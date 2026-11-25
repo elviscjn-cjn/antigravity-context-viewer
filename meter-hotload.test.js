@@ -1089,7 +1089,7 @@ test('热加载 7：PROJECT_VERSION 精确跟随本插件 package.json 但不误
     fs.copyFileSync(path.join(__dirname, 'meter-proxy.js'), path.join(distDir, 'meter-proxy.js'));
 
     const hostModCfg = require(path.join(distDir, 'modules-config.js'));
-    assert.equal(hostModCfg.PROJECT_VERSION, '0.8.8', '未存在插件自身 package.json 时必须回退插件版本，绝不能误读宿主 2.32.1');
+    assert.equal(hostModCfg.PROJECT_VERSION, '0.9.0', '未存在插件自身 package.json 时必须回退插件版本，绝不能误读宿主 2.32.1');
 
     // 同目录存在本插件 package.json 时，应动态对齐新版本（例如 0.8.9）
     const extDir = path.join(dir, 'ext');
@@ -1132,7 +1132,7 @@ test('热加载 7：PROJECT_VERSION 精确跟随本插件 package.json 但不误
     });
     const vEl = h.shadowElements.get('v');
     vEl.textContent = 'v0.8.8';
-    h.shadowElements.get('btn-check-update-ctx').click();
+    h.shadowElements.get('btn-check-update').click();
     await h.flush(40);
     h.shadowElements.get('btn-apply-update').click();
     await h.flush(60);
@@ -1328,7 +1328,12 @@ test('热加载 12：build-renderer 检测到 truncated for diff preview 时立�
   try {
     fs.mkdirSync(tmpSrc, { recursive: true });
     fs.writeFileSync(path.join(tmpRoot, 'package.json'), JSON.stringify({ name: 'antigravity-context-viewer', version: '0.8.7' }), 'utf8');
-    for (const f of ['styles.css', 'template.html', 'colors.js', 'i18n.js', 'context-budget-engine.js', 'dropdown.js', 'heatmap.js']) {
+    for (const f of [
+      'styles.css', 'template.html', 'colors.js', 'i18n.js', 'context-budget-engine.js',
+      'dropdown.js', 'dashboard-grid.js', 'next-prompt.js', 'context-settings-ui.js', 'host-settings.js',
+      'trend-pulse.js', 'context-inspector.js',
+      'execution-trace.js', 'agent-collab-hub.js', 'audit-widgets.js', 'cross-session-insights.js', 'heatmap.js'
+    ]) {
       fs.copyFileSync(path.join(__dirname, 'src', 'renderer', f), path.join(tmpSrc, f));
     }
 

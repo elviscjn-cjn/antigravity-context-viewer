@@ -24,7 +24,14 @@ scripts/capture-v080-screenshots.js
 # Local test & debug scripts and root redundant copies
 /apply_update_and_restart.bat
 /cli-window-helper.exe
+/scripts/cli-window-helper.exe
+/scripts/cli-window-helper.exe.sha256
 scripts/verify-installation.js
 scripts/demo-private-cli.cs
 scripts/run_demo_record.bat
 
+
+# Keep promotional media outside the repository.
+/assets/demo*.gif
+/assets/demo*.mp4
+/assets/demo-preview.jpg

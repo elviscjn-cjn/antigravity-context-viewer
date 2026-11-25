@@ -4,12 +4,6 @@
 
 给 Antigravity 桌面客户端补上上下文和用量信息. 方便查看当前会话用了多少上下文. 各模型还剩多少额度. 以及历史 Token 消耗.
 
-## 演示
-
-https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
-
-[下载高清 MP4](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
-
 ## 功能
 
 - **上下文监控.** 查看当前会话已用 Token 和剩余空间. 按模型分别保存上下文长度. 支持预设和自定义设置及恢复默认. 展示已保存设置与实际请求预算的区别.
@@ -27,12 +21,16 @@ https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
 
 免 TUN 功能需要可用的本地代理. 不是免费网络服务.
 
-目前主要在 Windows 桌面客户端验证. Mac 兼容问题会继续跟进. IDE 专属支持正在规划开发.
+目前主要在 Windows 桌面客户端实机验证. macOS 兼容与完整性校验边界如下:
+
+- **2.34.0 窗口加载锚点 (`loadHubWindowUrl`)**: 已同步适配并通过跨平台安装/升级/还原自动化测试验证.
+- **macOS `ElectronAsarIntegrity` 与应用包签名**: `node cli.js check` 会预检签名和 ASAR 完整性. 对启用 `ElectronAsarIntegrity` 或带发行方签名的 `.app`，`install` 和 `recover` 默认拦截改盘并推荐免改盘 **`node cli.js watch`**. 改写 `app.asar` 会影响签名验证，可能导致客户端或定时任务的 `language_server` 无法启动.
+- **实机未覆盖说明**: 本版构建期无 macOS 物理实机, macOS 上真实冷启动、Keychain/TCC 系统签名表现与真机 `watch` 交互仍待社区实际反馈核实. IDE 专属支持正在规划开发.
 
 ## 界面语言
 
 - **插件面板三语言**：面板内置 **简体中文**、**繁體中文**、**English** 即时切换与持久保存，覆盖全部页签、图表、价格账单与系统增强页（`src/renderer/i18n.js`）。
-- **客户端语言与授权说明**：桌面端界面语言支持切换 **简体中文**（内置自主整理的 `i18n/zh-CN.json` 与 `i18n/i18n-runtime.js`）或 **英文原版**。因外部繁体词典仓库 `qqxpee/antigravity2-cn` 未声明开源许可证，本版本未内置客户端繁體词典；繁體中文选项仅作用于插件自身面板。
+- **客户端语言与授权说明**：桌面端界面语言支持切换 **简体中文** 或 **英文原版**. Antigravity 界面汉化基于 [Antigravity-Chinese-Localization](https://github.com/antigravity-cn-community/Antigravity-Chinese-Localization)（采用本地工具包 Release `v2.34.0`）, 感谢 aabbWei 与 antigravity-cn-community 贡献者. 完整 MIT 许可证与版权声明见随包附带的 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). 因外部繁体词典仓库 `qqxpee/antigravity2-cn` 未声明开源许可证, 本版本未内置客户端繁體词典, 繁體中文选项仅作用于插件自身面板.
 
 ---
 
@@ -80,8 +78,17 @@ node cli.js check
 # 2. 一键安装（ASAR 持久化注入 + 当前运行窗口 CDP 即时热生效）
 node cli.js install
 
-# 3. 仅对当前运行窗口进行 CDP 免改盘热挂载
+# 3. 仅对当前运行窗口进行 CDP 免改盘热挂载（客户端未运行时支持自动带调试端口拉起；v2.33.0+ 已裸开时外置终端支持 --relaunch 优雅重开）
 node cli.js live
+node cli.js live --relaunch
+
+# 3b. 免改盘后台守护模式（macOS 推荐，保留官方原始签名；随窗口刷新自动重挂，关闭后自动退出）
+node cli.js watch
+node cli.js stop-watch
+
+# 3c. 检查并下载免改盘更新，watch 会接手验证后的新版本
+node cli.js update --check-only
+node cli.js update
 
 # 4. 查看当前安装状态与实时会话上下文用量
 node cli.js status
@@ -97,6 +104,8 @@ node cli.js enhance-status
 node cli.js enhance --tier 3 --chinese-title on --brand-title english
 node cli.js enhance-restore
 ```
+
+如果旧版插件目录里的 `cli.js` 不认识 `update`，请从 [GitHub Releases](https://github.com/elviscjn-cjn/antigravity-context-viewer/releases) 下载包含该命令的插件包，解压到新目录后在该目录运行 `node cli.js watch`。插件更新与 Antigravity 客户端更新独立。macOS 签名已经损坏时，先换回官方客户端并确认定时任务可运行，再使用 `watch`。
 
 ---
 
@@ -114,11 +123,7 @@ npm test
 
 ```text
 antigravity-context-viewer/
-├── assets/                                 # 演示动图、高清录屏与实拍截图
-│   ├── demo-01-context-audit.gif / .mp4    # 演示 1：会话上下文监控与底层技术参数附件审计
-│   ├── demo-02-token-heatmap.gif / .mp4    # 演示 2：Token 历史用量统计与 52 周活跃热力图交互
-│   ├── demo-03-panel-switching.gif / .mp4  # 演示 3：独立双面板平滑切换与侧边栏防遮挡自适应
-│   ├── demo-04-responsive-collapse.gif/.mp4# 演示 4：顶栏胶囊多级响应式折叠与窄屏自适应
+├── assets/                                 # 界面实拍截图
 │   ├── panel-context-main.png              # 实拍 1：会话上下文与生成监控主视图
 │   ├── panel-context-audit-expanded.png    # 实拍 2：会话上下文全展开：外观调色与底层审计
 │   ├── capsule-speed-and-tooltip.png       # 实拍 3：顶栏环形胶囊、实时速度与原生气泡提示
@@ -133,7 +138,7 @@ antigravity-context-viewer/
 ├── meter-enhance.js                        # 系统提示词 0~4 档、防幻觉与中文标题等长替换引擎
 ├── i18n/                                   # 客户端简体中文化词典与运行时 (zh-CN.json / i18n-runtime.js)
 ├── unlock/                                 # PR #3 跨平台解锁工具与文档 (language-server & agy-cli)
-├── meter-renderer.js                       # 渲染层构建产物 (0.8.5)
+├── meter-renderer.js                       # 渲染层构建产物
 ├── src/renderer/                           # 渲染层源码
 ├── scripts/                                # 构建、发布打包与基准测试
 ├── meter-collector.js                      # 本地会话归档读取与附件提取收集器
@@ -147,14 +152,16 @@ antigravity-context-viewer/
 
 ## 🛡️ 安全说明与原生窗口辅助程序 (Security & Transparency)
 
-- **用途说明**：Windows 安装包中的可选组件 `scripts/cli-window-helper.exe`（源码 [scripts/cli-window-helper.cs](scripts/cli-window-helper.cs)）仅用于在从插件弹窗一键启动 `agy` CLI 时定位新控制台窗口、按当前工作区居中并激活前台焦点，不包含任何联网、持久化或后台驻留逻辑。
-- **工具链与构建命令**：基于 Windows 自带 `.NET Framework 4.0` 编译，可随时自行审计源码并本地重编：
+- **用途说明**：Windows 发布包中的可选组件 `scripts/cli-window-helper.exe`（唯一源码 [scripts/cli-window-helper.cs](scripts/cli-window-helper.cs)）仅用于在从插件弹窗一键启动 `agy` CLI 时定位新控制台窗口、按当前工作区居中并激活前台焦点，不包含任何联网、持久化或后台驻留逻辑。
+- **构建来源可追溯（Git 零预编译二进制）**：源码仓库已将预编译 `scripts/cli-window-helper.exe` 移出 Git 跟踪。发布产物中的二进制仅通过以下两种途径从 `scripts/cli-window-helper.cs` 现场构建并做 SHA-256 校验：
+  1. GitHub Actions（`.github/workflows/release.yml`）在 `windows-latest` 运行器上使用 `.NET Framework 4.0` 现场编译并生成 `.sha256` 校验文件，跨作业校验一致后打入 Windows ZIP 包；
+  2. 本地运行 `node scripts/package-release.js` 或从源码工作树执行 `node cli.js install` 时，直接调用本地 `csc.exe` 将源码编译到系统临时目录（不写入工作树、不使用残留 `.exe`）。
+- **工具链与手动重编命令**：基于 Windows 自带 `.NET Framework 4.0` 编译，可随时自行审计源码并本地重编：
   ```powershell
   C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:exe /platform:anycpu /optimize+ /out:scripts\cli-window-helper.exe scripts\cli-window-helper.cs
   ```
-- **当前随附二进制 SHA-256**：`e6a62cbb03163107db889e6accf7c05049ecf949c89f29afaf072c66fe09eac9`（注：.NET Framework `csc.exe` 默认嵌入 PE 时间戳/MVID，自行本地或由 `.github/workflows/release.yml` 在 `windows-latest` 上从同份源码重编会生成有效功能等价但哈希值不同的二进制；CI 现场编译旨在提升构建来源透明度，但**不代表所有杀软引擎一定会停止触发告警**）。
-- **常见安全软件检测说明**：由于该程序是约 15 KB 的未数字签名原生辅助二进制且调用了 `keybd_event`、`AttachThreadInput`、`AllowSetForegroundWindow`、`CreateToolhelp32Snapshot` 与 `Process.Start("cmd.exe")`，部分杀毒引擎可能报启发式可疑告警。
-- **无需关闭杀软的可选降级**：如果您不希望保留任何预编译 `.exe` 或其被安全软件拦截，无需关闭安全软件，也无需购买签名证书，可直接删除 `scripts/cli-window-helper.exe`。`meter-cli-launcher.js` 检测到 helper 缺失或失败时会自动降级为直接启动标准 Windows 控制台 `cmd.exe /d /k`，CLI 启动与对话能力完全正常（仅不再自动居中或强制置顶窗口）。
+- **常见安全软件检测说明**：由于该程序是约 15 KB 的未数字签名原生辅助二进制且调用了 `keybd_event`、`AttachThreadInput`、`AllowSetForegroundWindow`、`CreateToolhelp32Snapshot` 与 `Process.Start("cmd.exe")`，部分杀毒引擎可能报启发式可疑告警（注：CI 现场编译旨在确保构建来源可追溯，但**不代表所有杀软引擎一定会停止触发告警**）。
+- **无需关闭杀软的可选降级**：如果您不希望保留任何 `.exe` 或其被安全软件拦截，无需关闭安全软件，也无需购买签名证书，可直接删除 `cli-window-helper.exe`（位于安装目录 `scripts/cli-window-helper.exe` 或 `%LOCALAPPDATA%\AntigravityContextMeter\cli-window-helper.exe`）。`meter-cli-launcher.js` 检测到 helper 缺失或失败时会自动降级为直接启动标准 Windows 控制台 `cmd.exe /d /k`，CLI 启动与对话能力完全正常（仅不再自动居中或强制置顶窗口）。
 
 ---
 
@@ -172,52 +179,10 @@ antigravity-context-viewer/
 - **Issue #17（`cli-window-helper` VirusTotal 检测溯源、文档透明度与 Windows CI 源码构建建议）**：感谢 **[@riandycandra](https://github.com/riandycandra)**。
 - **PR #21（繁体中文面板译文精细优化）**：感谢 **[@U1tr0n-Lee](https://github.com/U1tr0n-Lee)**。
 - **Issue #22（GitHub API 限流时官方 Atom/Web 更新回退方案）**：感谢 **[@zhao33079-zhao](https://github.com/zhao33079-zhao)**。
+- **v0.9.0 代码合入贡献者**：感谢 **[@Tswatery](https://github.com/Tswatery)**（[PR #38](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/38) · [PR #53](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/53) · [PR #32](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/32)）、**[@Kisaragi-Mio-0127](https://github.com/Kisaragi-Mio-0127)**（[PR #47](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/47) · [Issue #46](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/46)）、**[@feizaodemon](https://github.com/feizaodemon)**（[PR #52](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/52) · [PR #72](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/72)）与 **[@yuanyang749](https://github.com/yuanyang749)**（[PR #57](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/57)）。
+- **v0.9.0 采纳方案与兼容性贡献者**：感谢 **[@JYPYYy](https://github.com/JYPYYy)**（[PR #35](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/35) · [PR #36](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/36) · [PR #37](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/37)）、**[@Nymph-Beta](https://github.com/Nymph-Beta)**（[Issue #42](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/42) · [PR #43](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/43) · [PR #48](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/48) · [PR #71](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/71)）、**[@Staaaying](https://github.com/Staaaying)**（[PR #70](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/70) · [PR #74](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/74) · [PR #79](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/79)）、**[@paojiaoleshenghuo](https://github.com/paojiaoleshenghuo)**（[PR #27](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/27)）、**[@Fengsuid](https://github.com/Fengsuid)**（[PR #55](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/55)）、**[@1-pluto1](https://github.com/1-pluto1)**（[PR #60](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/60)）、**[@lllhhhh](https://github.com/lllhhhh)**（[PR #63](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/63)）、**[@unie774](https://github.com/unie774)**（[PR #64](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/64)）、**[@XiangZheng2283](https://github.com/XiangZheng2283)**（[Issue #75](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/75) · [PR #76](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/76)）、**[@BetterThanAny](https://github.com/BetterThanAny)**（[Issue #77](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/77)）、**[@jinyue806](https://github.com/jinyue806)**（[Issue #78](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/78)）、**[@Jeffgithub0029](https://github.com/Jeffgithub0029)**（[Issue #80](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/80)）、**[@x1051445024](https://github.com/x1051445024)**（[PR #61](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/61) · [Issue #50](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/50)）、**[@Hirasawa8](https://github.com/Hirasawa8)**（[PR #66](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/66)）、**[@shixin08052](https://github.com/shixin08052)**（[PR #67](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/67)）、**[@Xuhang0607](https://github.com/Xuhang0607)**（[PR #68](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/68)）、**[@Jemiking](https://github.com/Jemiking)**（[PR #69](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/69)）与 **[@awu5425](https://github.com/awu5425)**（[PR #73](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/73)），以及 **[@MoiraToki](https://github.com/MoiraToki)**（[PR #34](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/34)）。
+- **客户端界面汉化上游**：Antigravity 界面汉化基于 [Antigravity-Chinese-Localization](https://github.com/antigravity-cn-community/Antigravity-Chinese-Localization)（Release `v2.34.0`）, 感谢 aabbWei 与 antigravity-cn-community 贡献者. 许可与版权声明见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
-
-## 🙌 贡献者 (Contributors)
-
-历次 GitHub Release 说明中署名的社区贡献者共 35 位，按版本归集在 [CONTRIBUTORS.md](CONTRIBUTORS.md)。
-
-<p align="left">
-  <a href="https://github.com/elviscjn-cjn" title="elviscjn-cjn · 作者 / author"><img src="https://github.com/elviscjn-cjn.png?size=96" width="48" height="48" alt="@elviscjn-cjn"></a>
-  <a href="https://github.com/Tswatery" title="Tswatery · v0.8.8-rc.1"><img src="https://github.com/Tswatery.png?size=96" width="48" height="48" alt="@Tswatery"></a>
-  <a href="https://github.com/Kisaragi-Mio-0127" title="Kisaragi-Mio-0127 · v0.8.9"><img src="https://github.com/Kisaragi-Mio-0127.png?size=96" width="48" height="48" alt="@Kisaragi-Mio-0127"></a>
-  <a href="https://github.com/feizaodemon" title="feizaodemon · v0.8.9"><img src="https://github.com/feizaodemon.png?size=96" width="48" height="48" alt="@feizaodemon"></a>
-  <a href="https://github.com/yuanyang749" title="yuanyang749 · v0.8.9"><img src="https://github.com/yuanyang749.png?size=96" width="48" height="48" alt="@yuanyang749"></a>
-  <a href="https://github.com/JYPYYy" title="JYPYYy · v0.8.6"><img src="https://github.com/JYPYYy.png?size=96" width="48" height="48" alt="@JYPYYy"></a>
-  <a href="https://github.com/Nymph-Beta" title="Nymph-Beta · v0.8.9"><img src="https://github.com/Nymph-Beta.png?size=96" width="48" height="48" alt="@Nymph-Beta"></a>
-  <a href="https://github.com/Fengsuid" title="Fengsuid · v0.9.0"><img src="https://github.com/Fengsuid.png?size=96" width="48" height="48" alt="@Fengsuid"></a>
-  <a href="https://github.com/lllhhhh" title="lllhhhh · v0.9.0"><img src="https://github.com/lllhhhh.png?size=96" width="48" height="48" alt="@lllhhhh"></a>
-  <a href="https://github.com/Staaaying" title="Staaaying · v0.9.0"><img src="https://github.com/Staaaying.png?size=96" width="48" height="48" alt="@Staaaying"></a>
-  <a href="https://github.com/XiangZheng2283" title="XiangZheng2283 · v0.9.0"><img src="https://github.com/XiangZheng2283.png?size=96" width="48" height="48" alt="@XiangZheng2283"></a>
-  <a href="https://github.com/x1051445024" title="x1051445024 · v0.8.1"><img src="https://github.com/x1051445024.png?size=96" width="48" height="48" alt="@x1051445024"></a>
-  <a href="https://github.com/Hirasawa8" title="Hirasawa8 · v0.9.0"><img src="https://github.com/Hirasawa8.png?size=96" width="48" height="48" alt="@Hirasawa8"></a>
-  <a href="https://github.com/shixin08052" title="shixin08052 · v0.9.0"><img src="https://github.com/shixin08052.png?size=96" width="48" height="48" alt="@shixin08052"></a>
-  <a href="https://github.com/Xuhang0607" title="Xuhang0607 · v0.9.0"><img src="https://github.com/Xuhang0607.png?size=96" width="48" height="48" alt="@Xuhang0607"></a>
-  <a href="https://github.com/Jemiking" title="Jemiking · v0.8.10"><img src="https://github.com/Jemiking.png?size=96" width="48" height="48" alt="@Jemiking"></a>
-  <a href="https://github.com/awu5425" title="awu5425 · v0.9.0"><img src="https://github.com/awu5425.png?size=96" width="48" height="48" alt="@awu5425"></a>
-  <a href="https://github.com/LC9999216" title="LC9999216 · v0.9.0"><img src="https://github.com/LC9999216.png?size=96" width="48" height="48" alt="@LC9999216"></a>
-  <a href="https://github.com/locking-main-163" title="locking-main-163 · v0.8.10"><img src="https://github.com/locking-main-163.png?size=96" width="48" height="48" alt="@locking-main-163"></a>
-  <a href="https://github.com/Lopution" title="Lopution · v0.8.8"><img src="https://github.com/Lopution.png?size=96" width="48" height="48" alt="@Lopution"></a>
-  <a href="https://github.com/huron09280" title="huron09280 · v0.8.8-rc.1"><img src="https://github.com/huron09280.png?size=96" width="48" height="48" alt="@huron09280"></a>
-  <a href="https://github.com/kyrie21z" title="kyrie21z · v0.8.8"><img src="https://github.com/kyrie21z.png?size=96" width="48" height="48" alt="@kyrie21z"></a>
-  <a href="https://github.com/startips" title="startips · v0.8.8-rc.1"><img src="https://github.com/startips.png?size=96" width="48" height="48" alt="@startips"></a>
-  <a href="https://github.com/nokiy" title="nokiy · v0.8.4"><img src="https://github.com/nokiy.png?size=96" width="48" height="48" alt="@nokiy"></a>
-  <a href="https://github.com/Azreal2021" title="Azreal2021 · v0.8.4"><img src="https://github.com/Azreal2021.png?size=96" width="48" height="48" alt="@Azreal2021"></a>
-  <a href="https://github.com/MoiraToki" title="MoiraToki · v0.8.4"><img src="https://github.com/MoiraToki.png?size=96" width="48" height="48" alt="@MoiraToki"></a>
-  <a href="https://github.com/yinshengphy" title="yinshengphy · v0.8.4"><img src="https://github.com/yinshengphy.png?size=96" width="48" height="48" alt="@yinshengphy"></a>
-  <a href="https://github.com/Andrew-liu" title="Andrew-liu · v0.8.4"><img src="https://github.com/Andrew-liu.png?size=96" width="48" height="48" alt="@Andrew-liu"></a>
-  <a href="https://github.com/nocoo" title="nocoo · v0.8.4"><img src="https://github.com/nocoo.png?size=96" width="48" height="48" alt="@nocoo"></a>
-  <a href="https://github.com/U1tr0n-Lee" title="U1tr0n-Lee · v0.8.4"><img src="https://github.com/U1tr0n-Lee.png?size=96" width="48" height="48" alt="@U1tr0n-Lee"></a>
-  <a href="https://github.com/zhao33079-zhao" title="zhao33079-zhao · v0.8.4"><img src="https://github.com/zhao33079-zhao.png?size=96" width="48" height="48" alt="@zhao33079-zhao"></a>
-  <a href="https://github.com/git-aa12138" title="git-aa12138 · v0.8.4"><img src="https://github.com/git-aa12138.png?size=96" width="48" height="48" alt="@git-aa12138"></a>
-  <a href="https://github.com/anyu0804" title="anyu0804 · v0.8.3"><img src="https://github.com/anyu0804.png?size=96" width="48" height="48" alt="@anyu0804"></a>
-  <a href="https://github.com/Jia131313" title="Jia131313 · v0.8.3"><img src="https://github.com/Jia131313.png?size=96" width="48" height="48" alt="@Jia131313"></a>
-  <a href="https://github.com/joyshan1986" title="joyshan1986 · v0.8.3"><img src="https://github.com/joyshan1986.png?size=96" width="48" height="48" alt="@joyshan1986"></a>
-  <a href="https://github.com/riandycandra" title="riandycandra · v0.8.4"><img src="https://github.com/riandycandra.png?size=96" width="48" height="48" alt="@riandycandra"></a>
-</p>
-
----
 
 ## 作者
 

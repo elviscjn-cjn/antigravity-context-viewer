@@ -5,11 +5,13 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { spawnSync } = require('node:child_process');
 
 const {
   resolveCliExecutable,
   resolveCliWorkspace,
   resolveHelperExecutable,
+  resolveCliAccountProfile,
   escapePosixArg,
   launchCliSession
 } = require('./meter-cli-launcher');
@@ -98,30 +100,36 @@ test('CLI 启动模块 4: helper 输出诊断结构完整解析与部分成功�
   assert.equal(parsed.cmdPid, 12345);
 });
 
-test('CLI 启动模块 5: 隔离环境中验证 helper 部署、探测与哈希一致性（零生产依赖）', () => {
-  const canonicalHelper = path.join(__dirname, 'scripts', 'cli-window-helper.exe');
-  assert.ok(fs.existsSync(canonicalHelper), '唯一权威二进制 scripts/cli-window-helper.exe 必须存在');
+test('CLI 启动模块 5: 隔离环境中验证从源码编译 helper 部署、探测与哈希一致性（零预编译跟踪）', () => {
+  const csSource = path.join(__dirname, 'scripts', 'cli-window-helper.cs');
+  assert.ok(fs.existsSync(csSource), '唯一权威源码 scripts/cli-window-helper.cs 必须存在');
+  const { ensureWindowsHelper } = require('./scripts/package-release');
 
-  const buf = fs.readFileSync(canonicalHelper);
-  assert.ok(buf.length > 1024, 'helper 文件体积必须有效');
-  assert.equal(buf[0], 0x4d, '必须为合法 MZ 头');
-  assert.equal(buf[1], 0x5a, '必须为合法 MZ 头');
-  const canonicalSha = crypto.createHash('sha256').update(buf).digest('hex');
-
-  // 在隔离临时目录中模拟部署状态
+  let built = null;
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-deploy-'));
   try {
-    const mockStateDir = path.join(tmpDir, 'state');
-    fs.mkdirSync(mockStateDir, { recursive: true });
-    const deployedHelper = path.join(mockStateDir, 'cli-window-helper.exe');
-    fs.copyFileSync(canonicalHelper, deployedHelper);
+    if (process.platform === 'win32') {
+      built = ensureWindowsHelper();
+      assert.equal(built.compiled, true);
+      const buf = fs.readFileSync(built.helperPath);
+      assert.ok(buf.length > 1024, 'helper 文件体积必须有效');
+      assert.equal(buf[0], 0x4d, '必须为合法 MZ 头');
+      assert.equal(buf[1], 0x5a, '必须为合法 MZ 头');
 
-    // 验证 resolveHelperExecutable 优先识别注入的 stateDir 部署路径
-    const res = resolveHelperExecutable({ stateDir: mockStateDir });
-    assert.equal(res.ok, true, '必须能成功识别已部署的 helper');
-    assert.equal(path.resolve(res.helperPath), path.resolve(deployedHelper));
-    assert.equal(res.helperSha256, canonicalSha, '部署后 helper 的哈希必须与源码一致');
+      const mockStateDir = path.join(tmpDir, 'state');
+      fs.mkdirSync(mockStateDir, { recursive: true });
+      const deployedHelper = path.join(mockStateDir, 'cli-window-helper.exe');
+      fs.copyFileSync(built.helperPath, deployedHelper);
+
+      const res = resolveHelperExecutable({ stateDir: mockStateDir });
+      assert.equal(res.ok, true, '必须能成功识别已部署的 helper');
+      assert.equal(path.resolve(res.helperPath), path.resolve(deployedHelper));
+      assert.equal(res.helperSha256, built.helperSha256, '部署后 helper 的哈希必须与本轮源码构建一致');
+    }
   } finally {
+    if (built?.tempDir) {
+      try { fs.rmSync(built.tempDir, { recursive: true, force: true }); } catch {}
+    }
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
@@ -346,6 +354,44 @@ test('local-api exports parseExplicitPort and cli.js status / runtime-check.js -
   }
 });
 
+test('CLI 启动模块 9: 探测 ~/.gemini/bin/agy 与 detectCliBinary 原生二进制过滤', () => {
+  const { detectCliBinary } = require('./meter-context-unlock');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-gemini-root-bin-'));
+  try {
+    // 1. Windows: ~/.gemini/bin/agy.exe 应无需 PATH 即被识别
+    const winExe = path.join(tmpDir, '.gemini', 'bin', 'agy.exe');
+    fs.mkdirSync(path.dirname(winExe), { recursive: true });
+    fs.writeFileSync(winExe, 'MZdummy', 'utf8');
+
+    const resWin = resolveCliExecutable(null, { platform: 'win32', homeDir: tmpDir, env: {} });
+    assert.equal(resWin.ok, true);
+    assert.equal(resWin.source, 'gemini_cli_bin_exe');
+    assert.equal(path.resolve(resWin.exePath), path.resolve(winExe));
+
+    const detectedWin = detectCliBinary(null, { platform: 'win32', homeDir: tmpDir, env: {} });
+    assert.equal(path.resolve(detectedWin), path.resolve(winExe));
+
+    // 2. Windows 仅有无伴生 .exe 的 .cmd 包装脚本时，detectCliBinary 应拒绝将其送入 PE 解析
+    const cmdOnlyHome = path.join(tmpDir, 'cmd-only');
+    const winCmd = path.join(cmdOnlyHome, '.gemini', 'bin', 'agy.cmd');
+    fs.mkdirSync(path.dirname(winCmd), { recursive: true });
+    fs.writeFileSync(winCmd, '@echo off\r\necho agy wrapper\r\n', 'utf8');
+    assert.equal(detectCliBinary(null, { platform: 'win32', homeDir: cmdOnlyHome, env: {} }), null);
+
+    // 3. Linux/macOS: ~/.gemini/bin/agy 应被识别
+    const unixHome = path.join(tmpDir, 'unix-home');
+    const unixBin = path.join(unixHome, '.gemini', 'bin', 'agy');
+    fs.mkdirSync(path.dirname(unixBin), { recursive: true });
+    fs.writeFileSync(unixBin, '#!/bin/sh\necho ok\n', 'utf8');
+    const resLinux = resolveCliExecutable(null, { platform: 'linux', homeDir: unixHome, env: {} });
+    assert.equal(resLinux.ok, true);
+    assert.equal(resLinux.source, 'gemini_cli_bin');
+    assert.equal(path.resolve(resLinux.exePath), path.resolve(unixBin));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('cli.js rejects --help, -h, and unknown args/commands with non-zero exit, prints usage only, and performs zero writes or live injection', () => {
   const { spawnSync } = require('node:child_process');
   const { parseCliArgs } = require('./cli');
@@ -412,34 +458,56 @@ test('cli.js rejects --help, -h, and unknown args/commands with non-zero exit, p
   }
 });
 
-test('打包脚本回归: package-release 编译 helper 输出至临时目录且不覆盖仓库 cli-window-helper.exe', () => {
+test('打包脚本回归: package-release 强制源码编译且忽略残留 .exe、编译/CI校验失败必报错', () => {
   const { ensureWindowsHelper, packagePlatform, supportsCscDeterministicFlag } = require('./scripts/package-release');
-  const repoHelperPath = path.join(__dirname, 'scripts', 'cli-window-helper.exe');
-  const beforeStat = fs.statSync(repoHelperPath);
-  const beforeSha = crypto.createHash('sha256').update(fs.readFileSync(repoHelperPath)).digest('hex');
-
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-pkg-root-'));
   const tmpOut = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-pkg-test-'));
   let helperInfo = null;
   try {
-    helperInfo = ensureWindowsHelper();
-    assert.ok(fs.existsSync(helperInfo.helperPath), '必须返回可用的 helperPath');
-    if (process.platform === 'win32' && helperInfo.compiled) {
-      assert.notEqual(
-        path.resolve(helperInfo.helperPath),
-        path.resolve(repoHelperPath),
-        '本地编译输出必须位于临时目录，绝不能覆盖仓库里的 scripts/cli-window-helper.exe'
-      );
-      assert.ok(helperInfo.tempDir && helperInfo.helperPath.startsWith(path.resolve(os.tmpdir())));
-    }
-    const afterStat = fs.statSync(repoHelperPath);
-    const afterSha = crypto.createHash('sha256').update(fs.readFileSync(repoHelperPath)).digest('hex');
-    assert.equal(afterSha, beforeSha, '仓库 tracking 的 scripts/cli-window-helper.exe 内容绝不能被改写');
-    assert.equal(afterStat.mtimeMs, beforeStat.mtimeMs, '仓库 scripts/cli-window-helper.exe 修改时间绝不能被改写');
+    // 1. 构造隔离根目录：复制真实 .cs 源码并故意放入伪造残留 cli-window-helper.exe
+    const fakeScripts = path.join(tmpRoot, 'scripts');
+    fs.mkdirSync(fakeScripts, { recursive: true });
+    fs.copyFileSync(path.join(__dirname, 'scripts', 'cli-window-helper.cs'), path.join(fakeScripts, 'cli-window-helper.cs'));
+    const staleExe = path.join(fakeScripts, 'cli-window-helper.exe');
+    fs.writeFileSync(staleExe, 'STALE_LEFTOVER_EXE_MUST_NOT_BE_PACKAGED');
+    const staleSha = crypto.createHash('sha256').update(fs.readFileSync(staleExe)).digest('hex');
 
+    if (process.platform === 'win32') {
+      helperInfo = ensureWindowsHelper({ rootDir: tmpRoot });
+      assert.equal(helperInfo.compiled, true);
+      assert.equal(helperInfo.source, 'local_source_build');
+      assert.notEqual(helperInfo.helperSha256, staleSha, 'Windows 本地打包绝不能采用源码目录残留 .exe');
+      assert.ok(helperInfo.tempDir && helperInfo.helperPath.startsWith(path.resolve(os.tmpdir())));
+
+      // 编译工具链缺失时必须直接报错，禁止回退到残留 .exe
+      assert.throws(
+        () => ensureWindowsHelper({ rootDir: tmpRoot, cscCandidates: [path.join(tmpRoot, 'missing-csc.exe')] }),
+        /csc\.exe|禁止回退|终止/
+      );
+    }
+
+    // 2. CI 模式校验：哈希文件缺失或篡改时报错，匹配时通过
+    const ciShaFile = path.join(fakeScripts, 'cli-window-helper.exe.sha256');
+    assert.throws(
+      () => ensureWindowsHelper({ rootDir: tmpRoot, useCiArtifact: true }),
+      /哈希校验文件|无法验证/
+    );
+    fs.writeFileSync(ciShaFile, `${'0'.repeat(64)}  scripts/cli-window-helper.exe\n`, 'utf8');
+    assert.throws(
+      () => ensureWindowsHelper({ rootDir: tmpRoot, useCiArtifact: true }),
+      /哈希校验失败/
+    );
+    fs.writeFileSync(ciShaFile, `${staleSha}  scripts/cli-window-helper.exe\n`, 'utf8');
+    const ciRes = ensureWindowsHelper({ rootDir: tmpRoot, useCiArtifact: true });
+    assert.equal(ciRes.source, 'ci_verified_artifact');
+    assert.equal(ciRes.helperSha256, staleSha);
+
+    // 3. 验证 packagePlatform 正确打包指定的源码构建产物
+    const targetHelperPath = helperInfo ? helperInfo.helperPath : ciRes.helperPath;
     const res = packagePlatform(
       { name: 'windows_amd64', scripts: ['install.bat', 'uninstall.bat', 'scripts/cli-window-helper.exe'] },
-      '0.8.8-test',
-      { distDir: tmpOut, helperPath: helperInfo.helperPath }
+      '0.9.0-test',
+      { distDir: tmpOut, helperPath: targetHelperPath }
     );
     assert.ok(fs.existsSync(res.path) && res.size > 0);
     assert.equal(typeof supportsCscDeterministicFlag('Z:/missing/csc.exe'), 'boolean');
@@ -447,6 +515,130 @@ test('打包脚本回归: package-release 编译 helper 输出至临时目录且
     if (helperInfo?.tempDir) {
       try { fs.rmSync(helperInfo.tempDir, { recursive: true, force: true }); } catch {}
     }
+    try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
     try { fs.rmSync(tmpOut, { recursive: true, force: true }); } catch {}
+  }
+});
+
+test('CLI 启动模块 10: resolveCliAccountProfile 独立账号解析、凭据提取与 profile 目录隔离', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-acc-'));
+  try {
+    const stateDir = path.join(tmpDir, 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const storeFile = path.join(stateDir, 'accounts_v1.json');
+    const profilesDir = path.join(tmpDir, 'cli-profiles');
+
+    // 1. 无指定账号时保持未隔离
+    const resNone = await resolveCliAccountProfile(null, { stateDir, cliProfilesDir: profilesDir });
+    assert.equal(resNone.ok, true);
+    assert.equal(resNone.isolated, false);
+    assert.equal(resNone.email, null);
+
+    // 2. 账号库存在但查询不存在的账号
+    const fakeStore = {
+      version: 1,
+      accounts: {
+        'alpha@example.com': {
+          email: 'alpha@example.com',
+          credential: { accessToken: 'mock_token_alpha', refreshToken: 'mock_refresh_alpha' }
+        },
+        'beta@example.com': {
+          email: 'beta@example.com',
+          credential: {}
+        }
+      }
+    };
+    fs.writeFileSync(storeFile, JSON.stringify(fakeStore), 'utf8');
+
+    const resMissing = await resolveCliAccountProfile('gamma@example.com', { stateDir, cliProfilesDir: profilesDir });
+    assert.equal(resMissing.ok, false);
+    assert.equal(resMissing.code, 'ACCOUNT_NOT_FOUND');
+    assert.match(resMissing.error, /未在多账号管理器中找到指定账号/);
+
+    // 3. 账号存在但无凭据
+    const resNoCred = await resolveCliAccountProfile('beta@example.com', { stateDir, cliProfilesDir: profilesDir });
+    assert.equal(resNoCred.ok, false);
+    assert.equal(resNoCred.code, 'ACCOUNT_NO_CREDENTIALS');
+
+    // 4. 正常账号成功生成隔离 profile 与 token 文件
+    const resAlpha = await resolveCliAccountProfile('alpha@example.com', { stateDir, cliProfilesDir: profilesDir });
+    assert.equal(resAlpha.ok, true);
+    assert.equal(resAlpha.isolated, true);
+    assert.equal(resAlpha.email, 'alpha@example.com');
+    assert.ok(fs.existsSync(resAlpha.isolatedDir));
+    assert.ok(fs.existsSync(resAlpha.tokenFile));
+    assert.ok(fs.existsSync(path.join(resAlpha.isolatedDir, 'keyring-marker-disabled')));
+
+    const parsedToken = JSON.parse(fs.readFileSync(resAlpha.tokenFile, 'utf8'));
+    assert.equal(parsedToken.token.access_token, 'mock_token_alpha');
+    assert.equal(parsedToken.token.refresh_token, 'mock_refresh_alpha');
+    assert.equal(parsedToken.id_token_email, 'alpha@example.com');
+    assert.equal(parsedToken.auth_method, 'consumer');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('CLI 启动模块 11: launchCliSession 与 cli.js launch-cli --account 隔离环境变量与无损凭据交接启动', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-launch-acc-'));
+  try {
+    const stateDir = path.join(tmpDir, 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const storeFile = path.join(stateDir, 'accounts_v1.json');
+    const profilesDir = path.join(tmpDir, 'cli-profiles');
+    const fakeCli = path.join(tmpDir, process.platform === 'win32' ? 'agy.exe' : 'agy');
+    fs.writeFileSync(fakeCli, 'stub', { mode: 0o755 });
+
+    const fakeStore = {
+      version: 1,
+      accounts: {
+        'isolated_user@gmail.com': {
+          email: 'isolated_user@gmail.com',
+          credential: { accessToken: 'mock_token_iso', refreshToken: 'mock_refresh_iso' }
+        }
+      }
+    };
+    fs.writeFileSync(storeFile, JSON.stringify(fakeStore), 'utf8');
+
+    // 1. launchCliSession dryRun 验证
+    const dryRes = await launchCliSession({
+      cliPath: fakeCli,
+      cwd: tmpDir,
+      account: 'isolated_user@gmail.com',
+      stateDir,
+      cliProfilesDir: profilesDir,
+      dryRun: true
+    });
+    assert.equal(dryRes.ok, true);
+    assert.equal(dryRes.account, 'isolated_user@gmail.com');
+    assert.equal(dryRes.keyringBypassed, true);
+    assert.equal(dryRes.args.includes('-keyring-unavailable'), false);
+    assert.equal(dryRes.env.JETSKI_APP_DATA_DIR, dryRes.isolatedDir);
+    assert.equal(dryRes.env.JETSKI_OAUTH_TOKEN, 'mock_token_iso');
+    assert.equal(dryRes.env.AG_CLI_ACCOUNT_EMAIL, 'isolated_user@gmail.com');
+
+    // 2. 通过 cli.js 命令行进程解析验证
+    const resCli = spawnSync(
+      process.execPath,
+      [
+        path.join(__dirname, 'cli.js'),
+        'launch-cli',
+        '--cli-path', fakeCli,
+        '--cwd', tmpDir,
+        '--account', 'isolated_user@gmail.com',
+        '--state-dir', stateDir,
+        '--dry-run',
+        '--json'
+      ],
+      { cwd: __dirname, encoding: 'utf8', windowsHide: true }
+    );
+    assert.equal(resCli.status, 0, resCli.stderr);
+    const parsedOut = JSON.parse(resCli.stdout.trim());
+    assert.equal(parsedOut.ok, true);
+    assert.equal(parsedOut.account, 'isolated_user@gmail.com');
+    assert.equal(parsedOut.keyringBypassed, true);
+    assert.equal(parsedOut.args.includes('-keyring-unavailable'), false);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });

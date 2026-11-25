@@ -18,23 +18,16 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Compile scripts/cli-window-helper.cs with .NET Framework csc.exe
-        shell: powershell
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Compile and verify the Windows helper
+        shell: pwsh
         run: |
-          $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-          if (-not (Test-Path $csc)) {
-            $csc = "C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe"
-          }
-          if (-not (Test-Path $csc)) {
-            throw ".NET Framework csc.exe not found on windows-latest runner"
-          }
-          & $csc /nologo /target:exe /platform:anycpu /optimize+ /out:scripts\cli-window-helper.exe scripts\cli-window-helper.cs
-          if ($LASTEXITCODE -ne 0) {
-            throw "csc.exe failed with exit code $LASTEXITCODE"
-          }
-          $hash = (Get-FileHash scripts\cli-window-helper.exe -Algorithm SHA256).Hash.ToLower()
-          Write-Host "Built scripts/cli-window-helper.exe SHA-256: $hash"
-          "$hash  scripts/cli-window-helper.exe" | Out-File -FilePath scripts\cli-window-helper.exe.sha256 -Encoding ascii
+          node -e 'const fs = require("fs"); const { ensureWindowsHelper } = require("./scripts/package-release.js"); const built = ensureWindowsHelper(); try { fs.copyFileSync(built.helperPath, "scripts/cli-window-helper.exe"); fs.writeFileSync("scripts/cli-window-helper.exe.sha256", built.helperSha256 + "  scripts/cli-window-helper.exe\n"); } finally { fs.rmSync(built.tempDir, { recursive: true, force: true }); }'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload Compiled Helper Artifact
         uses: actions/upload-artifact@v4
@@ -64,21 +57,16 @@ jobs:
       - name: Verify Helper Provenance
         run: |
           sha256sum -c scripts/cli-window-helper.exe.sha256
-          rm -f scripts/cli-window-helper.exe.sha256
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
-
       - name: Build Cross-Platform Release Packages
         run: |
-          python3 scripts/package-release.py
+          node scripts/package-release.js
+          rm -f scripts/cli-window-helper.exe.sha256
 
       - name: Resolve Release Metadata
         id: meta
@@ -86,7 +74,9 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           TITLE=$(node -e "const p=require('./package.json'); const tag=process.env.REF_NAME||''; const dv=(p.displayVersion||'').trim(); console.log((dv && tag==='v'+p.version) ? 'v'+dv : (tag || 'v'+p.version));")
+          IS_PRE=$(node -e "const tag=process.env.REF_NAME||''; console.log(/-beta/i.test(tag) ? 'true' : 'false');")
           echo "release_title=$TITLE" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRE" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -97,7 +87,7 @@ jobs:
             dist/release/*.zip
             dist/release/checksums.txt
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.meta.outputs.is_prerelease }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

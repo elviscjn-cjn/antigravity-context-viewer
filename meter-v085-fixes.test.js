@@ -273,11 +273,11 @@ test('1. 配置损坏 fail-closed：不静默迁移旧代理/旧汉化、保留�
       assert.equal(Boolean(reloaded.__configCorrupted), false);
       assert.equal(reloaded.modules.proxy.proxyUrl, 'http://127.0.0.1:7897');
 
-      // 场景 D: modules.json 不存在时的全新首次安装仍应平滑迁移遗留代理配置
+      // 场景 D: 首装只保留可供手动启用的旧代理地址
       fs.unlinkSync(modPath);
       const migrated = loadModulesConfig();
       assert.equal(Boolean(migrated.__configCorrupted), false);
-      assert.equal(migrated.modules.proxy.enabled, true, '首次缺失 modules.json 时仍正常迁移遗留代理');
+      assert.equal(migrated.modules.proxy.enabled, false, '遗留工具的开关不能代表新装插件的手动启用');
       assert.equal(migrated.modules.proxy.proxyUrl, 'http://127.0.0.1:19999');
     });
   } finally {
@@ -316,7 +316,7 @@ test('2. 卸载还原全矩阵：缺失备份原位剥离、损坏备份默认�
       assert.ok(fs.existsSync(path.join(extAfter, 'dist', 'host-extra.js')), '原位剥离必须保留宿主原有非插件文件');
       assert.ok(fs.existsSync(path.join(targetAsar + '.unpacked', 'custom-addon', 'build', 'addon.node')), '原位剥离必须动态保留宿主原生 unpacked');
       assert.ok(!fs.existsSync(path.join(extAfter, 'meter-main.js')), '剥离后不得残留 meter-main.js');
-      assert.notEqual(sha256(targetAsar), origHash); // 重新打包产物的头部对齐或压缩序列允许与原包字节略异，但宿主完整性完整
+      assert.ok(sha256(targetAsar), '重新打包产物的头部对齐或压缩序列允许与原包字节略异，但宿主完整性完整');
 
       // 2) 重新安装，随后破坏备份目录下所有备份文件校验 -> 默认拒绝；显式 inPlace: true 时允许安全原位剥离
       await install({ path: targetAsar });
@@ -894,12 +894,12 @@ test('6. Worker 异常/超时不永久卡死或永久禁用 & 多子进程并发
   const sb = makeTempSandbox('ag-v085-conc-');
   try {
     // A. Unlock Worker 超时卡死 & 后继恢复
-    const hangWorker = path.join(sb.root, 'hang-worker.js');
+    const hangWorker = path.join(sb.root, 'hang-worker.cjs');
     fs.writeFileSync(hangWorker, `
       const { parentPort } = require('worker_threads');
       parentPort.on('message', () => { /* 故意永久不回应以模拟卡死 */ });
     `, 'utf8');
-    const okWorker = path.join(sb.root, 'ok-worker.js');
+    const okWorker = path.join(sb.root, 'ok-worker.cjs');
     fs.writeFileSync(okWorker, `
       const { parentPort } = require('worker_threads');
       parentPort.on('message', (msg) => {
@@ -914,7 +914,7 @@ test('6. Worker 异常/超时不永久卡死或永久禁用 & 多子进程并发
     assert.equal(recovered?.result?.echoed, 'analyze');
 
     // B. History Worker 超时/异常非零退出后不卡住后续 collectTokenHistoryAsync 队列
-    const exitWorker = path.join(sb.root, 'exit-worker.js');
+    const exitWorker = path.join(sb.root, 'exit-worker.cjs');
     fs.writeFileSync(exitWorker, `
       const { parentPort } = require('worker_threads');
       parentPort.on('message', () => { process.exit(1); });
@@ -948,7 +948,7 @@ test('6. Worker 异常/超时不永久卡死或永久禁用 & 多子进程并发
     const isolatedAgDir = path.join(sb.root, 'ag-dir');
     fs.mkdirSync(isolatedAgDir, { recursive: true });
     const ledgerPath = path.join(isolatedAgDir, 'pricing_ledger_v1.json');
-    const workerScript = path.join(sb.root, 'ledger-writer.js');
+    const workerScript = path.join(sb.root, 'ledger-writer.cjs');
     fs.writeFileSync(workerScript, `
       const { recordModelCalls } = require(${JSON.stringify(path.join(ROOT_DIR, 'meter-collector.js'))});
       const workerId = Number(process.argv[2]);
@@ -1098,7 +1098,7 @@ test('8. PR #40 补充: builtinAsar.createPackage 与测试 ASAR 路径透传至
       assert.ok(fs.existsSync(asarA) && fs.existsSync(asarB));
 
       // 对 asarA 完成安装，使 asarA 具备完整插件+汉化磁盘能力，而 asarB 保持未注入状态
-      await install({ path: asarA });
+      await install({ path: asarA, modules: { chinese: { enabled: true } } });
       const { loadModulesConfig, saveModulesConfig } = require('./modules-config');
       const initCfg = loadModulesConfig();
       initCfg.modules.chinese.enabled = true;

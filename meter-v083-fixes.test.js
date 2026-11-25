@@ -125,7 +125,7 @@ function createTestHarness(options = {}) {
       return null;
     },
     querySelectorAll() { return []; },
-    appendChild() {},
+    appendChild() { },
     innerHTML: ''
   };
 
@@ -153,8 +153,8 @@ function createTestHarness(options = {}) {
     body: makeElement('body'),
     documentElement: makeElement('html'),
     title: 'Workspace - Antigravity',
-    addEventListener() {},
-    removeEventListener() {}
+    addEventListener() { },
+    removeEventListener() { }
   };
 
   const localStore = new Map();
@@ -190,11 +190,11 @@ function createTestHarness(options = {}) {
     AbortController,
     fetch: async () => ({ ok: false }),
     setTimeout: (fn) => setTimeout(fn, 0),
-    clearTimeout: () => {},
+    clearTimeout: () => { },
     setInterval: (fn) => { intervals.push(fn); return intervals.length; },
-    clearInterval: () => {},
+    clearInterval: () => { },
     requestAnimationFrame: (fn) => setTimeout(fn, 0),
-    cancelAnimationFrame: () => {},
+    cancelAnimationFrame: () => { },
     location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' },
     document: doc,
     window: {
@@ -204,8 +204,8 @@ function createTestHarness(options = {}) {
       contextMeterAPI: mockApi,
       innerWidth: 1024,
       innerHeight: 768,
-      addEventListener() {},
-      removeEventListener() {}
+      addEventListener() { },
+      removeEventListener() { }
     },
     localStorage,
     navigator: { platform: 'Win32' },
@@ -219,7 +219,7 @@ function createTestHarness(options = {}) {
 
   // 预创建影子节点挂载宿主
   const hostEl = makeElement('div');
-  hostEl.remove = () => {};
+  hostEl.remove = () => { };
   hostEl.attachShadow = () => shadow;
   doc.createElement = (tag) => {
     if (tag === 'div') return hostEl;
@@ -248,24 +248,27 @@ test('0.8.3 修复验证 1: 四 Tab 导航布局、平级配置页与 setting �
   const btnSession = h.elements.get('tab-ctx-session');
   const btnModels = h.elements.get('tab-ctx-models');
   const btnSpeed = h.elements.get('tab-ctx-speed');
-  const btnSettings = h.elements.get('tab-ctx-settings');
-  assert.ok(btnSession && btnModels && btnSpeed && btnSettings, '必须同时存在 4 个平级 Tab');
+  const btnAccounts = h.elements.get('tab-ctx-accounts');
+  assert.ok(btnSession && btnModels && btnSpeed && btnAccounts, '必须同时存在 4 个平级 Tab');
 
-  // 2. 检查默认简体与繁体名称均为「配置」
+  // 2. 检查第四标签三语「账号与共享池」及配置降级标题三语
   api.setPanelLanguage('zh-CN');
-  assert.equal(api.translateForTest('tab.settings'), '配置', '简体中文必须严格显示「配置」');
+  assert.equal(api.translateForTest('tab.accounts'), '账号与共享池', '简体中文必须显示「账号与共享池」');
+  assert.equal(api.translateForTest('tab.settings'), '配置', '简体中文必须保留「配置」');
   api.setPanelLanguage('zh-TW');
+  assert.equal(api.translateForTest('tab.accounts'), '帳號與共享池', '繁體中文必须显示「帳號與共享池」');
   assert.equal(api.translateForTest('tab.settings'), '配置', '繁體中文必须严格显示「配置」，不生造异体词');
 
-  // 3. 检查英文模式下标签严格为「setting」
+  // 3. 检查英文模式下标签名称
   api.setPanelLanguage('en');
+  assert.equal(api.translateForTest('tab.accounts'), 'Accounts & Pools', '英文必须显示「Accounts & Pools」');
   assert.equal(api.translateForTest('tab.settings'), 'setting', '英文必须严格显示「setting」');
 
-  // 4. 点击配置 Tab -> 正确切换到配置分页，主导航 tabs bar 保持平级可见
-  btnSettings.click();
+  // 4. 点击第四标签 -> 正确切换到账号与共享池分页，主导航 tabs bar 保持平级可见
+  btnAccounts.click();
   const st = api.getContextPreferencesState();
-  assert.equal(st.activeContextTab, 'settings', '当前活动 Tab 应为 settings');
-  assert.equal(h.elements.get('pane-ctx-settings').hidden, false, '配置页应显示');
+  assert.equal(st.activeContextTab, 'accounts', '当前活动 Tab 应为 accounts');
+  assert.equal(h.elements.get('pane-ctx-accounts').hidden, false, '账号与共享池页应显示');
   assert.equal(h.elements.get('ctx-tabs-bar').hidden, false, '主导航栏在四 Tab 架构下必须保持平级可见');
   h.api.dispose();
 });
@@ -307,6 +310,8 @@ test('0.8.3 修复验证 3: 居中统一模态重启弹窗、立即可见、绝�
   const btnModalCancel = h.elements.get('btn-modal-restart-cancel');
   const btnModalConfirm = h.elements.get('btn-modal-restart-confirm');
   assert.ok(modal && btnModalCancel && btnModalConfirm, '必须具备全局统一模态重启弹窗');
+  modal.showModal = () => { modal.open = true; };
+  modal.close = () => { modal.open = false; };
 
   // 模拟用户在模型设置中有未保存的脏草稿
   h.api.switchContextTabForTest('models');
@@ -324,10 +329,12 @@ test('0.8.3 修复验证 3: 居中统一模态重启弹窗、立即可见、绝�
 
   // 弹窗必须立即可见，无论滚动到哪里
   assert.equal(modal.hidden, false, '模态居中弹窗必须展开且可见');
+  assert.equal(modal.open, true, '重启确认应通过原生 dialog 进入顶层');
 
   // 1. 点击取消 -> 弹窗隐藏，绝不触发重启
   btnModalCancel.click();
   assert.equal(modal.hidden, true, '点击取消后弹窗必须关闭');
+  assert.equal(modal.open, false, '取消应退出原生模态层');
   assert.equal(h.getRestartCalled(), false, '取消不得触发重启');
   assert.equal(draftSaved, false, '取消绝不得顺带保存草稿');
 
@@ -348,14 +355,14 @@ test('0.8.3 修复验证 4: 品牌三态逻辑仅针对左上角品牌文字，�
   const runtimeCode = fs.readFileSync(path.join(__dirname, 'src', 'i18n', 'i18n-runtime.js'), 'utf8');
   const root = {
     setTimeout: (fn) => setTimeout(fn, 0),
-    clearTimeout: () => {},
+    clearTimeout: () => { },
     setInterval: () => 1,
-    clearInterval: () => {},
+    clearInterval: () => { },
     document: {
       title: 'main.py - Antigravity',
       readyState: 'complete',
       documentElement: { tagName: 'HTML', nodeType: 1 },
-      addEventListener() {}
+      addEventListener() { }
     }
   };
   root.window = root;
@@ -685,150 +692,150 @@ test('设置页动态操作反馈三语支持与面板语言切换即时更新�
   const h = createTestHarness();
   try {
 
-  const hostBrandBtn = h.doc.createElement('button');
-  hostBrandBtn.id = 'host-brand-i18n-test';
-  hostBrandBtn.setAttribute('data-testid', 'title-menu-bar-item');
-  hostBrandBtn.className = 'agy-button agy-button-sm';
-  hostBrandBtn.textContent = 'Antigravity';
-  hostBrandBtn.getBoundingClientRect = () => ({ top: 4, left: 8, width: 90, height: 28 });
-  h.doc.body.appendChild(hostBrandBtn);
+    const hostBrandBtn = h.doc.createElement('button');
+    hostBrandBtn.id = 'host-brand-i18n-test';
+    hostBrandBtn.setAttribute('data-testid', 'title-menu-bar-item');
+    hostBrandBtn.className = 'agy-button agy-button-sm';
+    hostBrandBtn.textContent = 'Antigravity';
+    hostBrandBtn.getBoundingClientRect = () => ({ top: 4, left: 8, width: 90, height: 28 });
+    h.doc.body.appendChild(hostBrandBtn);
 
-  let toggleCalls = 0;
-  let mockBrand = 'english';
-  let mockChinese = true;
-  let failToggleWith = null;
-  let savedPanelLangs = [];
+    let toggleCalls = 0;
+    let mockBrand = 'english';
+    let mockChinese = true;
+    let failToggleWith = null;
+    let savedPanelLangs = [];
 
-  h.sandbox.window.contextMeterAPI = {
-    ...h.sandbox.window.contextMeterAPI,
-    saveSettings: async (payload) => {
-      if (payload?.panelLanguage) savedPanelLangs.push(payload.panelLanguage);
-      return { ok: true };
-    },
-    getModulesStatus: async () => ({
-      ok: true,
-      data: { modules: { chinese: { enabled: mockChinese, language: mockChinese ? 'zh-CN' : 'en', brandTitle: mockBrand }, proxy: { enabled: false } } },
-      disk: { chinese: true, proxy: true }
-    }),
-    toggleModule: async (name, enable, opts) => {
-      toggleCalls++;
-      if (failToggleWith) return { ok: false, error: failToggleWith };
-      if (name === 'chinese') {
-        mockChinese = Boolean(enable);
-        if (opts?.brandTitle) mockBrand = opts.brandTitle;
-      }
-      return { ok: true, data: { modules: { chinese: { enabled: mockChinese, brandTitle: mockBrand } } } };
-    },
-    getEnhanceStatus: async () => ({ ok: true, data: { supported: true, summary: { promptTier: 4, chineseTitleEnabled: true } } }),
-    applyEnhancePatch: async () => ({ ok: true, needsRestart: true }),
-    restoreAllEnhance: async () => ({ ok: true, needsRestart: true }),
-    restartLanguageServers: async () => ({ ok: true, killed: 2 }),
-    applyContextUnlock: async () => ({ ok: true, needsRestart: true }),
-    restoreContextUnlock: async () => ({ ok: false, error: '原版备份不存在' })
-  };
+    h.sandbox.window.contextMeterAPI = {
+      ...h.sandbox.window.contextMeterAPI,
+      saveSettings: async (payload) => {
+        if (payload?.panelLanguage) savedPanelLangs.push(payload.panelLanguage);
+        return { ok: true };
+      },
+      getModulesStatus: async () => ({
+        ok: true,
+        data: { modules: { chinese: { enabled: mockChinese, language: mockChinese ? 'zh-CN' : 'en', brandTitle: mockBrand }, proxy: { enabled: false } } },
+        disk: { chinese: true, proxy: true }
+      }),
+      toggleModule: async (name, enable, opts) => {
+        toggleCalls++;
+        if (failToggleWith) return { ok: false, error: failToggleWith };
+        if (name === 'chinese') {
+          mockChinese = Boolean(enable);
+          if (opts?.brandTitle) mockBrand = opts.brandTitle;
+        }
+        return { ok: true, data: { modules: { chinese: { enabled: mockChinese, brandTitle: mockBrand } } } };
+      },
+      getEnhanceStatus: async () => ({ ok: true, data: { supported: true, summary: { promptTier: 4, chineseTitleEnabled: true } } }),
+      applyEnhancePatch: async () => ({ ok: true, needsRestart: true }),
+      restoreAllEnhance: async () => ({ ok: true, needsRestart: true }),
+      restartLanguageServers: async () => ({ ok: true, killed: 2 }),
+      applyContextUnlock: async () => ({ ok: true, needsRestart: true }),
+      restoreContextUnlock: async () => ({ ok: false, error: '原版备份不存在' })
+    };
 
-  h.elements.get('btn-ctx-settings').click();
-  await new Promise(r => setTimeout(r, 25));
+    h.elements.get('btn-ctx-settings').click();
+    await new Promise(r => setTimeout(r, 25));
 
-  // 1. 简中下切换品牌为「反重力」并验证单句已应用反馈（无重启生效提示）
-  h.elements.get('btn-brand-translated').click();
-  await new Promise(r => setTimeout(r, 25));
-  assert.equal(toggleCalls, 1);
-  assert.equal(mockBrand, 'translated');
-  assert.equal(mockChinese, true);
+    // 1. 简中下切换品牌为「反重力」并验证单句已应用反馈（无重启生效提示）
+    h.elements.get('btn-brand-translated').click();
+    await new Promise(r => setTimeout(r, 25));
+    assert.equal(toggleCalls, 1);
+    assert.equal(mockBrand, 'translated');
+    assert.equal(mockChinese, true);
 
-  const globalResText = h.elements.get('enhance-global-result-text');
-  const brandFeedback = h.elements.get('brand-apply-feedback');
-  assert.equal(globalResText.textContent, '已保存并应用：左上角品牌已更新为「反重力」。');
-  assert.equal(brandFeedback.style.display, 'block');
-  assert.equal(brandFeedback.textContent, '已保存并应用：左上角品牌已更新为「反重力」。');
-  assert.equal(h.elements.get('btn-enhance-restart-host').hidden, true);
+    const globalResText = h.elements.get('enhance-global-result-text');
+    const brandFeedback = h.elements.get('brand-apply-feedback');
+    assert.equal(globalResText.textContent, '已保存并应用：左上角品牌已更新为「反重力」。');
+    assert.equal(brandFeedback.style.display, 'block');
+    assert.equal(brandFeedback.textContent, '已保存并应用：左上角品牌已更新为「反重力」。');
+    assert.equal(h.elements.get('btn-enhance-restart-host').hidden, true);
 
-  // 2. 保持反馈显示，切换面板语言到 EN：只改界面与反馈语言，不调用 toggleModule，不改宿主/品牌
-  const callsBeforeEn = toggleCalls;
-  h.elements.get('btn-top-lang-en').click();
-  await new Promise(r => setTimeout(r, 25));
+    // 2. 保持反馈显示，切换面板语言到 EN：只改界面与反馈语言，不调用 toggleModule，不改宿主/品牌
+    const callsBeforeEn = toggleCalls;
+    h.elements.get('btn-top-lang-en').click();
+    await new Promise(r => setTimeout(r, 25));
 
-  assert.equal(toggleCalls, callsBeforeEn, '选择 EN 绝不能修改宿主语言或品牌设置');
-  assert.equal(mockBrand, 'translated');
-  assert.equal(mockChinese, true);
-  assert.equal(globalResText.textContent, 'Header name updated to "反重力" (applied).');
-  assert.equal(brandFeedback.textContent, 'Header name updated to "反重力" (applied).');
-  assert.doesNotMatch(globalResText.textContent, /Restart|重启|（|）/);
+    assert.equal(toggleCalls, callsBeforeEn, '选择 EN 绝不能修改宿主语言或品牌设置');
+    assert.equal(mockBrand, 'translated');
+    assert.equal(mockChinese, true);
+    assert.equal(globalResText.textContent, 'Header name updated to "反重力" (applied).');
+    assert.equal(brandFeedback.textContent, 'Header name updated to "反重力" (applied).');
+    assert.doesNotMatch(globalResText.textContent, /Restart|重启|（|）/);
 
-  // 3. 切换到繁中：反馈单语言更新且保留「反重力」设置值
-  h.elements.get('btn-top-lang-zh-TW').click();
-  await new Promise(r => setTimeout(r, 25));
-  assert.equal(toggleCalls, callsBeforeEn);
-  assert.equal(globalResText.textContent, '已儲存並套用：左上角品牌已更新為「反重力」。');
+    // 3. 切换到繁中：反馈单语言更新且保留「反重力」设置值
+    h.elements.get('btn-top-lang-zh-TW').click();
+    await new Promise(r => setTimeout(r, 25));
+    assert.equal(toggleCalls, callsBeforeEn);
+    assert.equal(globalResText.textContent, '已儲存並套用：左上角品牌已更新為「反重力」。');
 
-  // 4. 在 EN 下测试「Antigravity」与「Hide」热更新结果，及未检测到节点时不假报已应用
-  h.elements.get('btn-top-lang-en').click();
-  await new Promise(r => setTimeout(r, 25));
-  h.elements.get('btn-brand-english').click();
-  await new Promise(r => setTimeout(r, 25));
-  assert.equal(globalResText.textContent, 'Header name updated to "Antigravity" (applied).');
+    // 4. 在 EN 下测试「Antigravity」与「Hide」热更新结果，及未检测到节点时不假报已应用
+    h.elements.get('btn-top-lang-en').click();
+    await new Promise(r => setTimeout(r, 25));
+    h.elements.get('btn-brand-english').click();
+    await new Promise(r => setTimeout(r, 25));
+    assert.equal(globalResText.textContent, 'Header name updated to "Antigravity" (applied).');
 
-  h.elements.get('btn-brand-hidden').click();
-  await new Promise(r => setTimeout(r, 25));
-  assert.equal(globalResText.textContent, 'Header name hidden (applied).');
+    h.elements.get('btn-brand-hidden').click();
+    await new Promise(r => setTimeout(r, 25));
+    assert.equal(globalResText.textContent, 'Header name hidden (applied).');
 
-  // 移除品牌节点模拟运行时未找到目标（不假报已应用）
-  hostBrandBtn.setAttribute('data-testid', 'removed');
-  hostBrandBtn.removeAttribute('data-agy-brand-item');
-  hostBrandBtn.classList.remove('agy-button');
-  h.elements.get('btn-brand-translated').click();
-  await new Promise(r => setTimeout(r, 25));
-  assert.equal(
-    globalResText.textContent,
-    'Brand setting saved (反重力), but header element was not found in this window (not applied live).'
-  );
-  assert.match(h.elements.get('enhance-global-result').className, /result-error/);
+    // 移除品牌节点模拟运行时未找到目标（不假报已应用）
+    hostBrandBtn.setAttribute('data-testid', 'removed');
+    hostBrandBtn.removeAttribute('data-agy-brand-item');
+    hostBrandBtn.classList.remove('agy-button');
+    h.elements.get('btn-brand-translated').click();
+    await new Promise(r => setTimeout(r, 25));
+    assert.equal(
+      globalResText.textContent,
+      'Brand setting saved (反重力), but header element was not found in this window (not applied live).'
+    );
+    assert.match(h.elements.get('enhance-global-result').className, /result-error/);
 
-  // 5. 测试失败提示及切语言重译
-  failToggleWith = '写入失败';
-  h.elements.get('btn-apply-brand-title').click();
-  await new Promise(r => setTimeout(r, 25));
-  assert.equal(globalResText.textContent, 'Failed to save brand setting: Write failed');
-  h.elements.get('btn-top-lang-zh-CN').click();
-  await new Promise(r => setTimeout(r, 25));
-  assert.equal(globalResText.textContent, '保存品牌设置失败：写入失败');
-  failToggleWith = null;
+    // 5. 测试失败提示及切语言重译
+    failToggleWith = '写入失败';
+    h.elements.get('btn-apply-brand-title').click();
+    await new Promise(r => setTimeout(r, 25));
+    assert.equal(globalResText.textContent, 'Failed to save brand setting: Write failed');
+    h.elements.get('btn-top-lang-zh-CN').click();
+    await new Promise(r => setTimeout(r, 25));
+    assert.equal(globalResText.textContent, '保存品牌设置失败：写入失败');
+    failToggleWith = null;
 
-  // 6. 在 EN 下测试提示词应用、LS 重启、推荐确认栏实时切换与部分失败（含中文错误翻译，不残留中文）
-  h.elements.get('btn-top-lang-en').click();
-  await new Promise(r => setTimeout(r, 25));
-  h.elements.get('btn-enhance-apply-prompt').click();
-  await new Promise(r => setTimeout(r, 25));
-  assert.match(h.elements.get('enhance-prompt-result-text').textContent, /Prompt & title settings written/);
+    // 6. 在 EN 下测试提示词应用、LS 重启、推荐确认栏实时切换与部分失败（含中文错误翻译，不残留中文）
+    h.elements.get('btn-top-lang-en').click();
+    await new Promise(r => setTimeout(r, 25));
+    h.elements.get('btn-enhance-apply-prompt').click();
+    await new Promise(r => setTimeout(r, 25));
+    assert.match(h.elements.get('enhance-prompt-result-text').textContent, /Prompt & title settings written/);
 
-  h.elements.get('btn-enhance-restart-ls').click();
-  await new Promise(r => setTimeout(r, 25));
-  assert.match(globalResText.textContent, /Language server signaled to reload \(2 process\(es\) cycled\)/);
+    h.elements.get('btn-enhance-restart-ls').click();
+    await new Promise(r => setTimeout(r, 25));
+    assert.match(globalResText.textContent, /Language server signaled to reload \(2 process\(es\) cycled\)/);
 
-  // 确认框弹出后切换语言（mock harness 需显式设置默认勾选态）
-  h.elements.get('chk-rec-prompt').checked = true;
-  h.elements.get('chk-rec-title').checked = true;
-  h.elements.get('btn-enhance-preset-apply').click();
-  const confirmText = h.elements.get('enhance-preset-confirm-text');
-  assert.match(confirmText.textContent, /About to apply checked items: .*, /);
-  h.elements.get('btn-top-lang-zh-CN').click();
-  await new Promise(r => setTimeout(r, 25));
-  assert.match(confirmText.textContent, /即将执行以下已勾选项：.*、/);
+    // 确认框弹出后切换语言（mock harness 需显式设置默认勾选态）
+    h.elements.get('chk-rec-prompt').checked = true;
+    h.elements.get('chk-rec-title').checked = true;
+    h.elements.get('btn-enhance-preset-apply').click();
+    const confirmText = h.elements.get('enhance-preset-confirm-text');
+    assert.match(confirmText.textContent, /About to apply checked items: /);
+    h.elements.get('btn-top-lang-zh-CN').click();
+    await new Promise(r => setTimeout(r, 25));
+    assert.match(confirmText.textContent, /即将执行以下已勾选项：/);
 
-  // 恢复默认触发部分失败，随后切换 EN 验证全部条目与分隔符重译
-  h.elements.get('btn-enhance-restore-all').click();
-  assert.match(confirmText.textContent, /全部恢复官方默认/);
-  h.elements.get('btn-top-lang-en').click();
-  await new Promise(r => setTimeout(r, 25));
-  assert.match(confirmText.textContent, /"Restore All to Stock" resets these 4 items/);
+    // 恢复默认触发部分失败，随后切换 EN 验证全部条目与分隔符重译
+    h.elements.get('btn-enhance-restore-all').click();
+    assert.match(confirmText.textContent, /全部恢复官方默认/);
+    h.elements.get('btn-top-lang-en').click();
+    await new Promise(r => setTimeout(r, 25));
+    assert.match(confirmText.textContent, /"Restore All to Stock" resets these 4 items/);
 
-  h.elements.get('btn-enhance-confirm-go').click();
-  await new Promise(r => setTimeout(r, 30));
-  assert.match(globalResText.textContent, /Partial completion\. Succeeded: .*; Failed: .*Original backup not found/);
-  assert.doesNotMatch(globalResText.textContent, /[\u4e00-\u9fff]/, 'EN 模式下部分失败结果不得残留中文');
+    h.elements.get('btn-enhance-confirm-go').click();
+    await new Promise(r => setTimeout(r, 30));
+    assert.match(globalResText.textContent, /Partial completion\. Succeeded: .*; Failed: .*Original backup not found/);
+    assert.doesNotMatch(globalResText.textContent, /[\u4e00-\u9fff]/, 'EN 模式下部分失败结果不得残留中文');
 
-  assert.ok(savedPanelLangs.includes('en') && savedPanelLangs.includes('zh-TW'));
+    assert.ok(savedPanelLangs.includes('en') && savedPanelLangs.includes('zh-TW'));
   } finally {
     h.api.dispose();
   }
@@ -1031,7 +1038,7 @@ test('PR #11/#12 沙箱 preload 汉化门禁必须 fail-closed，且同步 IPC �
     const sandbox = {
       window: {},
       globalThis: {},
-      console: { warn: () => {} },
+      console: { warn: () => { } },
       process: { platform: 'win32', env: {} },
       electron_1: electronMock,
       require: () => { throw new Error('sandbox: fs disabled'); }
@@ -1046,19 +1053,19 @@ test('PR #11/#12 沙箱 preload 汉化门禁必须 fail-closed，且同步 IPC �
   assert.equal(winNoIpc.__AGY_I18N_BOOTED__, undefined);
 
   const winUnresolved = runSandboxPreload({
-    ipcRenderer: { sendSync: () => ({ enabled: false, language: 'en', brandTitle: 'english', resolved: false }), on: () => {} }
+    ipcRenderer: { sendSync: () => ({ enabled: false, language: 'en', brandTitle: 'english', resolved: false }), on: () => { } }
   });
   assert.equal(winUnresolved.__AGY_I18N_BOOTED__, undefined);
 
   // 2. 明确关闭（enabled=false 且 brandTitle=english）时：不启动汉化
   const winDisabled = runSandboxPreload({
-    ipcRenderer: { sendSync: () => ({ enabled: false, language: 'en', brandTitle: 'english', resolved: true }), on: () => {} }
+    ipcRenderer: { sendSync: () => ({ enabled: false, language: 'en', brandTitle: 'english', resolved: true }), on: () => { } }
   });
   assert.equal(winDisabled.__AGY_I18N_BOOTED__, undefined);
 
   // 3. IPC 返回已开启时：沙箱环境下允许启动，并绑定品牌切换监听
   const winEnabled = runSandboxPreload({
-    ipcRenderer: { sendSync: () => ({ enabled: true, language: 'zh-CN', brandTitle: 'english', resolved: true }), on: () => {} }
+    ipcRenderer: { sendSync: () => ({ enabled: true, language: 'zh-CN', brandTitle: 'english', resolved: true }), on: () => { } }
   });
   assert.equal(winEnabled.__AGY_I18N_BOOTED__, true);
   assert.equal(winEnabled.__AGY_I18N_CONFIG__.language, 'zh-CN');
@@ -1066,7 +1073,7 @@ test('PR #11/#12 沙箱 preload 汉化门禁必须 fail-closed，且同步 IPC �
   // 4. meter-main.js 中的同步配置通道必须拒绝非本地主窗口请求
   const syncHandlers = {};
   const mockIpcMain = {
-    handle: () => {},
+    handle: () => { },
     on: (ch, fn) => { syncHandlers[ch] = fn; }
   };
   registerMeterIpcHandlers(mockIpcMain, {});
@@ -1092,7 +1099,7 @@ test('PR #11/#12 禁用汉化但开启品牌翻译时，translateElement 不翻�
       __AGY_I18N_DATA__: { exact: { Save: '保存', Settings: '设置', 'Save draft': '保存草稿' } }
     },
     globalThis: null,
-    console: { warn: () => {}, error: () => {} },
+    console: { warn: () => { }, error: () => { } },
     setTimeout,
     clearTimeout
   };
@@ -1365,7 +1372,7 @@ test('冷启动与连续5次会话切换性能隔离：切路由不强刷全量�
     const children = [];
     const el = {
       tagName: tag.toUpperCase(),
-      style: { display: '', opacity: '', cssText: '', setProperty() {}, removeProperty() {}, getPropertyValue() { return ''; } },
+      style: { display: '', opacity: '', cssText: '', setProperty() { }, removeProperty() { }, getPropertyValue() { return ''; } },
       children,
       hidden: false,
       textContent: '',
@@ -1374,17 +1381,17 @@ test('冷启动与连续5次会话切换性能隔离：切路由不强刷全量�
       get id() { return attrs.get('id') || ''; },
       set id(v) { attrs.set('id', String(v)); if (v) docElements.set(String(v), el); },
       get childNodes() { return this.children; },
-      classList: { add() {}, remove() {}, contains() { return false; }, toggle() {} },
+      classList: { add() { }, remove() { }, contains() { return false; }, toggle() { } },
       setAttribute(k, v) { attrs.set(k, String(v)); if (k === 'id') docElements.set(String(v), el); },
       getAttribute(k) { return attrs.get(k) ?? null; },
       removeAttribute(k) { attrs.delete(k); },
       addEventListener(type, fn) { if (!listeners.has(el)) listeners.set(el, new Map()); listeners.get(el).set(type, fn); },
-      removeEventListener() {},
+      removeEventListener() { },
       appendChild(c) { children.push(c); return c; },
       replaceChildren() { this.children = []; },
       querySelector() { return null; },
       querySelectorAll() { return []; },
-      click() { listeners.get(el)?.get('click')?.({ preventDefault() {}, stopPropagation() {} }); },
+      click() { listeners.get(el)?.get('click')?.({ detail: 0, preventDefault() { }, stopPropagation() { } }); },
       getBoundingClientRect() { return { top: 8, left: 600, right: 680, bottom: 32, width: 80, height: 24 }; }
     };
     return el;
@@ -1406,7 +1413,7 @@ test('冷启动与连续5次会话切换性能隔离：切路由不强刷全量�
   };
 
   const hostEl = makeEl('div');
-  hostEl.remove = () => {};
+  hostEl.remove = () => { };
   hostEl.attachShadow = () => shadow;
   const intervals = [];
   const doc = {
@@ -1416,8 +1423,8 @@ test('冷启动与连续5次会话切换性能隔离：切路由不强刷全量�
     createElement: (() => { let first = true; return tag => { if (first) { first = false; return hostEl; } return makeEl(tag); }; })(),
     body: makeEl('body'),
     documentElement: makeEl('html'),
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener() { },
+    removeEventListener() { },
     hidden: false
   };
   const sandbox = {
@@ -1430,23 +1437,23 @@ test('冷启动与连续5次会话切换性能隔离：切路由不强刷全量�
       document: doc,
       innerWidth: 1280,
       innerHeight: 800,
-      addEventListener() {},
-      removeEventListener() {},
+      addEventListener() { },
+      removeEventListener() { },
       contextMeterAPI: {
         getSettings: async () => ({ ok: true, data: {} }),
         getTokenHistory: force => new Promise(resolve => {
           historyCalls.push(Boolean(force));
           pendingHistory.push(resolve);
         }),
-        getQuota: () => new Promise(() => {}),
+        getQuota: () => new Promise(() => { }),
         scan: id => new Promise(resolve => pendingScans.push({ id, resolve }))
       }
     },
     __AGContextMeterCore: core,
     setTimeout: (fn) => setTimeout(fn, 0),
-    clearTimeout() {},
+    clearTimeout() { },
     setInterval(fn) { intervals.push(fn); return intervals.length; },
-    clearInterval() {},
+    clearInterval() { },
     fetch(url, opts) { return new Promise(resolve => pendingFetches.push({ url, opts, resolve })); }
   };
   sandbox.window.window = sandbox.window;
@@ -1769,7 +1776,7 @@ test('ELV-47 & ELV-60: 禁用汉化但开品牌不误报重启恢复英文；组
     setupSandbox(sb) {
       sb.window.__AGY_I18N_CONFIG__ = { enabled: false, language: 'en', brandTitle: 'translated' };
       sb.window.__AGY_I18N_DATA__ = { exact: { Settings: '设置' } };
-      sb.window.__AGY_TRANSLATE_EL__ = () => {};
+      sb.window.__AGY_TRANSLATE_EL__ = () => { };
     }
   });
   try {
@@ -1809,9 +1816,10 @@ test('ELV-47 & ELV-60: 禁用汉化但开品牌不误报重启恢复英文；组
   // 验证初始化时关闭汉化+开启品牌翻译展示「已关闭 (官方英文)」而非「需重启恢复英文」
   const h2 = createTestHarness({
     setupSandbox(sb) {
+      sb.localStorage.setItem('ag_panel_language', 'zh-CN');
       sb.window.__AGY_I18N_CONFIG__ = { enabled: false, language: 'en', brandTitle: 'hidden' };
       sb.window.__AGY_I18N_DATA__ = { exact: { Settings: '设置' } };
-      sb.window.__AGY_TRANSLATE_EL__ = () => {};
+      sb.window.__AGY_TRANSLATE_EL__ = () => { };
       sb.window.contextMeterAPI.getModulesStatus = async () => ({
         ok: true,
         data: {
@@ -1840,7 +1848,7 @@ test('ELV-47 & ELV-60: 禁用汉化但开品牌不误报重启恢复英文；组
     const sbBroken = {
       window: {},
       globalThis: null,
-      console: { warn: () => {} },
+      console: { warn: () => { } },
       process: { platform: 'win32', env: { AG_METER_STATE_DIR: tmpState, LOCALAPPDATA: tmpState } },
       require: (m) => require(m)
     };
@@ -1934,7 +1942,7 @@ test('ELV-44 & ELV-61 & ELV-62: 代理配置优先隔离不回落旧 proxy.json�
           http_proxy: 'http://stale-dead-proxy:10809'
         }
       },
-      console: { warn: () => {} },
+      console: { warn: () => { } },
       globalThis: null
     };
     sb.globalThis = sb;
@@ -1984,6 +1992,7 @@ test('ELV-44 & ELV-62: bootProxySnapshot 严禁未注入即虚报 active，部�
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-partial-boot-'));
   const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const prevAsarPath = process.env.AG_ASAR_PATH;
   const prevHttp = process.env.HTTP_PROXY;
   const prevHttps = process.env.HTTPS_PROXY;
   try {
@@ -2016,6 +2025,7 @@ test('ELV-44 & ELV-62: bootProxySnapshot 严禁未注入即虚报 active，部�
     fs.writeFileSync(path.join(pkgDir, 'dist', 'preload.js'), '// --- Antigravity Chinese Localization Injection Start ---\n// empty\n// --- Antigravity Chinese Localization Injection End ---', 'utf8');
     const partialAsar = path.join(tmpDir, 'partial.asar');
     await builtinAsar.createPackageWithOptions(pkgDir, partialAsar, {});
+    process.env.AG_ASAR_PATH = partialAsar;
 
     const statusRes = await handlers['context-meter:modules-status'](ev, partialAsar);
     assert.equal(statusRes.ok, true);
@@ -2026,13 +2036,14 @@ test('ELV-44 & ELV-62: bootProxySnapshot 严禁未注入即虚报 active，部�
     assert.equal(statusRes.disk.chinese, true);
     assert.equal(statusRes.disk.chineseReady, false);
 
-    const togglePartialRes = await handlers['context-meter:toggle-module'](ev, 'chinese', true, { asarPath: partialAsar });
+    const togglePartialRes = await handlers['context-meter:toggle-module'](ev, 'chinese', true);
     assert.equal(togglePartialRes.ok, false);
     assert.equal(togglePartialRes.status, 'install_failed');
     assert.match(togglePartialRes.error, /^当前客户端磁盘 ASAR 未注入汉化组件（或组件不完整）。/);
     assert.match(togglePartialRes.error, /系统托盘/);
   } finally {
     if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR; else process.env.AG_METER_STATE_DIR = prevStateDir;
+    if (prevAsarPath === undefined) delete process.env.AG_ASAR_PATH; else process.env.AG_ASAR_PATH = prevAsarPath;
     if (prevHttp === undefined) delete process.env.HTTP_PROXY; else process.env.HTTP_PROXY = prevHttp;
     if (prevHttps === undefined) delete process.env.HTTPS_PROXY; else process.env.HTTPS_PROXY = prevHttps;
     delete require.cache[require.resolve('./meter-main')];
@@ -2045,6 +2056,7 @@ test('ELV-47 & ELV-60: Electron 沙箱隔离且侧边栏含中文项目名时，
   let mockChineseEnabled = false;
   const h = createTestHarness({
     setupSandbox(sb) {
+      sb.localStorage.setItem('ag_panel_language', 'zh-CN');
       // 模拟侧边栏用户自定义中文项目名（包含“项目”“设置”字样）但宿主本身是英文
       const origQsa = sb.document.querySelectorAll.bind(sb.document);
       sb.document.querySelectorAll = (sel) => {
@@ -2102,4 +2114,213 @@ test('ELV-47 & ELV-60: Electron 沙箱隔离且侧边栏含中文项目名时，
   } finally {
     h.api.dispose();
   }
+});
+
+test('PR #47 / Issue #46: 推荐配置复选框按磁盘真实开关同步、仅提交差异、取消已开启项走恢复且不冲掉用户草稿', async () => {
+  const applyEnhanceCalls = [];
+  const toggleCalls = [];
+  const unlockCalls = [];
+  const restoreUnlockCalls = [];
+  const h = createTestHarness({
+    setupSandbox(sb) {
+      sb.window.contextMeterAPI.getEnhanceStatus = async () => ({
+        ok: true,
+        data: {
+          supported: true,
+          summary: {
+            promptTier: 4,
+            chineseTitleEnabled: false,
+            chineseTitleMode: 'default',
+            pendingLsRestart: false
+          }
+        }
+      });
+      sb.window.contextMeterAPI.getContextUnlockStatus = async () => ({
+        ok: true,
+        data: {
+          isPlatformSupported: true,
+          status: 'applied',
+          configuredMode: 'dynamic',
+          configuredLimitTokens: null
+        }
+      });
+      sb.window.contextMeterAPI.getModulesStatus = async () => ({
+        ok: true,
+        data: {
+          modules: {
+            chinese: { enabled: false, language: 'en', brandTitle: 'english' },
+            proxy: { enabled: false, proxyUrl: '' }
+          }
+        },
+        disk: { chinese: true, chineseReady: true, proxy: true, proxyReady: true },
+        runtime: { chineseActive: false, chineseNeedsRestart: false, proxyActive: false, proxyNeedsRestart: false }
+      });
+      sb.window.contextMeterAPI.applyEnhancePatch = async (payload) => {
+        applyEnhanceCalls.push(payload);
+        return {
+          ok: true,
+          changed: true,
+          needsRestart: true,
+          status: {
+            supported: true,
+            summary: {
+              promptTier: payload.promptTier ?? 4,
+              chineseTitleEnabled: Boolean(payload.chineseTitle),
+              chineseTitleMode: payload.chineseTitle ? 'zh' : 'default'
+            }
+          }
+        };
+      };
+      sb.window.contextMeterAPI.toggleModule = async (name, enable, opts) => {
+        toggleCalls.push({ name, enable, opts });
+        return {
+          ok: true,
+          status: 'config_toggled',
+          data: { modules: { chinese: { enabled: Boolean(enable), language: opts?.language || 'en', brandTitle: opts?.brandTitle || 'english' }, proxy: { enabled: false } } },
+          disk: { chinese: true, chineseReady: true, proxy: true, proxyReady: true },
+          runtime: { chineseActive: false, chineseNeedsRestart: Boolean(enable) }
+        };
+      };
+      sb.window.contextMeterAPI.applyContextUnlock = async (payload) => {
+        unlockCalls.push(payload);
+        return { ok: true, data: { isPlatformSupported: true, status: 'applied', configuredMode: payload.mode } };
+      };
+      sb.window.contextMeterAPI.restoreContextUnlock = async () => {
+        restoreUnlockCalls.push(true);
+        return { ok: true, data: { isPlatformSupported: true, status: 'not_patched', configuredMode: 'default' } };
+      };
+    }
+  });
+  try {
+    h.elements.get('btn-ctx-settings').click();
+    await new Promise(r => setTimeout(r, 80));
+
+    // 1. 磁盘上仅 promptTier=4 与 configuredMode='dynamic' 为开启，复选框必须按磁盘真实同步
+    const chkPrompt = h.elements.get('chk-rec-prompt');
+    const chkTitle = h.elements.get('chk-rec-title');
+    const chkLang = h.elements.get('chk-rec-lang');
+    const chkCtx = h.elements.get('chk-rec-ctx');
+    assert.equal(chkPrompt.checked, true);
+    assert.equal(chkTitle.checked, false);
+    assert.equal(chkLang.checked, false);
+    assert.equal(chkCtx.checked, true);
+
+    // 2. 用户未做任何改动直接点应用：差异为空，确认前绝不写入
+    h.elements.get('btn-enhance-preset-apply').click();
+    assert.equal(applyEnhanceCalls.length, 0);
+    assert.equal(toggleCalls.length, 0);
+    assert.equal(restoreUnlockCalls.length, 0);
+
+    // 3. 用户取消勾选已开启的 ctx，并勾选未开启的 title；触发 change 标记 dirty 后，后台状态刷新不能冲掉用户草稿
+    chkCtx.checked = false;
+    chkCtx.trigger('change', { target: chkCtx });
+    chkTitle.checked = true;
+    chkTitle.trigger('change', { target: chkTitle });
+
+    await h.api.refreshEnhanceStatusForTest();
+    assert.equal(chkCtx.checked, false, '用户已编辑的复选框不能被后台刷新冲掉');
+    assert.equal(chkTitle.checked, true, '用户已编辑的复选框不能被后台刷新冲掉');
+
+    // 4. 点应用再点确认：仅提交差异项（title 开启、ctx 恢复），未变动的 prompt 与 lang 不触发写入
+    h.elements.get('btn-enhance-preset-apply').click();
+    assert.equal(h.elements.get('enhance-preset-confirm').hidden, false);
+    assert.equal(applyEnhanceCalls.length, 0, '确认前绝不写入磁盘');
+    h.elements.get('btn-enhance-confirm-go').click();
+    await new Promise(r => setTimeout(r, 60));
+
+    assert.equal(applyEnhanceCalls.length, 1);
+    assert.deepEqual(JSON.parse(JSON.stringify(applyEnhanceCalls[0])), { chineseTitle: true });
+    assert.equal(toggleCalls.length, 0, '未变更的客户端语言不得被写入');
+    assert.equal(unlockCalls.length, 0);
+    assert.equal(restoreUnlockCalls.length, 1, '取消已开启的上下文跟随模型必须走 restore');
+  } finally {
+    h.api.dispose();
+  }
+});
+
+test('Issue #58: 汉化隔离聊天正文与 Markdown 输出（杜绝 Plane Trajectory 正在规划串字），且两份 i18n-runtime 字节一致', () => {
+  const fsSync = require('fs');
+  const pathMod = require('path');
+  const vmMod = require('vm');
+  const rootRuntime = fsSync.readFileSync(pathMod.join(__dirname, 'i18n', 'i18n-runtime.js'), 'utf8');
+  const srcRuntime = fsSync.readFileSync(pathMod.join(__dirname, 'src', 'i18n', 'i18n-runtime.js'), 'utf8');
+  assert.equal(rootRuntime, srcRuntime, 'i18n/i18n-runtime.js 与 src/i18n/i18n-runtime.js 必须保持字节完全一致');
+
+  const makeDomNode = (nodeType, tagName, props = {}) => {
+    const node = {
+      nodeType,
+      tagName,
+      children: [],
+      childNodes: [],
+      firstChild: null,
+      lastChild: null,
+      nextSibling: null,
+      previousSibling: null,
+      parentElement: null,
+      parentNode: null,
+      nodeValue: props.nodeValue || '',
+      className: props.className || '',
+      attrs: new Map(Object.entries(props.attrs || {})),
+      getAttribute(k) { return this.attrs.get(k) ?? null; },
+      hasAttribute(k) { return this.attrs.has(k); },
+      setAttribute(k, v) { this.attrs.set(k, String(v)); },
+      closest(sel) {
+        let cur = this;
+        const clsList = String(sel || '').split(',').map(s => s.trim()).filter(Boolean);
+        while (cur && cur.nodeType === 1) {
+          for (const rule of clsList) {
+            if (rule === '.markdown-body' && String(cur.className).includes('markdown-body')) return cur;
+            if (rule === '[data-testid*="assistant-message"]' && String(cur.getAttribute('data-testid') || '').includes('assistant-message')) return cur;
+          }
+          cur = cur.parentElement;
+        }
+        return null;
+      },
+      appendChild(c) {
+        c.parentNode = this;
+        this.childNodes.push(c);
+        if (c.nodeType === 1) this.children.push(c);
+        c.parentElement = this;
+        c.previousSibling = this.lastChild;
+        if (this.lastChild) this.lastChild.nextSibling = c;
+        else this.firstChild = c;
+        this.lastChild = c;
+        return c;
+      }
+    };
+    return node;
+  };
+
+  const docRoot = makeDomNode(1, 'DIV', { className: 'workbench' });
+  const mdBlock = makeDomNode(1, 'DIV', { className: 'markdown-body' });
+  const spanInMd = makeDomNode(1, 'SPAN');
+  const planningInMdText = makeDomNode(3, null, { nodeValue: 'Planning' });
+  spanInMd.appendChild(planningInMdText);
+  mdBlock.appendChild(makeDomNode(3, null, { nodeValue: 'Plane Trajectory ' }));
+  mdBlock.appendChild(spanInMd);
+  mdBlock.appendChild(makeDomNode(3, null, { nodeValue: ' (Table 3)' }));
+
+  const uiBtn = makeDomNode(1, 'BUTTON', { className: 'action-btn' });
+  const uiPlanningText = makeDomNode(3, null, { nodeValue: 'Planning' });
+  uiBtn.appendChild(uiPlanningText);
+
+  docRoot.appendChild(mdBlock);
+  docRoot.appendChild(uiBtn);
+
+  const sandbox = {
+    window: {
+      __AGY_I18N_DATA__: { exact: { Planning: '正在规划', Save: '保存' }, patterns: [] },
+      __AGY_I18N_CONFIG__: { enabled: true, language: 'zh-CN', brandTitle: 'english' }
+    },
+    document: { documentElement: docRoot, body: docRoot, readyState: 'complete' },
+    setTimeout: () => 1,
+    clearTimeout() { },
+    setInterval: () => 1
+  };
+  sandbox.window.document = sandbox.document;
+  vmMod.runInNewContext(rootRuntime, sandbox);
+  sandbox.window.__AGY_RUN_FULL_SCAN__();
+
+  assert.equal(planningInMdText.nodeValue, 'Planning', 'Markdown/消息正文中英文词绝不得被替换为中文');
+  assert.equal(uiPlanningText.nodeValue, '正在规划', '正常 UI 控件词条必须照常汉化');
 });

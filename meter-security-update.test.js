@@ -83,6 +83,15 @@ test('安装安全性 1.1：宿主升级后重新安装，以新版宿主为打�
 
     // 2. 首次安装到 0.1.0
     const manifestV1 = await install({ path: targetAsar });
+    const { inspectDiskModules, loadModulesConfig } = require('./modules-config');
+    const firstDisk = inspectDiskModules(targetAsar);
+    assert.equal(firstDisk.meter, true);
+    assert.equal(firstDisk.chinese, false);
+    assert.equal(firstDisk.proxy, false);
+    const fresh = loadModulesConfig().modules;
+    assert.equal(fresh.enhance.promptTier, 0);
+    assert.equal(fresh.enhance.chineseTitle, false);
+    assert.equal(fresh.rehydrate.enabled, false);
     assert.equal(manifestV1.version, '0.1.0');
     assert.ok(fs.existsSync(manifestV1.backup));
     assert.match(manifestV1.backup, /app-0\.1\.0-.*-base\.asar/);
@@ -308,6 +317,37 @@ test('卸载安全性 2.1：当前文件匹配 patchedSha256 且备份哈希正�
   }
 });
 
+test('卸载优先使用实际宿主版本对应且哈希有效的备份', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-versioned-backup-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const stateDir = path.join(tmpDir, 'state');
+  process.env.AG_METER_STATE_DIR = stateDir;
+  try {
+    const targetAsar = path.join(tmpDir, 'app.asar');
+    const olderBackup = path.join(tmpDir, 'app-old.asar');
+    fs.copyFileSync(await createMockHostAsar(tmpDir, '2.33.0'), olderBackup);
+    fs.copyFileSync(await createMockHostAsar(tmpDir, '2.34.0'), targetAsar);
+    const originalSha = sha256(fs.readFileSync(targetAsar));
+    await install({ path: targetAsar });
+
+    const manifestPath = path.join(stateDir, 'installation.json');
+    const info = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const matchingBackup = info.backup;
+    info.backupsByVersion = { '2.34.0': { backup: matchingBackup, sha256: originalSha } };
+    info.backup = olderBackup;
+    info.originalSha256 = sha256(fs.readFileSync(olderBackup));
+    fs.writeFileSync(manifestPath, JSON.stringify(info));
+
+    const restored = await restore({ path: targetAsar });
+    assert.equal(restored.fromBackup, matchingBackup);
+    assert.equal(sha256(fs.readFileSync(targetAsar)), originalSha);
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('卸载安全性 2.2：当前文件已经等于目标备份时，幂等返回 alreadyRestored: true', async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-restore-idempotent-'));
   const prevStateDir = process.env.AG_METER_STATE_DIR;
@@ -508,7 +548,7 @@ test('更新安全 4.2：资产文件名校验（官方标准无 v 前缀与带 
       ]
     }]);
   };
-  const resBad = await applyUpdateAsync({ version: '0.9.0', _requestGithubUrl: mockFetcherBad });
+  const resBad = await applyUpdateAsync({ version: '0.9.0', currentVersion: '0.8.10', _requestGithubUrl: mockFetcherBad });
   assert.equal(resBad.ok, false);
   assert.match(resBad.error, /不符合官方命名规范|未提供对应系统架构资产/);
 
@@ -524,7 +564,7 @@ test('更新安全 4.2：资产文件名校验（官方标准无 v 前缀与带 
       ]
     }]);
   };
-  const resLegacy = await applyUpdateAsync({ version: '0.9.0', _requestGithubUrl: mockFetcherLegacy });
+  const resLegacy = await applyUpdateAsync({ version: '0.9.0', currentVersion: '0.8.10', _requestGithubUrl: mockFetcherLegacy });
   assert.equal(resLegacy.ok, false);
   assert.doesNotMatch(resLegacy.error, /不符合官方命名规范/);
 });
@@ -545,7 +585,7 @@ test('更新安全 4.3：资产下载 URL 不属于官方仓库时拒绝安装',
     }]);
   };
 
-  const res = await applyUpdateAsync({ version: '0.9.0', _requestGithubUrl: mockFetcher });
+  const res = await applyUpdateAsync({ version: '0.9.0', currentVersion: '0.8.10', _requestGithubUrl: mockFetcher });
   assert.equal(res.ok, false);
   assert.match(res.error, /不属于官方仓库/);
 });
@@ -589,7 +629,7 @@ test('更新安全 4.5：checksums.txt 缺失哈希记录或哈希不匹配时�
     }
   };
 
-  const res1 = await applyUpdateAsync({ version: '0.9.0', _requestGithubUrl: mockFetcherMissingSha });
+  const res1 = await applyUpdateAsync({ version: '0.9.0', currentVersion: '0.8.10', _requestGithubUrl: mockFetcherMissingSha });
   assert.equal(res1.ok, false);
   assert.match(res1.error, /未找到合法的 64 位 SHA-256 校验记录/);
 
@@ -616,7 +656,7 @@ test('更新安全 4.5：checksums.txt 缺失哈希记录或哈希不匹配时�
     }
   };
 
-  const res2 = await applyUpdateAsync({ version: '0.9.0', _requestGithubUrl: mockFetcherWrongSha });
+  const res2 = await applyUpdateAsync({ version: '0.9.0', currentVersion: '0.8.10', _requestGithubUrl: mockFetcherWrongSha });
   assert.equal(res2.ok, false);
   assert.match(res2.error, /SHA-256 校验失败/);
 });
@@ -651,6 +691,7 @@ test('更新安全 4.6：模拟慢速 I/O 延迟打开写入流配合网络请�
 
     const res = await applyUpdateAsync({
       version: '0.9.0',
+      currentVersion: '0.8.10',
       _requestGithubUrl: failingFetcher
     });
 
@@ -696,10 +737,10 @@ test('子进程更新 3.2：防重复点击并发控制', async () => {
   };
 
   // 启动第一个更新
-  const p1 = applyUpdateAsync({ version: '0.9.0', _requestGithubUrl: slowFetcher });
+  const p1 = applyUpdateAsync({ version: '0.9.0', currentVersion: '0.8.10', _requestGithubUrl: slowFetcher });
 
   // 在 p1 尚未完成时，并发调用 p2
-  const res2 = await applyUpdateAsync({ version: '0.9.0', _requestGithubUrl: slowFetcher });
+  const res2 = await applyUpdateAsync({ version: '0.9.0', currentVersion: '0.8.10', _requestGithubUrl: slowFetcher });
   assert.equal(res2.ok, false);
   assert.match(res2.error, /更新任务正在执行中，请勿重复操作/);
 
@@ -763,6 +804,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   const mockExtractNoCli = async (zipPath, extractDir) => ({ status: 0 });
   const resNoCli = await applyUpdateAsync({
     version: '0.9.0',
+    currentVersion: '0.8.10',
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractNoCli
   });
@@ -775,6 +817,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   const spawnerNormal = createMockSpawner(0, '✅ ASAR 持久化注入完成\n✅ 运行中窗口热挂载状态: 已即时生效（无需重启）\n', '', 25);
   const resNormal = await applyUpdateAsync({
     version: '0.9.0',
+    currentVersion: '0.8.10',
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractZip,
     _spawn: spawnerNormal
@@ -786,6 +829,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   const spawnerFail = createMockSpawner(1, '', '磁盘空间不足，写入失败', 10);
   const resFail = await applyUpdateAsync({
     version: '0.9.0',
+    currentVersion: '0.8.10',
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractZip,
     _spawn: spawnerFail
@@ -807,6 +851,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   };
   const resTimeout = await applyUpdateAsync({
     version: '0.9.0',
+    currentVersion: '0.8.10',
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractZip,
     _spawn: spawnerTimeout,
@@ -820,6 +865,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   const spawnerLiveTrue = createMockSpawner(0, '✅ ASAR 持久化注入完成\n✅ 运行中窗口热挂载状态: 已即时生效（无需重启）\n', '', 10);
   const resTrue = await applyUpdateAsync({
     version: '0.9.0',
+    currentVersion: '0.8.10',
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractZip,
     _spawn: spawnerLiveTrue
@@ -830,6 +876,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   const spawnerLiveFalse = createMockSpawner(0, '✅ ASAR 持久化注入完成\n✅ 运行中窗口热挂载状态: 将在下次启动 Antigravity 时自动生效\n', '', 10);
   const resFalse = await applyUpdateAsync({
     version: '0.9.0',
+    currentVersion: '0.8.10',
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractZip,
     _spawn: spawnerLiveFalse
@@ -849,6 +896,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   };
   await applyUpdateAsync({
     version: '0.9.0',
+    currentVersion: '0.8.10',
     targetPath: 'D:\\custom\\antigravity\\resources\\app.asar',
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractZip,
@@ -1096,6 +1144,7 @@ test('界面状态 5.5：应用更新文案区分热注入即时生效与需重�
 
 test('界面状态 5.6：在线更新完成后再次检查更新呈现已是最新且红点与更新按钮自动消除', async () => {
   const h = setupRendererHarness();
+  const currentVer = h.sandbox.__AGContextMeter.version;
   let checkCount = 0;
   h.sandbox.window.contextMeterAPI.checkUpdate = async (opts) => {
     checkCount++;
@@ -1104,15 +1153,15 @@ test('界面状态 5.6：在线更新完成后再次检查更新呈现已是最�
         ok: true,
         hasUpdate: true,
         currentVersion: '0.8.0',
-        latestVersion: '0.8.1'
+        latestVersion: currentVer
       };
     }
     return {
       ok: true,
       hasUpdate: false,
-      currentVersion: opts?.currentVersion || '0.8.1',
-      installedVersion: '0.8.1',
-      latestVersion: '0.8.1'
+      currentVersion: opts?.currentVersion || currentVer,
+      installedVersion: currentVer,
+      latestVersion: currentVer
     };
   };
 
@@ -1120,7 +1169,9 @@ test('界面状态 5.6：在线更新完成后再次检查更新呈现已是最�
     ok: true,
     diskInstalled: true,
     liveInjected: true,
-    version: '0.8.1'
+    backendHotReloaded: true,
+    backendVersion: currentVer,
+    version: currentVer
   });
 
   // 1. 首次检查并应用更新
@@ -1135,13 +1186,14 @@ test('界面状态 5.6：在线更新完成后再次检查更新呈现已是最�
   const dot = h.elements.get('update-badge-dot');
   const pop = h.elements.get('update-popover');
 
-  // 2. 更新完成后弹窗关闭，用户再次主动触发“检查更新”
+  // 2. 前后端版本均已对齐后弹窗关闭，用户再次主动触发“检查更新”
   pop.style.display = 'none';
   h.elements.get('btn-check-update').click();
   await h.flush();
 
+  const escapedVer = currentVer.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   assert.equal(titleEl.textContent, '✅ 已是最新版本');
-  assert.match(verEl.textContent, /v0\.8\.1.*已是最新/);
+  assert.match(verEl.textContent, new RegExp(`v?${escapedVer}.*已是最新`));
   assert.equal(applyBtn.style.display, 'none');
   assert.equal(applyBtn.disabled, true);
   assert.equal(dot.style.display, 'none');
@@ -1904,17 +1956,14 @@ test('专项复核 14：隔离集成测试：状态机三分模型、目标定�
     assert.equal(status1.data.modules.chinese.enabled, false);
     assert.equal(status1.disk.chinese, false);
 
-    // 2. 模拟磁盘组件未就绪时的保护拦截：在未注入汉化的宿主上，客户端内尝试开启汉化
-    // 测试防护机制：绝对不能把异常吃掉！绝对不能将配置改成 true！绝不调用内部危险安装！
-    const resFail = await handleToggleModule(fakeEvent, 'chinese', true, { asarPath: targetAsar });
-
-    assert.equal(resFail.ok, false, '磁盘未就绪时 toggle-module 必须返回 ok: false');
-    assert.equal(resFail.status, 'install_failed', '状态必须明确为 install_failed');
-    assert.match(resFail.error, /未注入/, '错误描述必须清晰指出磁盘未注入组件');
-
-    // 核查配置：modules.json 必须保持 enabled: false，绝不偷偷改成已开启！
-    const cfgAfterFail = loadModulesConfig();
-    assert.equal(cfgAfterFail.modules.chinese.enabled, false, '安装失败后配置必须依然保持 false');
+    // 2. 首次明确启用汉化时写入隔离宿主，重启前保留原运行状态。
+    const firstEnable = await handleToggleModule(fakeEvent, 'chinese', true, { asarPath: targetAsar });
+    assert.equal(firstEnable.ok, true, firstEnable.error);
+    assert.equal(firstEnable.status, 'config_toggled');
+    assert.equal(firstEnable.disk.chineseReady, true);
+    assert.equal(firstEnable.runtime.chineseActive, false);
+    assert.equal(firstEnable.restartRequired, true);
+    assert.equal(loadModulesConfig().modules.chinese.enabled, true);
 
     // 3. 在全新隔离会话目录与纯净宿主副本上安装完整汉化包，模拟“客户端已开启汉化启动”，再测切回启动态的一致性判断
     process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state-boot-zh');
@@ -2032,7 +2081,7 @@ test('专项复核 15：真实 Electron/ASAR 模块加载环境验证：运行�
       return;
     }
 
-    const runnerScript = path.join(tmpDir, 'runner.js');
+    const runnerScript = path.join(tmpDir, 'runner.cjs');
     fs.writeFileSync(runnerScript, `
 'use strict';
 const assert = require('assert');

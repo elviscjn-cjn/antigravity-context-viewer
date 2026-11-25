@@ -2,6 +2,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFile } = require('child_process');
 let ipcMain = null;
 let app = null;
 try {
@@ -10,11 +11,12 @@ try {
     ipcMain = electron.ipcMain;
     app = electron.app;
   }
-} catch {}
+} catch { }
 const {
   collect,
+  collectTurnState,
   collectTokenHistory,
-  collectTokenHistoryAsync,
+  getTokenHistoryResponse,
   collectSessionTimelineAsync,
   recordModelCalls,
   recordModelCallsAsync,
@@ -29,9 +31,20 @@ const {
   applyContextUnlock,
   applyContextUnlockAsync,
   restoreContextUnlock,
-  restoreContextUnlockAsync
+  restoreContextUnlockAsync,
+  syncPricingCatalogAsync
 } = require('./meter-collector');
-const { isValidExternalUrl } = require('./meter-core');
+const { isValidExternalUrl, compareVersions } = require('./meter-core');
+
+function isHostVersionAtLeast(targetVersion = '2.34.0') {
+  try {
+    const raw = typeof app?.getVersion === 'function' ? String(app.getVersion() || '').trim() : '';
+    if (!raw) return false;
+    return compareVersions(raw, targetVersion) >= 0;
+  } catch {
+    return false;
+  }
+}
 const { PROJECT_VERSION } = require('./modules-config');
 const MAIN_STARTED_AT = Date.now();
 const MAIN_CAPABILITIES = {
@@ -44,12 +57,14 @@ const MAIN_CAPABILITIES = {
   launchCli: true,
   contextUnlock: true,
   enhance: true,
+  rehydrate: true,
   modules: true,
   accounts: true,
   checkUpdate: true,
   applyUpdate: true,
   restartHost: true,
-  hotReload: true
+  hotReload: true,
+  syncPricing: true
 };
 
 const {
@@ -57,7 +72,8 @@ const {
   detectProxyConfig,
   normalizeProxyUrl,
   normalizeBypassListForCompare,
-  parseAndValidateProxyUrl
+  parseAndValidateProxyUrl,
+  redactProxyUrl
 } = require('./meter-proxy');
 const { getStateDir } = require('./asar-engine');
 
@@ -84,6 +100,7 @@ function resolveBootProxySnapshot() {
 }
 
 const bootProxySnapshot = resolveBootProxySnapshot();
+let languageServerProxy = null;
 const bootChineseSnapshots = new Map();
 
 /**
@@ -108,11 +125,11 @@ function resolveBootChineseSnapshot(customAsarPath = null) {
       enabled: active,
       language: String(ch.language || (ch.enabled ? 'zh-CN' : 'en'))
     };
-  } catch {}
+  } catch { }
   bootChineseSnapshots.set(key, snap);
   return snap;
 }
-try { resolveBootChineseSnapshot(); } catch {}
+try { resolveBootChineseSnapshot(); } catch { }
 
 function buildRuntimeModulesMeta(cfg, customAsarPath = null) {
   const diskProxy = cfg?.modules?.proxy || {};
@@ -130,9 +147,10 @@ function buildRuntimeModulesMeta(cfg, customAsarPath = null) {
   return {
     injectedAtStartup: Boolean(bootProxySnapshot.injectedAtStartup),
     proxyActive: runtimeEnabled,
-    runtimeProxyUrl: runtimeUrl || null,
+    runtimeProxyUrl: redactProxyUrl(runtimeUrl) || null,
     runtimeBypassList: typeof bootProxySnapshot.bypassList === 'string' ? bootProxySnapshot.bypassList : null,
     proxyNeedsRestart,
+    languageServerProxy,
     chineseActive: Boolean(bootZh.enabled),
     chineseBootLanguage: bootZh.language,
     chineseNeedsRestart: diskZhActive !== Boolean(bootZh.enabled)
@@ -141,7 +159,18 @@ function buildRuntimeModulesMeta(cfg, customAsarPath = null) {
 
 function ensureProxyEnvironment(targetEnv = process.env) {
   try {
-    return applyProxyEnvironment(targetEnv, { overrideExisting: true });
+    const env = applyProxyEnvironment(targetEnv, { overrideExisting: true });
+    if (targetEnv !== process.env) {
+      const url = env.HTTPS_PROXY;
+      const httpConsistent = Boolean(url && ['HTTP_PROXY', 'http_proxy', 'https_proxy'].every(key => env[key] === url));
+      const allConsistent = Boolean(env.ALL_PROXY && env.all_proxy === env.ALL_PROXY);
+      languageServerProxy = {
+        endpoint: redactProxyUrl(url),
+        configured: httpConsistent && allConsistent && env.NODE_USE_ENV_PROXY === '1',
+        bypassConsistent: (env.NO_PROXY || '') === (env.no_proxy || '')
+      };
+    }
+    return env;
   } catch {
     return targetEnv;
   }
@@ -159,25 +188,143 @@ function buildBootBackendPayload() {
   };
 }
 
+const DIAGNOSTIC_LOG_MAX_BYTES = 512 * 1024;
+const DIAGNOSTIC_LOG_KEEP_BYTES = 128 * 1024;
+const DIAGNOSTIC_LOG_MAX_QUEUE = 200;
+const diagnosticLogQueue = [];
+let diagnosticFlushPromise = null;
+let diagnosticDirReadyFor = null;
+const meterSourceFileCache = new Map();
+
+async function trimDiagnosticLogIfNeeded(logFile) {
+  try {
+    const st = await fs.promises.stat(logFile).catch(() => null);
+    if (!st || !st.isFile() || st.size <= DIAGNOSTIC_LOG_MAX_BYTES) return;
+    const keepBytes = Math.min(DIAGNOSTIC_LOG_KEEP_BYTES, st.size);
+    const startOffset = Math.max(0, st.size - keepBytes);
+    const handle = await fs.promises.open(logFile, 'r');
+    try {
+      const buf = Buffer.allocUnsafe(keepBytes);
+      const { bytesRead } = await handle.read(buf, 0, keepBytes, startOffset);
+      let tail = buf.subarray(0, bytesRead).toString('utf8');
+      if (startOffset > 0) {
+        const nlIdx = tail.indexOf('\n');
+        if (nlIdx >= 0 && nlIdx + 1 < tail.length) {
+          tail = tail.slice(nlIdx + 1);
+        }
+      }
+      await fs.promises.writeFile(logFile, tail, 'utf8');
+    } finally {
+      await handle.close().catch(() => { });
+    }
+  } catch { }
+}
+
+async function flushDiagnosticLogQueue() {
+  while (diagnosticLogQueue.length > 0) {
+    const first = diagnosticLogQueue[0];
+    const targetDir = first.logDir;
+    const targetFile = first.logFile;
+    let batch = '';
+    while (diagnosticLogQueue.length > 0 && diagnosticLogQueue[0].logFile === targetFile) {
+      batch += diagnosticLogQueue.shift().line;
+    }
+    try {
+      if (diagnosticDirReadyFor !== targetDir) {
+        await fs.promises.mkdir(targetDir, { recursive: true });
+        diagnosticDirReadyFor = targetDir;
+      }
+      await fs.promises.appendFile(targetFile, batch, 'utf8');
+      await trimDiagnosticLogIfNeeded(targetFile);
+    } catch {
+      diagnosticDirReadyFor = null;
+    }
+  }
+}
+
+function logDiagnostic(stage, details = {}) {
+  try {
+    const logDir = getStateDir();
+    const logFile = path.join(logDir, 'meter-stage-diagnostics.log');
+    const time = new Date().toISOString();
+    const line = `[${time}] [STAGE:${stage}] ${JSON.stringify(details)}\n`;
+    if (diagnosticLogQueue.length >= DIAGNOSTIC_LOG_MAX_QUEUE) {
+      diagnosticLogQueue.shift();
+    }
+    diagnosticLogQueue.push({ logDir, logFile, line });
+    if (!diagnosticFlushPromise) {
+      const startFlush = () => {
+        diagnosticFlushPromise = flushDiagnosticLogQueue()
+          .catch(() => { })
+          .finally(() => {
+            diagnosticFlushPromise = null;
+            if (diagnosticLogQueue.length > 0) {
+              startFlush();
+            }
+          });
+      };
+      startFlush();
+    }
+  } catch { }
+}
+
+async function flushDiagnosticLogsForTest() {
+  while (diagnosticFlushPromise || diagnosticLogQueue.length > 0) {
+    if (diagnosticFlushPromise) {
+      await diagnosticFlushPromise;
+    } else {
+      await flushDiagnosticLogQueue();
+    }
+  }
+}
+
+function readCachedSourceFile(filePath) {
+  const resolved = path.resolve(filePath);
+  const st = fs.statSync(resolved);
+  const cached = meterSourceFileCache.get(resolved);
+  if (cached && cached.size === st.size && cached.mtimeMs === st.mtimeMs) {
+    return cached.content;
+  }
+  const content = fs.readFileSync(resolved, 'utf8');
+  meterSourceFileCache.set(resolved, { size: st.size, mtimeMs: st.mtimeMs, content });
+  return content;
+}
+
+function clearMeterSourceCacheForTest() {
+  meterSourceFileCache.clear();
+}
+
 function getMeterSource() {
   try {
-    const coreCode = fs.readFileSync(path.join(__dirname, 'meter-core.js'), 'utf8');
-    const rendererCode = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+    const coreCode = readCachedSourceFile(path.join(__dirname, 'meter-core.js'));
+    const rendererCode = readCachedSourceFile(path.join(__dirname, 'meter-renderer.js'));
     let bootstrap = `window.__AGContextMeterBootBackend = ${JSON.stringify(buildBootBackendPayload())};\n`;
     try {
       const settingsSnap = getPluginSettings();
       if (settingsSnap && settingsSnap.ok) {
         bootstrap += `window.__AGContextMeterSettings = ${JSON.stringify(settingsSnap)};\n`;
       }
-    } catch {}
+    } catch { }
     try {
       const { loadModulesConfig } = require('./modules-config');
       const mCfg = loadModulesConfig();
       if (mCfg?.modules?.chinese) {
         bootstrap += `window.__AGY_CHINESE_CONFIG__ = ${JSON.stringify(mCfg.modules.chinese)};\n`;
       }
-    } catch {}
-    return `${bootstrap}${coreCode}\n${rendererCode}\ntrue;`;
+    } catch { }
+    return `(() => {
+  try {
+    ${bootstrap}
+    ${coreCode}
+    ${rendererCode}
+    return true;
+  } catch (fatalErr) {
+    const msg = String(fatalErr && fatalErr.stack ? fatalErr.stack : fatalErr);
+    console.error('[Context Meter Fatal Init Error]:', msg);
+    try { window.__AGContextMeterFatalError = msg; } catch {}
+    return false;
+  }
+})();`;
   } catch (e) {
     return '';
   }
@@ -201,14 +348,14 @@ function resolveTargetWindow(sender) {
     const { BrowserWindow } = require('electron');
     const direct = BrowserWindow.fromWebContents(sender);
     if (direct && !direct.isDestroyed()) return direct;
-  } catch {}
+  } catch { }
   try {
     const utils = require('./utils');
     if (typeof utils.resolveHubWindowFromWebContents === 'function') {
       const hubWin = utils.resolveHubWindowFromWebContents(sender);
       if (hubWin && !hubWin.isDestroyed?.()) return hubWin;
     }
-  } catch {}
+  } catch { }
   return null;
 }
 
@@ -217,6 +364,8 @@ let isAppQuitting = false;
 const boundWindows = new WeakSet();
 const boundWebContents = new WeakSet();
 const injectionTimers = new WeakMap();
+const inFlightInjections = new WeakMap();
+const pendingForceInjections = new WeakMap();
 const wcProbeTimers = new WeakMap();
 
 function setAppQuitting(val = true) {
@@ -262,7 +411,7 @@ function getRecordedInstallerDir() {
     if (m && typeof m.installerDir === 'string' && m.installerDir.trim()) {
       return m.installerDir.trim();
     }
-  } catch {}
+  } catch { }
   return null;
 }
 
@@ -367,7 +516,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
               wc.send('context-meter:brand-title-changed', cfg.modules.chinese.brandTitle);
             }
           }
-        } catch {}
+        } catch { }
       }
 
       const runtime = buildRuntimeModulesMeta(cfg, extraOpts?.asarPath);
@@ -400,12 +549,15 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
       };
     }
 
-    // 若用户是关闭一个原本就未注入的模块，直接同步配置
+    // 若用户是关闭一个原本就未注入的模块，直接同步配置（只改目标语言，绝不覆盖原有品牌选择）
     if (!targetEnable && !(moduleName === 'chinese' && extraOpts?.brandTitle && extraOpts.brandTitle !== 'english')) {
       cfg.modules[moduleName].enabled = false;
       if (moduleName === 'chinese') {
         cfg.modules.chinese.language = 'en';
-        cfg.modules.chinese.brandTitle = 'english';
+        if (extraOpts?.brandTitle !== undefined) {
+          const { normalizeBrandTitle } = require('./modules-config');
+          cfg.modules.chinese.brandTitle = normalizeBrandTitle(extraOpts.brandTitle);
+        }
       }
       if (moduleName === 'proxy' && extraOpts) {
         if (typeof extraOpts.proxyUrl === 'string' && extraOpts.proxyUrl.trim()) {
@@ -427,7 +579,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
               wc.send('context-meter:brand-title-changed', cfg.modules.chinese.brandTitle);
             }
           }
-        } catch {}
+        } catch { }
       }
       return {
         ok: true,
@@ -440,7 +592,64 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
       };
     }
 
-    // 结果类型 3: 磁盘上原本没有该组件/资源或组件不完整，无法在客户端运行中直接热注入
+    // 首次手动启用时，由独立进程写盘。当前 Electron 窗口继续使用原运行时。
+    const installerDir = fs.existsSync(path.join(__dirname, 'package.json')) ? __dirname : getLiveRuntimeDir();
+    const installBrandSupport = moduleName === 'chinese' && extraOpts.brandTitle && extraOpts.brandTitle !== 'english';
+    if ((targetEnable || installBrandSupport) && disk.meterReady && disk.asarPath && ['proxy', 'chinese'].includes(moduleName)
+      && fs.existsSync(path.join(installerDir, 'install.js'))) {
+      const patch = { enabled: true };
+      if (moduleName === 'proxy') {
+        const proxy = validateProxyUrlInput(extraOpts.proxyUrl ?? cfg.modules.proxy.proxyUrl);
+        if (!proxy.ok) return { ok: false, status: 'invalid_config', error: proxy.error };
+        patch.proxyUrl = proxy.value;
+        if (typeof extraOpts.bypassList === 'string') patch.bypassList = extraOpts.bypassList.trim();
+      } else {
+        const { normalizeBrandTitle, normalizeClientLanguage } = require('./modules-config');
+        patch.language = normalizeClientLanguage(extraOpts.language, targetEnable);
+        patch.enabled = patch.language === 'zh-CN';
+        if (extraOpts.brandTitle !== undefined) patch.brandTitle = normalizeBrandTitle(extraOpts.brandTitle);
+      }
+      resolveBootChineseSnapshot(disk.asarPath);
+      const rt = resolveNodeRuntime();
+      const argv = [
+        ...rt.args, '-e',
+        'process.noAsar = true; const args = JSON.parse(process.env.AG_OPTIONAL_MODULE_INSTALL); require("./install").install(args).catch(e => { console.error(e.message); process.exitCode = 1; });'
+      ];
+      try {
+        await new Promise((resolve, reject) => {
+          execFile(rt.runtime, argv, {
+            cwd: installerDir,
+            env: {
+              ...rt.env, AG_METER_STATE_DIR: getStateDir(), AG_OPTIONAL_MODULE_INSTALL: JSON.stringify({
+                path: disk.asarPath, modules: { [moduleName]: patch }, noHotInject: true
+              })
+            },
+            windowsHide: true,
+            timeout: 60000
+          }, (error, _stdout, stderr) => {
+            if (error) reject(new Error(String(stderr || '可选模块安装未完成').trim()));
+            else resolve();
+          });
+        });
+        const installed = inspectDiskModules(disk.asarPath, { forceRefresh: true });
+        const next = loadModulesConfig();
+        const ready = moduleName === 'proxy' ? installed.proxyReady : installed.chineseReady;
+        if (!ready) throw new Error('磁盘校验未找到可选模块');
+        return {
+          ok: true, status: 'config_toggled', data: next, disk: installed,
+          runtime: buildRuntimeModulesMeta(next, disk.asarPath), restartRequired: true,
+          message: '可选模块已安装，重启客户端后生效'
+        };
+      } catch (error) {
+        return {
+          ok: false, status: 'install_failed', data: loadModulesConfig(),
+          disk: inspectDiskModules(disk.asarPath, { forceRefresh: true }),
+          restartRequired: false, error: error.message
+        };
+      }
+    }
+
+    // 组件缺失且无法在本次启动中写盘时，保留原配置并显示终端入口。
     const modLabel = moduleName === 'chinese' ? '汉化' : (moduleName === 'proxy' ? '免 TUN 代理' : '核心监控');
     const partialReason = moduleName === 'chinese'
       ? (disk.chinese && !disk.chineseReady ? (disk.chineseReason || '汉化资源或门禁不完整') : '')
@@ -476,12 +685,22 @@ async function handleRestartHost(event, options = {}) {
     ? options.args
     : (Array.isArray(process.argv) ? process.argv.slice(1) : []);
   const delayMs = Number.isFinite(Number(options?.delayMs)) ? Number(options.delayMs) : 80;
+  try {
+    targetApp.relaunch({ args });
+  } catch (error) {
+    return { ok: false, supported: true, error: error.message };
+  }
   const triggerRestart = () => {
     try {
       setAppQuitting(true);
-      targetApp.relaunch({ args });
+      try {
+        const hostUtils = require('./utils');
+        if (typeof hostUtils?.setShowQuitConfirmation === 'function') {
+          hostUtils.setShowQuitConfirmation(false);
+        }
+      } catch { }
       targetApp.quit();
-    } catch {}
+    } catch { }
   };
   if (delayMs <= 0) {
     triggerRestart();
@@ -514,6 +733,13 @@ function registerMeterIpcHandlers(ipcMain) {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try { return { ok: true, data: await collect(url.origin, id, { force: force === true, supersedePrevious: true }) }; }
+    catch (e) { return { ok: false, error: e.message }; }
+  });
+
+  ipcMain.handle('context-meter:turn-state', async (event, id) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try { return { ok: true, data: await collectTurnState(url.origin, id) }; }
     catch (e) { return { ok: false, error: e.message }; }
   });
 
@@ -565,10 +791,10 @@ function registerMeterIpcHandlers(ipcMain) {
     }
   });
 
-  ipcMain.handle('context-meter:token-history', async (event, force) => {
+  ipcMain.handle('context-meter:token-history', async (event, force, knownRevision, knownAccountKey) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
-    try { return { ok: true, data: await collectTokenHistoryAsync({ force: force === true }) }; }
+    try { return await getTokenHistoryResponse({ force: force === true, knownRevision, knownAccountKey }); }
     catch (e) { return { ok: false, error: e.message }; }
   });
 
@@ -597,31 +823,156 @@ function registerMeterIpcHandlers(ipcMain) {
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
       const collector = require('./meter-collector');
-      const opts = typeof options === 'boolean'
-        ? { force: options }
-        : (options && typeof options === 'object' ? { ...options } : {});
-      if (!opts.origin) opts.origin = url.origin;
-      opts.backendSource = 'electron-ipc';
+      const opts = {
+        force: options === true || options?.force === true,
+        currentModel: typeof options?.currentModel === 'string' ? options.currentModel : null,
+        browsePoolKey: typeof options?.browsePoolKey === 'string' ? options.browsePoolKey : null,
+        origin: url.origin,
+        backendSource: 'electron-ipc'
+      };
       const res = await collector.fetchQuotaSnapshotFromHost(opts);
       const { _raw, ...safePayload } = res || {};
       let accountSyncResult = null;
       try {
-        const { getSharedAccountsManager } = require('./meter-accounts');
+        const { getSharedAccountsManager, deriveTrustedAutoSwitchQuotaContext } = require('./meter-accounts');
         const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
         const switchInFlight = Boolean(mgr.isSwitchInFlight?.());
-        const email = !switchInFlight
-          ? (res?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null)
+        const sourceEmail = !switchInFlight
+          ? (res?.email || _raw?.planStatus?.email || _raw?.userStatus?.email || _raw?.email || res?.planStatus?.email || null)
           : null;
-        if (!switchInFlight && email && res?.snapshot) {
-          mgr.syncActiveHostQuotaSnapshot(res, email);
-          const ov = mgr.getOverviewState();
-          if (ov.autoSwitch?.enabled && !res.error) {
-            accountSyncResult = await mgr.evaluateAutoSwitch({
-              activeEmail: email,
-              activeSnapshot: res.snapshot,
-              syncState: 'fresh',
-              isGenerating: Boolean(opts.isGenerating)
-            });
+        const activeDetectedEmail = !switchInFlight
+          ? (sourceEmail || (await mgr.detectCurrentActiveAccount())?.email || null)
+          : null;
+        const trustCtx = deriveTrustedAutoSwitchQuotaContext({
+          res,
+          raw: _raw,
+          activeEmail: activeDetectedEmail
+        });
+        if (!switchInFlight && trustCtx.trusted && trustCtx.email && res?.snapshot) {
+          mgr.syncActiveHostQuotaSnapshot(res, trustCtx.email);
+        }
+        const ov = mgr.getOverviewState();
+        if (!switchInFlight && ov.autoSwitch?.enabled) {
+          const requiresClientRestart = isHostVersionAtLeast('2.34.0');
+          const openWindowCount = countOpenHostWindows();
+          const hasRestartApi = typeof app?.relaunch === 'function' && typeof app?.quit === 'function';
+          const isGeneratingNow = options?.isGenerating === true;
+          const hasUnsavedDraft = options?.hasUnsavedDraft === true;
+          const canRestart = requiresClientRestart
+            && !isGeneratingNow
+            && !hasUnsavedDraft
+            && openWindowCount <= 1
+            && hasRestartApi;
+          const blockedRestartReason = !canRestart
+            ? (isGeneratingNow
+              ? 'generation_in_progress'
+              : (hasUnsavedDraft
+                ? 'unsaved_draft_present'
+                : (openWindowCount > 1 ? 'multi_window_open' : 'client_restart_requires_idle_window')))
+            : undefined;
+          const expectedActiveEmail = (trustCtx.email || activeDetectedEmail)
+            ? String(trustCtx.email || activeDetectedEmail).trim().toLowerCase()
+            : null;
+          const snapshotRuleSig = JSON.stringify({
+            poolKey: ov.autoSwitch?.poolKey || '',
+            windowKey: ov.autoSwitch?.windowKey || '',
+            metricMode: ov.autoSwitch?.metricMode || '',
+            thresholdPct: ov.autoSwitch?.thresholdPct ?? null,
+            candidates: Array.isArray(ov.autoSwitch?.candidates) ? ov.autoSwitch.candidates : []
+          });
+          const queryLiveGuardState = async () => {
+            if (typeof options?.getLiveGuardState === 'function') {
+              try {
+                const live = await options.getLiveGuardState();
+                if (live && typeof live === 'object') return live;
+              } catch { }
+            }
+            if (event?.sender && !event.sender.isDestroyed?.() && typeof event.sender.executeJavaScript === 'function') {
+              try {
+                const live = await Promise.race([
+                  event.sender.executeJavaScript('window.__AGContextMeter?.getLiveAutoSwitchGuardState?.() || null', true),
+                  new Promise(resolve => setTimeout(() => resolve(null), 500))
+                ]);
+                if (live && typeof live === 'object') return live;
+              } catch { }
+            }
+            return {
+              isGenerating: options?.isGenerating === true,
+              hasComposerDraft: false,
+              hasRuleDraft: options?.hasUnsavedDraft === true
+            };
+          };
+          const evalSyncState = trustCtx.trusted
+            ? 'fresh'
+            : (trustCtx.syncState && trustCtx.syncState !== 'fresh' ? trustCtx.syncState : 'untrusted');
+          accountSyncResult = await mgr.evaluateAutoSwitch({
+            activeEmail: expectedActiveEmail,
+            activeSnapshot: res?.snapshot || null,
+            syncState: evalSyncState,
+            allowLiveCandidateRefresh: true,
+            isGenerating: isGeneratingNow,
+            hasUnsavedDraft,
+            openWindowCount,
+            requiresClientRestart,
+            blockedRestartReason,
+            preRestartNoticeDelayMs: Number.isFinite(Number(options?.preRestartNoticeDelayMs))
+              ? Number(options.preRestartNoticeDelayMs)
+              : (event?.sender && typeof event.sender.executeJavaScript === 'function' ? 2000 : 0),
+            onBeforeRestartNotice: async (meta) => {
+              if (event?.sender && !event.sender.isDestroyed?.() && typeof event.sender.executeJavaScript === 'function') {
+                try {
+                  await event.sender.executeJavaScript(
+                    `window.__AGContextMeter?.showAutoSwitchPreRestartNotice?.(${JSON.stringify(meta)})`,
+                    true
+                  );
+                } catch { }
+              }
+            },
+            onAbortRestartNotice: async (abortInfo) => {
+              if (event?.sender && !event.sender.isDestroyed?.() && typeof event.sender.executeJavaScript === 'function') {
+                try {
+                  await event.sender.executeJavaScript(
+                    `window.__AGContextMeter?.clearAutoSwitchPreRestartNotice?.(${JSON.stringify(abortInfo?.error || '')})`,
+                    true
+                  );
+                } catch { }
+              }
+            },
+            preCommitCheck: async ({ phase } = {}) => {
+              const latestOv = mgr.getOverviewState();
+              if (!latestOv?.autoSwitch?.enabled) {
+                return { ok: false, deferred: true, reason: 'auto_switch_disabled', error: '自动切号已被关闭，取消切换' };
+              }
+              const latestRuleSig = JSON.stringify({
+                poolKey: latestOv.autoSwitch?.poolKey || '',
+                windowKey: latestOv.autoSwitch?.windowKey || '',
+                metricMode: latestOv.autoSwitch?.metricMode || '',
+                thresholdPct: latestOv.autoSwitch?.thresholdPct ?? null,
+                candidates: Array.isArray(latestOv.autoSwitch?.candidates) ? latestOv.autoSwitch.candidates : []
+              });
+              if (latestRuleSig !== snapshotRuleSig) {
+                return { ok: false, deferred: true, reason: 'rule_changed_before_commit', error: '自动切号规则已变更，已中止旧切换并回滚' };
+              }
+              if (expectedActiveEmail && latestOv.activeAccountEmail && String(latestOv.activeAccountEmail).trim().toLowerCase() !== expectedActiveEmail) {
+                return { ok: false, deferred: true, reason: 'active_account_changed', error: '当前激活账号已发生变化，取消旧上下文切换' };
+              }
+              const latestWinCount = countOpenHostWindows();
+              if (latestWinCount > 1) {
+                return { ok: false, deferred: true, reason: 'multi_window_open', error: '检测到新打开的 Antigravity 窗口，已延后切号与重启' };
+              }
+              const liveGuard = await queryLiveGuardState();
+              if (liveGuard?.isGenerating === true) {
+                return { ok: false, deferred: true, reason: 'generation_in_progress', error: phase === 'before_restart' ? '会话开始生成，已中止并回滚本次切换' : '当前有会话正在生成，已延后自动切号' };
+              }
+              if (liveGuard?.hasComposerDraft === true || liveGuard?.hasRuleDraft === true) {
+                return { ok: false, deferred: true, reason: 'unsaved_draft_present', error: '检测到未发送的聊天草稿或未保存规则，已延后自动切号并回滚' };
+              }
+              return { ok: true };
+            },
+            restartClient: canRestart ? () => handleRestartHost(event) : undefined
+          });
+          if (accountSyncResult && typeof accountSyncResult === 'object') {
+            accountSyncResult.overview = mgr.getOverviewState();
           }
         }
       } catch { }
@@ -660,10 +1011,10 @@ function registerMeterIpcHandlers(ipcMain) {
           } else if (buf && buf.length >= 4) {
             ownerHwndStr = buf.readInt32LE(0).toString();
           }
-        } catch {}
+        } catch { }
         try {
           hostBounds = targetWin.getBounds();
-        } catch {}
+        } catch { }
       }
       const res = await launchCliSession({
         ...options,
@@ -682,7 +1033,7 @@ function registerMeterIpcHandlers(ipcMain) {
           runtimeInfo: res?.runtimeInfo,
           telemetry: res?.telemetry
         }));
-      } catch {}
+      } catch { }
 
       return res;
     }
@@ -700,15 +1051,18 @@ function registerMeterIpcHandlers(ipcMain) {
         try {
           if (typeof targetWin.setMenuBarVisibility === 'function') targetWin.setMenuBarVisibility(false);
           targetWin.autoHideMenuBar = true;
-        } catch {}
+        } catch { }
       }
       if (typeof targetWin.setTitleBarOverlay !== 'function') return { ok: true };
       const patch = {};
       if (options && typeof options.color === 'string') patch.color = options.color;
       if (options && typeof options.symbolColor === 'string') patch.symbolColor = options.symbolColor;
       const rawHeight = options?.height ?? options?.heightCssPx;
-      if (options && Number.isFinite(Number(rawHeight)) && Number(rawHeight) >= 24 && Number(rawHeight) <= 64) {
-        patch.height = Math.round(Number(rawHeight));
+      if (options && Number.isFinite(Number(rawHeight)) && Number(rawHeight) >= 24) {
+        // 严格遵循宿主原生 30px 高度规范，防止 WCO 覆盖会话工具栏行
+        patch.height = Math.max(26, Math.min(32, Math.round(Number(rawHeight))));
+      } else {
+        patch.height = 30;
       }
       targetWin.setTitleBarOverlay(patch);
       return { ok: true, patch };
@@ -728,8 +1082,12 @@ function registerMeterIpcHandlers(ipcMain) {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
-      const updateRes = await applyUpdateAsync(options || {});
-      return await tryInAppHotReloadAfterUpdate(updateRes, options || {});
+      const updateRes = await applyUpdateAsync({
+        version: typeof options?.version === 'string' ? options.version : undefined,
+        allowBetaUpdates: typeof options?.allowBetaUpdates === 'boolean' ? options.allowBetaUpdates : undefined,
+        diskOnly: true
+      });
+      return updateRes.ok ? { ...updateRes, restartRequired: true } : updateRes;
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -784,6 +1142,61 @@ function registerMeterIpcHandlers(ipcMain) {
     }
   });
 
+  ipcMain.handle('context-meter:rehydrate-status', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { getRehydrateStatusAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+      return { ok: true, data: await getRehydrateStatusAsync(sanitizeRehydrateRendererOptions(options, 'status')) };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:rehydrate-apply', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { applyRehydrateAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+      return await applyRehydrateAsync(sanitizeRehydrateRendererOptions(options, 'apply'));
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:rehydrate-disable', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { disableRehydrateAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+      return await disableRehydrateAsync(sanitizeRehydrateRendererOptions(options, 'disable'));
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:rehydrate-restore', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { restoreRehydrateAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+      return await restoreRehydrateAsync(sanitizeRehydrateRendererOptions(options, 'restore'));
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:rehydrate-install-python', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { installPythonRuntimeAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+      return await installPythonRuntimeAsync(sanitizeRehydrateRendererOptions(options, 'install-python'));
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
   ipcMain.handle('context-meter:restart-host', handleRestartHost);
 
   if (typeof ipcMain.on === 'function') {
@@ -798,7 +1211,7 @@ function registerMeterIpcHandlers(ipcMain) {
         const cfg = loadModulesConfig();
         const ch = cfg?.modules?.chinese;
         if (ch && typeof ch === 'object') {
-          const enabled = ch.enabled !== false && ch.language !== 'en';
+          const enabled = ch.enabled === true && ch.language !== 'en';
           const language = ch.language || (enabled ? 'zh-CN' : 'en');
           const brandTitle = ch.brandTitle || 'english';
           event.returnValue = { enabled, language, brandTitle, resolved: true };
@@ -856,7 +1269,13 @@ function registerMeterIpcHandlers(ipcMain) {
   });
 
   ipcMain.handle('context-meter:modules-status', handleModulesStatus);
-  ipcMain.handle('context-meter:toggle-module', handleToggleModule);
+  ipcMain.handle('context-meter:toggle-module', (event, name, enable, options) =>
+    handleToggleModule(event, name, enable, {
+      language: options?.language,
+      brandTitle: options?.brandTitle,
+      proxyUrl: options?.proxyUrl,
+      bypassList: options?.bypassList
+    }));
 
   ipcMain.handle('context-meter:test-proxy', async (event, proxyUrl) => {
     const url = isLocalMainFrameSender(event);
@@ -889,26 +1308,127 @@ function registerMeterIpcHandlers(ipcMain) {
     try {
       const { getSharedAccountsManager, dispatchAccountsAction } = require('./meter-accounts');
       const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
-      return await dispatchAccountsAction(mgr, payload || {});
+      let restartClient;
+      const requiresClientRestart = isHostVersionAtLeast('2.34.0');
+      if (payload?.action === 'switch' && requiresClientRestart
+        && typeof app?.relaunch === 'function' && typeof app?.quit === 'function') {
+        const { dialog } = require('electron');
+        const zh = /^zh/i.test(app.getLocale?.() || '');
+        const result = await dialog.showMessageBox({
+          type: 'question',
+          buttons: zh ? ['切换并重启', '取消'] : ['Switch and restart', 'Cancel'],
+          defaultId: 1,
+          cancelId: 1,
+          message: zh ? '切换账号需要重新启动 Antigravity' : 'Restart Antigravity to switch accounts'
+        });
+        if (result.response !== 0) {
+          return { ok: false, cancelled: true, reason: 'user_cancelled_restart', overview: mgr.getOverviewState() };
+        }
+        restartClient = () => handleRestartHost(event);
+      }
+      return await dispatchAccountsAction(mgr, payload || {}, {
+        restartClient,
+        requiresClientRestart,
+        allowManualRestartPending: requiresClientRestart && !restartClient
+      });
     } catch (e) {
       return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:sync-pricing', async (event, opts) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      return await syncPricingCatalogAsync({ force: opts?.force !== false });
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:open-dashboard-browser', async (event, payload = {}) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { startCliUiServer } = require('./meter-cli-ui');
+      const rawSid = typeof payload?.sessionId === 'string' ? payload.sessionId.trim() : '';
+      const cleanSid = (rawSid && !/[/\\]|\.\./.test(rawSid)) ? rawSid : '';
+      const rawSrc = typeof payload?.source === 'string' ? payload.source.trim().toLowerCase() : 'desktop';
+      const cleanSrc = (rawSrc === 'cli' || rawSrc === 'desktop') ? rawSrc : 'desktop';
+      const shouldOpenExternal = payload?.openExternal === true;
+      const srv = await startCliUiServer({
+        open: false,
+        sessionId: cleanSid || undefined,
+        source: cleanSid ? cleanSrc : undefined
+      });
+      const baseUrl = srv.baseUrl || srv.url || `http://127.0.0.1:${srv.port || 56780}`;
+      const dashboardUrl = cleanSid
+        ? `${baseUrl}/?sessionId=${encodeURIComponent(cleanSid)}&source=${encodeURIComponent(cleanSrc)}`
+        : baseUrl;
+      if (shouldOpenExternal) {
+        const { shell } = require('electron');
+        if (shell && typeof shell.openExternal === 'function') {
+          await shell.openExternal(dashboardUrl);
+        }
+      }
+      return {
+        ok: true,
+        baseUrl,
+        url: dashboardUrl,
+        port: srv.port,
+        pid: srv.pid,
+        sessionId: cleanSid || null,
+        source: cleanSrc,
+        openedExternal: shouldOpenExternal
+      };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:predict-next-prompt', async (event, payload = {}) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const settings = getPluginSettings();
+      if (settings.nextPromptEnabled !== true) {
+        return { ok: true, abstained: true, suggestion: '', reason: 'feature_disabled', requestCount: 0 };
+      }
+      const { predictNextPromptAsync } = require('./meter-next-prompt');
+      const safeInput = {
+        cascadeId: typeof payload?.cascadeId === 'string' ? payload.cascadeId : undefined,
+        turnId: typeof payload?.turnId === 'string' ? payload.turnId : undefined,
+        language: typeof payload?.language === 'string' ? payload.language : undefined,
+        turns: Array.isArray(payload?.turns) ? payload.turns : [],
+        preferences: Array.isArray(payload?.preferences) ? payload.preferences : [],
+        verificationEvidence: typeof payload?.verificationEvidence === 'string' ? payload.verificationEvidence : undefined,
+        taskMarkdown: typeof payload?.taskMarkdown === 'string' ? payload.taskMarkdown : undefined
+      };
+      return await predictNextPromptAsync(safeInput, {
+        origin: url.origin,
+        model: typeof payload?.model === 'string' && payload.model.trim() ? payload.model.trim() : undefined,
+        allowGetModelResponseFallback: payload?.allowGetModelResponseFallback === true
+      });
+    } catch (e) {
+      return { ok: false, abstained: true, suggestion: '', error: e.message };
     }
   });
 }
 
 function getWindowWebContents(win) {
   if (!win || win.isDestroyed?.()) return null;
-  // 1. 若为标准 BrowserWindow 或已定义 webContents getter
-  if (win.webContents && !win.webContents.isDestroyed?.()) return win.webContents;
 
-  // 2. 宿主官方 utils.getHubWebContents(win)（最权威主会话 WebContents 来源）
+  // 1. 优先使用宿主官方最权威的主会话 WebContents 来源 utils.getHubWebContents(win)
   try {
     const utils = require('./utils');
     if (typeof utils.getHubWebContents === 'function') {
       const wc = utils.getHubWebContents(win);
       if (wc && !wc.isDestroyed?.()) return wc;
     }
-  } catch {}
+  } catch { }
+
+  // 2. 若为标准 BrowserWindow 或已定义 webContents getter
+  if (win.webContents && !win.webContents.isDestroyed?.()) return win.webContents;
 
   // 3. 针对 Antigravity 2.x BaseWindow + contentView 架构遍历子 View
   // 严格安全限制：仅选择主会话界面，坚决排除 curtainView（data: 协议）及无关弹窗
@@ -930,7 +1450,7 @@ function getWindowWebContents(win) {
         }
       }
     }
-  } catch {}
+  } catch { }
   return null;
 }
 
@@ -957,14 +1477,63 @@ function getActiveHubWindowOrigins() {
     }
   } catch { }
   try {
-    const { BrowserWindow } = require('electron');
-    const allWins = typeof BrowserWindow?.getAllWindows === 'function' ? BrowserWindow.getAllWindows() : [];
+    const { BrowserWindow, BaseWindow } = require('electron');
+    const seenWins = new Set();
+    const allWins = [
+      ...(typeof BrowserWindow?.getAllWindows === 'function' ? BrowserWindow.getAllWindows() : []),
+      ...(typeof BaseWindow?.getAllWindows === 'function' ? BaseWindow.getAllWindows() : [])
+    ];
     for (const win of allWins) {
+      if (!win || seenWins.has(win)) continue;
+      seenWins.add(win);
       const wc = getWindowWebContents(win);
       if (wc && !wc.isDestroyed?.()) pushUrl(wc.getURL?.());
     }
   } catch { }
   return origins;
+}
+
+/**
+ * 统计当前活跃的 Antigravity 宿主窗口数量（基于 Window 实例与 webContents ID 精确去重，防止多窗口共享原点时误判单窗口）
+ */
+function countOpenHostWindows() {
+  const seenWins = new Set();
+  const seenWcIds = new Set();
+  let count = 0;
+  const collectWin = (win) => {
+    if (!win || seenWins.has(win) || win.isDestroyed?.()) return;
+    seenWins.add(win);
+    try {
+      // 跳过宿主内部隐形背景窗口（未最小化且不可见）
+      if (typeof win.isVisible === 'function' && !win.isVisible() && !win.isMinimized?.()) return;
+      const wc = getWindowWebContents(win);
+      if (wc && !wc.isDestroyed?.()) {
+        const url = String(wc.getURL?.() || '').trim();
+        if (url && !/^https?:\/\/127\.0\.0\.1:\d+/i.test(url)) return;
+        const wcId = wc.id;
+        if (wcId != null) {
+          if (seenWcIds.has(wcId)) return;
+          seenWcIds.add(wcId);
+        }
+      }
+    } catch { }
+    count += 1;
+  };
+  try {
+    const utils = require('./utils');
+    const wins = typeof utils.getHubWindows === 'function' ? utils.getHubWindows() : [];
+    for (const w of wins) collectWin(w);
+  } catch { }
+  try {
+    const { BrowserWindow, BaseWindow } = require('electron');
+    const allWins = [
+      ...(typeof BrowserWindow?.getAllWindows === 'function' ? BrowserWindow.getAllWindows() : []),
+      ...(typeof BaseWindow?.getAllWindows === 'function' ? BaseWindow.getAllWindows() : [])
+    ];
+    for (const w of allWins) collectWin(w);
+  } catch { }
+  if (count > 0) return count;
+  return getActiveHubWindowOrigins().length;
 }
 
 
@@ -973,12 +1542,14 @@ function syncWindowOverlayHeight(win) {
     if (!win || process.platform === 'darwin' || win.isDestroyed?.() || typeof win.setTitleBarOverlay !== 'function') return;
     const wc = getWindowWebContents(win);
     const zf = typeof wc?.getZoomFactor === 'function' ? wc.getZoomFactor() : 1;
-    const targetH = Math.max(28, Math.min(60, Math.round(40 * (Number.isFinite(zf) && zf > 0 ? zf : 1))));
+    // 严格遵循宿主原生 30px 默认高度（DEFAULT_TITLE_BAR_OVERLAY_HEIGHT），避免写死 40px 产生右上角大黑块色差
+    const baseH = 30;
+    const targetH = Math.max(26, Math.min(48, Math.round(baseH * (Number.isFinite(zf) && zf > 0 ? zf : 1))));
     win.setTitleBarOverlay({ height: targetH });
-  } catch {}
+  } catch { }
 }
 
-async function ensureMeterInjected(win, options = {}) {
+async function runEnsureMeterInjected(win, options = {}) {
   try {
     if (!win || win.isDestroyed?.()) return false;
     const wc = getWindowWebContents(win);
@@ -1019,18 +1590,26 @@ async function ensureMeterInjected(win, options = {}) {
         const alive = await wc.executeJavaScript(
           'Boolean(window.__AGContextMeter && document.getElementById("ag-context-meter") && (window.__AGContextMeter.ensureAlive ? window.__AGContextMeter.ensureAlive() : true))'
         );
-        if (alive === true) return true;
-      } catch {}
+        if (alive === true) {
+          logDiagnostic('inject:alive_already', { wcId: wc.id, url: url.slice(0, 32) });
+          return true;
+        }
+      } catch { }
     }
 
     const runtimeSource = getMeterSource();
-    if (!runtimeSource) return false;
+    if (!runtimeSource) {
+      logDiagnostic('inject:empty_source', { wcId: wc.id });
+      return false;
+    }
 
-    await wc.executeJavaScript(runtimeSource);
-    return true;
+    const res = await wc.executeJavaScript(runtimeSource);
+    logDiagnostic('inject:executed', { wcId: wc.id, result: res, url: url.slice(0, 32) });
+    return res !== false;
   } catch (error) {
     const attempt = Number(options.attempt || 0);
     const delays = [350, 1000, 2500];
+    logDiagnostic('inject:catch_error', { attempt, error: error?.message || String(error) });
     if (attempt < delays.length && win && !win.isDestroyed?.()) {
       const prevTimer = injectionTimers.get(win);
       if (prevTimer) clearTimeout(prevTimer);
@@ -1046,11 +1625,55 @@ async function ensureMeterInjected(win, options = {}) {
   }
 }
 
+async function ensureMeterInjected(win, options = {}) {
+  if (!win || win.isDestroyed?.()) return false;
+  const existing = inFlightInjections.get(win);
+  if (!existing && pendingForceInjections.has(win)) {
+    return pendingForceInjections.get(win).promise;
+  }
+  if (existing) {
+    if (options?.force === true && !existing.isForce) {
+      let pending = pendingForceInjections.get(win);
+      if (!pending) {
+        pending = { options: { ...options, attempt: 0 }, promise: null };
+        pending.promise = existing.promise.then(() => {
+          if (pendingForceInjections.get(win) === pending) {
+            pendingForceInjections.delete(win);
+          }
+          if (!win || win.isDestroyed?.()) return false;
+          return ensureMeterInjected(win, pending.options);
+        });
+        pendingForceInjections.set(win, pending);
+      } else {
+        pending.options = { ...options, attempt: 0 };
+      }
+      return pending.promise;
+    }
+    const pending = pendingForceInjections.get(win);
+    return pending ? pending.promise : existing.promise;
+  }
+
+  const isForce = options?.force === true;
+  const task = (async () => {
+    try {
+      return await runEnsureMeterInjected(win, options);
+    } finally {
+      if (inFlightInjections.get(win)?.promise === task) {
+        inFlightInjections.delete(win);
+      }
+    }
+  })();
+  inFlightInjections.set(win, { promise: task, isForce });
+  return task;
+}
+
 exports.ensureMeterInjected = ensureMeterInjected;
 
 exports.installContextMeter = function (win) {
   registerIpcOnce();
   if (!win || win.isDestroyed?.()) return;
+
+  logDiagnostic('install:win_called', { winId: win.id, isDestroyed: win.isDestroyed?.() });
 
   if (!boundWindows.has(win)) {
     boundWindows.add(win);
@@ -1058,14 +1681,14 @@ exports.installContextMeter = function (win) {
       try {
         if (typeof win.setMenuBarVisibility === 'function') win.setMenuBarVisibility(false);
         win.autoHideMenuBar = true;
-      } catch {}
+      } catch { }
     }
     const onWinVisibleOrActive = () => {
       if (process.platform === 'win32') {
         try {
           if (typeof win.setMenuBarVisibility === 'function') win.setMenuBarVisibility(false);
           win.autoHideMenuBar = true;
-        } catch {}
+        } catch { }
       }
       void ensureMeterInjected(win, { force: false });
     };
@@ -1083,25 +1706,43 @@ exports.installContextMeter = function (win) {
           }
         }
       });
-    } catch {}
+    } catch { }
   }
 
   const bindToWc = (wc) => {
     if (!wc || boundWebContents.has(wc)) return;
     boundWebContents.add(wc);
+    logDiagnostic('bind:wc_attached', { wcId: wc.id, url: wc.getURL?.()?.slice(0, 32) });
+
     wc.on('did-finish-load', () => {
+      logDiagnostic('event:did-finish-load', { wcId: wc.id });
       void ensureMeterInjected(win, { force: true });
     });
     wc.on('dom-ready', () => {
+      logDiagnostic('event:dom-ready', { wcId: wc.id });
       void ensureMeterInjected(win, { force: false });
     });
     wc.on('did-navigate', () => {
+      logDiagnostic('event:did-navigate', { wcId: wc.id });
       void ensureMeterInjected(win, { force: false });
     });
     wc.on('did-navigate-in-page', () => {
+      logDiagnostic('event:did-navigate-in-page', { wcId: wc.id });
       void ensureMeterInjected(win, { force: false });
     });
     wc.on('zoom-changed', () => syncWindowOverlayHeight(win));
+    wc.on('console-message', function (event) {
+      const isModernEvent = event && typeof event === 'object' && typeof event.message === 'string';
+      const level = isModernEvent ? event.level : arguments[1];
+      const message = isModernEvent ? event.message : String(arguments[2] ?? '');
+      const line = isModernEvent ? event.lineNumber : arguments[3];
+      const isWarnOrError = typeof level === 'string'
+        ? (level === 'warning' || level === 'error')
+        : Number(level) >= 2;
+      if (message.includes('Context Meter') || message.includes('ag-context-meter') || isWarnOrError) {
+        logDiagnostic('renderer:console', { level, line, message: message.slice(0, 200) });
+      }
+    });
   };
 
   const initialWc = getWindowWebContents(win);
@@ -1150,7 +1791,7 @@ try {
       try {
         exports.installContextMeter(win);
         void ensureMeterInjected(win, { force: false });
-      } catch {}
+      } catch { }
     };
     app.on('browser-window-created', handleCreated);
     app.on('base-window-created', handleCreated);
@@ -1162,7 +1803,7 @@ try {
           exports.installContextMeter(w);
           void ensureMeterInjected(w, { force: true });
         }
-      } catch {}
+      } catch { }
     });
     app.on('second-instance', () => {
       try {
@@ -1174,12 +1815,12 @@ try {
               exports.installContextMeter(w);
               void ensureMeterInjected(w, { force: true });
             }
-          } catch {}
+          } catch { }
         }, 120);
-      } catch {}
+      } catch { }
     });
   }
-} catch {}
+} catch { }
 
 function isHostRunInBackgroundEnabled() {
   try {
@@ -1188,7 +1829,7 @@ function isHostRunInBackgroundEnabled() {
     if (app && typeof app.getPath === 'function') {
       try {
         storagePath = path.join(app.getPath('userData'), 'app_storage.json');
-      } catch {}
+      } catch { }
     }
     if (!storagePath) {
       const home = typeof os.homedir === 'function' ? os.homedir() : '';
@@ -1224,7 +1865,7 @@ function shouldInterceptWindowClose(win, options = {}) {
       try {
         const utils = require('./utils');
         if (typeof utils.getHubWindows === 'function') wins = utils.getHubWindows();
-      } catch {}
+      } catch { }
     }
 
     // 获取窗口列表失败或当前窗口非已确认的主会话窗口（避免影响辅助/弹窗窗口），安全放行
@@ -1317,7 +1958,7 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
     try {
       const utils = require('./utils');
       wins = typeof utils.getHubWindows === 'function' ? (utils.getHubWindows() || []) : [];
-    } catch {}
+    } catch { }
   }
   const activeTargets = [];
   for (const w of wins) {
@@ -1327,7 +1968,7 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
     if (!/^https?:\/\/127\.0\.0\.1:\d+\//.test(rawUrl)) continue;
     try {
       activeTargets.push({ win: w, wc, origin: new URL(rawUrl).origin });
-    } catch {}
+    } catch { }
   }
   if (!activeTargets.length) {
     return {
@@ -1346,7 +1987,7 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
     if (fs.existsSync(liveSessionPath)) {
       previousLiveInfo = JSON.parse(fs.readFileSync(liveSessionPath, 'utf8'));
     }
-  } catch {}
+  } catch { }
 
   const probeFn = typeof options._probeLiveHost === 'function'
     ? options._probeLiveHost
@@ -1360,7 +2001,7 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
         await defaultPostLiveHttpJson(info.port, info.token, '/shutdown', o, {}, 1200);
       }
       if (info.pid) {
-        try { process.kill(info.pid); } catch {}
+        try { process.kill(info.pid); } catch { }
       }
     };
 
@@ -1417,14 +2058,14 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
             break;
           }
         }
-      } catch {}
+      } catch { }
     }
-    try { if (fs.existsSync(stagingStamp)) fs.unlinkSync(stagingStamp); } catch {}
+    try { if (fs.existsSync(stagingStamp)) fs.unlinkSync(stagingStamp); } catch { }
   }
 
   if (!newLiveInfo || !newLiveInfo.port || !newLiveInfo.token) {
     if (spawnedChild?.pid) {
-      try { process.kill(spawnedChild.pid); } catch {}
+      try { process.kill(spawnedChild.pid); } catch { }
     }
     return {
       ...updateRes,
@@ -1441,7 +2082,7 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
     fs.writeFileSync(tmpMain, JSON.stringify(newLiveInfo, null, 2));
     fs.renameSync(tmpMain, liveSessionPath);
   } catch {
-    try { fs.writeFileSync(liveSessionPath, JSON.stringify(newLiveInfo, null, 2)); } catch {}
+    try { fs.writeFileSync(liveSessionPath, JSON.stringify(newLiveInfo, null, 2)); } catch { }
   }
 
   let injectedCount = 0;
@@ -1455,7 +2096,7 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
       if (settingsSnap && settingsSnap.ok) {
         settingsBootstrap = `window.__AGContextMeterSettings = ${JSON.stringify(settingsSnap)};\n`;
       }
-    } catch {}
+    } catch { }
     let chineseBootstrap = '';
     try {
       const { loadModulesConfig } = require('./modules-config');
@@ -1463,7 +2104,7 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
       if (mCfg?.modules?.chinese) {
         chineseBootstrap = `window.__AGY_CHINESE_CONFIG__ = ${JSON.stringify(mCfg.modules.chinese)};\n`;
       }
-    } catch {}
+    } catch { }
 
     for (const target of activeTargets) {
       const liveBridgeObj = {
@@ -1504,14 +2145,14 @@ true;`;
           if (verify && (!targetVer || verify.backendVersion === targetVer)) {
             backendVerified = true;
           }
-        } catch {}
+        } catch { }
       }
     }
   } catch (injectErr) {
     if (injectedCount === 0) {
-      await shutdownFn(newLiveInfo).catch(() => {});
+      await shutdownFn(newLiveInfo).catch(() => { });
       if (previousLiveInfo) {
-        try { fs.writeFileSync(liveSessionPath, JSON.stringify(previousLiveInfo, null, 2)); } catch {}
+        try { fs.writeFileSync(liveSessionPath, JSON.stringify(previousLiveInfo, null, 2)); } catch { }
       }
       return {
         ...updateRes,
@@ -1524,9 +2165,9 @@ true;`;
   }
 
   if (injectedCount === 0) {
-    await shutdownFn(newLiveInfo).catch(() => {});
+    await shutdownFn(newLiveInfo).catch(() => { });
     if (previousLiveInfo) {
-      try { fs.writeFileSync(liveSessionPath, JSON.stringify(previousLiveInfo, null, 2)); } catch {}
+      try { fs.writeFileSync(liveSessionPath, JSON.stringify(previousLiveInfo, null, 2)); } catch { }
     }
     return {
       ...updateRes,
@@ -1538,7 +2179,7 @@ true;`;
   }
 
   if (previousLiveInfo && (!previousLiveInfo.pid || previousLiveInfo.pid !== newLiveInfo.pid)) {
-    await shutdownFn(previousLiveInfo).catch(() => {});
+    await shutdownFn(previousLiveInfo).catch(() => { });
   }
 
   return {
@@ -1564,3 +2205,8 @@ exports.shouldInterceptWindowClose = shouldInterceptWindowClose;
 exports.isHostRunInBackgroundEnabled = isHostRunInBackgroundEnabled;
 exports.getWindowWebContents = getWindowWebContents;
 exports.getActiveHubWindowOrigins = getActiveHubWindowOrigins;
+exports.countOpenHostWindows = countOpenHostWindows;
+exports.getMeterSource = getMeterSource;
+exports.clearMeterSourceCacheForTest = clearMeterSourceCacheForTest;
+exports.logDiagnostic = logDiagnostic;
+exports.flushDiagnosticLogsForTest = flushDiagnosticLogsForTest;

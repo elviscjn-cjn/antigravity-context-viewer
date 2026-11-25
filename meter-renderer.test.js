@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), vm = require('node:vm'), core = require('./meter-core');
 const source = fs.readFileSync(require('node:path').join(__dirname, 'meter-renderer.js'), 'utf8');
-function session(unknown = 0) { return { groups: Object.fromEntries(['user','assistant','thinking','tools','summaries','system','definitions'].map(k => [k,core.empty()])), total: { chars: 100, low: 10, high: 50 }, attachmentTotal: core.empty(), attachments: unknown ? [{ name: '<img onerror=bad>', status: 'unknown', unknownParts: ['图像 token 未知'], chars: 0, source: 'user' }] : [], unknownFiles: unknown, steps: 10, userMessages: 2, assistantMessages: 3 }; }
+function session(unknown = 0) { return { groups: Object.fromEntries(['user', 'assistant', 'thinking', 'tools', 'summaries', 'system', 'definitions'].map(k => [k, core.empty()])), total: { chars: 100, low: 10, high: 50 }, attachmentTotal: core.empty(), attachments: unknown ? [{ name: '<img onerror=bad>', status: 'unknown', unknownParts: ['图像 token 未知'], chars: 0, source: 'user' }] : [], unknownFiles: unknown, steps: 10, userMessages: 2, assistantMessages: 3 }; }
 function harness(scanSession = session(), extraSandbox = null) {
   const elements = new Map();
   const docElements = new Map();
@@ -92,15 +92,64 @@ function harness(scanSession = session(), extraSandbox = null) {
     };
     return el;
   };
-  const host = element(); host.attachShadow = () => ({ set innerHTML(value) {}, getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); } });
+  const host = element(); host.attachShadow = () => ({ set innerHTML(value) { }, getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); } });
   const pending = [], scans = [], timers = [];
-  const sandbox = { location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' }, document: { createElement: () => element(), getElementById: id => docElements.get(id) || null, documentElement: { appendChild() {} }, addEventListener() {}, removeEventListener() {}, hidden: false }, window: { __APP_CONFIG__: { csrfToken: 'test' }, contextMeterAPI: { scan: id => new Promise(resolve => scans.push({ id, resolve })) } }, __AGContextMeterCore: core, AbortController, Date, setTimeout: () => 1, clearTimeout() {}, setInterval(callback) { timers.push(callback); return 1; }, clearInterval() {}, fetch(url, options) { return new Promise(resolve => pending.push({ url, options, resolve })); }, ...(extraSandbox && typeof extraSandbox === 'object' ? extraSandbox : {}) };
+  const docListeners = new Map();
+  const sandbox = {
+    location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' },
+    document: {
+      createElement: () => element(),
+      getElementById: id => docElements.get(id) || null,
+      documentElement: { appendChild() { } },
+      addEventListener(type, fn) {
+        if (!docListeners.has(type)) docListeners.set(type, new Set());
+        docListeners.get(type).add(fn);
+      },
+      removeEventListener(type, fn) {
+        docListeners.get(type)?.delete(fn);
+      },
+      dispatchEvent(ev) {
+        const type = ev?.type || ev;
+        for (const fn of (docListeners.get(type) || [])) fn(ev);
+      },
+      hidden: false
+    },
+    window: { __APP_CONFIG__: { csrfToken: 'test' }, contextMeterAPI: { scan: id => new Promise(resolve => scans.push({ id, resolve })) } },
+    __AGContextMeterCore: core,
+    AbortController,
+    Date,
+    setTimeout: () => 1,
+    clearTimeout() { },
+    setInterval(callback) { timers.push(callback); return 1; },
+    clearInterval() { },
+    fetch(url, options) { return new Promise(resolve => pending.push({ url, options, resolve })); },
+    ...(extraSandbox && typeof extraSandbox === 'object' ? extraSandbox : {})
+  };
   // First createElement call is the host; later calls are safe text-only file rows.
   let first = true; sandbox.document.createElement = () => { if (first) { first = false; return host; } return element(); };
   vm.createContext(sandbox); vm.runInContext(source, sandbox);
   return { sandbox, host, pending, scans, elements, tick: () => timers[0](), flush: () => new Promise(resolve => setImmediate(resolve)), finishScan(i = 0) { scans[i].resolve({ ok: true, data: { session: scanSession, scannedAt: Date.now(), latest: null } }); } };
 }
 function response(chatModel) { return { ok: true, json: async () => ({ generatorMetadata: [{ chatModel }] }) }; }
+
+test('帖子 #124：会话费用栏展示最近未知调用折算和混合会话总额', () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const calls = [
+    { callId: 'known', model: 'Gemini 4 Carbon', isPriced: true, costUSD: 2.5 },
+    { callId: 'unknown', inputTokens: 40000, cacheTokens: 20000, outputTokens: 10000 }
+  ];
+  try {
+    api.setComposerStateForTest({ sessionCalls: calls });
+    api.setAvailableWidthForTest(900);
+    const mixed = core.summarizeSessionHybridCost(calls);
+    assert.ok(h.elements.get('round-cost-text').textContent.includes(mixed.latestEstimateUSD.toFixed(4)));
+    assert.ok(h.elements.get('session-cost-text').textContent.includes(mixed.combinedTotalUSD.toFixed(4)));
+    assert.match(h.elements.get('session-cost-text').title, /Gemini 3\.8 Flash/);
+  } finally {
+    api.dispose();
+  }
+});
 test('late old request and old full-scan responses cannot contaminate a newly selected chat', async () => {
   const h = harness(); h.sandbox.location.pathname = '/c/22222222-2222-2222-2222-222222222222'; h.tick();
   assert.equal(h.pending[0].options.signal.aborted, true);
@@ -542,6 +591,45 @@ test('custom background color (panelBg), custom Color Picker HEX->RGB/HSL sync, 
   api.dispose();
 });
 
+test('daily heatmap repaints low and high usage with the active purple theme', t => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  t.after(() => api.dispose());
+
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  const lowDay = yesterday.toLocaleDateString('en-CA');
+  const highDay = today.toLocaleDateString('en-CA');
+  api.setTokenHistoryForTest({
+    firstUseDate: lowDay,
+    dailyMap: { [lowDay]: { total: 145700 }, [highDay]: { total: 131110000 } }
+  });
+  api.switchHeatView('daily');
+
+  function cellColors() {
+    const cells = h.elements.get('h-grid-cols').children.flatMap(col => col.children);
+    return [lowDay, highDay].map(day =>
+      cells.find(cell => cell.getAttribute('data-date') === day).style.backgroundColor);
+  }
+
+  api.setTheme('dark');
+  assert.deepEqual(cellColors(), ['#5f27b2', '#d8b4fe']);
+
+  api.setTheme('light');
+  const legendStops = [1, 2, 3, 4].map(i => h.elements.get(`heat-leg-${i}`).style.background);
+  const lowResponse = core.computeColorScaleResponse(145700, 'heat');
+  const lightColors = [core.interpolateScaleColorHsl(lowResponse, legendStops), legendStops[3]];
+  assert.deepEqual(cellColors(), lightColors);
+
+  h.sandbox.document.documentElement.style = { colorScheme: 'dark' };
+  api.setTheme('auto');
+  assert.deepEqual(cellColors(), ['#5f27b2', '#d8b4fe']);
+  h.sandbox.document.documentElement.style.colorScheme = 'light';
+  api.setTheme('auto');
+  assert.deepEqual(cellColors(), lightColors);
+});
+
 test('timeline starts at actual firstUseDate with zero leading blank cells and supports multi-year archive pagination', () => {
   const h = harness();
   const api = h.sandbox.__AGContextMeter;
@@ -823,10 +911,10 @@ test('default current period API reference amount, independent subscription spen
   h.elements.get('btn-custom-plan-save').click();
 
   assert.equal(customForm.style.display, 'none');
-  assert.equal(h.elements.get('p-det-region').textContent, '日本 (JP)');
+  assert.equal(h.elements.get('p-det-region').textContent, 'JP 日本');
   assert.match(h.elements.get('p-det-acq').textContent, /学生.*优惠/);
   assert.match(h.elements.get('p-det-price').textContent, /\$0/);
-  assert.equal(h.elements.get('p-det-price-tag').textContent, '手动确认 · 免费');
+  assert.equal(h.elements.get('p-det-price-tag').textContent, '免费');
 
   // 验证在首屏估值卡片中，实际支出并列显示为 $0，且标注免费权益使用中
   h.elements.get('cost-btn-scope-period').click();
@@ -970,7 +1058,7 @@ test('instant region switch to Australia & Korea, price badge dynamic animation 
   // 验证初始状态：韩元 29000（整数不带 .00）
   assert.match(priceVal.textContent, /₩29000/);
   assert.match(priceVal.textContent, /月/);
-  assert.equal(priceCny.textContent, '(≈ ¥147.9 CNY)');
+  assert.equal(priceCny.textContent, '· ≈ ¥147.9 CNY');
   assert.match(detPrice.textContent, /₩29000 · 月付/);
   assert.equal(detPriceTag.textContent, '官方定价');
 
@@ -994,7 +1082,7 @@ test('instant region switch to Australia & Korea, price badge dynamic animation 
   // 3. 验证立即更新（0延迟保存与上面立即更改）
   assert.match(priceVal.textContent, /AU\$32\.99/);
   assert.match(priceVal.textContent, /月/);
-  assert.equal(priceCny.textContent, '(≈ ¥146.8 CNY)');
+  assert.equal(priceCny.textContent, '· ≈ ¥146.8 CNY');
   assert.match(detPrice.textContent, /AU\$32\.99 · 月付/);
   assert.equal(detPriceTag.textContent, '官方定价');
   assert.match(directLabel.textContent, /澳大利亚.*AU\$32\.99/);
@@ -1061,11 +1149,10 @@ test('tray/root startup visibility, settings save/restore (country, subscription
   assert.match(h.elements.get('plan-save-feedback').textContent, /保存失败.*模拟磁盘只读/);
   shouldFailSave = false;
 
-  // 3. 验证 AI Pro 详情展开、手动“详情收回”按钮、切换预估费用自动关闭详情及异步返回防重开
+  // 3. 验证 AI Pro 详情单入口展开/收起、切换预估费用自动关闭详情及异步返回防重开
   h.elements.get('badge-tokens').click();
   const detailCard = h.elements.get('plan-detail-card');
   const toggleBtn = h.elements.get('btn-plan-detail-toggle');
-  const collapseTopBtn = h.elements.get('btn-plan-detail-collapse-top');
   const collapseBottomBtn = h.elements.get('btn-plan-detail-collapse');
   const customForm = h.elements.get('plan-custom-form');
 
@@ -1078,8 +1165,8 @@ test('tray/root startup visibility, settings save/restore (country, subscription
   h.elements.get('btn-edit-plan-custom').click();
   assert.equal(customForm.style.display, 'block');
 
-  // 点击顶部“详情收回 ▲”按钮手动关闭
-  collapseTopBtn.click();
+  // 再次点击单一展开/收起按钮手动关闭
+  toggleBtn.click();
   assert.equal(detailCard.style.display, 'none');
   assert.equal(customForm.style.display, 'none');
   assert.equal(api.getPlanDetailExpanded(), false);
@@ -1170,8 +1257,8 @@ test('custom dropdowns for country, region, and currency support code/symbol sea
   // 点击选中台湾
   twItem.click();
   await h.flush();
-  assert.equal(api.getPlanSettings().country, '中国台湾 (TW)');
-  assert.equal(h.elements.get('direct-country-label').textContent, '🇹🇼 中国台湾 (TW)');
+  assert.equal(api.getPlanSettings().country, 'TW 中国台湾');
+  assert.equal(h.elements.get('direct-country-label').textContent, '🇹🇼 TW 中国台湾');
 
   // 3. 验证「币种」统一定制下拉：展开、搜索符号 "AU$" 过滤出澳元、选择后保存
   const curTrigger = h.elements.get('direct-currency-trigger');
@@ -1194,7 +1281,7 @@ test('custom dropdowns for country, region, and currency support code/symbol sea
   audItem.click();
   await h.flush();
   assert.equal(api.getPlanSettings().currency, 'AUD');
-  assert.equal(h.elements.get('direct-currency-label').textContent, 'AUD (AU$ 澳元)');
+  assert.equal(h.elements.get('direct-currency-label').textContent, 'AUD · AU$ 澳元');
 
   // 4. 验证 Esc 关闭
   curTrigger.click();
@@ -1239,6 +1326,51 @@ test('network errors are consistently displayed across badge, tooltip, and key s
   assert.notEqual(h.elements.get('key-remaining').textContent, '0 (已溢出)');
 
   h.sandbox.__AGContextMeter.dispose();
+});
+
+test('cancellation status is muted, describes the recorded request, and clears after success', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  h.finishScan();
+  h.pending[0].resolve(response({
+    usage: { inputTokens: 12000, outputTokens: 200 },
+    chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+  }));
+  await h.flush();
+  try {
+    const previous = api.snapshot().latest;
+    const canceled = core.summarize({
+      chatModel: {
+        retryInfos: [{ error: 'request failed: Post "https://example.invalid/api": context canceled' }],
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    }, { previousValidContext: previous });
+    api.setContextLatestForTest(canceled);
+    h.elements.get('badge').trigger('mouseenter');
+    assert.equal(h.elements.get('badge-pct-val').textContent, '已中断');
+    assert.equal(h.elements.get('amount').textContent, '上次中断');
+    assert.equal(h.host.getAttribute('data-occupancy'), 'normal');
+    assert.equal(h.elements.get('key-badge').className, 'key-pill pill-muted');
+    assert.match(h.elements.get('ctx-tip-title').textContent, /最近一次/);
+    assert.match(h.elements.get('ctx-tip-detail').textContent, /无法确定/);
+    assert.doesNotMatch(h.elements.get('ctx-tip-detail').textContent, /用户取消|重新发送/);
+    assert.match(h.elements.get('status').textContent, /最近一次.*中断/);
+    assert.notEqual(h.elements.get('key-used').textContent, '—');
+    assert.equal(h.elements.get('key-limit').textContent, '512K');
+    assert.equal(api.snapshot().latest.actual, previous.actual);
+    for (const [language, title] of [['en', /Last recorded request/], ['zh-TW', /最近一次/]]) {
+      api.setPanelLanguage(language, { persist: false });
+      h.elements.get('badge').trigger('mouseenter');
+      assert.match(h.elements.get('ctx-tip-title').textContent, title);
+      assert.equal(h.elements.get('key-badge').className, 'key-pill pill-muted');
+    }
+    api.setPanelLanguage('zh-CN', { persist: false });
+    api.setContextLatestForTest(previous);
+    assert.doesNotMatch(h.elements.get('badge-pct-val').textContent, /中断|待确认/);
+    assert.doesNotMatch(h.elements.get('key-takeaway').textContent, /中断|原因未知/);
+  } finally {
+    api.dispose();
+  }
 });
 
 test('quota exhaustion status across badge, tooltip, and summary displays affected pool and reset time', async () => {
@@ -1704,8 +1836,8 @@ test('产品级偏好、旧档位同值直显与异值冲突迁移、预设 512K
     })
   };
   const api = h.sandbox.__AGContextMeter;
-  h.elements.get('ctx-conflict-rows').replaceChildren = function(...nodes) { this.children = nodes; };
-  h.elements.get('ctx-card-observed-speed').replaceChildren = function(...nodes) { this.children = nodes; };
+  h.elements.get('ctx-conflict-rows').replaceChildren = function (...nodes) { this.children = nodes; };
+  h.elements.get('ctx-card-observed-speed').replaceChildren = function (...nodes) { this.children = nodes; };
   const cascadeConfigs = [
     { modelId: 'gemini-4-hydrogen-low', label: 'Gemini 4 Hydrogen (Low)' },
     { modelId: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)' },
@@ -1891,8 +2023,8 @@ test('速度对比分页：零网络请求与零 IPC 发送，正确绘制柱状
   h.elements.get('tab-ctx-speed').click();
   await h.flush();
   // harness 默认 replaceChildren 不保留子节点，此处启用以检查 SVG 绘制元素
-  h.elements.get('speed-bar-svg').replaceChildren = function(...nodes) { this.children = nodes; };
-  h.elements.get('speed-line-svg').replaceChildren = function(...nodes) { this.children = nodes; };
+  h.elements.get('speed-bar-svg').replaceChildren = function (...nodes) { this.children = nodes; };
+  h.elements.get('speed-line-svg').replaceChildren = function (...nodes) { this.children = nodes; };
 
   const fetchBefore = h.pending.length;
   const scansBefore = h.scans.length;
@@ -2733,7 +2865,7 @@ test('requestPoll retries recordCalls on next 3s poll after failure or rejection
   const events = [];
   let attempt = 0;
   const origWarn = console.warn;
-  console.warn = () => {};
+  console.warn = () => { };
 
   h.sandbox.window.contextMeterAPI = {
     ...h.sandbox.window.contextMeterAPI,
@@ -2847,7 +2979,7 @@ test('pendingFinalCalls retains 5-row batch across offset=2 sliding window, retr
   const savedLedger = new Map();
   let recordBehavior = () => Promise.resolve({ ok: true, changed: true });
   const origWarn = console.warn;
-  console.warn = () => {};
+  console.warn = () => { };
 
   h.sandbox.window.contextMeterAPI = {
     ...h.sandbox.window.contextMeterAPI,
@@ -3055,7 +3187,7 @@ test('pendingFinalCalls survives route switches across conversations and / home 
   const savedLedger = new Map();
   let recordBehavior = () => Promise.resolve({ ok: true, changed: true });
   const origWarn = console.warn;
-  console.warn = () => {};
+  console.warn = () => { };
 
   h.sandbox.window.contextMeterAPI = {
     ...h.sandbox.window.contextMeterAPI,
@@ -3218,7 +3350,7 @@ test('flushPendingFinalCalls chunks >500 items and >900KB UTF-8 payloads for liv
   await flushAsync();
 
   const origWarn = console.warn;
-  console.warn = () => {};
+  console.warn = () => { };
 
   // Use live-host HTTP mode (enforcing live-host.js MAX_RECORD_CALLS=500 & MAX_BODY_BYTES=1MB)
   delete h.sandbox.window.contextMeterAPI.recordCalls;
@@ -3587,7 +3719,7 @@ test('oversized >1 MiB first item never head-of-line blocks normal queued items 
   await flushAsync();
 
   const origWarn = console.warn;
-  console.warn = () => {};
+  console.warn = () => { };
 
   const makeRow = (id, stepIdx, modelLabel = 'Gemini 4 Carbon') => ({
     stepIndices: [stepIdx],
@@ -4006,7 +4138,7 @@ test('[P2] renderer watermark re-sends when RPC upgrades provisional date to aut
     if (prevWindow === undefined) delete globalThis.window;
     else globalThis.window = prevWindow;
     api.dispose();
-    try { fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch {}
+    try { fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch { }
   }
 });
 
@@ -4165,7 +4297,7 @@ test('[P3] provisional Carbon call crossing 11-30 -> 12-01 rate-hike midnight do
     if (prevWindow === undefined) delete globalThis.window;
     else globalThis.window = prevWindow;
     api.dispose();
-    try { fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch {}
+    try { fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch { }
   }
 });
 
@@ -4531,7 +4663,7 @@ test('[P2] same-rank authoritative created_at revision updates persisted ledger 
     if (prevWindow === undefined) delete globalThis.window;
     else globalThis.window = prevWindow;
     api.dispose();
-    try { fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch {}
+    try { fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch { }
   }
 });
 
@@ -4583,7 +4715,7 @@ test('PR #13 & PR #21: 弹窗动态锚点定位、首帧显示前预设坐标、
     h.elements.get('badge-tokens').click();
     assert.equal(h.elements.get('panel-tokens').style.left, `${1048 - 730}px`);
 
-    h.elements.get('badge-quota').click();
+    h.elements.get('badge-quota').trigger('click', { detail: 0 });
     assert.equal(h.elements.get('panel-quota').style.left, `${1104 - 460}px`);
 
     // 溢出入口打开 tokens / quota 时必须对齐 badge-overflow 而非隐藏按钮
@@ -4616,6 +4748,9 @@ test('PR #13 & PR #21: 弹窗动态锚点定位、首帧显示前预设坐标、
 });
 
 test('Issue #22: applyAppUpdate 在严格模式下不因未声明 currentVer 报错，且按 liveInjected 状态安全刷新版本 UI', async () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+  const curVer = pkg.version;
+  const escapedVer = curVer.replace(/\./g, '\\.');
   const h = harness();
   const api = h.sandbox.__AGContextMeter;
   try {
@@ -4626,15 +4761,15 @@ test('Issue #22: applyAppUpdate 在严格模式下不因未声明 currentVer 报
         ok: true,
         hasUpdate: true,
         currentVersion: '0.8.3',
-        latestVersion: '0.9.1',
-        tagName: 'v0.9.1',
+        latestVersion: curVer,
+        tagName: `v${curVer}`,
         releaseNotes: 'Fix update flow',
-        htmlUrl: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.1'
+        htmlUrl: `https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v${curVer}`
       }),
       applyUpdate: async () => ({
         ok: true,
-        version: '0.9.1',
-        installedVersion: '0.9.1',
+        version: curVer,
+        installedVersion: curVer,
         liveInjected: mockLiveInjected,
         backendHotReloaded: mockLiveInjected
       })
@@ -4642,38 +4777,38 @@ test('Issue #22: applyAppUpdate 在严格模式下不因未声明 currentVer 报
 
     h.elements.get('btn-check-update').click();
     await h.flush();
-    assert.equal(h.elements.get('up-pop-ver').textContent, 'v0.8.3 → v0.9.1');
+    assert.equal(h.elements.get('up-pop-ver').textContent, `v0.8.3 → ${curVer}`);
 
     h.elements.get('btn-apply-update').click();
     await h.flush();
 
     assert.equal(h.elements.get('v').textContent, '');
-    assert.match(h.elements.get('up-pop-ver').textContent, /0\.9\.1/);
+    assert.match(h.elements.get('up-pop-ver').textContent, new RegExp(escapedVer));
     assert.doesNotMatch(h.elements.get('up-pop-status').textContent, /currentVer|异常|失败/i);
-    assert.match(h.elements.get('up-pop-status').textContent, /0\.9\.1/);
+    assert.match(h.elements.get('up-pop-status').textContent, new RegExp(escapedVer));
 
     mockLiveInjected = true;
     h.elements.get('btn-apply-update').click();
     await h.flush();
-    assert.equal(h.elements.get('v').textContent, 'v0.9.1');
+    assert.equal(h.elements.get('v').textContent, curVer);
   } finally {
     api.dispose();
   }
 });
 
 test('ELV-84: 静止浮层避免常驻合成层与冗余模糊，混合 DPI 坐标对齐像素网格并在跨屏变更时重排与清理', async () => {
-  // 1. CSS 静态防虚契约断言（构建产物 meter-renderer.js）
-  assert.match(source, /font:12px\/1\.4 [^;]*"Microsoft YaHei UI"/, '应优先使用 Microsoft YaHei UI 改善 100% 缩放 ClearType');
-  assert.match(source, /\.ag-panel\{[^}]*transform:none;[^}]*\}/, '.ag-panel 静止打开态必须回退到 transform:none');
-  assert.doesNotMatch(source, /\.ag-panel\{[^}]*will-change:opacity,transform;/, '.ag-panel 不应常驻 will-change:opacity,transform');
-  assert.doesNotMatch(source, /\.ag-panel\{[^}]*contain:layout paint;/, '.ag-panel 不应常驻 contain:layout paint');
-  assert.match(source, /#context-tooltip\[data-visible="true"\]\{[^}]*transform:none;/, '悬停气泡可见态应使用 transform:none');
-  assert.doesNotMatch(source, /#overflow-menu\{[^}]*will-change:opacity,transform;/, '溢出菜单不应常驻 will-change');
-  assert.match(source, /\.ag-dropdown-wrapper\.is-open \.ag-dropdown-menu\{[^}]*transform:none;/, '打开的下拉列表应使用 transform:none');
-  assert.doesNotMatch(source, /\.ag-dropdown-menu\{[^}]*backdrop-filter:blur\(24px\)/, '不透明背景的下拉列表不得叠加 backdrop-filter:blur(24px)');
-  assert.match(source, /@keyframes agSmoothExpand\{\s*0%\{[^}]*\}\s*100%\{[^}]*transform:none;/, '展开关键帧结束态应使用 transform:none');
+  // 1. CSS 静态防虚契约断言（构建产物 meter-renderer.js，兼容合法 CSS 多行排版与空白）
+  assert.match(source, /font:\s*12px\/1\.4 [^;]*"Microsoft YaHei UI"/, '应优先使用 Microsoft YaHei UI 改善 100% 缩放 ClearType');
+  assert.match(source, /\.ag-panel\s*\{[^}]*transform:\s*none;[^}]*\}/, '.ag-panel 静止打开态必须回退到 transform:none');
+  assert.doesNotMatch(source, /\.ag-panel\s*\{[^}]*will-change:\s*opacity,\s*transform;/, '.ag-panel 不应常驻 will-change:opacity,transform');
+  assert.doesNotMatch(source, /\.ag-panel\s*\{[^}]*contain:\s*layout paint;/, '.ag-panel 不应常驻 contain:layout paint');
+  assert.match(source, /#context-tooltip\[data-visible="true"\]\s*\{[^}]*transform:\s*none;/, '悬停气泡可见态应使用 transform:none');
+  assert.doesNotMatch(source, /#overflow-menu\s*\{[^}]*will-change:\s*opacity,\s*transform;/, '溢出菜单不应常驻 will-change');
+  assert.match(source, /\.ag-dropdown-wrapper\.is-open \.ag-dropdown-menu\s*\{[^}]*transform:\s*none;/, '打开的下拉列表应使用 transform:none');
+  assert.doesNotMatch(source, /\.ag-dropdown-menu\s*\{[^}]*backdrop-filter:\s*blur\(24px\)/, '不透明背景的下拉列表不得叠加 backdrop-filter:blur(24px)');
+  assert.match(source, /@keyframes agSmoothExpand\s*\{\s*0%\s*\{[^}]*\}\s*100%\s*\{[^}]*transform:\s*none;/, '展开关键帧结束态应使用 transform:none');
   assert.doesNotMatch(source, /animation:\s*agSmoothExpand[^;]*forwards/, '折叠展开动画不得使用 forwards 永久锁定合成层');
-  assert.match(source, /\.view-pane-fade\{[^}]*transform:none/, '视图切换容器静止态应使用 transform:none');
+  assert.match(source, /\.view-pane-fade\s*\{[^}]*transform:\s*none/, '视图切换容器静止态应使用 transform:none');
 
   // 2. 运行态设备像素网格对齐与跨屏 DPI change 事件测试
   const ctx = {};
@@ -4681,11 +4816,11 @@ test('ELV-84: 静止浮层避免常驻合成层与冗余模糊，混合 DPI 坐�
   const mqlListeners = new Map();
   let mqlRemoved = 0;
   const mockHost = {
-    style: { setProperty() {}, removeProperty() {}, top: '', right: '', left: '', zIndex: '' },
-    setAttribute() {},
+    style: { setProperty() { }, removeProperty() { }, top: '', right: '', left: '', zIndex: '' },
+    setAttribute() { },
     getAttribute() { return null; },
-    removeAttribute() {},
-    remove() {},
+    removeAttribute() { },
+    remove() { },
     getBoundingClientRect: () => ({ left: 1210.4, top: 6.3, right: 1410.3, bottom: 34.1, width: 199.9, height: 27.8 }),
     attachShadow() {
       return {
@@ -4709,15 +4844,15 @@ test('ELV-84: 静止浮层避免常驻合成层与冗余模糊，混合 DPI 坐�
       textContent: '',
       value: '',
       children: [],
-      style: { display: '', top: '', left: '', right: '', maxWidth: '', maxHeight: '', transformOrigin: '', setProperty() {}, removeProperty() {} },
-      classList: { add() {}, remove() {}, contains() { return false; } },
+      style: { display: '', top: '', left: '', right: '', maxWidth: '', maxHeight: '', transformOrigin: '', setProperty() { }, removeProperty() { } },
+      classList: { add() { }, remove() { }, contains() { return false; } },
       setAttribute(k, v) { attrs.set(k, String(v)); },
       getAttribute(k) { return attrs.get(k) ?? null; },
       removeAttribute(k) { attrs.delete(k); },
-      addEventListener() {},
-      removeEventListener() {},
-      replaceChildren() {},
-      appendChild() {},
+      addEventListener() { },
+      removeEventListener() { },
+      replaceChildren() { },
+      appendChild() { },
       querySelectorAll: () => [],
       getBoundingClientRect: () => ({ left: 1300.3, top: 6.2, right: 1410.3, bottom: 34.1, width: 110, height: 27.9 })
     };
@@ -4743,8 +4878,8 @@ test('ELV-84: 静止浮层避免常驻合成层与冗余模糊，混合 DPI 坐�
   };
   let isFirstCreate = true;
   const docObj = {
-    body: { appendChild() {}, children: [] },
-    documentElement: { appendChild() {} },
+    body: { appendChild() { }, children: [] },
+    documentElement: { appendChild() { } },
     createElement: () => {
       if (isFirstCreate) {
         isFirstCreate = false;
@@ -4754,8 +4889,8 @@ test('ELV-84: 静止浮层避免常驻合成层与冗余模糊，混合 DPI 坐�
     },
     querySelector: () => null,
     querySelectorAll: () => [],
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener() { },
+    removeEventListener() { },
     getElementById: () => null
   };
   Object.assign(ctx, {
@@ -4765,13 +4900,13 @@ test('ELV-84: 静止浮层避免常驻合成层与冗余模糊，混合 DPI 坐�
     document: docObj,
     globalThis: null,
     navigator: {},
-    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
-    sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    localStorage: { getItem: () => null, setItem() { }, removeItem() { } },
+    sessionStorage: { getItem: () => null, setItem() { }, removeItem() { } },
     setTimeout: () => 1,
-    clearTimeout() {},
+    clearTimeout() { },
     setInterval: () => 1,
-    clearInterval() {},
-    fetch: () => new Promise(() => {}),
+    clearInterval() { },
+    fetch: () => new Promise(() => { }),
     AbortController,
     URL,
     Date,
@@ -4896,6 +5031,7 @@ test('By Model usage view: renders stacked bars, percentages, 7d/30d, variant/ca
     });
 
     // Switch to By Model view
+    h.sandbox.__AGContextMeter.toggle(true, 'tokens');
     h.elements.get('tok-view-models').click();
     assert.equal(h.elements.get('model-usage-view').style.display, 'block');
     assert.equal(h.elements.get('tokens-main-view').style.display, 'none');
@@ -4964,7 +5100,7 @@ test('v0.8.8 顶栏收尾回归: ring-only 保留溢出菜单入口，无菜单�
   const stylesCssText = fs.readFileSync(path.join(__dirname, 'src/renderer/styles.css'), 'utf8');
   try {
     // 1. ring-only 模式下 CSS 与布局保持溢出按钮与已打开溢出菜单可用
-    assert.match(stylesCssText, /:host\(\[data-layout="ring-only"\]\)\s*#badge-overflow\{\s*display:inline-flex!important;/);
+    assert.match(stylesCssText, /:host\(\[data-layout="ring-only"\]\)\s*#badge-overflow\s*\{\s*display:\s*inline-flex\s*!important;/);
     assert.doesNotMatch(stylesCssText, /:host\(\[data-layout="ring-only"\]\)[^}]*#badge-overflow[^}]*display:\s*none/);
 
     api.setAvailableWidthForTest(90); // minimal
@@ -5314,54 +5450,69 @@ test('v0.8.8 chart visual redesign E2E: single 1.82M vs heavy 100..3.64B, cross-
   }
 });
 
-test('v0.8.8 α 版本展示与更新比较隔离: 界面展示 0.8.8 α 且无正式版字样, 0.8.8==0.8.8 判最新, 0.8.9 判有更新', async () => {
+test('当前权威版本展示与预发布更新比较隔离', async () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-  assert.equal(pkg.version, '0.8.8');
+  const curVer = pkg.version;
+  const escapedVer = curVer.replace(/\./g, '\\.');
+  assert.equal(pkg.displayVersion, curVer);
 
-  // 1. 默认构建模板中 #v 与 #up-pop-ver 均为 0.8.8 α，且渲染源码中不含“正式版”字样
+  // 1. 默认构建模板中 #v 与 #up-pop-ver 均为权威版本，且 beta 通道开关默认未勾选
   const builtCode = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
-  assert.match(builtCode, /<span id="v">0\.8\.8 α<\/span>/);
-  assert.match(builtCode, /<span id="up-pop-ver"[^>]*>0\.8\.8 α<\/span>/);
-  assert.equal(builtCode.includes('正式版'), false);
+  assert.match(builtCode, new RegExp(`<span id="v"[^>]*>${escapedVer}<\\/span>`));
+  assert.match(builtCode, new RegExp(`<span id="up-pop-ver"[^>]*>${escapedVer}<\\/span>`));
+  assert.equal(builtCode.includes('id="check-allow-beta-updates"'), true);
 
-  // 2. 0.8.8 vs 0.8.8 判为已是最新，且文案展示 0.8.8 α
+  // 2. 当前版本 vs 当前版本 判为已是最新
   {
     const h = harness();
     const api = h.sandbox.__AGContextMeter;
+    assert.equal(h.elements.get('check-allow-beta-updates').checked, false);
     h.sandbox.window.contextMeterAPI = {
       ...h.sandbox.window.contextMeterAPI,
       checkUpdate: async (req) => {
-        assert.equal(req.currentVersion, '0.8.8');
-        return { ok: true, hasUpdate: false, currentVersion: '0.8.8', installedVersion: '0.8.8' };
+        assert.equal(req.currentVersion, curVer);
+        assert.equal(req.allowBetaUpdates, false);
+        return { ok: true, hasUpdate: false, currentVersion: curVer, installedVersion: curVer };
       }
     };
     try {
       await api.checkUpdate(true);
       await h.flush();
-      assert.equal(h.elements.get('up-pop-ver').textContent, '0.8.8 α (已是最新)');
-      assert.match(h.elements.get('up-pop-body').textContent, /0\.8\.8 α/);
-      assert.equal(h.elements.get('up-pop-body').textContent.includes('正式版'), false);
+      assert.equal(h.elements.get('up-pop-ver').textContent, `${curVer} (已是最新)`);
+      assert.match(h.elements.get('up-pop-body').textContent, new RegExp(escapedVer));
     } finally {
       api.dispose();
     }
   }
 
-  // 3. 0.8.8 vs 0.8.9 判为有更新，且展示 0.8.8 α → v0.8.9
+  // 3. 预发布展示格式，以及开启 beta 通道开关持久化
   {
+    const savedPayloads = [];
     const h = harness();
     const api = h.sandbox.__AGContextMeter;
     h.sandbox.window.contextMeterAPI = {
       ...h.sandbox.window.contextMeterAPI,
+      saveSettings: async (payload) => {
+        savedPayloads.push(payload);
+        return { ok: true };
+      },
       checkUpdate: async (req) => {
-        assert.equal(req.currentVersion, '0.8.8');
-        return { ok: true, hasUpdate: true, currentVersion: '0.8.8', latestVersion: '0.8.9', releaseNotes: 'v0.8.9 test' };
+        assert.equal(req.currentVersion, curVer);
+        assert.equal(req.allowBetaUpdates, true);
+        return { ok: true, hasUpdate: true, currentVersion: curVer, latestVersion: `${curVer}-beta.2`, releaseNotes: `v${curVer}-beta.2` };
       }
     };
+    const chkBeta = h.elements.get('check-allow-beta-updates');
+    chkBeta.checked = true;
+    chkBeta.trigger('change', { target: chkBeta });
+    await h.flush();
+    assert.equal(savedPayloads.some(p => p.allowBetaUpdates === true), true);
+
     try {
       await api.checkUpdate(true);
       await h.flush();
-      assert.equal(h.elements.get('up-pop-ver').textContent, '0.8.8 α → v0.8.9');
-      assert.match(h.elements.get('up-pop-body').textContent, /v0\.8\.9/);
+      assert.equal(h.elements.get('up-pop-ver').textContent, `${curVer} → ${curVer} beta2`);
+      assert.match(h.elements.get('up-pop-body').textContent, new RegExp(`v${escapedVer}`));
       assert.equal(h.elements.get('btn-apply-update').style.display, 'inline-block');
     } finally {
       api.dispose();
@@ -5490,7 +5641,7 @@ test('cumulative ResizeObserver auto-toggles is-narrow across 460px threshold wi
     api.dispose();
     assert.equal(panelObserver.disconnected, true, 'dispose 时必须断开 panelTokensResizeObserver');
   } finally {
-    try { api.dispose(); } catch {}
+    try { api.dispose(); } catch { }
   }
 });
 
@@ -5682,13 +5833,13 @@ function htmlAwareRendererHarness(extraSandbox = null) {
       click() {
         const handlers = listeners.get(el) || [];
         for (const h of handlers) {
-          if (h.type === 'click') h.fn({ target: el, stopPropagation() {} });
+          if (h.type === 'click') h.fn({ target: el, stopPropagation() { } });
         }
       },
       trigger(type, ev = {}) {
         const handlers = listeners.get(el) || [];
         for (const h of handlers) {
-          if (h.type === type) h.fn({ target: el, preventDefault() {}, stopPropagation() {}, ...ev });
+          if (h.type === type) h.fn({ target: el, preventDefault() { }, stopPropagation() { }, ...ev });
         }
       },
       getBoundingClientRect() { return { left: 100, top: 100, width: 120, height: 26, right: 220, bottom: 126 }; },
@@ -5722,12 +5873,14 @@ function htmlAwareRendererHarness(extraSandbox = null) {
   const sandbox = {
     location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' },
     document: {
+      head: makeEl('head'),
+      body: makeEl('body'),
       createElement: (tag) => makeEl(tag || 'div'),
       createElementNS: (_ns, tag) => makeEl(tag || 'svg'),
       getElementById: id => docElements.get(id) || null,
-      documentElement: { appendChild() {} },
+      documentElement: { appendChild() { } },
       addEventListener(type, fn) { docListeners.push({ type, fn }); },
-      removeEventListener() {},
+      removeEventListener() { },
       hidden: false
     },
     window: {
@@ -5745,10 +5898,10 @@ function htmlAwareRendererHarness(extraSandbox = null) {
     AbortController,
     Date,
     setTimeout: () => 1,
-    clearTimeout() {},
+    clearTimeout() { },
     setInterval: () => 1,
-    clearInterval() {},
-    fetch: () => new Promise(() => {}),
+    clearInterval() { },
+    fetch: () => new Promise(() => { }),
     ...(extraSandbox && typeof extraSandbox === 'object' ? extraSandbox : {})
   };
   let first = true;
@@ -5835,8 +5988,8 @@ test('v0.8.8 英文界面完整去汉字回归、地区预设自动转换与零 
     await api.setPanelLanguage('en', { persist: false });
 
     assert.equal(h.shadow.querySelectorAll('input[type="date"]').length, 0, '不允许存在原生 input[type="date"]');
-    assert.equal(h.elements.get('input-custom-country').value, 'United States (US)');
-    assert.equal(h.elements.get('input-custom-region').value, 'United States (USD)');
+    assert.equal(h.elements.get('input-custom-country').value, 'US United States');
+    assert.equal(h.elements.get('input-custom-region').value, 'USD United States');
     assert.equal(h.elements.get('cost-period-tag').textContent, `${ym} (Calendar Month)`);
     assert.doesNotMatch(h.elements.get('cost-scope-desc').textContent, /[\u4e00-\u9fff]/);
     assert.doesNotMatch(h.elements.get('plan-summary-price-val').textContent, /[\u4e00-\u9fff]/);
@@ -5881,7 +6034,7 @@ test('v0.8.8 英文界面完整去汉字回归、地区预设自动转换与零 
     walkShadow(h.shadow);
     assert.deepEqual(leaks, [], `en 模式下发现汉字泄露: ${JSON.stringify(leaks, null, 2)}`);
   } finally {
-    try { api.dispose(); } catch {}
+    try { api.dispose(); } catch { }
   }
 });
 
@@ -5960,8 +6113,8 @@ test('v0.8.8 三语货币参考规则（en 纯 USD / zh-CN USD+CNY / zh-TW 四�
 
     h.elements.get('btn-plan-detail-toggle').click();
     h.elements.get('btn-edit-plan-custom').click();
-    assert.equal(h.elements.get('input-custom-country').value, '美國 (US)');
-    assert.equal(h.elements.get('input-custom-region').value, '美國 (USD)');
+    assert.equal(h.elements.get('input-custom-country').value, 'US 美國');
+    assert.equal(h.elements.get('input-custom-region').value, 'USD 美國');
 
     // 扫描 PANEL_I18N zh-TW 全字典不含明确简体专属字
     const simpOnlyRe = /[国韩亚欧乌罗马联东陆区宾兰达尔义书买云亿仅从仓优会体佣储兑划创删剂剑劝办务动励劳势协单卖卫却压厌双变叠叶号叹启员响哑唤严丰临举么乐习乡乱亏亚产亲们价众伙伞伟传伤伦伪侣侦侧侨俩仓个倾偿催傲傻]/;
@@ -6011,6 +6164,5083 @@ test('v0.8.8 三语货币参考规则（en 纯 USD / zh-CN USD+CNY / zh-TW 四�
     const lastSave = h.savedSettings[h.savedSettings.length - 1];
     assert.equal(lastSave?.customPlan?.validEndDate, todayYmd);
   } finally {
-    try { api.dispose(); } catch {}
+    try { api.dispose(); } catch { }
+  }
+});
+
+test('v0.8.9 UI 精简 4 项实装: 标题栏/卡片瘦身、ELV-94 五态停靠、Issue #41 额度窗口四态、ELV-93 纯 SVG 等待沙漏', async () => {
+  const tpl = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
+  // 1. 面板瘦身结构断言
+  assert.equal(tpl.includes('id="ctx-compact-card"'), false, '应移除独立 #ctx-compact-card 并合并入 #key-summary 头部胶囊');
+  assert.equal(tpl.includes('id="speed-active-test-note"'), false, '应移除 #speed-active-test-note');
+  assert.equal(tpl.includes('id="quota-usage-tip"'), false, '应移除 #quota-usage-tip');
+  assert.equal(tpl.includes('id="quota-basis-note"'), false, '应移除静态大段 #quota-basis-note');
+  assert.equal(tpl.includes('id="btn-plan-detail-collapse-top"'), false, '应移除重复的 #btn-plan-detail-collapse-top');
+  assert.ok(tpl.includes('id="btn-check-update"'), '主面板标题栏应回迁检查更新按钮');
+  assert.ok(tpl.includes('id="btn-github-repo"'), '主面板标题栏应回迁 GitHub 按钮');
+  assert.ok(tpl.includes('id="panel-lang-top-segmented"'), '主面板标题栏应回迁三语言切换按钮');
+  assert.ok(tpl.includes('id="settings-about-update-card"'), '配置 Tab 应包含统一的更新与项目链接卡');
+  assert.ok(tpl.includes('id="ui-slim-prefs-card"'), '配置 Tab 应包含外观、停靠与顶栏偏好卡');
+  assert.ok(tpl.includes('id="badge-speed-wait-svg"'), '顶栏速度单元应包含等待态纯 SVG 沙漏容器');
+
+  // 2. #key-takeaway 仅告警/异常时显示（<75% 隐藏，>=75% 显示），点击 #v 直达设置更新
+  const savedPayloads = [];
+  const auxContainer = {
+    children: [],
+    appendChild(n) { this.children.push(n); n.parentElement = this; },
+    insertBefore(n) { this.children.unshift(n); n.parentElement = this; },
+    removeChild(n) { this.children = this.children.filter(x => x !== n); }
+  };
+  const pageContainer = {
+    children: [],
+    appendChild(n) { this.children.push(n); n.parentElement = this; },
+    insertBefore(n) { this.children.unshift(n); n.parentElement = this; },
+    removeChild(n) { this.children = this.children.filter(x => x !== n); }
+  };
+  let mockQueryMode = 'none';
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  h.sandbox.document.querySelector = (sel) => {
+    if (mockQueryMode === 'aux' && sel.includes('aux-sidebar')) return auxContainer;
+    if (mockQueryMode === 'page' && sel.includes('workbench.parts.editor')) return pageContainer;
+    return null;
+  };
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    saveSettings: async (payload) => { savedPayloads.push(payload); return { ok: true }; }
+  };
+  try {
+    h.finishScan();
+    // 50% 安全状态 -> #key-takeaway 隐藏
+    h.pending[0].resolve(response({ usage: { inputTokens: 128000 }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } } }));
+    await h.flush();
+    assert.equal(h.elements.get('key-takeaway').hidden, true, '正常 <75% 占用时 #key-takeaway 应隐藏');
+
+    // 点击版本号胶囊 #v 自动展开主面板并切至设置 Tab
+    assert.equal(h.elements.get('panel').hidden, true);
+    h.elements.get('v').click();
+    assert.equal(h.elements.get('panel').hidden, false);
+    assert.equal(h.elements.get('pane-ctx-settings').hidden, false);
+
+    // 3. 停靠位置支持四种形态: 常态 flow、缩略 compact、右侧辅助面板 aux、独立页面 page，hide 安全兼容为 flow
+    mockQueryMode = 'none';
+    api.setDockPosition('aux');
+    assert.equal(api.getDockPosition().dockPosition, 'aux');
+    assert.equal(api.getDockPosition().fallbackReason, 'aux', '无辅助栏容器时平滑回退并记录 fallbackReason');
+
+    mockQueryMode = 'compact';
+    api.setDockPosition('compact');
+    assert.equal(api.getDockPosition().dockPosition, 'compact', '支持缩略三图标 compact 形态');
+    assert.equal(api.getDockPosition().actualDock, 'compact');
+
+    api.setDockPosition('hide');
+    assert.equal(api.getDockPosition().dockPosition, 'flow', '历史或外部传入 hide 自动安全规范为 flow 且激活隐藏开关');
+
+    api.setDockPosition('flow');
+    assert.equal(api.getDockPosition().dockPosition, 'flow');
+
+    // 4. Issue #41 顶栏额度窗口模式 4 选 1 (auto / 5h / weekly / both) 逐一点按 DOM 按钮与右键/Alt+点击切换
+    const nowQuotaTs = Date.now();
+    api.setContextLatestForTest({ model: 'Gemini 4 Hydrogen (High)', modelId: 'gemini-4-hydrogen-high', actual: 12000, budget: 256000 });
+    api.setQuotaSnapshotForTest({
+      snapshot: {
+        fetchedAtMs: nowQuotaTs,
+        currentModel: { productKey: 'product:google:gemini-4-hydrogen', productLabel: 'Gemini 4 Hydrogen (High)', poolKey: 'shared_gemini_main' },
+        activeStatus: 'available',
+        pools: [{
+          poolKey: 'shared_gemini_main',
+          title: 'Gemini 模型',
+          models: [{ productKey: 'product:google:gemini-4-hydrogen', productLabel: 'Gemini 4 Hydrogen', modelIds: ['gemini-4-hydrogen-high'] }],
+          buckets: [
+            { bucketId: 'b5h', windowKey: '5h', windowShort: '5h', remainingFraction: 0.92, percentText: '92%' },
+            { bucketId: 'b7d', windowKey: 'weekly', windowShort: '7d', remainingFraction: 0.64, percentText: '64%' }
+          ]
+        }]
+      }
+    }, nowQuotaTs);
+    assert.equal(h.elements.get('quota-badge-val').textContent, '64%', 'auto 模式默认显示更紧缩的 7d 64%');
+
+    // 逐一点按 4 个 DOM 按钮断言顶栏文本即时变化
+    const segQuota = h.elements.get('quota-mode-segmented');
+    const clickQuotaMode = (mode) => {
+      segQuota.trigger('click', {
+        target: {
+          closest: (sel) => ({ getAttribute: (k) => (k === 'data-quota-window-mode' ? mode : null) })
+        }
+      });
+    };
+
+    clickQuotaMode('5h');
+    assert.equal(h.elements.get('quota-badge-val').textContent, '92%', '点按 5h 按钮立即刷新为 92%');
+    assert.equal(h.elements.get('quota-badge-tag').textContent, '5h');
+
+    clickQuotaMode('weekly');
+    assert.equal(h.elements.get('quota-badge-val').textContent, '64%', '点按周额度按钮立即刷新为 64%');
+    assert.equal(h.elements.get('quota-badge-tag').textContent, '7d');
+
+    clickQuotaMode('both');
+    assert.equal(h.elements.get('quota-badge-dual').hidden, false, '点按双显按钮立即展示双行额度');
+    assert.equal(h.elements.get('quota-badge-dual').children[0].textContent, '5h 92%');
+    assert.equal(h.elements.get('quota-badge-dual').children[1].textContent, '7d 64%');
+
+    clickQuotaMode('auto');
+    assert.equal(h.elements.get('quota-badge-dual').hidden, true, '点按自动按钮双显隐藏并恢复单显');
+    assert.equal(h.elements.get('quota-badge-val').textContent, '64%');
+
+    const quotaBadge = h.elements.get('badge-quota');
+    const quotaPanel = h.elements.get('panel-quota');
+    // 左键轮转，提示和数值即时更新，面板保持关闭。
+    quotaBadge.trigger('click', { detail: 1 });
+    assert.equal(api.getQuotaBadgeWindowMode(), '5h');
+    assert.equal(h.elements.get('quota-badge-val').textContent, '92%');
+    assert.equal(quotaPanel.hidden, true);
+
+    let prevented = false;
+    let stopped = false;
+    quotaBadge.trigger('contextmenu', {
+      preventDefault() { prevented = true; },
+      stopPropagation() { stopped = true; }
+    });
+    assert.ok(prevented && stopped);
+    assert.equal(quotaPanel.hidden, false);
+    assert.equal(api.getQuotaBadgeWindowMode(), '5h');
+    quotaBadge.trigger('click', { altKey: true, detail: 1 });
+    assert.equal(quotaPanel.hidden, true);
+    assert.equal(api.getQuotaBadgeWindowMode(), '5h');
+    quotaBadge.trigger('click', { detail: 0 });
+    assert.equal(quotaPanel.hidden, false);
+    assert.equal(api.getQuotaBadgeWindowMode(), '5h');
+    h.elements.get('close-quota').click();
+    assert.equal(savedPayloads.at(-1).quotaBadgeWindowMode, '5h');
+
+    // 5. ELV-93 顶栏等待状态改为纯 SVG 沙漏动效（去除 Wait Xs / 等待 Xs 文本抖动）
+    api.setSpeedEvaluationForTest({ phase: 'waiting', elapsedSec: 4 });
+    const spWait = api.getSpeedPanelStateForTest();
+    assert.equal(spWait.topSpeedPhase, 'waiting');
+    assert.equal(spWait.topWaitSvgVisible, true);
+    assert.equal(spWait.topSpeedText, '', '等待期顶栏不得显示每秒跳动文字');
+    assert.match(h.elements.get('badge-speed').title, /4s/);
+
+    api.setSpeedEvaluationForTest({
+      phase: 'final',
+      ttftSec: 0.7,
+      streamingSec: 2.0,
+      totalDurationSec: 2.7,
+      streamSpeed: 145.2,
+      overallTps: 108.0,
+      outputTokens: 290
+    });
+    const spDone = api.getSpeedPanelStateForTest();
+    assert.equal(spDone.topSpeedPhase, null);
+    assert.equal(spDone.topWaitSvgVisible, false);
+    assert.match(spDone.topSpeedText, /145\.2/);
+  } finally {
+    try { api.dispose(); } catch { }
+  }
+});
+
+test('多账号卡片配额展示回归: Pro/Free 账号不出现假 Carbon、Ultra 账号正常显示 Carbon 5h/7d、双窗口与单窗口格式对齐、过滤历史残留杂项池', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    const mockOverview = {
+      accounts: [
+        // 1. Pro 账号：Hydrogen 双窗口 (5h 0%, 7d 70%), Claude/3P 双窗口 (5h 100%, 7d 87%), Argon 单窗口 (7d 70%), Carbon 无权限 (noPermission: true),
+        // 且包含历史残留 shared_chat_23310 与 shared_gemini-25-pro 杂项池
+        {
+          email: 'pro-user@example.com',
+          isActive: true,
+          hasRefreshToken: true,
+          tierId: 'g1-pro-tier',
+          lastQuotaUpdatedAtMs: 1760000000000,
+          quotaSnapshot: {
+            pools: [
+              {
+                poolKey: 'shared_gemini_main',
+                title: 'Gemini 4 Hydrogen',
+                percentText: '0%',
+                buckets: [
+                  { bucketId: 'b5h', windowKey: '5h', windowShort: '5h', remainingFraction: 0, percentText: '0%' },
+                  { bucketId: 'b7d', windowKey: 'weekly', windowShort: '7d', remainingFraction: 0.70, percentText: '70%' }
+                ]
+              },
+              {
+                poolKey: 'shared_3p_pool',
+                title: 'Claude/3P',
+                percentText: '87%',
+                buckets: [
+                  { bucketId: 'b5h_3p', windowKey: '5h', windowShort: '5h', remainingFraction: 1.0, percentText: '100%' },
+                  { bucketId: 'b7d_3p', windowKey: 'weekly', windowShort: '7d', remainingFraction: 0.87, percentText: '87%' }
+                ]
+              },
+              {
+                poolKey: 'shared_gemini_argon',
+                title: 'Gemini 4 Argon',
+                percentText: '70%',
+                buckets: [
+                  { bucketId: 'barg', windowKey: 'weekly', windowShort: '7d', remainingFraction: 0.70, percentText: '70%' }
+                ]
+              },
+              {
+                poolKey: 'shared_gemini_carbon',
+                title: 'Gemini 4 Carbon',
+                noPermission: true,
+                remainingFraction: null,
+                percentText: '无权限',
+                buckets: []
+              },
+              {
+                poolKey: 'shared_chat_23310',
+                title: 'Internal Chat 23310',
+                remainingFraction: 1.0,
+                percentText: '100%',
+                buckets: []
+              },
+              {
+                poolKey: 'shared_gemini-25-pro',
+                title: 'Gemini 2.5 Pro',
+                remainingFraction: 1.0,
+                percentText: '100%',
+                buckets: []
+              }
+            ]
+          }
+        },
+        // 2. Free 账号：仅有 Hydrogen 单窗口 7d 100%，Carbon 无权限
+        {
+          email: 'free-user@example.com',
+          isActive: false,
+          hasRefreshToken: true,
+          tierId: 'free-tier',
+          lastQuotaUpdatedAtMs: 1760000000000,
+          quotaSnapshot: {
+            pools: [
+              {
+                poolKey: 'shared_gemini_main',
+                title: 'Gemini 4 Hydrogen',
+                percentText: '100%',
+                buckets: [
+                  { bucketId: 'bfree_7d', windowKey: 'weekly', windowShort: '7d', remainingFraction: 1.0, percentText: '100%' }
+                ]
+              },
+              {
+                poolKey: 'shared_gemini_carbon',
+                title: 'Gemini 4 Carbon',
+                noPermission: true,
+                remainingFraction: null,
+                percentText: '无权限',
+                buckets: []
+              }
+            ]
+          }
+        },
+        // 3. Ultra 账号：Carbon 具有真实可用权限且存在双窗口配额 (5h 100%, 7d 100%)
+        {
+          email: 'ultra-user@example.com',
+          isActive: false,
+          hasRefreshToken: true,
+          tierId: 'g1-ultra-tier',
+          lastQuotaUpdatedAtMs: 1760000000000,
+          quotaSnapshot: {
+            pools: [
+              {
+                poolKey: 'shared_gemini_main',
+                title: 'Gemini 4 Hydrogen',
+                percentText: '90%',
+                buckets: [
+                  { bucketId: 'u_5h', windowKey: '5h', windowShort: '5h', remainingFraction: 0.90, percentText: '90%' },
+                  { bucketId: 'u_7d', windowKey: 'weekly', windowShort: '7d', remainingFraction: 0.95, percentText: '95%' }
+                ]
+              },
+              {
+                poolKey: 'shared_gemini_carbon',
+                title: 'Gemini 4 Carbon',
+                noPermission: false,
+                remainingFraction: 1.0,
+                percentText: '100%',
+                buckets: [
+                  { bucketId: 'c_5h', windowKey: '5h', windowShort: '5h', remainingFraction: 1.0, percentText: '100%' },
+                  { bucketId: 'c_7d', windowKey: 'weekly', windowShort: '7d', remainingFraction: 1.0, percentText: '100%' }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    };
+
+    api.setAccountsOverviewForTest(mockOverview);
+    const listEl = h.elements.get('quota-accounts-list');
+    assert.equal(listEl.children.length, 3);
+
+    // 1) 验证 Pro 账号卡片
+    const proCard = listEl.children[0];
+    const proMeta = proCard.children.find(c => c.className === 'quota-acct-meta');
+    assert.ok(proMeta, 'Pro 卡片应有 meta 摘要行');
+    const proText = proMeta.textContent;
+    // 验证双窗口与单窗口格式
+    assert.match(proText, /Gemini \(Neon\/Hydrogen\): 5h 0% \/ 7d 70%/);
+    assert.match(proText, /Claude\/3P: 5h 100% \/ 7d 87%/);
+    assert.match(proText, /Argon: 7d 70%/);
+    // 严禁出现假 Carbon（shared_chat_23310 或 gemini-2.5-pro 绝不能变成 Carbon）
+    assert.doesNotMatch(proText, /Carbon: 100%/);
+    // Pro 用户无 Carbon 权限，Carbon 应直接隐藏，不显示 "Carbon: 无模型权限"
+    assert.doesNotMatch(proText, /Carbon/);
+    assert.doesNotMatch(proText, /chat_23310/);
+    assert.doesNotMatch(proText, /gemini-25-pro/);
+
+    // 2) 验证 Free 账号卡片
+    const freeCard = listEl.children[1];
+    const freeMeta = freeCard.children.find(c => c.className === 'quota-acct-meta');
+    assert.ok(freeMeta);
+    const freeText = freeMeta.textContent;
+    assert.match(freeText, /Gemini \(Neon\/Hydrogen\): 7d 100%/);
+    assert.doesNotMatch(freeText, /Carbon/);
+
+    // 3) 验证 Ultra 账号卡片
+    const ultraCard = listEl.children[2];
+    const ultraMeta = ultraCard.children.find(c => c.className === 'quota-acct-meta');
+    assert.ok(ultraMeta);
+    const ultraText = ultraMeta.textContent;
+    assert.match(ultraText, /Gemini \(Neon\/Hydrogen\): 5h 90% \/ 7d 95%/);
+    assert.match(ultraText, /Carbon: 5h 100% \/ 7d 100%/);
+  } finally {
+    try { api.dispose(); } catch { }
+  }
+});
+
+test('Issue #49: 套餐规格与 5x/20x 子档覆盖下拉选择、立即保存及三端 UI 同步展示', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  let savedSettingsPayload = null;
+  h.sandbox.window.contextMeterAPI.saveSettings = async (payload) => {
+    savedSettingsPayload = payload;
+    return { ok: true, customPlan: payload.customPlan };
+  };
+
+  try {
+    const mockPlan = {
+      status: 'identified',
+      tierKey: 'ultra',
+      tierName: 'Google AI Ultra',
+      email: 'ultra-user@example.com'
+    };
+    api.applyTokenHistoryPayload({
+      planStatus: mockPlan,
+      rawPlanStatus: mockPlan,
+      dailyMap: {}
+    });
+
+    // 1. 验证存在紫光风格下拉选择器包裹容器与 trigger
+    const wrap = h.elements.get('direct-tier-wrap');
+    assert.ok(wrap, '必须渲染 direct-tier-wrap 下拉包裹器');
+    const labelEl = h.elements.get('direct-tier-label');
+    assert.ok(labelEl, '必须渲染 direct-tier-label');
+
+    // 2. 选择 Google AI Ultra (5x) 并触发 change
+    const sel = h.elements.get('direct-tier-select');
+    assert.ok(sel, '必须存在原生 direct-tier-select');
+    sel.value = 'ultra_5x';
+    sel.trigger('change', { target: { value: 'ultra_5x' } });
+
+    // 3. 验证触发了 saveSettings 保存，且 customPlan 包含 planTierOverride
+    assert.ok(savedSettingsPayload, '必须调用 saveSettings');
+    assert.equal(savedSettingsPayload.customPlan.planTierOverride, 'ultra_5x');
+
+    // 4. 验证 Token 面板订阅摘要条展示带子档套餐名
+    const sumTxt = h.elements.get('plan-summary-text');
+    assert.match(sumTxt.textContent, /Google AI Ultra 5x/);
+
+    // 5. 验证额度面板顶部套餐胶囊展示带子档套餐名
+    const quotaPill = h.elements.get('quota-plan-tier-pill');
+    assert.equal(quotaPill.hidden, false);
+    assert.equal(quotaPill.textContent, 'Google AI Ultra 5x');
+
+    // 6. 验证多账号列表展示带子档套餐名
+    const mockOverview = {
+      accounts: [
+        {
+          email: 'ultra-user@example.com',
+          isActive: true,
+          hasRefreshToken: true,
+          tierId: 'g1-ultra-tier',
+          quotaSnapshot: { pools: [] }
+        }
+      ]
+    };
+    api.setAccountsOverviewForTest(mockOverview);
+    const listEl = h.elements.get('quota-accounts-list');
+    assert.ok(listEl.children.length > 0);
+    const acctEmail = listEl.children[0].children.find(c => c.className === 'quota-subcard-row')?.children?.find(c => c.className === 'quota-acct-email');
+    assert.ok(acctEmail);
+    assert.match(acctEmail.textContent, /ultra-user@example\.com · Google AI Ultra 5x/);
+
+    // 7. 验证切换英文 en 模式下，全 DOM 零汉字门禁通过
+    await api.setPanelLanguage('en', { persist: false });
+    assert.doesNotMatch(labelEl.textContent, /[\u4e00-\u9fff]/);
+    assert.doesNotMatch(sumTxt.textContent, /[\u4e00-\u9fff]/);
+  } finally {
+    try { api.dispose(); } catch { }
+  }
+});
+
+test('Issue #54 & Issue #59: 顶栏内联锚定打开 IDE 左侧、右侧辅助栏开关零飞移、Customizations 避让与 4 额度窗口即时重算刷新', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+
+  // 1. 模拟会话标题栏 DOM 结构：左侧标题，右侧按钮组（包含打开 IDE 与三个点按钮）
+  const openIdeBtn = { textContent: 'Open IDE', getBoundingClientRect: () => ({ top: 10, left: 800, right: 880, width: 80 }) };
+  const moreBtn = { textContent: '...', getBoundingClientRect: () => ({ top: 10, left: 884, right: 914, width: 30 }) };
+  const rightGroup = {
+    className: 'shrink-0 flex items-center',
+    children: [openIdeBtn, moreBtn],
+    get firstChild() { return this.children[0]; },
+    get firstElementChild() { return this.children[0]; },
+    appendChild(n) { this.children.push(n); n.parentElement = this; },
+    insertBefore(n, ref) {
+      const existingIdx = this.children.indexOf(n);
+      if (existingIdx >= 0) this.children.splice(existingIdx, 1);
+      const idx = this.children.indexOf(ref);
+      if (idx >= 0) this.children.splice(idx, 0, n);
+      else this.children.unshift(n);
+      n.parentElement = this;
+    },
+    getBoundingClientRect: () => ({ top: 10, left: 800, right: 920, width: 120 })
+  };
+  const titlebarEl = {
+    className: 'flex items-center justify-between @container/titlebar',
+    firstElementChild: { scrollWidth: 140, firstElementChild: { getBoundingClientRect: () => ({ left: 20 }) } },
+    lastElementChild: rightGroup,
+    querySelector(sel) { return sel.includes('shrink-0') ? rightGroup : null; },
+    contains(n) { return rightGroup.children.includes(n) || n.parentElement === rightGroup; },
+    getBoundingClientRect: () => ({ top: 10, left: 0, right: 1200, width: 1200 })
+  };
+
+  h.sandbox.document.querySelector = (sel) => {
+    if (sel.includes('@container/titlebar')) return titlebarEl;
+    if (sel.includes('toggle-aux-sidebar')) return { click() { } };
+    return null;
+  };
+
+  api.setDockPosition('flow');
+  const pos = api.getDockPosition();
+  assert.equal(pos.dockPosition, 'flow');
+  assert.equal(pos.actualDock, 'flow');
+
+  // 断言宿主挂在右侧组最前面，即处于“打开 IDE”与“三个点”按钮左侧，同一水平线上
+  const activeHost = h.sandbox.__AGContextMeterActiveHost;
+  assert.ok(activeHost);
+  assert.equal(activeHost.parentElement, rightGroup);
+  assert.equal(rightGroup.children[0], activeHost, '顶栏组件必须作为 targetContainer.firstChild 锚定在打开 IDE 左侧');
+  assert.equal(rightGroup.children[1], openIdeBtn);
+
+  // 2. 开关右侧辅助面板（模拟 DOM 发生变动且尺寸改变），宿主依然稳固锚定在打开 IDE 左侧，严禁飞到 fixed 或 top: 6px
+  for (let i = 0; i < 3; i++) {
+    api.setDockPosition('flow');
+    assert.equal(api.getDockPosition().actualDock, 'flow', '开关辅助栏期间 actualDock 始终为 flow 零飞移');
+    assert.equal(activeHost.style.top, '', '严禁设置 top: 6px');
+    assert.equal(activeHost.style.right, '', '严禁设置 fixed right 偏移动态乱飞');
+  }
+
+  // 3. 适配 Antigravity 2.33 的 Customizations 自定义扩展等非会话全屏子视图顶栏避让 (Issue #59)
+  if (!h.sandbox.document.head) {
+    h.sandbox.document.head = h.sandbox.document.createElement();
+  }
+  h.sandbox.navigator = { platform: 'Win32' };
+  h.sandbox.window.innerWidth = 1200;
+  h.sandbox.window.outerWidth = 1200;
+  titlebarEl.getBoundingClientRect = () => ({ top: 10, left: 0, right: 1200, width: 1200, height: 40 });
+  let inCustomizationView = true;
+  const backBtn = { getBoundingClientRect: () => ({ top: 10, left: 8, right: 36, width: 28, height: 28 }) };
+  h.sandbox.document.querySelector = (sel) => {
+    if (inCustomizationView && (sel.includes('customization') || sel.includes('Back'))) {
+      return backBtn;
+    }
+    if (sel.includes('@container/titlebar')) return titlebarEl;
+    return null;
+  };
+
+  // 触发布局测量，在 Customizations 视图下自动预留原生返回与搜索空间，绝不遮挡原生按钮
+  h.sandbox.__AGContextMeter.syncWindowControlsOverlayForTest?.();
+  const styleFix = h.sandbox.document.getElementById('ag-topbar-host-fix');
+  assert.ok(styleFix, '必须注入避让样式表');
+  assert.match(styleFix.textContent, /#ag-context-meter[\s\S]*-webkit-app-region:\s*no-drag/);
+
+  // 4. 自动化 DOM 测试逐一点按 4 个额度窗口按钮立即从 buckets 重算 5h 与 7d 数值并当场刷新 #badge-quota
+  const nowTs = Date.now();
+  api.setQuotaSnapshotForTest({
+    snapshot: {
+      fetchedAtMs: nowTs,
+      activeStatus: 'available',
+      pools: [{
+        poolKey: 'shared_gemini_main',
+        title: 'Gemini 模型',
+        buckets: [
+          { bucketId: 'b5h', windowKey: '5h', windowShort: '5h', remainingFraction: 0.85, percentText: '85%' },
+          { bucketId: 'b7d', windowKey: 'weekly', windowShort: '7d', remainingFraction: 0.42, percentText: '42%' }
+        ]
+      }]
+    }
+  }, nowTs);
+
+  const segQuota = h.elements.get('quota-mode-segmented');
+  const clickQuotaMode = (mode) => {
+    segQuota.trigger('click', {
+      target: {
+        closest: (sel) => ({ getAttribute: (k) => (k === 'data-quota-window-mode' ? mode : null) })
+      }
+    });
+  };
+
+  // a) 点按 5h 窗口
+  clickQuotaMode('5h');
+  assert.equal(h.elements.get('quota-badge-val').textContent, '85%', '点按 5h 按钮后 #badge-quota 文本即时变化为 85%');
+  assert.equal(h.elements.get('quota-badge-tag').textContent, '5h');
+
+  // b) 点按周额度
+  clickQuotaMode('weekly');
+  assert.equal(h.elements.get('quota-badge-val').textContent, '42%', '点按周额度按钮后 #badge-quota 文本即时变化为 42%');
+  assert.equal(h.elements.get('quota-badge-tag').textContent, '7d');
+
+  // c) 点按 5h+周双显
+  clickQuotaMode('both');
+  assert.equal(h.elements.get('quota-badge-dual').hidden, false, '点按双显按钮后双显行立即展示');
+  assert.equal(h.elements.get('quota-badge-dual').children[0].textContent, '5h 85%');
+  assert.equal(h.elements.get('quota-badge-dual').children[1].textContent, '7d 42%');
+
+  // d) 点按自动（最紧缩）
+  clickQuotaMode('auto');
+  assert.equal(h.elements.get('quota-badge-dual').hidden, true);
+  assert.equal(h.elements.get('quota-badge-val').textContent, '42%', '点按自动按钮立即根据 buckets 选出最紧缩 42%');
+});
+
+test('桌面端四种停靠形态与隐藏顶栏开关: 常态、缩略、右侧辅助面板、独立页面，旧偏好安全兼容', async () => {
+  const extraSandbox = {
+    localStorage: {
+      _store: new Map([['ag_dock_position', 'hide']]),
+      getItem(k) { return this._store.get(k) || null; },
+      setItem(k, v) { this._store.set(k, String(v)); },
+      removeItem(k) { this._store.delete(k); }
+    }
+  };
+  const h = harness(undefined, extraSandbox);
+  const api = h.sandbox.__AGContextMeter;
+
+  try {
+    // 1. 初始化时历史配置 hide 自动兼容规范为 flow
+    assert.equal(api.getDockPosition().dockPosition, 'flow', '本地历史写入 hide 时初始化自动兼容为 flow');
+    assert.equal(api.getDockPosition().actualDock, 'flow', '实际挂载保持为顶栏默认显示');
+
+    // 2. 四种合法形态切换
+    api.setDockPosition('compact');
+    assert.equal(api.getDockPosition().dockPosition, 'compact', '支持切换为缩略形态');
+
+    api.setDockPosition('aux');
+    assert.equal(api.getDockPosition().dockPosition, 'aux', '支持切换为右侧辅助面板');
+
+    api.setDockPosition('page');
+    assert.equal(api.getDockPosition().dockPosition, 'page', '支持切换为独立页面');
+
+    api.setDockPosition('flow');
+    assert.equal(api.getDockPosition().dockPosition, 'flow', '支持切换为常态');
+
+    // 3. 静态模板门禁: 验证 template.html 存在四形态按钮与隐藏开关
+    const templatePath = path.resolve(__dirname, 'src/renderer/template.html');
+    const templateHtml = fs.readFileSync(templatePath, 'utf8');
+    assert.ok(templateHtml.includes('id="btn-dock-flow"'), '必须包含常态按钮 btn-dock-flow');
+    assert.ok(templateHtml.includes('id="btn-dock-compact"'), '必须包含缩略按钮 btn-dock-compact');
+    assert.ok(templateHtml.includes('id="btn-dock-aux"'), '必须包含右侧辅助面板按钮 btn-dock-aux');
+    assert.ok(templateHtml.includes('id="btn-dock-page"'), '必须包含独立页面按钮 btn-dock-page');
+    assert.ok(templateHtml.includes('id="chk-hide-topbar"'), '必须包含隐藏顶栏开关 chk-hide-topbar');
+    assert.ok(templateHtml.includes('id="badge-dock-wake"'), '必须保留边缘轻量唤醒按钮 badge-dock-wake');
+  } finally {
+    try { api.dispose(); } catch { }
+  }
+});
+
+test('弹窗顶栏布局回迁: 简繁EN语言切换、GitHub入口与检查更新按钮紧凑并排且点击可用, 配置页无重复区块', async () => {
+  let openedUrl = null;
+  let checkedUpdateOpts = null;
+  const h = harness();
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    openExternal: url => { openedUrl = url; },
+    checkUpdate: opts => {
+      checkedUpdateOpts = opts;
+      return {
+        hasUpdate: true,
+        version: '0.8.9-beta.1',
+        tagName: 'v0.8.9-beta.1',
+        releaseNotes: '新特性说明',
+        htmlUrl: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.8.9-beta.1'
+      };
+    }
+  };
+  const api = h.sandbox.__AGContextMeter;
+
+  try {
+    // 1. 结构与位置断言：读取 template.html 验证 #panel 标题栏容器包含回迁的组件
+    const templatePath = path.resolve(__dirname, 'src/renderer/template.html');
+    const templateHtml = fs.readFileSync(templatePath, 'utf8');
+    const panelHeaderMatch = templateHtml.match(/<section id="panel"[\s\S]*?<div id="view-context">/);
+    assert.ok(panelHeaderMatch, '必须存在 #panel 顶部区域');
+    const headerHtml = panelHeaderMatch[0];
+
+    assert.ok(headerHtml.includes('id="panel-lang-top-segmented"'), '顶栏必须包含三语言分段按钮');
+    assert.ok(headerHtml.includes('id="btn-top-lang-zh-CN"'), '顶栏必须包含简中按钮');
+    assert.ok(headerHtml.includes('id="btn-top-lang-zh-TW"'), '顶栏必须包含繁中按钮');
+    assert.ok(headerHtml.includes('id="btn-top-lang-en"'), '顶栏必须包含EN按钮');
+    assert.ok(headerHtml.includes('id="btn-github-repo"'), '顶栏必须包含 GitHub 按钮');
+    assert.ok(headerHtml.includes('id="btn-check-update"'), '顶栏必须包含检查更新按钮');
+    assert.ok(headerHtml.includes('id="theme-toggle"'), '顶栏必须包含主题切换按钮');
+    assert.ok(headerHtml.includes('id="close"'), '顶栏必须包含关闭按钮');
+
+    // 2. 配置页清理断言：配置页内不得存在重复的语言分段按钮和重复的 GitHub/更新按钮
+    const settingsPaneMatch = templateHtml.match(/<div id="pane-ctx-settings"[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/);
+    assert.ok(settingsPaneMatch, '必须存在配置页容器');
+    const settingsHtml = settingsPaneMatch[0];
+    assert.equal(settingsHtml.includes('id="panel-lang-top-segmented"'), false, '配置页内不得残留重复的语言分段按钮');
+    assert.equal(settingsHtml.includes('id="btn-top-lang-zh-CN"'), false, '配置页内不得残留重复简中按钮');
+    assert.equal(settingsHtml.includes('id="btn-check-update"'), false, '配置页卡片内不得残留重复检查更新按钮');
+    assert.equal(settingsHtml.includes('id="btn-github-repo"'), false, '配置页卡片内不得残留重复 GitHub 按钮');
+
+    // 3. 点击可用性验证：点击 GitHub 入口
+    const btnGithub = h.elements.get('btn-github-repo');
+    assert.ok(btnGithub, 'DOM 中必须解析出 btn-github-repo');
+    btnGithub.click();
+    assert.equal(openedUrl, 'https://github.com/elviscjn-cjn/antigravity-context-viewer');
+
+    // 4. 点击可用性验证：点击检查更新入口
+    const btnUpdate = h.elements.get('btn-check-update');
+    assert.ok(btnUpdate, 'DOM 中必须解析出 btn-check-update');
+    btnUpdate.click();
+    await h.flush();
+    assert.ok(checkedUpdateOpts, '点击检查更新必须触发更新检查逻辑');
+    assert.equal(checkedUpdateOpts.force, true);
+
+    // 5. 点击可用性验证：语言切换简 繁 EN
+    const btnEn = h.elements.get('btn-top-lang-en');
+    const btnTw = h.elements.get('btn-top-lang-zh-TW');
+    const btnCn = h.elements.get('btn-top-lang-zh-CN');
+    assert.ok(btnEn && btnTw && btnCn, 'DOM 中必须解析出三语言切换按钮');
+
+    btnEn.click();
+    await h.flush();
+    assert.equal(api.getPanelLanguage(), 'en');
+
+    btnTw.click();
+    await h.flush();
+    assert.equal(api.getPanelLanguage(), 'zh-TW');
+
+    btnCn.click();
+    await h.flush();
+    assert.equal(api.getPanelLanguage(), 'zh-CN');
+  } finally {
+    try { api.dispose(); } catch { }
+  }
+});
+test('Split Windows route: picks the focused conversation from /c/<id1>%2B<id2>?focused=<id>', () => {
+  const A = '11111111-1111-1111-1111-111111111111';
+  const B = '22222222-2222-2222-2222-222222222222';
+  const C = '33333333-3333-3333-3333-333333333333';
+  const h = harness();
+  assert.equal(h.sandbox.__AGContextMeter.snapshot().route, A);
+  h.sandbox.location.pathname = `/c/${A}%2B${B}`;
+  h.sandbox.location.search = `?project=outside-of-project&focused=${B}`;
+  h.tick();
+  assert.equal(h.sandbox.__AGContextMeter.snapshot().route, B);
+  h.sandbox.location.pathname = `/c/${A}%2B${B}%2B${C}`;
+  h.sandbox.location.search = `?focused=${C}`;
+  h.tick();
+  assert.equal(h.sandbox.__AGContextMeter.snapshot().route, C);
+  h.sandbox.location.search = '';
+  h.tick();
+  assert.equal(h.sandbox.__AGContextMeter.snapshot().route, A, 'falls back to the first pane without focused');
+  h.sandbox.location.search = '?focused=44444444-4444-4444-4444-444444444444';
+  h.tick();
+  assert.equal(h.sandbox.__AGContextMeter.snapshot().route, A, 'ignores a focused id that is not in the path');
+  h.sandbox.location.pathname = '/c/not-a-uuid';
+  h.tick();
+  assert.equal(h.sandbox.__AGContextMeter.snapshot().route, null);
+  h.sandbox.__AGContextMeter.dispose();
+});
+
+
+test('multi-pane Split Right / Split Down: route focus follow, 0ms cache hot-switch without closing panel, and blank _new fallback', async () => {
+  const [A, B, C, D] = [1, 2, 3, 4].map(n => `${String(n).repeat(8)}-${String(n).repeat(4)}-${String(n).repeat(4)}-${String(n).repeat(4)}-${String(n).repeat(12)}`);
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const settleLatest = async (tokens, stepCount = 1) => {
+    const row = { chatModel: { usage: { inputTokens: tokens }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } };
+    h.pending[h.pending.length - 1].resolve({
+      ok: true,
+      json: async () => ({ generatorMetadata: Array.from({ length: stepCount }, () => row) })
+    });
+    h.finishScan(h.scans.length - 1);
+    await h.flush();
+  };
+  const nav = (pathname, search = '') => { h.sandbox.location.pathname = pathname; h.sandbox.location.search = search; h.tick(); };
+  try {
+    let sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.activeRoute, A);
+    assert.equal(sc.scopeBarHidden, true);
+    assert.equal(sc.badgeScopeTagHidden, true);
+    assert.equal(sc.keyScopeChipHidden, true);
+
+    h.elements.get('panel').hidden = false;
+    await settleLatest(46100, 5);
+    assert.equal(api.snapshot().latest.actual, 46100);
+
+    nav(`/c/${A}%2B${B}`, `?project=outside-of-project&focused=${A}`);
+    sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.activeRoute, A);
+    assert.equal(sc.scopeBarHidden, false);
+    assert.equal(sc.badgeScopeTagHidden, false);
+    assert.equal(sc.badgeScopeTag, '1/2');
+    assert.equal(sc.keyScopeChip, '窗格 1');
+    assert.equal(sc.followLabel, '跟随焦点');
+    assert.deepEqual(Array.from(sc.pills, p => p.selected), [true, false]);
+
+    const pendingBeforeSwitch = h.pending.length;
+    nav(`/c/${A}%2B${B}`, `?project=outside-of-project&focused=${B}`);
+    assert.equal(h.elements.get('panel').hidden, false, '同屏分屏切窗格时不应强行关闭已展开的面板');
+    sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.activeRoute, B);
+    assert.equal(sc.badgeScopeTag, '2/2');
+    assert.equal(sc.keyScopeChip, '窗格 2');
+    assert.equal(sc.pills[1].selected, true);
+    assert.ok(sc.cachedRoutes.includes(A));
+    assert.ok(h.pending.length > pendingBeforeSwitch);
+
+    await settleLatest(128400);
+    assert.equal(api.snapshot().latest.actual, 128400);
+
+    const pendingBeforeBack = h.pending.length;
+    nav(`/c/${A}%2B${B}`, `?project=outside-of-project&focused=${A}`);
+    assert.equal(api.snapshot().latest.actual, 46100, '同屏回切应立即命中会话快照缓存（零闪烁）');
+    assert.notEqual(h.elements.get('files').children[0]?.textContent, '暂无附件', '回切首帧应直接还原缓存附件列表而非暂无附件');
+    assert.equal(h.elements.get('panel').hidden, false);
+    assert.ok(h.pending.length > pendingBeforeBack);
+
+    // 模拟切走期间窗格 1 消息被撤回/回滚（步数从 5 缩至 1）：首轮增量 offset=2 返回空时自动作废旧缓存并从 offset=0 重拉
+    const catchupReq = h.pending[h.pending.length - 1];
+    assert.equal(JSON.parse(catchupReq.options.body).generatorMetadataOffset, 2);
+    catchupReq.resolve({ ok: true, json: async () => ({ generatorMetadata: [] }) });
+    await h.flush();
+    const retryFromZeroReq = h.pending[h.pending.length - 1];
+    assert.equal(JSON.parse(retryFromZeroReq.options.body).generatorMetadataOffset, 0);
+    retryFromZeroReq.resolve({ ok: true, json: async () => ({ generatorMetadata: [{ chatModel: { usage: { inputTokens: 12300 }, modelDisplayName: 'Gemini 4 Neon', chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } }] }) });
+    await h.flush();
+    assert.equal(api.snapshot().latest.actual, 12300);
+    assert.equal(api.snapshot().count, 1);
+
+    nav(`/c/${A}%2B${B}%2B${C}`, `?focused=${C}`);
+    sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.activeRoute, C);
+    assert.equal(sc.badgeScopeTag, '3/3');
+    assert.equal(sc.pills.length, 3);
+
+    nav(`/c/${A}%2B${B}%2B${C}`, '?focused=99999999-9999-9999-9999-999999999999');
+    assert.equal(api.getConversationScopeStateForTest().activeRoute, A);
+
+    nav(`/c/${A}%2B_new`, '?focused=_new');
+    assert.equal(api.getConversationScopeStateForTest().activeRoute, A);
+
+    h.elements.get('panel').hidden = false;
+    nav(`/c/${D}`);
+    assert.equal(h.elements.get('panel').hidden, true);
+    assert.equal(api.getConversationScopeStateForTest().scopeBarHidden, true);
+  } finally {
+    try { api.dispose(); } catch { }
+  }
+});
+
+test('Side Chat / Side Question read-only view switcher, auto-resume follow, 3-locale i18n, and top-rightmost titlebar docking', async () => {
+  const A = '11111111-1111-1111-1111-111111111111';
+  const B = '22222222-2222-2222-2222-222222222222';
+  const S = '9a41c80b-77e2-4f10-81ad-3b20e91c4f02';
+  const S2 = '7c63e02d-55c0-4d31-83cf-5d42013e6f24';
+  const Q = '8b52d91c-66d1-4e20-92be-4c31f02d5e13';
+
+  const makeMockTitlebar = (id, rect) => ({
+    id, isConnected: true, children: [], getBoundingClientRect: () => rect,
+    appendChild(c) { if (c) { c.parentElement = this; this.children.push(c); } },
+    insertBefore(c) { if (c) { c.parentElement = this; this.children.unshift(c); } },
+    contains(c) { return this.children.includes(c); }
+  });
+  const tbLeft = makeMockTitlebar('tb-left', { top: 0, left: 0, right: 600, width: 600, height: 40 });
+  const tbTopRight = makeMockTitlebar('tb-top-right', { top: 0, left: 600, right: 1200, width: 600, height: 40 });
+  const tbBottomRight = makeMockTitlebar('tb-bottom-right', { top: 420, left: 600, right: 1200, width: 600, height: 40 });
+  let mockDomTabNodes = [];
+
+  const h = harness(session(), {
+    document: {
+      createElement: () => null, getElementById: () => null, documentElement: { appendChild() { } },
+      addEventListener() { }, removeEventListener() { }, hidden: false,
+      querySelectorAll: (sel) => sel === '[class*="@container/titlebar"]'
+        ? [tbLeft, tbBottomRight, tbTopRight]
+        : (sel === '[data-tab-id]' ? mockDomTabNodes : []),
+      querySelector: (sel) => (sel === '[class*="@container/titlebar"]' ? tbLeft : null)
+    }
+  });
+  const api = h.sandbox.__AGContextMeter;
+  const settleLatest = async (tokens) => {
+    h.pending[h.pending.length - 1].resolve(response({ usage: { inputTokens: tokens }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } }));
+    h.finishScan(h.scans.length - 1);
+    await h.flush();
+  };
+  try {
+    assert.equal(api.findHostTitlebarForTest(), tbTopRight);
+
+    h.elements.get('panel').hidden = false;
+    await settleLatest(52000);
+
+    const origPathname = `/c/${A}`;
+    const origSearch = `?project=demo&tab=subagent_convo__${S}`;
+    h.sandbox.location.pathname = origPathname;
+    h.sandbox.location.search = origSearch;
+    h.tick();
+
+    let sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.activeRoute, A);
+    assert.equal(sc.isFollowingFocus, true);
+    assert.equal(sc.scopeBarHidden, false);
+    assert.equal(sc.badgeScopeTag, '+支线');
+    assert.deepEqual(Array.from(sc.pills, p => p.label), ['主对话', 'Side Chat']);
+
+    const pendingBeforeSide = h.pending.length;
+    h.elements.get('ctx-scope-pills').children[1].click();
+    assert.equal(h.sandbox.location.pathname, origPathname, '点击胶囊绝不能篡改宿主主对话路径');
+    assert.equal(h.sandbox.location.search, origSearch, '点击胶囊绝不能篡改宿主查询参数');
+    assert.equal(h.elements.get('panel').hidden, false);
+
+    sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.activeRoute, S);
+    assert.equal(sc.pinnedViewRoute, S);
+    assert.equal(sc.isFollowingFocus, false);
+    assert.equal(sc.badgeScopeTag, '支线');
+    assert.equal(sc.badgeScopeLocked, 'true');
+    assert.equal(sc.followAttr, 'false');
+    assert.equal(sc.followLabel, '恢复跟随');
+    assert.equal(sc.keyScopeChip, 'Side Chat');
+    assert.ok(h.pending.length > pendingBeforeSide);
+    assert.equal(JSON.parse(h.pending[h.pending.length - 1].options.body).cascadeId, S);
+
+    await api.setPanelLanguage('en', { persist: false });
+    sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.badgeScopeTag, 'Side');
+    assert.equal(sc.followLabel, 'Follow Focus');
+    assert.deepEqual(Array.from(sc.pills, p => p.label), ['Main', 'Side Chat']);
+    assert.doesNotMatch(`${sc.badgeScopeTag}${sc.followLabel}${sc.pills.map(p => p.label).join('')}`, /[\u4e00-\u9fff]/);
+
+    await api.setPanelLanguage('zh-TW', { persist: false });
+    sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.badgeScopeTag, '支線');
+    assert.equal(sc.followLabel, '恢復跟隨');
+    assert.equal(sc.pills[0].label, '主對話');
+
+    await api.setPanelLanguage('zh-CN', { persist: false });
+    h.elements.get('btn-ctx-scope-follow').click();
+    sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.activeRoute, A);
+    assert.equal(sc.isFollowingFocus, true);
+    assert.equal(sc.badgeScopeTag, '+支线');
+    assert.equal(api.snapshot().latest.actual, 52000);
+
+    h.sandbox.location.search = `?tab=side_question__${Q}`;
+    h.tick();
+    assert.equal(api.getConversationScopeStateForTest().pills[1].label, '支线问答');
+    api.selectConversationScopeForTest(Q);
+    assert.equal(api.getConversationScopeStateForTest().activeRoute, Q);
+
+    h.sandbox.location.search = '';
+    h.tick();
+    sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.activeRoute, A);
+    assert.equal(sc.pinnedViewRoute, null);
+    assert.equal(sc.scopeBarHidden, true);
+
+    let activeDomSideId = S;
+    const makeMockSideTab = (sid, title) => ({
+      get className() { return activeDomSideId === sid ? 'bg-secondary text-foreground' : 'bg-transparent text-secondary-foreground'; },
+      getAttribute: k => (k === 'data-tab-id' ? `subagent_convo__${sid}` : (k === 'title' ? title : null)),
+      textContent: title
+    });
+    mockDomTabNodes = [makeMockSideTab(S, 'Side Chat · Debug API'), makeMockSideTab(S2, 'Side Chat · Review Diff')];
+    h.tick();
+    sc = api.getConversationScopeStateForTest();
+    assert.equal(sc.scopeBarHidden, false);
+    assert.deepEqual(Array.from(sc.pills, p => p.label), ['主对话', 'Side Chat 1', 'Side Chat 2']);
+
+    api.selectConversationScopeForTest(S);
+    assert.equal(api.getConversationScopeStateForTest().activeRoute, S);
+    await settleLatest(18200);
+    assert.equal(api.snapshot().latest.actual, 18200);
+
+    activeDomSideId = S2;
+    h.sandbox.location.search = `?tab=subagent_convo__${S2}`;
+    h.tick();
+    sc = api.getConversationScopeStateForTest();
+    assert.deepEqual(Array.from(sc.pills).slice(1).map(p => `${p.label}:${p.id}`), [`Side Chat 1:${S}`, `Side Chat 2:${S2}`]);
+    assert.equal(sc.activeRoute, S2);
+    await settleLatest(33400);
+    assert.equal(api.snapshot().latest.actual, 33400);
+
+    activeDomSideId = S;
+    h.sandbox.location.search = '';
+    h.tick();
+    assert.equal(api.getConversationScopeStateForTest().activeRoute, S);
+    assert.equal(api.snapshot().latest.actual, 18200);
+
+    mockDomTabNodes = [];
+    h.tick();
+    assert.equal(api.getConversationScopeStateForTest().activeRoute, A);
+    assert.equal(api.getConversationScopeStateForTest().scopeBarHidden, true);
+
+    h.sandbox.location.pathname = `/c/${A}%2B${B}`;
+    h.sandbox.location.search = `?focused=${A}`;
+    h.tick();
+    api.selectConversationScopeForTest(B);
+    assert.equal(api.getConversationScopeStateForTest().isFollowingFocus, false);
+    assert.equal(api.getConversationScopeStateForTest().activeRoute, B);
+    h.sandbox.location.search = `?focused=${B}`;
+    h.tick();
+    assert.equal(api.getConversationScopeStateForTest().isFollowingFocus, true);
+    h.sandbox.location.search = `?focused=${A}`;
+    h.tick();
+    assert.equal(api.getConversationScopeStateForTest().activeRoute, A);
+    assert.equal(api.getConversationScopeStateForTest().isFollowingFocus, true);
+  } finally {
+    try { api.dispose(); } catch { }
+  }
+});
+
+test('/compact 端到端闭环：压缩中稳态提示、完成后强制重扫回落圆环、轮询防倒灌、三语切换与新消息无缝恢复实测', async () => {
+  let nowMs = 1763500000000;
+  class MockDate extends Date {
+    constructor(...args) {
+      super(...(args.length ? args : [nowMs]));
+    }
+    static now() {
+      return nowMs;
+    }
+  }
+  const cascadeId = '11111111-1111-1111-1111-111111111111';
+  const h = harness(session(), { Date: MockDate });
+  const api = h.sandbox.__AGContextMeter;
+  h.sandbox.window.contextMeterAPI.scan = (id, force = false) =>
+    new Promise(resolve => h.scans.push({ id, force, resolve }));
+
+  try {
+    // 1. 初始压缩前 80% 偏高状态（204,800 / 256,000）
+    const preSession = {
+      ...session(),
+      total: { chars: 480000, low: 150000, high: 210000 },
+      steps: 3,
+      userMessages: 1,
+      assistantMessages: 1,
+      lastModelStepAt: 1,
+      checkpointCount: 0,
+      lastCheckpointIndex: -1
+    };
+    const preTurnRow = {
+      stepIndices: [1],
+      chatModel: {
+        model: 'MODEL_GOOGLE_GEMINI_4_HYDROGEN_HIGH',
+        modelDisplayName: 'Gemini 4 Hydrogen (High)',
+        usage: { inputTokens: 202800, outputTokens: 2000 },
+        timeToFirstToken: '1.0s',
+        streamingDuration: '4.0s',
+        chatStartMetadata: {
+          startStepIndex: 1,
+          contextWindowMetadata: { estimatedTokensUsed: 202000, maxContextTokens: 256000 }
+        }
+      }
+    };
+    h.scans[0].resolve({ ok: true, data: { session: preSession, scannedAt: nowMs, generatorCount: 1, latest: null } });
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: [preTurnRow] }) });
+    await h.flush();
+
+    assert.equal(h.host.getAttribute('data-occupancy'), 'warn');
+    assert.equal(h.elements.get('ring-fill').getAttribute('data-ring-state'), 'determinate');
+    const preArcDash = h.elements.get('ring-fill').getAttribute('stroke-dasharray');
+    assert.equal(h.elements.get('amount').textContent, '204.8K (80%)');
+    assert.equal(h.elements.get('key-badge').textContent, '偏高');
+    const preSpeedTxt = h.elements.get('speed-amount').textContent;
+    assert.ok(preSpeedTxt && !preSpeedTxt.includes('--'), `应显示有效速度，实际: ${preSpeedTxt}`);
+
+    // 2. 用户输入 /compact：进入压缩过渡态，圆环弧长保持稳定不乱跳，速度徽章不误入“等待首字”
+    nowMs += 500;
+    const dispatchTok = h.sandbox.__AG_METER_ON_SEND_MESSAGE__({
+      cascadeId,
+      items: [{ text: '/compact' }]
+    });
+    assert.ok(dispatchTok?.dispatchId?.startsWith('compact_'), '应识别 /compact 指令并返回专属 dispatchId');
+    assert.equal(api.snapshot().compacting?.cascadeId, cascadeId);
+    assert.equal(h.elements.get('ring-fill').getAttribute('stroke-dasharray'), preArcDash, '压缩进行中圆环弧长应保持稳定');
+    assert.equal(h.elements.get('speed-amount').textContent, preSpeedTxt, '/compact 不应污染速度徽章为等待首字');
+    assert.equal(h.elements.get('status').textContent, '正在压缩会话上下文，完成后圆环与剩余空间将自动同步更新…');
+    assert.equal(h.host.getAttribute('data-compacting'), 'true', '压缩进行中宿主节点必须标记 data-compacting="true" 驱动呼吸动效');
+    assert.equal(h.elements.get('badge-pct-val').textContent, '压缩中…', '顶栏圆环旁胶囊在压缩进行中必须即时显示“压缩中…”反馈');
+    assert.equal(h.elements.get('key-badge').textContent, '压缩中…');
+    assert.equal(h.elements.get('request-status').textContent, '正在压缩上下文…');
+    assert.equal(h.elements.get('ctx-tip-title').textContent, '上下文窗口（正在压缩…）：');
+    assert.equal(h.elements.get('ctx-tip-pct').textContent, '正在生成压缩摘要，完成后自动更新');
+
+    // 3. /compact RPC 完成：立即触发 scan(id, force=true) 绕过 20s 周期与 12s 缓存
+    nowMs += 600;
+    h.sandbox.__AG_METER_ON_SEND_RESULT__(dispatchTok.dispatchId, true, null);
+    assert.equal(h.scans.length, 2, '压缩完成应立即发起新扫描');
+    assert.equal(h.scans[1].id, cascadeId);
+    assert.equal(h.scans[1].force, true, '压缩后扫描必须传入 force=true 绕过缓存');
+
+    const postSession = {
+      ...preSession,
+      steps: 4,
+      userMessages: 2,
+      checkpointCount: 1,
+      lastCheckpointIndex: 3,
+      lastCheckpointFailed: false,
+      groups: {
+        ...preSession.groups,
+        summaries: { chars: 1200, low: 400, high: 800 }
+      },
+      postCheckpoint: {
+        textTotal: { chars: 42000, low: 14000, high: 18000 },
+        mediaRefs: {}
+      },
+      postCompactActiveTotal: { chars: 50000, low: 16000, high: 20000 }
+    };
+    const postLatest = core.buildPostCompactSummary({
+      session: postSession,
+      previousLatest: {
+        budget: 256000,
+        model: 'Gemini 4 Hydrogen (High)',
+        speed: { tps: 500, streamingTps: 500, duration: 4, ttft: 1, outputTokens: 2000 }
+      }
+    });
+    h.scans[1].resolve({
+      ok: true,
+      data: {
+        session: postSession,
+        scannedAt: nowMs,
+        generatorCount: 2,
+        preCompactLatest: { budget: 256000, model: 'Gemini 4 Hydrogen (High)' },
+        latest: postLatest
+      }
+    });
+    await h.flush();
+
+    assert.equal(api.snapshot().compacting, null, '读取到新检查点后应清除压缩过渡态');
+    assert.equal(h.host.getAttribute('data-occupancy'), 'normal', '压缩回落后应清除 80% 橙色告警');
+    assert.equal(h.elements.get('ring-fill').getAttribute('data-ring-state'), 'determinate');
+    const postArcLen = parseFloat(h.elements.get('ring-fill').getAttribute('stroke-dasharray'));
+    assert.ok(postArcLen > 1.8 && postArcLen < 5, `压缩后圆环弧长应回落至 ~7%（实测 ${postArcLen}）`);
+    assert.equal(h.elements.get('amount').textContent, '~18K (7%)');
+    assert.equal(h.elements.get('badge-pct-val').textContent, '~7%');
+    assert.equal(h.elements.get('ctx-tip-title').textContent, '上下文窗口（已压缩 · 预估）：');
+    assert.equal(h.elements.get('ctx-tip-pct').textContent, '约 7% 已用（剩余约 93% · 已压缩）');
+    assert.equal(h.elements.get('ctx-tip-detail').textContent, '压缩后预估 ≈ 18k / 256k token（发新消息后切换精确值）');
+    assert.equal(h.elements.get('key-badge').textContent, '已压缩 · 预估');
+    assert.equal(h.elements.get('key-used').textContent, '~18K (7.0%)');
+    assert.equal(h.elements.get('key-remaining').textContent, '~238K (93.0%)');
+    assert.equal(h.elements.get('request-status').textContent, '已压缩（待下一轮实测校准）');
+    assert.equal(h.elements.get('actual').textContent, '待压缩后首条消息返回');
+    assert.equal(h.elements.get('percent').textContent, '~7.0%（按压缩后估算）');
+    assert.match(h.elements.get('summaries').textContent, /共 1 次压缩（最近 #3）/);
+    assert.match(h.elements.get('session-total').textContent, /150K–210K/, '技术明细抽屉应继续保留会话累计历史');
+
+    // 4. 轮询防倒灌：后续 3s 轮询返回压缩前轮次 (#1) 与内部摘要器调用 (#3, 195K 输入) 时，绝不回跳至 80%
+    nowMs += 3500;
+    h.tick();
+    assert.equal(h.pending.length, 2);
+    const summarizerRow = {
+      stepIndices: [3],
+      chatModel: {
+        model: 'MODEL_FLASH_SUMMARIZER_INTERNAL',
+        modelDisplayName: 'Internal Summarizer',
+        usage: { inputTokens: 195000, outputTokens: 1500 }
+      }
+    };
+    h.pending[1].resolve({ ok: true, json: async () => ({ generatorMetadata: [preTurnRow, summarizerRow] }) });
+    await h.flush();
+
+    assert.equal(api.snapshot().latest.compacted, true, '轮询到 <= lastCheckpointIndex 的记录不得覆盖压缩后状态');
+    assert.equal(h.elements.get('amount').textContent, '~18K (7%)');
+    assert.equal(h.host.getAttribute('data-occupancy'), 'normal');
+
+    // 5. 三语实时切换验证（zh-TW 繁体无简体残留 / en 纯英文无汉字泄漏）
+    h.elements.get('btn-top-lang-zh-TW').click();
+    await h.flush();
+    assert.equal(h.elements.get('key-badge').textContent, '已壓縮 · 預估');
+    assert.equal(h.elements.get('ctx-tip-title').textContent, '上下文視窗（已壓縮 · 預估）：');
+    assert.equal(h.elements.get('request-status').textContent, '已壓縮（待下一輪實測校準）');
+    assert.equal(h.elements.get('actual').textContent, '待壓縮後首則訊息回傳');
+
+    h.elements.get('btn-top-lang-en').click();
+    await h.flush();
+    assert.equal(h.elements.get('key-badge').textContent, 'Compacted · Est.');
+    assert.equal(h.elements.get('ctx-tip-title').textContent, 'Context window (compacted · est.):');
+    assert.equal(h.elements.get('request-status').textContent, 'Compacted (awaiting next turn calibration)');
+    assert.equal(h.elements.get('actual').textContent, 'Pending first post-compact message');
+    assert.match(h.elements.get('summaries').textContent, /1 compaction\(s\) \(latest #3\)/);
+    assert.doesNotMatch(h.elements.get('key-takeaway').textContent, /[\u4e00-\u9fff]/);
+
+    h.elements.get('btn-top-lang-zh-CN').click();
+    await h.flush();
+
+    // 6. 发送压缩后首条新消息（stepIndices=[5] > 3）：自动褪去 ~ 预估前缀，无缝切回服务端精确上报
+    nowMs += 3500;
+    h.tick();
+    assert.equal(h.pending.length, 3);
+    const postCompactReplyRow = {
+      stepIndices: [5],
+      chatModel: {
+        model: 'MODEL_GOOGLE_GEMINI_4_HYDROGEN_HIGH',
+        modelDisplayName: 'Gemini 4 Hydrogen (High)',
+        usage: { inputTokens: 20000, outputTokens: 480 },
+        timeToFirstToken: '0.8s',
+        streamingDuration: '2.0s',
+        chatStartMetadata: {
+          startStepIndex: 5,
+          contextWindowMetadata: { estimatedTokensUsed: 19800, maxContextTokens: 256000 }
+        }
+      }
+    };
+    h.pending[2].resolve({ ok: true, json: async () => ({ generatorMetadata: [preTurnRow, summarizerRow, postCompactReplyRow] }) });
+    await h.flush();
+
+    assert.equal(Boolean(api.snapshot().latest.compacted), false, '收到压缩后新回复应退出 compacted 态');
+    assert.equal(api.snapshot().latest.status, 'reported');
+    assert.equal(h.elements.get('amount').textContent, '20.5K (8%)');
+    assert.equal(h.elements.get('badge-pct-val').textContent, '8%');
+    assert.equal(h.elements.get('key-badge').textContent, '正常');
+    assert.equal(h.elements.get('request-status').textContent, '已返回实际统计');
+    assert.equal(h.elements.get('actual').textContent, '20,480 tokens');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('/compact 100% 溢出自救与双通道感知：被动 WebSocket ContextWindowUsage 0ms 回落及宿主 DOM 横幅兜底触发', async () => {
+  let nowMs = 1763510000000;
+  class MockDate extends Date {
+    constructor(...args) {
+      super(...(args.length ? args : [nowMs]));
+    }
+    static now() {
+      return nowMs;
+    }
+  }
+  const cascadeId = '11111111-1111-1111-1111-111111111111';
+  const overflowSession = {
+    ...session(),
+    steps: 11,
+    checkpointCount: 1,
+    lastCheckpointIndex: 4,
+    currentError: {
+      index: 10,
+      text: 'The input token count exceeds the maximum number of tokens allowed 1048576.'
+    }
+  };
+  const h = harness(overflowSession, { Date: MockDate });
+  const api = h.sandbox.__AGContextMeter;
+  h.sandbox.window.contextMeterAPI.scan = (id, force = false) =>
+    new Promise(resolve => h.scans.push({ id, force, resolve }));
+
+  try {
+    h.scans[0].resolve({ ok: true, data: { session: overflowSession, scannedAt: nowMs, generatorCount: 3, latest: null } });
+    h.pending[0].resolve(response({
+      retryInfos: [{ error: 'The input token count exceeds the maximum number of tokens allowed 1048576.' }]
+    }));
+    await h.flush();
+
+    assert.equal(h.elements.get('amount').textContent, '服务端超限');
+    assert.equal(h.elements.get('ring-fill').getAttribute('data-ring-state'), 'exceeded');
+    assert.equal(h.host.getAttribute('data-occupancy'), 'danger');
+
+    // 1. 宿主在 #12 步完成第二次压缩并通过 WebSocket 推送 ContextWindowUsage（此时后台 scan 尚未返回）
+    nowMs += 800;
+    api.simulateHostWsMessageForTest({
+      payload: {
+        update: {
+          conversationId: cascadeId,
+          contextWindowUsage: {
+            estimatedTokensUsed: 15360,
+            maxContextTokens: 256000,
+            lastStepIndex: 12,
+            generatorMetadataIndex: 4,
+            estimatedAfterCompaction: true
+          }
+        }
+      }
+    });
+
+    // 0ms 即刻清除 100% 超限红环并回落至 15.4K (6%)，同时触发后台强制扫描
+    assert.equal(h.elements.get('ring-fill').getAttribute('data-ring-state'), 'determinate');
+    assert.equal(h.host.getAttribute('data-occupancy'), 'normal');
+    assert.equal(h.elements.get('amount').textContent, '~15.4K (6%)');
+    assert.equal(h.elements.get('badge-pct-val').textContent, '~6%');
+    assert.equal(h.elements.get('key-badge').textContent, '已压缩 · 预估');
+    assert.equal(h.scans.length, 2);
+    assert.equal(h.scans[1].force, true);
+
+    const recoveredSession = {
+      ...overflowSession,
+      steps: 13,
+      checkpointCount: 2,
+      lastCheckpointIndex: 12,
+      currentError: null,
+      postCompactActiveTotal: { chars: 40000, low: 12000, high: 16000 }
+    };
+    h.scans[1].resolve({
+      ok: true,
+      data: {
+        session: recoveredSession,
+        scannedAt: nowMs,
+        generatorCount: 4,
+        latest: core.buildPostCompactSummary({ session: recoveredSession, previousLatest: { budget: 256000 } })
+      }
+    });
+    await h.flush();
+    assert.equal(h.elements.get('amount').textContent, '~15.4K (6%)');
+
+    // 2. 宿主 DOM 自动压缩横幅兜底探测：覆盖长会话 (>900 个前置节点) + 逐字闪烁 span (children.length === 10)
+    const leadingHistoryNodes = Array.from({ length: 900 }, (_, idx) => ({ textContent: `history row ${idx}`, children: [] }));
+    const shimmerChars = Array.from('Compacting').map(ch => ({ textContent: ch, children: [] }));
+    let mockDomNodes = [
+      ...leadingHistoryNodes,
+      { textContent: 'Compacting', children: shimmerChars }
+    ];
+    h.sandbox.document.querySelectorAll = () => mockDomNodes;
+    nowMs += 1000;
+    api.checkHostDomCompactionForTest();
+    assert.equal(api.snapshot().compacting?.cascadeId, cascadeId, '长会话底部逐字闪烁的 Compacting 提示必须被逆序探测命中');
+    assert.equal(h.elements.get('badge-pct-val').textContent, '压缩中…');
+    assert.equal(h.elements.get('key-badge').textContent, '压缩中…');
+
+    mockDomNodes = [
+      ...leadingHistoryNodes,
+      { textContent: 'The conversation was compacted to fit within the context window.', children: [] }
+    ];
+    nowMs += 1000;
+    api.checkHostDomCompactionForTest();
+    assert.equal(h.scans.length, 3, '宿主压缩横幅出现且 Compacting 消失时应触发强制扫描');
+    assert.equal(h.scans[2].force, true);
+    h.scans[2].resolve({
+      ok: true,
+      data: {
+        session: { ...recoveredSession, checkpointCount: 3, lastCheckpointIndex: 14 },
+        scannedAt: nowMs,
+        generatorCount: 4,
+        latest: core.buildPostCompactSummary({ session: { ...recoveredSession, checkpointCount: 3, lastCheckpointIndex: 14 }, previousLatest: { budget: 256000 } })
+      }
+    });
+    await h.flush();
+    assert.equal(api.snapshot().compacting, null);
+
+    // 3. SlashCommandScopeItem（Antigravity [>< compact] 胶囊：info.name = "compact"，无前导斜杠）直击检测
+    const slashPillTok = h.sandbox.__AG_METER_ON_SEND_MESSAGE__({
+      cascadeId,
+      items: [{ item: { slashCommand: { info: { name: 'compact', displayName: 'compact' } } } }]
+    });
+    assert.ok(slashPillTok?.dispatchId?.startsWith('compact_'), 'SlashCommandScopeItem(name="compact") 必须立即触发压缩过渡态');
+    assert.equal(h.elements.get('badge-pct-val').textContent, '压缩中…');
+    assert.equal(h.elements.get('key-badge').textContent, '压缩中…');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('/compact 二次长时压缩防闪回回归：保持压缩前 94% 用量不误算 7.35M、超 45s 宿主仍在压缩时不闪回 94%、完成直达 ~6%', async () => {
+  let nowMs = 1763520000000;
+  class MockDate extends Date {
+    constructor(...args) {
+      super(...(args.length ? args : [nowMs]));
+    }
+    static now() {
+      return nowMs;
+    }
+  }
+  const intervalCallbacks = [];
+  const cascadeId = '11111111-1111-1111-1111-111111111111';
+
+  const preSecondCompactSession = {
+    ...session(),
+    steps: 437,
+    checkpointCount: 1,
+    lastCheckpointIndex: 229,
+    lastCheckpointFailed: false,
+    inProgressCheckpointIndex: -1,
+    lastAssistantAt: 436,
+    lastModelStepAt: 436,
+    postCheckpoint: {
+      checkpointIndex: 229,
+      textTotal: { chars: 20000000, bytes: 24000000, low: 6000000, high: 8700000 },
+      mediaRefs: {}
+    },
+    postCompactActiveTotal: { chars: 20000000, bytes: 24000000, low: 6000000, high: 8700000 }
+  };
+
+  const preCompactRealLatest = {
+    used: 483235,
+    actual: 483235,
+    estimate: 461654,
+    budget: 512000,
+    percent: (483235 / 512000) * 100,
+    compacted: false,
+    estimated: false,
+    status: 'reported',
+    model: 'Gemini 4 Carbon (High)',
+    modelId: 'MODEL_GOOGLE_GEMINI_4_CARBON_HIGH',
+    speed: { tps: 82.5, streamingTps: 82.5, duration: 32.6, ttft: 8.95, outputTokens: 1954 }
+  };
+
+  const h = harness(preSecondCompactSession, {
+    Date: MockDate,
+    setInterval(cb) {
+      intervalCallbacks.push(cb);
+      return intervalCallbacks.length;
+    }
+  });
+  const api = h.sandbox.__AGContextMeter;
+  h.sandbox.window.contextMeterAPI.scan = (id, force = false) =>
+    new Promise(resolve => h.scans.push({ id, force, resolve }));
+
+  try {
+    h.scans[0].resolve({
+      ok: true,
+      data: {
+        session: preSecondCompactSession,
+        scannedAt: nowMs,
+        generatorCount: 48,
+        preCompactLatest: preCompactRealLatest,
+        latest: preCompactRealLatest
+      }
+    });
+    h.pending[0].resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [{
+          chatModel: {
+            model: 'MODEL_GOOGLE_GEMINI_4_CARBON_HIGH',
+            modelDisplayName: 'Gemini 4 Carbon (High)',
+            usage: { inputTokens: 481281, outputTokens: 1954 },
+            chatStartMetadata: { contextWindowMetadata: { estimatedTokensUsed: 461654, maxContextTokens: 512000 } }
+          }
+        }]
+      })
+    });
+    await h.flush();
+    assert.equal(h.elements.get('badge-pct-val').textContent, '94%');
+    assert.equal(h.elements.get('key-used').textContent, '483.2K (94.4%)');
+
+    let mockDomNodes = [{ textContent: 'Compacting', children: [] }];
+    h.sandbox.document.querySelectorAll = () => mockDomNodes;
+    h.sandbox.__AG_METER_ON_SEND_MESSAGE__({
+      cascadeId,
+      items: [{ item: { slashCommand: { info: { name: 'compact' } } } }]
+    });
+    api.checkHostDomCompactionForTest();
+
+    assert.equal(h.elements.get('badge-pct-val').textContent, '压缩中…');
+    assert.equal(h.elements.get('key-badge').textContent, '压缩中…');
+    assert.equal(h.elements.get('key-used').textContent, '483.2K (94.4%)', '二次压缩开始时应保留 483.2K');
+
+    nowMs += 4000;
+    const compactProbeCb = intervalCallbacks[intervalCallbacks.length - 1];
+    compactProbeCb();
+    assert.equal(h.scans.length, 2);
+    h.scans[1].resolve({
+      ok: true,
+      data: {
+        session: preSecondCompactSession,
+        scannedAt: nowMs,
+        generatorCount: 48,
+        preCompactLatest: preCompactRealLatest,
+        latest: preCompactRealLatest
+      }
+    });
+    await h.flush();
+
+    assert.equal(h.elements.get('badge-pct-val').textContent, '压缩中…');
+    assert.equal(h.elements.get('key-used').textContent, '483.2K (94.4%)', '二次压缩期间严禁回退旧检查点 229 误算出 ~7.35M (100.0%)');
+
+    mockDomNodes = [{ textContent: 'Compacting · 46s', children: [] }];
+    nowMs += 42000;
+    compactProbeCb();
+    if (h.scans.length > 2) {
+      h.scans[h.scans.length - 1].resolve({
+        ok: true,
+        data: {
+          session: preSecondCompactSession,
+          scannedAt: nowMs,
+          generatorCount: 48,
+          preCompactLatest: preCompactRealLatest,
+          latest: preCompactRealLatest
+        }
+      });
+      await h.flush();
+    }
+    assert.equal(api.snapshot().compacting?.domEndedAtMs, 0);
+    assert.equal(h.elements.get('badge-pct-val').textContent, '压缩中…');
+
+    mockDomNodes = [{ textContent: 'Compacting · 1m 5s', children: [] }];
+    nowMs += 19000;
+    compactProbeCb();
+    if (h.scans.length > 3) {
+      h.scans[h.scans.length - 1].resolve({
+        ok: true,
+        data: {
+          session: preSecondCompactSession,
+          scannedAt: nowMs,
+          generatorCount: 48,
+          preCompactLatest: preCompactRealLatest,
+          latest: preCompactRealLatest
+        }
+      });
+      await h.flush();
+    }
+    assert.ok(api.snapshot().compacting);
+    assert.equal(h.elements.get('badge-pct-val').textContent, '压缩中…');
+
+    mockDomNodes = [{ textContent: '1m ago', children: [] }];
+    nowMs += 1000;
+    const scansBeforeDone = h.scans.length;
+    api.checkHostDomCompactionForTest();
+    assert.equal(h.scans.length, scansBeforeDone + 1);
+    assert.equal(h.elements.get('badge-pct-val').textContent, '压缩中…');
+
+    const postSecondCompactSession = {
+      ...preSecondCompactSession,
+      steps: 439,
+      checkpointCount: 2,
+      lastCheckpointIndex: 438,
+      postCheckpoint: {
+        checkpointIndex: 438,
+        textTotal: { chars: 12000, bytes: 15000, low: 3500, high: 5500 },
+        mediaRefs: {}
+      },
+      postCompactActiveTotal: { chars: 96000, bytes: 110000, low: 26000, high: 35000 }
+    };
+    const postSecondCompactLatest = core.buildPostCompactSummary({
+      session: postSecondCompactSession,
+      previousLatest: preCompactRealLatest
+    });
+    h.scans[h.scans.length - 1].resolve({
+      ok: true,
+      data: {
+        session: postSecondCompactSession,
+        scannedAt: nowMs,
+        generatorCount: 49,
+        preCompactLatest: preCompactRealLatest,
+        latest: postSecondCompactLatest
+      }
+    });
+    await h.flush();
+
+    assert.equal(api.snapshot().compacting, null);
+    assert.equal(h.elements.get('badge-pct-val').textContent, '~6%');
+    assert.equal(h.elements.get('key-badge').textContent, '已压缩 · 预估');
+    assert.equal(h.host.getAttribute('data-occupancy'), 'normal');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('ELV-95: renderSessionTimeline 渲染五类上下文变化事件及前后 Token 差值', async () => {
+  const cascadeId = '11111111-1111-1111-1111-111111111111';
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  h.sandbox.window.contextMeterAPI.getSessionTimeline = async () => ({
+    ok: true,
+    data: {
+      cascadeId,
+      turns: [{ turnIndex: 1, stepIndex: 0, preview: 'hi', callCount: 1, inputTokens: 1000, cacheReadTokens: 0, outputTokens: 200, calls: [] }],
+      unlinkedSubagentCalls: [],
+      totalCalls: 1,
+      mainCallsCount: 1,
+      subagentCallsCount: 0,
+      cacheSummary: { cacheStatus: 'zero_cache', cacheReadPct: 0 },
+      contextChangeEvents: [
+        { type: 'compaction', stepIndex: 3, detail: '#3', beforeTokens: 120000, afterTokens: 14500, deltaTokens: -105500 },
+        { type: 'inject', stepIndex: 4, detail: 'post-compact-rehydrate', beforeTokens: 14500, afterTokens: 15800, deltaTokens: 1300 },
+        { type: 'model', stepIndex: 5, detail: 'Carbon → Hydrogen', beforeTokens: 15800, afterTokens: 16000, deltaTokens: 200 }
+      ]
+    }
+  });
+  const collectText = (node) => {
+    if (!node) return '';
+    const own = node.textContent ? String(node.textContent) : '';
+    const kids = Array.isArray(node.children) ? node.children.map(collectText).join(' ') : '';
+    return `${own} ${kids}`.trim();
+  };
+  try {
+    h.elements.get('btn-session-history-toggle').click();
+    await h.flush();
+    const eventsEl = h.elements.get('session-timeline-events');
+    assert.equal(eventsEl.hidden, false, '应显示 session-timeline-events 容器');
+    const txt = collectText(eventsEl);
+    assert.match(txt, /上下文变化事件 \(3\)/);
+    assert.match(txt, /120K → 14.5K/);
+    assert.match(txt, /post-compact-rehydrate/);
+    assert.match(txt, /Carbon → Hydrogen/);
+  } finally {
+    api.dispose();
+  }
+});
+
+test('Step 6: 2.34.0 Rich Text 对话可点与顶栏强制 no-drag，进 Customizations/Installed 自动收起并禁开', async () => {
+  const elements = new Map();
+  const docElements = new Map();
+  const listeners = new Map();
+  const docListeners = new Map();
+  const createdEls = [];
+  let isMarketplace = false;
+  let capturedObserverCb = null;
+  const scheduledTimers = [];
+
+  const element = () => {
+    const attrs = new Map();
+    const props = new Map();
+    const el = {
+      style: {
+        display: '',
+        opacity: '',
+        pointerEvents: '',
+        setProperty(k, v) { props.set(k, v); },
+        removeProperty(k) { props.delete(k); },
+        getPropertyValue(k) { return props.get(k) || ''; }
+      },
+      children: [],
+      hidden: false,
+      textContent: '',
+      get id() { return attrs.get('id') || ''; },
+      set id(v) { attrs.set('id', String(v)); if (v) docElements.set(String(v), el); },
+      get className() { return attrs.get('class') || ''; },
+      set className(v) { attrs.set('class', String(v || '')); },
+      classList: {
+        add(c) {
+          const cur = (attrs.get('class') || '').split(/\s+/).filter(Boolean);
+          if (!cur.includes(c)) cur.push(c);
+          attrs.set('class', cur.join(' '));
+        },
+        remove(c) {
+          const cur = (attrs.get('class') || '').split(/\s+/).filter(x => x && x !== c);
+          attrs.set('class', cur.join(' '));
+        },
+        contains(c) { return (attrs.get('class') || '').split(/\s+/).includes(c); },
+        toggle(c, force) {
+          const has = this.contains(c);
+          const want = force !== undefined ? Boolean(force) : !has;
+          if (want) this.add(c); else this.remove(c);
+          return want;
+        }
+      },
+      addEventListener(type, fn) {
+        if (!listeners.has(el)) listeners.set(el, new Map());
+        listeners.get(el).set(type, fn);
+      },
+      setAttribute(k, v) {
+        attrs.set(k, String(v));
+        if (k === 'id' && v) docElements.set(String(v), el);
+      },
+      getAttribute(k) { return attrs.get(k) ?? null; },
+      removeAttribute(k) {
+        if (k === 'id') {
+          const id = attrs.get('id');
+          if (id && docElements.get(id) === el) docElements.delete(id);
+        }
+        attrs.delete(k);
+      },
+      remove() {
+        if (this.parentElement && Array.isArray(this.parentElement.children)) {
+          const idx = this.parentElement.children.indexOf(this);
+          if (idx >= 0) this.parentElement.children.splice(idx, 1);
+        }
+      },
+      appendChild(x) {
+        if (x) {
+          x.parentElement = this;
+          this.children.push(x);
+          const xId = x.id || x.getAttribute?.('id');
+          if (xId) docElements.set(xId, x);
+        }
+      },
+      contains(target) {
+        if (!target) return false;
+        if (target === el) return true;
+        return Array.isArray(el.children) && el.children.some(c => c && (c === target || c.contains?.(target)));
+      },
+      closest() { return null; },
+      querySelectorAll(sel) {
+        const found = [];
+        const check = node => {
+          if (!node) return;
+          if (sel === '#ag-wco-spacer' && (node.id === 'ag-wco-spacer' || node.getAttribute?.('id') === 'ag-wco-spacer')) found.push(node);
+          if (Array.isArray(node.children)) node.children.forEach(check);
+        };
+        this.children.forEach(check);
+        return found;
+      },
+      replaceChildren() { this.children = []; },
+      click() { listeners.get(el)?.get('click')?.(); },
+      getBoundingClientRect() { return { left: 100, top: 100, width: 10, height: 10, right: 110, bottom: 110 }; },
+      trigger(type, ev = {}) { listeners.get(el)?.get(type)?.(ev); }
+    };
+    return el;
+  };
+
+  const host = element();
+  host.isConnected = true;
+  let rehydrateTriggerClicks = 0;
+  let proxyTriggerClicks = 0;
+  const preRehydrateCard = element();
+  preRehydrateCard.classList.add('ctx-settings-card');
+  preRehydrateCard.closest = () => null;
+  preRehydrateCard.querySelector = s => s === '.drawer-trigger'
+    ? { getAttribute: () => 'false', click: () => { rehydrateTriggerClicks++; } }
+    : null;
+  elements.set('rehydrate-hook-card', preRehydrateCard);
+  const preProxyDrawer = element();
+  preProxyDrawer.classList.add('tech-drawer');
+  preProxyDrawer.closest = () => null;
+  preProxyDrawer.querySelector = s => s === '.drawer-trigger'
+    ? { getAttribute: () => 'false', click: () => { proxyTriggerClicks++; } }
+    : null;
+  elements.set('proxy-notun-drawer', preProxyDrawer);
+  host.attachShadow = () => ({
+    set innerHTML(_) { },
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, element());
+      return elements.get(id);
+    }
+  });
+  const pending = [];
+  const scans = [];
+  const composerNode = { tagName: 'DIV', isContentEditable: true, getAttribute: () => null };
+  const marketplaceHeading = { textContent: 'Installed', closest: () => null };
+  let first = true;
+  const sandbox = {
+    location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' },
+    document: {
+      body: element(),
+      head: element(),
+      documentElement: element(),
+      createElement() {
+        if (first) { first = false; return host; }
+        const n = element();
+        createdEls.push(n);
+        return n;
+      },
+      getElementById: id => docElements.get(id) || null,
+      querySelector(sel) {
+        if (!isMarketplace && sel && sel.includes('[contenteditable="true"]')) return composerNode;
+        if (isMarketplace && sel && sel.includes('marketplace')) return null;
+        return null;
+      },
+      querySelectorAll(sel) {
+        if (sel && sel.includes('[role="heading"]')) {
+          return isMarketplace ? [marketplaceHeading] : [{ textContent: 'Installed', closest: () => null }];
+        }
+        return [];
+      },
+      addEventListener(type, fn) {
+        if (!docListeners.has(type)) docListeners.set(type, new Set());
+        docListeners.get(type).add(fn);
+      },
+      removeEventListener(type, fn) { docListeners.get(type)?.delete(fn); },
+      dispatchEvent(ev) {
+        const type = ev?.type || ev;
+        for (const fn of (docListeners.get(type) || [])) fn(ev);
+      },
+      hidden: false
+    },
+    window: { __APP_CONFIG__: { csrfToken: 'test' }, contextMeterAPI: { scan: id => new Promise(resolve => scans.push({ id, resolve })) } },
+    __AGContextMeterCore: core,
+    AbortController,
+    Date,
+    MutationObserver: function (cb) {
+      capturedObserverCb = cb;
+      return { observe() { }, disconnect() { } };
+    },
+    setTimeout(fn, ms) {
+      scheduledTimers.push({ fn, ms });
+      return scheduledTimers.length;
+    },
+    clearTimeout() { },
+    setInterval: () => 1,
+    clearInterval() { },
+    fetch: (url, options) => new Promise(resolve => pending.push({ url, options, resolve }))
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox);
+  try {
+    scans[0]?.resolve({ ok: true, data: { session: session(), scannedAt: Date.now(), latest: null } });
+    pending[0]?.resolve(response({ usage: { inputTokens: 1000 } }));
+    await new Promise(r => setImmediate(r));
+
+    const badge = elements.get('badge');
+    const panel = elements.get('panel');
+    // 1. 注入 WCO 样式必须强制顶栏可点击且 no-drag
+    const wcoStyle = docElements.get('ag-topbar-host-fix') || createdEls.find(n => String(n.textContent || '').includes('#ag-context-meter') && String(n.textContent || '').includes('-webkit-app-region: no-drag !important'));
+    assert.ok(wcoStyle && String(wcoStyle.textContent).includes('-webkit-app-region: no-drag !important; pointer-events: auto;'));
+
+    // 2. 2.34.0 Rich Text 对话页不应误判 Marketplace，点击顶栏打开面板
+    isMarketplace = false;
+    badge.click();
+    assert.equal(panel.hidden, false, '有 [contenteditable="true"] 的对话页点击顶栏应打开面板');
+
+    // 3. 切入 Customizations / Installed（无输入框 + Installed 标题）触发 DOM 变更应自动收起并禁止重新打开
+    isMarketplace = true;
+    const beforeLen = scheduledTimers.length;
+    if (typeof capturedObserverCb === 'function') {
+      capturedObserverCb([{ type: 'childList', addedNodes: [{}] }]);
+    }
+    for (const item of scheduledTimers.slice(beforeLen)) {
+      try { item.fn(); } catch { }
+    }
+    assert.equal(panel.hidden, true, '进入 Installed 页面后已打开面板应自动收起');
+    badge.click();
+    assert.equal(panel.hidden, true, '在 Installed 页面顶栏点击不应重新打开面板');
+
+    // 4. 返回对话后可手动打开
+    isMarketplace = false;
+    badge.click();
+    assert.equal(panel.hidden, false, '返回聊天页后点击顶栏应恢复打开');
+
+    // 5. 配置页快捷导航：点卡片不误展开内部抽屉，点 .tech-drawer 自动展开
+    const quickNav = elements.get('settings-quick-nav-group');
+    quickNav.children = [];
+    quickNav.trigger('click', {
+      currentTarget: quickNav,
+      target: { closest: () => ({ getAttribute: k => k === 'data-nav-target' ? 'rehydrate-hook-card' : null, classList: { toggle() { } } }) }
+    });
+    assert.equal(rehydrateTriggerClicks, 0, '点击卡片快捷导航不得误展开内部附属技术抽屉');
+    quickNav.trigger('click', {
+      currentTarget: quickNav,
+      target: { closest: () => ({ getAttribute: k => k === 'data-nav-target' ? 'proxy-notun-drawer' : null, classList: { toggle() { } } }) }
+    });
+    assert.equal(proxyTriggerClicks, 1, '点击 .tech-drawer 快捷导航应自动展开对应抽屉');
+  } finally {
+    sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('Step 6: aux/page 停靠 data-panel-docked、返回聊天仅 page 显示、配置页无残留、导航不误展开抽屉、无 600K 硬编码及 rgb 标题栏适配', async () => {
+  const overlayCalls = [];
+  const extScans = [];
+  const h = harness(session(), {
+    getComputedStyle: () => ({
+      getPropertyValue: k => k === '--vscode-titleBar-activeBackground' ? 'rgb(30, 31, 34)' : ''
+    }),
+    window: {
+      __APP_CONFIG__: { csrfToken: 'test' },
+      contextMeterAPI: {
+        scan: id => new Promise(resolve => extScans.push({ id, resolve })),
+        getSettings: async () => ({ ok: true, settings: {} })
+      },
+      electronNative: {
+        setTitleBarOverlay: opts => overlayCalls.push(opts)
+      }
+    }
+  });
+  try {
+    extScans[0]?.resolve({ ok: true, data: { session: session(), scannedAt: Date.now(), latest: null } });
+    h.pending[0]?.resolve(response({ usage: { inputTokens: 1000 } }));
+    await h.flush();
+
+    // 1. colors.js 应能解析 rgb(30, 31, 34) 为 #1e1f22 同步给原生标题栏覆盖按钮
+    h.elements.get('theme-toggle').click();
+    assert.ok(overlayCalls.some(o => o && o.color === '#1e1f22'), `应把 rgb(30, 31, 34) 转为 #1e1f22，实际: ${JSON.stringify(overlayCalls)}`);
+
+    // 2. 停靠位置与“返回聊天”可见性（挂接右栏与编辑器宿主容器）
+    const makeDockContainer = () => ({
+      firstChild: null,
+      children: [],
+      appendChild(n) { n.parentElement = this; this.children.push(n); this.firstChild = this.children[0] || n; },
+      insertBefore(n) { this.appendChild(n); }
+    });
+    const auxContainer = makeDockContainer();
+    const pageContainer = makeDockContainer();
+    h.sandbox.document.querySelector = sel => {
+      if (sel && sel.includes('auxiliarybar')) return auxContainer;
+      if (sel && sel.includes('workbench.parts.editor')) return pageContainer;
+      return null;
+    };
+    const panel = h.elements.get('panel');
+    const backBtn = h.elements.get('btn-dock-page-back');
+    h.sandbox.__AGContextMeter.setDockPosition('aux');
+    assert.equal(panel.getAttribute('data-panel-docked'), 'true');
+    assert.equal(backBtn.hidden, true, 'aux 模式不显示返回聊天按钮');
+
+    h.sandbox.__AGContextMeter.setDockPosition('page');
+    assert.equal(panel.getAttribute('data-panel-docked'), 'true');
+    assert.equal(backBtn.hidden, false, '仅 page 独立页面显示返回聊天按钮');
+
+    h.sandbox.__AGContextMeter.setDockPosition('flow');
+    assert.equal(panel.getAttribute('data-panel-docked'), null);
+    assert.equal(backBtn.hidden, true, 'flow 模式隐藏返回聊天按钮');
+
+    // 3. 配置页切换其它三页时 pane-ctx-settings 无残留高度；快捷导航仅自动展开 .tech-drawer
+    h.sandbox.__AGContextMeter.openContextSettingsForTest({ forceFallbackPane: true });
+    const paneSettings = h.elements.get('pane-ctx-settings');
+    assert.equal(paneSettings.hidden, false);
+    assert.equal(paneSettings.style.display, '');
+
+    h.elements.get('tab-ctx-models').click();
+    assert.equal(paneSettings.hidden, true);
+    assert.equal(paneSettings.style.display, 'none');
+
+    // 4. 输入框状态条：缺失上限与 Token 时全显示 — 且绝无硬编码 600K；速度直达 context/speed；离开 5 行卡同步零残留
+    h.sandbox.__AGContextMeter.setComposerStateForTest({ sessionStats: { usedTokens: 50000 } });
+    assert.equal(h.elements.get('csb-context-text').textContent, '--%');
+    assert.equal(String(h.elements.get('csb-group-context').title || ''), '', '原生 title 必须清空以消除系统黑框双气泡');
+    assert.doesNotMatch(String(h.elements.get('csb-group-context').getAttribute('data-tooltip') || ''), /600K/);
+    assert.match(String(h.elements.get('csb-group-context').getAttribute('data-tooltip') || ''), /—/);
+
+    // 验证全空时显示 —
+    const hEmpty = harness();
+    try {
+      const csbEmpty = hEmpty.sandbox.__AGContextMeter.getComposerStatusBarStateForTest();
+      assert.match(csbEmpty.tokensText, /—/);
+      assert.equal(csbEmpty.cardTotal, '—');
+      assert.equal(csbEmpty.cardUncached, '—');
+
+      hEmpty.elements.get('csb-group-speed').click();
+      assert.equal(hEmpty.elements.get('panel').hidden, false, '点击底栏速度项直达速度对比视图');
+      assert.equal(hEmpty.elements.get('tab-ctx-speed').classList.contains('active'), true);
+      // 二次点击同视图关闭
+      hEmpty.elements.get('csb-group-speed').click();
+      assert.equal(hEmpty.elements.get('panel').hidden, true, '再次点击底栏速度项关闭面板');
+
+      const tokBtn = hEmpty.elements.get('csb-group-tokens');
+      const card = hEmpty.elements.get('csb-card-tokens');
+      tokBtn.trigger('mouseenter');
+      assert.equal(card.hidden, false);
+      assert.equal(card.style.display, '');
+      tokBtn.trigger('mouseleave');
+      assert.equal(card.hidden, true);
+      assert.equal(card.style.display, 'none');
+      assert.equal(card.style.pointerEvents, 'none');
+    } finally {
+      hEmpty.sandbox.__AGContextMeter.dispose();
+    }
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('会话深度剖析桌面 UI: 注入/技能组成对照与时间线 5 视图 (Delta/耗时/文件/命令/Agent家族) 渲染', async () => {
+  const extScans = [];
+  const collectText = (node) => {
+    if (!node) return '';
+    const kids = Array.isArray(node.children) && node.children.length > 0
+      ? node.children.map(collectText).join(' ')
+      : '';
+    return kids || String(node.textContent || '');
+  };
+  const timelineMock = {
+    cascadeId: 'c1',
+    totalCalls: 2,
+    mainCallsCount: 1,
+    subagentCallsCount: 1,
+    cacheSummary: { evaluatedRequestCount: 2, totalInput: 10000, totalUncachedInput: 4000, totalCacheRead: 6000, cacheReadPct: 60, cacheStatus: 'hit' },
+    contextDeltaSummary: { initialContextTokens: 4000, latestContextTokens: 12000, netDeltaTokens: 8000, maxJumpCallId: 'c2', maxJumpDeltaTokens: 8000 },
+    timingSummary: { totalTtftSec: 1.5, ttftCount: 2, totalStreamingSec: 6.0, streamingCount: 2, totalToolExecSec: 2.5, toolExecCount: 2, activeWallSec: 10.0, ttftPct: 15, streamingPct: 60, toolExecPct: 25 },
+    fileActivities: [
+      { path: 'D:/repo/meter-core.js', basename: 'meter-core.js', readCount: 2, writeCount: 1, searchCount: 0, totalCount: 3, addedLines: 14, removedLines: 2, turnNumbers: [1] }
+    ],
+    commandExecutions: [
+      { id: 'cmd-1', stepIndex: 2, turnNumber: 1, program: 'node', command: 'node test.js --token ***', status: 'failed', isSlow: true, isBackground: false, durationSec: 6.1 }
+    ],
+    agentFleetSummary: {
+      mainAgent: { callCount: 1, models: ['Gemini 4'], totalTokens: 12000 },
+      subagents: [{ childCid: 'sub-1', type: 'research', callCount: 1, models: ['Gemini Flash'], totalTokens: 2000 }],
+      unlinkedCount: 0,
+      mainOnlyTotalTokens: 12000,
+      fleetCombinedTotalTokens: 14000,
+      dedupVerified: true
+    },
+    turns: [
+      {
+        turnIndex: 1, stepIndex: 0, preview: 'inspect repo',
+        inputTokens: 4000, cacheReadTokens: 6000, outputTokens: 300,
+        lastContextTokens: 12000, deltaFromPrevTurn: 8000,
+        calls: [
+          { callId: 'c2', stepIndex: 3, modelLabel: 'Gemini 4', agentRole: 'main', hasInputCacheFields: true, inputTokens: 4000, cacheReadTokens: 8000, totalInputTokens: 12000, outputTokens: 300, contextWindowTokens: 12000, deltaFromPrevStep: 8000, isMaxContextJump: true, outcomeStatus: 'success', created_at: '2026-11-22T01:00:05Z' }
+        ]
+      }
+    ],
+    unlinkedSubagentCalls: [],
+    contextChangeEvents: []
+  };
+  const h = harness(session(), {
+    window: {
+      __APP_CONFIG__: { csrfToken: 'test' },
+      contextMeterAPI: {
+        scan: id => new Promise(resolve => extScans.push({ id, resolve })),
+        getSettings: async () => ({ ok: true, settings: {} }),
+        getSessionTimeline: async () => ({ ok: true, data: timelineMock })
+      }
+    }
+  });
+  try {
+    const baseSess = session();
+    const sessWithSub = {
+      ...baseSess,
+      groups: {
+        ...baseSess.groups,
+        user: { chars: 4000, bytes: 4000, low: 800, high: 1200 }
+      },
+      compositionSubgroups: {
+        injections: { chars: 1200, bytes: 1200, low: 300, high: 500 },
+        skills: { chars: 400, bytes: 400, low: 100, high: 200 },
+        injectionCount: 2,
+        skillCount: 1
+      }
+    };
+    extScans[0]?.resolve({ ok: true, data: { session: sessWithSub, scannedAt: Date.now(), latest: { actual: 9000 } } });
+    h.pending[0]?.resolve(response({ usage: { inputTokens: 9000, outputTokens: 200 } }));
+    await h.flush();
+
+    assert.match(h.elements.get('injections').textContent, /2/);
+    assert.match(h.elements.get('skills').textContent, /1/);
+    assert.match(h.elements.get('composition-gap').textContent, /9\.2K|9K|9000/);
+
+    // 展开历史时间线抽屉并逐项验证 5 个洞察标签页及 Δ 切换
+    h.elements.get('btn-session-history-toggle').click();
+    await h.flush();
+    assert.equal(h.elements.get('session-timeline-drawer').style.display, 'flex');
+    assert.match(collectText(h.elements.get('session-timeline-summary')), /\+8K|8K/);
+
+    const bar = h.elements.get('timeline-insight-bar');
+    const clickTab = tabName => bar.trigger('click', {
+      currentTarget: bar,
+      target: { getAttribute: k => k === 'data-tl-tab' ? tabName : null }
+    });
+
+    const insightBody = h.elements.get('session-timeline-insight-body');
+    clickTab('timing');
+    assert.equal(insightBody.hidden, false);
+    assert.match(collectText(insightBody), /10s|10\.0|60%/);
+
+    clickTab('files');
+    assert.match(collectText(insightBody), /meter-core\.js/);
+
+    clickTab('commands');
+    const cmdTxt = collectText(insightBody);
+    assert.match(cmdTxt, /\*\*\*/);
+    assert.match(cmdTxt, /node/);
+
+    clickTab('fleet');
+    assert.match(collectText(insightBody), /12K.*14K/);
+
+    clickTab('turns');
+    assert.equal(insightBody.hidden, true);
+    bar.trigger('click', {
+      currentTarget: bar,
+      target: { id: 'btn-timeline-delta-mode', getAttribute: () => null }
+    });
+    assert.equal(h.elements.get('btn-timeline-delta-mode').getAttribute('aria-pressed'), 'true');
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('2.34.0 Hub DOM 停靠、分屏/Side Chat 右侧打开精确传参、点击固定 5 行卡、分段条 75/90 阈值与每轮尾部微徽标', async () => {
+  const openCalls = [];
+  const savedPayloads = [];
+  const makeContainer = () => ({
+    children: [],
+    appendChild(n) { n.parentElement = this; this.children.push(n); this.firstChild = this.children[0] || n; },
+    insertBefore(n) { this.appendChild(n); }
+  });
+  const hubConvParent = makeContainer();
+  const hubConvView = { parentElement: hubConvParent };
+  const auxBox = makeContainer();
+  const sideFooterList = [];
+  const makeToolbar = (sideQuestion = false) => {
+    const row = {
+      children: [],
+      prepend(n) { n.parentElement = this; this.children.unshift(n); },
+      appendChild(n) { n.parentElement = this; this.children.push(n); },
+      querySelector(sel) {
+        if (sel === '.ag-cm-turn-footer') return this.children.find(c => c.className === 'ag-cm-turn-footer') || null;
+        return null;
+      }
+    };
+    return {
+      firstElementChild: row,
+      row,
+      getAttribute: k => (sideQuestion && k === 'data-side-question' ? 'true' : null)
+    };
+  };
+  const tbMain = makeToolbar(false);
+  const tbSide = makeToolbar(true);
+
+  let currentTabs = [];
+  let currentTabNodes = [];
+  const h = harness(session(), {
+    location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', search: '' }
+  });
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    openDashboardBrowser: async (opts) => {
+      openCalls.push(opts);
+      const q = opts?.sessionId ? `/?sessionId=${encodeURIComponent(opts.sessionId)}&source=${opts.source || 'desktop'}` : '';
+      return { ok: true, baseUrl: 'http://127.0.0.1:56780', url: `http://127.0.0.1:56780${q}`, openedExternal: Boolean(opts?.openExternal) };
+    },
+    saveSettings: async (payload) => { savedPayloads.push(payload); return { ok: true }; }
+  };
+  h.sandbox.document.querySelector = sel => {
+    if (sel && sel.includes('data-aux-pane-focus-scope')) return auxBox;
+    if (sel && sel.includes('conversation-view')) return hubConvView;
+    return null;
+  };
+  h.sandbox.document.querySelectorAll = sel => {
+    if (sel && sel.includes('data-tab-id')) return currentTabNodes;
+    if (sel && sel.includes('cascade-system-message-toolbar')) return [tbMain, tbSide];
+    if (sel && sel.includes('.ag-cm-turn-footer')) {
+      return [tbMain.row.children[0], tbSide.row.children[0]].filter(Boolean);
+    }
+    return [];
+  };
+
+  try {
+    const api = h.sandbox.__AGContextMeter;
+    api.setTurnFooterStatsEnabledForTest(true);
+
+    // 1. 2.34.0 Hub DOM (无 workbench.parts.editor) 下 page 模式直接挂载到 Hub 主视图且不回退
+    api.setDockPosition('page');
+    assert.equal(api.getDockPosition().actualDock, 'page');
+    assert.equal(api.getDockPosition().fallbackReason, '');
+    assert.equal(h.elements.get('btn-dock-page-back').hidden, false);
+    h.elements.get('btn-dock-page-back').click();
+    assert.equal(api.getDockPosition().dockPosition, 'flow');
+    assert.equal(h.elements.get('btn-dock-page-back').hidden, true);
+
+    // 2. 右侧打开与外部浏览器打开分别传 openExternal: false / true 且精准跟随会话 A -> B -> Side Chat
+    await api.openDashboardInRightPanelForTest();
+    assert.equal(openCalls[0].sessionId, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    assert.equal(openCalls[0].source, 'desktop');
+    assert.equal(openCalls[0].openExternal, false);
+
+    // 切到会话 B 并触发宿主路由轮询提交聚焦态
+    h.sandbox.location.pathname = '/c/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    h.tick();
+    await api.openStandaloneBrowserPageForTest();
+    assert.equal(openCalls[1].sessionId, 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+    assert.equal(openCalls[1].openExternal, true);
+
+    // 激活 Side Chat tab 并选中 Side Question 视角
+    currentTabNodes = [{
+      getAttribute: k => (k === 'data-tab-id' ? 'side_question__cccccccc-cccc-4ccc-8ccc-cccccccccccc' : (k === 'aria-selected' ? 'true' : null)),
+      className: 'bg-secondary',
+      textContent: 'Side Question'
+    }];
+    h.tick();
+    assert.equal(api.selectConversationScopeForTest('cccccccc-cccc-4ccc-8ccc-cccccccccccc'), true);
+    await api.openDashboardInRightPanelForTest();
+    assert.equal(openCalls[2].sessionId, 'cccccccc-cccc-4ccc-8ccc-cccccccccccc');
+    assert.equal(openCalls[2].openExternal, false);
+
+    // 无法解析会话 ID 时传 null，绝不瞎猜
+    h.sandbox.location.pathname = '/home';
+    currentTabNodes = [];
+    h.tick();
+    await api.openDashboardInRightPanelForTest();
+    assert.equal(openCalls[3].sessionId, null);
+
+    // 恢复正常会话路线供后续检查
+    h.sandbox.location.pathname = '/c/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    h.tick();
+
+    // 3. 输入框 4 态运行态、分段条 (>=75% warning)、点击固定 5 行卡与 Esc 关闭
+    api.setContextLatestForTest({ model: 'Gemini 3.8 Flash', actual: 160000, budget: 200000 });
+    api.setComposerStateForTest({
+      sessionCalls: [{
+        callId: 'c-turn-1',
+        modelLabel: 'Gemini 3.8 Flash',
+        inputTokens: 30000,
+        cacheCreationInputTokens: 10000,
+        cacheReadTokens: 118000,
+        outputTokens: 2000,
+        streamingTps: 145
+      }],
+      sessionStats: { usedTokens: 160000, limitTokens: 200000, turnCount: 1, stepCount: 2 }
+    });
+    const csbSnap = api.getComposerStatusBarStateForTest();
+    assert.equal(csbSnap.runtimeState, 'idle');
+    assert.equal(csbSnap.segThreshold, 'warning');
+    assert.match(csbSnap.segLegend, /32\.0K|118\.0K/);
+
+    const statusBtn = h.elements.get('csb-group-status');
+    const tokBtn = h.elements.get('csb-group-tokens');
+    const card = h.elements.get('csb-card-tokens');
+    // 悬停 Token 胶囊预览、移开关闭；状态胶囊取消点击收敛为纯遥测展示
+    tokBtn.trigger('mouseenter');
+    assert.equal(card.hidden, false);
+    tokBtn.trigger('mouseleave');
+    assert.equal(card.hidden, true);
+
+    statusBtn.click();
+    assert.equal(card.hidden, true, '状态胶囊收敛不误弹浮卡');
+    assert.equal(api.getComposerStatusBarStateForTest().cardPinned, false);
+
+    // 4. 每轮回复尾部统计微徽标（主区 + Side Chat toolbar）及配置开关持久化
+    assert.ok(tbMain.row.children[0].textContent.includes('Gemini 3.8 Flash'));
+    assert.match(tbSide.row.children[0].textContent, /缓存|Cache/);
+    const footerSwitch = h.elements.get('chk-show-turn-footer-stats');
+    footerSwitch.checked = false;
+    footerSwitch.trigger('change', { target: footerSwitch });
+    assert.equal(api.getTurnFooterStatsForTest().enabled, false);
+    assert.equal(tbMain.row.children.length, 0);
+    assert.ok(savedPayloads.some(p => p.showTurnFooterStats === false));
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('v0.9.0-beta.1 实机停靠修复: hidden 停靠面板零高度折叠、page 偏好不跨重启锁死、异步标题栏延迟重挂', async () => {
+  // 1. 验证 styles.css 与最新构建产物包含 aux/page 隐藏面板 display:none 与限高规则
+  const cssRaw = fs.readFileSync(require('node:path').join(__dirname, 'src/renderer/styles.css'), 'utf8');
+  assert.match(cssRaw, /:host\(\[data-dock="aux"\]\) \.ag-panel\[data-panel-docked="true"\]\[hidden\],\s*:host\(\[data-dock="page"\]\) \.ag-panel\[data-panel-docked="true"\]\[hidden\]\s*\{\s*display:\s*none\s*!important;/);
+  assert.doesNotMatch(cssRaw, /:host\(\[data-dock="page"\]\) \.ag-panel\[data-panel-docked="true"\][^}]*max-height:\s*none/);
+
+  // 2. 冷启动时若 localStorage 与宿主 getSettings() 均残存历史 page 模式，自动归位为 flow 并清理设置
+  const savedBatch = [];
+  const lStore = new Map([['ag_dock_position', 'page']]);
+  const titlebarEl = {
+    className: 'flex items-center justify-between @container/titlebar',
+    children: [],
+    firstElementChild: { scrollWidth: 80 },
+    lastElementChild: null,
+    querySelector() { return null; },
+    contains(node) { return this.children.includes(node) || node?.parentElement === this; },
+    appendChild(n) { n.parentElement = this; this.children.push(n); },
+    insertBefore(n, ref) {
+      const existingIdx = this.children.indexOf(n);
+      if (existingIdx >= 0) this.children.splice(existingIdx, 1);
+      const idx = this.children.indexOf(ref);
+      if (idx >= 0) this.children.splice(idx, 0, n);
+      else this.children.unshift(n);
+      n.parentElement = this;
+    },
+    getBoundingClientRect: () => ({ top: 35, left: 257, right: 1329, width: 1072, height: 40 })
+  };
+  let titlebarReady = false;
+  let observerCb = null;
+  const scheduledTimeouts = [];
+  const docBody = {
+    children: [],
+    appendChild(n) { n.parentElement = this; if (!this.children.includes(n)) this.children.push(n); },
+    contains(n) { return this.children.includes(n); }
+  };
+
+  // 构建带 body、MutationObserver 与可控 setTimeout 的延迟标题栏沙盒
+  const lateDocElements = new Map();
+  const lateDocListeners = new Map();
+  const mkSimpleEl = () => ({
+    style: { setProperty() { }, removeProperty() { }, getPropertyValue() { return ''; } },
+    children: [], childNodes: [], hidden: false, textContent: '',
+    classList: { add() { }, remove() { }, contains() { return false; } },
+    addEventListener() { }, setAttribute() { }, getAttribute() { return null; }, removeAttribute() { },
+    appendChild() { }, replaceChildren() { }, querySelectorAll() { return []; },
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 10, height: 10, right: 10, bottom: 10 })
+  });
+  const editorPageContainer = {
+    firstChild: null,
+    children: [],
+    appendChild(n) { n.parentElement = this; this.children.push(n); if (!this.firstChild) this.firstChild = n; },
+    insertBefore(n, ref) { n.parentElement = this; this.children.unshift(n); this.firstChild = n; },
+    contains(n) { return this.children.includes(n); }
+  };
+  const convViewNode = { parentElement: editorPageContainer };
+  const h = harness(undefined, {
+    localStorage: {
+      getItem: k => lStore.get(k) || null,
+      setItem: (k, v) => lStore.set(k, String(v)),
+      removeItem: k => lStore.delete(k)
+    },
+    MutationObserver: class {
+      constructor(cb) { observerCb = cb; }
+      observe() { }
+      disconnect() { }
+    },
+    setTimeout(fn, delay) {
+      if (typeof fn === 'function' && delay === 60) {
+        scheduledTimeouts.push(fn);
+      }
+      return scheduledTimeouts.length;
+    },
+    document: {
+      body: docBody,
+      head: { appendChild() { } },
+      hidden: false,
+      createElement: () => mkSimpleEl(),
+      getElementById: id => lateDocElements.get(id) || null,
+      documentElement: { appendChild() { } },
+      querySelector: sel => {
+        if (titlebarReady && sel && sel.includes('@container/titlebar')) return titlebarEl;
+        if (sel && sel.includes('conversation-view')) return convViewNode;
+        return null;
+      },
+      querySelectorAll: sel => (titlebarReady && sel && sel.includes('@container/titlebar') ? [titlebarEl] : []),
+      addEventListener(type, fn) {
+        if (!lateDocListeners.has(type)) lateDocListeners.set(type, new Set());
+        lateDocListeners.get(type).add(fn);
+      },
+      removeEventListener(type, fn) { lateDocListeners.get(type)?.delete(fn); },
+      dispatchEvent(ev) { for (const fn of (lateDocListeners.get(ev?.type || ev) || [])) fn(ev); }
+    },
+    window: {
+      __APP_CONFIG__: { csrfToken: 'test' },
+      contextMeterAPI: {
+        scan: async () => ({ ok: true, data: { session: session(), scannedAt: Date.now(), latest: null } }),
+        getSettings: async () => ({ ok: true, dockPosition: 'page', uiPreferences: { dockPosition: 'page' } }),
+        saveSettings: async (p) => { savedBatch.push(p); return { ok: true }; }
+      }
+    }
+  });
+
+  try {
+    const api = h.sandbox.__AGContextMeter;
+    await h.flush();
+    assert.equal(api.getDockPosition().dockPosition, 'flow', '冷启动历史 page 必须自动安全归位为 flow');
+    assert.ok(savedBatch.some(p => p.dockPosition === 'flow'), '应清理历史 page 脏设置');
+    assert.equal(h.host.parentElement, docBody, '标题栏未渲染前先暂时落入 document.body');
+
+    // 3. 模拟 React 延迟渲染出 @container/titlebar，并测试 compact 模式与回退态均会重挂载到顶栏
+    api.setDockPosition('compact');
+    assert.equal(api.getDockPosition().actualDock, 'compact');
+    titlebarReady = true;
+    assert.equal(typeof observerCb, 'function');
+    observerCb();
+    const timerFn = scheduledTimeouts.pop();
+    assert.equal(typeof timerFn, 'function');
+    timerFn();
+    assert.equal(titlebarEl.contains(h.host), true, 'compact 模式下标题栏延迟渲染后必须重挂载入顶栏');
+
+    // 4. 运行期显式切到 page 时仅会话内有效，写入持久化偏好保持 flow，且切回 flow 必须清除 static 防止面板被顶栏裁切
+    api.setDockPosition('page');
+    api.repositionPanelsForTest();
+    assert.equal(api.getDockPosition().actualDock, 'page');
+    assert.equal(h.elements.get('panel').style.position, 'static');
+    assert.equal(lStore.get('ag_dock_position'), 'flow', 'page 模式不得覆盖 localStorage 为 page');
+    assert.equal(savedBatch.at(-1)?.dockPosition, 'flow', 'page 模式不得持久化为重启后的 page 锁死');
+
+    api.setDockPosition('flow');
+    api.repositionPanelsForTest();
+    assert.equal(api.getDockPosition().actualDock, 'flow');
+    assert.equal(h.elements.get('panel').style.position, '', '从 page 切回 flow 必须清除 inline position: static');
+    assert.match(h.elements.get('panel').style.top, /^\d+px$/, '切回 flow 后必须重新计算有效的固定定位 top');
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('ELV-94 2.34.0 右侧辅助栏 [data-side-panel-open="true"] 识别、展开防反关、切会话跟随与退出返回', async () => {
+  let toggleClicks = 0;
+  let auxExpanded = false;
+  const sidePanelScopeEl = {
+    children: [],
+    style: {},
+    parentElement: null,
+    contains(n) { return this.children.includes(n); },
+    appendChild(n) { n.parentElement = this; this.children.push(n); },
+    insertBefore(n, ref) {
+      const existingIdx = this.children.indexOf(n);
+      if (existingIdx >= 0) this.children.splice(existingIdx, 1);
+      const idx = this.children.indexOf(ref);
+      if (idx >= 0) this.children.splice(idx, 0, n);
+      else this.children.unshift(n);
+      n.parentElement = this;
+    },
+    querySelector(s) {
+      if (s && s.includes('data-side-panel-strip')) return { getAttribute: () => 'true' };
+      return null;
+    },
+    getBoundingClientRect: () => ({ width: auxExpanded ? 773 : 0, height: 865, top: 35, left: 649 })
+  };
+  const toggleBtn = {
+    getAttribute(k) { return k === 'aria-expanded' ? (auxExpanded ? 'true' : 'false') : null; },
+    click() {
+      toggleClicks += 1;
+      auxExpanded = !auxExpanded;
+    }
+  };
+  let curTabs = [];
+  const h = harness(session(), {
+    location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', search: '' }
+  });
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    openDashboardBrowser: async (opts) => ({
+      ok: true,
+      baseUrl: 'http://127.0.0.1:56780',
+      url: opts?.sessionId ? `http://127.0.0.1:56780/?sessionId=${opts.sessionId}&source=desktop` : 'http://127.0.0.1:56780/',
+      openedExternal: Boolean(opts?.openExternal)
+    }),
+    saveSettings: async () => ({ ok: true })
+  };
+  h.sandbox.document.querySelector = (sel) => {
+    if (sel && sel.includes('toggle-aux-sidebar')) return toggleBtn;
+    if (auxExpanded && sel && (sel.includes('data-side-panel-open="true"') || sel.includes('data-aux-pane-open="true"'))) {
+      return sidePanelScopeEl;
+    }
+    return null;
+  };
+  h.sandbox.document.querySelectorAll = (sel) => {
+    if (sel && sel.includes('data-tab-id')) return curTabs;
+    if (auxExpanded && sel && sel.includes('data-side-panel-focus-scope="true"')) return [sidePanelScopeEl];
+    return [];
+  };
+
+  try {
+    const api = h.sandbox.__AGContextMeter;
+    // 1. 初始折叠态点击右侧入口 -> 仅点击一次 toggle 展开、挂载到 sidePanelScopeEl、停靠 aux 且显示当前会话短 ID
+    const res1 = await api.openDashboardInRightPanelForTest();
+    assert.equal(toggleClicks, 1);
+    assert.equal(auxExpanded, true);
+    assert.equal(res1.mode, 'aux_dock');
+    const st1 = api.getAuxDockStateForTest();
+    assert.equal(st1.actualDock, 'aux');
+    assert.equal(st1.auxBarHidden, false);
+    assert.match(st1.auxSessionLabel, /aaaaaaaa/);
+
+    // 2. 已展开态再次点击右侧入口 -> 绝不误点 toggle 折叠，仍停靠于 aux
+    await api.openDashboardInRightPanelForTest();
+    assert.equal(toggleClicks, 1, '右侧栏已展开时不得再次点击 toggle-aux-sidebar 将其关闭');
+    assert.equal(auxExpanded, true);
+
+    // 3. 同项目内切会话 A -> B 与分屏焦点切换 -> Side Chat：右侧面板保持展开不关，并跟随新会话 ID
+    h.sandbox.location.pathname = '/c/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    h.tick();
+    let st2 = api.getAuxDockStateForTest();
+    assert.equal(st2.panelHidden, false, 'aux 模式下切换会话应保持右侧面板展开跟随');
+    assert.match(st2.auxSessionLabel, /bbbbbbbb/);
+
+    h.sandbox.location.pathname = '/c/11111111-1111-4111-8111-111111111111+22222222-2222-4222-8222-222222222222';
+    h.sandbox.location.search = '?focused=22222222-2222-4222-8222-222222222222';
+    h.tick();
+    st2 = api.getAuxDockStateForTest();
+    assert.match(st2.auxSessionLabel, /22222222/);
+
+    curTabs = [{
+      getAttribute: k => (k === 'data-tab-id' ? 'side_question__33333333-3333-4333-8333-333333333333' : (k === 'aria-selected' ? 'true' : null)),
+      className: 'bg-secondary',
+      textContent: 'Side Question'
+    }];
+    h.tick();
+    api.selectConversationScopeForTest('33333333-3333-4333-8333-333333333333');
+    st2 = api.getAuxDockStateForTest();
+    assert.match(st2.auxSessionLabel, /Side Chat.*33333333/);
+
+    // 4. aux 停靠态下触发 host 外部点击不关闭已停靠面板；退回 flow 后再外部点击应关闭
+    h.sandbox.document.dispatchEvent({ type: 'click', composedPath: () => [{ id: 'left-chat-pane' }] });
+    assert.equal(h.elements.get('panel').hidden, false, 'aux 停靠态点击外部主聊天区不得误关已停靠面板');
+
+    // 5. 点击“返回顶栏”按钮退出 aux 停靠，之后外部点击应正常收起浮动面板
+    h.elements.get('btn-dock-aux-back').click();
+    const stBack = api.getAuxDockStateForTest();
+    assert.equal(stBack.dockPosition, 'flow');
+    assert.equal(stBack.auxBarHidden, true);
+
+    h.elements.get('badge').click();
+    assert.equal(h.elements.get('panel').hidden, false);
+    h.sandbox.document.dispatchEvent({ type: 'click', composedPath: () => [{ id: 'left-chat-pane' }] });
+    assert.equal(h.elements.get('panel').hidden, true, '退出 aux 回到 flow 浮动态后点击外部应正常收起面板');
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('v0.9.0-beta.1 回复尾注去框、两轮独立对账不跨轮复用与 computeCacheHitSummary 口径回归', async () => {
+  // 1. CSS 去框校验（主样式与宿主注入 CSS 均无边框、无背景、无阴影）
+  const mainSrc = fs.readFileSync(require('node:path').join(__dirname, 'src/renderer/main.js'), 'utf8');
+  assert.match(mainSrc, /\.ag-cm-turn-footer\s*\{[\s\S]*border:\s*0\s*!important;[\s\S]*background:\s*transparent\s*!important;[\s\S]*box-shadow:\s*none\s*!important;/);
+
+  // 2. computeCacheHitSummary 全口径校验（inputIncludesCache / 排除输出 / Test Conversation 26% 汇总 / 0% vs —）
+  const sIncl = core.computeCacheHitSummary([{ inputTokens: 100000, cacheReadTokens: 25000, outputTokens: 5000, inputIncludesCache: true }]);
+  assert.equal(sIncl.totalInput, 100000);
+  assert.equal(sIncl.uncachedInput, 75000);
+  assert.equal(sIncl.cacheRead, 25000);
+  assert.equal(sIncl.hitPct, 25, 'inputIncludesCache=true 时分母直接用总输入且排除输出');
+
+  const sZero = core.computeCacheHitSummary([{ inputTokens: 31851, cacheReadTokens: 0, outputTokens: 57 }]);
+  assert.equal(sZero.hitPct, 0);
+  assert.equal(sZero.hitText, '0%', '确认 inputTokens>0 且 cacheRead=0 才显示 0%');
+
+  const sMissing = core.computeCacheHitSummary([{ totalTokens: 1500 }]);
+  assert.equal(sMissing.hitPct, null);
+  assert.equal(sMissing.hitText, '—', '字段缺失或分母为 0 必须显示 —，绝不补成 0%');
+
+  const real7Calls = [
+    { callId: 'c1', inputTokens: 31082, cacheReadTokens: 0, outputTokens: 219 },
+    { callId: 'c2', inputTokens: 32264, cacheReadTokens: 0, outputTokens: 152 },
+    { callId: 'c3', inputTokens: 30625, cacheReadTokens: 0, outputTokens: 58 },
+    { callId: 'c4', inputTokens: 2177, cacheReadTokens: 28573, outputTokens: 113 },
+    { callId: 'c5', inputTokens: 2231, cacheReadTokens: 28699, outputTokens: 86 },
+    { callId: 'c6', inputTokens: 31851, cacheReadTokens: 0, outputTokens: 57, streamingTps: 570 },
+    { callId: 'c7', inputTokens: 32209, cacheReadTokens: 0, outputTokens: 57, streamingTps: 518.2 }
+  ];
+  const sumReal = core.computeCacheHitSummary(real7Calls);
+  assert.equal(sumReal.uncachedInput, 162439);
+  assert.equal(sumReal.cacheRead, 57272);
+  assert.equal(sumReal.totalInput, 219711);
+  assert.equal(sumReal.output, 742);
+  assert.equal(sumReal.hitPct, 26);
+
+  // 3. 两条独立回复严格尾对齐一对一绑定，且缺时间线时绝不跨轮复用
+  const makeTb = () => {
+    const row = {
+      children: [],
+      prepend(n) { n.parentElement = this; this.children.unshift(n); },
+      appendChild(n) { n.parentElement = this; this.children.push(n); },
+      querySelector(sel) {
+        if (sel === '.ag-cm-turn-footer') return this.children.find(c => c.className === 'ag-cm-turn-footer') || null;
+        return null;
+      }
+    };
+    return { firstElementChild: row, row, getAttribute: () => null };
+  };
+  const tb1 = makeTb();
+  const tb2 = makeTb();
+  const h = harness(session(), {
+    location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/78799486-61aa-422e-b0dc-dc61314d4c1d', search: '' }
+  });
+  h.sandbox.document.querySelectorAll = sel => {
+    if (sel && sel.includes('cascade-system-message-toolbar')) return [tb1, tb2];
+    if (sel && sel.includes('.ag-cm-turn-footer')) return [tb1.row.children[0], tb2.row.children[0]].filter(Boolean);
+    return [];
+  };
+  try {
+    const api = h.sandbox.__AGContextMeter;
+    api.setTurnFooterStatsEnabledForTest(true);
+    // 只有 1 条记录却有 2 个主区 toolbar 时：仅最后一个 toolbar 挂载，前者绝不复用 turns[0]
+    api.setComposerStateForTest({
+      sessionCalls: [{ callId: 'quwBa7eRLpW6odAPxqKKsAM', modelLabel: 'Gemini 3.8 Flash', inputTokens: 31851, cacheReadTokens: 0, outputTokens: 57, streamingTps: 570 }],
+      sessionStats: { usedTokens: 31908, limitTokens: 1000000, turnCount: 1, stepCount: 1 }
+    });
+    assert.equal(tb1.row.children.length, 0, 'M > T 时前置回复绝不允许复用 turns[0]');
+    assert.equal(tb2.row.children.length, 1);
+
+    // 7 轮时间线就位且视图仅挂载末尾两条 OK 时：从尾部一一对应绑定 Turn 6 和 Turn 7
+    const tl = core.groupSessionCallsByTurns(
+      [
+        { stepIndex: 1, timestamp: 1795280000000 },
+        { stepIndex: 4, timestamp: 1795281000000 },
+        { stepIndex: 7, timestamp: 1795282000000 },
+        { stepIndex: 9, timestamp: 1795283000000 },
+        { stepIndex: 11, timestamp: 1795284000000 },
+        { stepIndex: 13, timestamp: 1795288200000 },
+        { stepIndex: 16, timestamp: 1795305900000 }
+      ],
+      [
+        { callId: 'c1', stepIndex: 2, modelLabel: 'Gemini 3.8 Flash', inputTokens: 31082, cacheReadTokens: 0, outputTokens: 219 },
+        { callId: 'c2', stepIndex: 5, modelLabel: 'Gemini 3.8 Flash', inputTokens: 32264, cacheReadTokens: 0, outputTokens: 152 },
+        { callId: 'c3', stepIndex: 8, modelLabel: 'Gemini 3.8 Flash', inputTokens: 30625, cacheReadTokens: 0, outputTokens: 58 },
+        { callId: 'c4', stepIndex: 10, modelLabel: 'Gemini 3.8 Flash', inputTokens: 2177, cacheReadTokens: 28573, outputTokens: 113 },
+        { callId: 'c5', stepIndex: 12, modelLabel: 'Gemini 3.8 Flash', inputTokens: 2231, cacheReadTokens: 28699, outputTokens: 86 },
+        { callId: 'quwBa7eRLpW6odAPxqKKsAM', stepIndex: 14, modelLabel: 'Gemini 3.8 Flash', inputTokens: 31851, cacheReadTokens: 0, outputTokens: 57, streamingTps: 570 },
+        { callId: 'wTECa8iUMJaA6tkPqLCn4Qk', stepIndex: 17, modelLabel: 'Gemini 3.8 Flash', inputTokens: 32209, cacheReadTokens: 0, outputTokens: 57, streamingTps: 518.2 }
+      ],
+      { cascadeId: '78799486-61aa-422e-b0dc-dc61314d4c1d' }
+    );
+    api.setComposerStateForTest({
+      sessionCalls: tl.turns.flatMap(t => t.calls || []),
+      sessionTimeline: tl,
+      sessionStats: { usedTokens: 32266, limitTokens: 1000000, turnCount: 7, stepCount: 17 }
+    });
+    const footerSnap = api.getTurnFooterStatsForTest();
+    assert.equal(footerSnap.items.length, 2);
+    assert.equal(footerSnap.items[0].callId, 'quwBa7eRLpW6odAPxqKKsAM');
+    assert.equal(footerSnap.items[1].callId, 'wTECa8iUMJaA6tkPqLCn4Qk');
+    assert.match(footerSnap.items[0].text, /本次请求.*31\.9K.*Out 57.*0%.*570 tok\/s/);
+    assert.match(footerSnap.items[1].text, /本次请求.*32\.2K.*Out 57.*0%.*518 tok\/s/);
+    assert.match(api.getComposerStatusBarStateForTest().tokensText, /缓存 26%/);
+    assert.match(h.elements.get('csb-group-tokens').getAttribute('data-tooltip'), /会话缓存命中率 26%/);
+    assert.equal(h.elements.get('csb-group-tokens').title, '', '原生 title 必须清空以杜绝双气泡');
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('v0.9.0-beta.1 顶栏圆形入口悬停面板切换、不关闭右栏/重置会话及高亮底块内收', async () => {
+  const cssRaw = fs.readFileSync(require('node:path').join(__dirname, 'src/renderer/styles.css'), 'utf8');
+  assert.match(cssRaw, /\.ag-unit::before\s*\{[\s\S]*inset:\s*3px 2px;/);
+  assert.match(cssRaw, /#overflow-menu::before\s*\{[\s\S]*top:\s*-16px;\s*height:\s*18px/);
+  const overflowZ = Number((cssRaw.match(/#overflow-menu\s*\{[^}]*z-index\s*:\s*(\d+)/) || [])[1] || 0);
+  const panelZ = Number((cssRaw.match(/\.ag-panel\s*\{[^}]*z-index\s*:\s*(\d+)/) || [])[1] || 0);
+  assert.ok(overflowZ > panelZ && overflowZ >= 2147483645, `浮动面板开启时悬停菜单 z-index (${overflowZ}) 必须严格高于 .ag-panel (${panelZ})`);
+
+  const auxBox = { children: [], appendChild(n) { n.parentElement = this; this.children.push(n); } };
+  const h = harness(session(), {
+    location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', search: '' }
+  });
+  h.sandbox.document.querySelector = sel => (sel && sel.includes('data-aux-pane-focus-scope') ? auxBox : null);
+  try {
+    const api = h.sandbox.__AGContextMeter;
+    api.setDockPosition('aux');
+    api.showQuotaPanelForTest(true);
+    assert.equal(api.getAuxDockStateForTest().actualDock, 'aux');
+    assert.equal(h.elements.get('panel-quota').hidden, false);
+
+    // 悬停额度圆形图标 -> 展开选择器并标出 quota 为当前激活项；移入菜单取消关闭
+    const bQuota = h.elements.get('badge-quota');
+    const om = h.elements.get('overflow-menu');
+    bQuota.trigger('mouseenter');
+    assert.equal(om.hidden, false);
+    assert.equal(api.getPanelPickerStateForTest().currentTarget, 'quota');
+    bQuota.trigger('mouseleave');
+    om.trigger('mouseenter');
+    assert.equal(om.hidden, false, '鼠标跨越间隙进入选择器时必须保持展开');
+
+    // 在选择器中切到上下文详情 -> 直接原地替换且保留 aux 停靠与当前会话
+    h.elements.get('overflow-context-detail-btn').click();
+    assert.equal(h.elements.get('panel-quota').hidden, true);
+    assert.equal(h.elements.get('panel').hidden, false);
+    assert.equal(api.getAuxDockStateForTest().actualDock, 'aux');
+    assert.equal(api.getConversationScopeStateForTest().activeRoute, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    assert.equal(api.getPanelPickerStateForTest().currentTarget, 'context_detail');
+
+    // 悬停 -> 切到请求明细
+    h.elements.get('badge').trigger('mouseenter');
+    assert.equal(om.hidden, false);
+    h.elements.get('overflow-requests-btn').click();
+    assert.equal(h.elements.get('panel-tokens').hidden, false);
+    assert.equal(h.elements.get('requests-live-view').style.display, 'flex');
+    assert.equal(api.getAuxDockStateForTest().actualDock, 'aux');
+
+    // 误点已选项 -> 面板继续保持展开；按 Esc 时若选择器打开则仅关闭选择器并保留面板（即使焦点回到触发按钮）
+    const bOverflow = h.elements.get('badge-overflow');
+    bOverflow.focus = () => bOverflow.trigger('focus');
+    const bQuotaFocusOrig = h.elements.get('badge-quota');
+    bQuotaFocusOrig.focus = () => bQuotaFocusOrig.trigger('focus');
+    bQuotaFocusOrig.trigger('focus');
+    assert.equal(om.hidden, false);
+    h.elements.get('overflow-requests-btn').click();
+    assert.equal(h.elements.get('panel-tokens').hidden, false, '误点当前已选面板时必须保持开启');
+
+    // mouseenter 刚打开 badge-overflow 后紧接着 click，应保持展开不被同次点击反关
+    bOverflow.trigger('mouseenter');
+    assert.equal(om.hidden, false);
+    bOverflow.click();
+    assert.equal(om.hidden, false, 'hover 打开 overflow-menu 后立刻 click 不应反关菜单');
+
+    h.sandbox.document.dispatchEvent({ type: 'keydown', key: 'Escape' });
+    assert.equal(om.hidden, true, 'Esc 后即使触发 returnTrigger.focus() 也必须保持选择器关闭');
+    assert.equal(h.elements.get('panel-tokens').hidden, false, 'Esc 仅关闭选择器，不关当前已停靠或展开的面板');
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('v0.9.0-beta.1 窄窗下回复尾注优先保留完整 tok/s 速度且缓存命中率与未知区分', async () => {
+  const tl = core.groupSessionCallsByTurns(
+    [
+      { stepIndex: 13, timestamp: 1795288200000 },
+      { stepIndex: 16, timestamp: 1795305900000 }
+    ],
+    [
+      { callId: 'quwBa7eRLpW6odAPxqKKsAM', stepIndex: 14, modelLabel: 'Gemini 3.8 Flash', inputTokens: 31851, cacheReadTokens: 0, outputTokens: 57, streamingTps: 570 },
+      { callId: 'wTECa8iUMJaA6tkPqLCn4Qk', stepIndex: 17, modelLabel: 'Gemini 3.8 Flash', inputTokens: 32209, cacheReadTokens: 0, outputTokens: 57, streamingTps: 518.2 }
+    ],
+    { cascadeId: '78799486-61aa-422e-b0dc-dc61314d4c1d' }
+  );
+  const makeToolbar = (rowW) => {
+    const row = {
+      clientWidth: rowW,
+      children: [],
+      prepend(n) { n.parentElement = this; this.children.unshift(n); },
+      appendChild(n) { n.parentElement = this; this.children.push(n); },
+      querySelector(sel) {
+        if (sel === '.ag-cm-turn-footer') return this.children.find(c => c.className === 'ag-cm-turn-footer') || null;
+        return null;
+      }
+    };
+    return { firstElementChild: row, clientWidth: rowW, row, getAttribute: () => null };
+  };
+  const tb1 = makeToolbar(178);
+  const tb2 = makeToolbar(178);
+  const h = harness(session(), {
+    location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/78799486-61aa-422e-b0dc-dc61314d4c1d', search: '' }
+  });
+  h.sandbox.document.querySelectorAll = sel => {
+    if (sel && sel.includes('cascade-system-message-toolbar')) return [tb1, tb2];
+    if (sel && sel.includes('.ag-cm-turn-footer')) return [tb1.row.children[0], tb2.row.children[0]].filter(Boolean);
+    return [];
+  };
+  try {
+    const api = h.sandbox.__AGContextMeter;
+    api.setTurnFooterStatsEnabledForTest(true);
+    api.setComposerStateForTest({
+      sessionCalls: tl.turns.flatMap(t => t.calls || []),
+      sessionTimeline: tl,
+      sessionStats: { usedTokens: 32266, limitTokens: 1000000, turnCount: 2, stepCount: 17 }
+    });
+    const snap178 = api.getTurnFooterStatsForTest();
+    assert.equal(snap178.items.length, 2);
+    assert.match(snap178.items[0].text, /In 31\.9K.*0%.*570 tok\/s/);
+    assert.match(snap178.items[1].text, /In 32\.2K.*0%.*518 tok\/s/);
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('PR #79: 右侧分屏防抢焦点、可编辑控件保留聚焦、点空白关浮层与 aux/page 停靠保持及 Esc 守卫', () => {
+  const shadowListeners = new Map();
+  const docListeners = new Map();
+  const elements = new Map();
+  const makeNode = (tagName = 'div', id = '') => {
+    const attrs = new Map();
+    const classSet = new Set();
+    const nodeListeners = new Map();
+    if (id) attrs.set('id', id);
+    const n = {
+      tagName: String(tagName).toUpperCase(),
+      style: { setProperty() { }, removeProperty() { }, getPropertyValue() { return ''; } },
+      children: [],
+      hidden: false,
+      disabled: false,
+      textContent: '',
+      value: '',
+      scrollTop: 0,
+      get id() { return attrs.get('id') || ''; },
+      set id(v) { attrs.set('id', String(v)); if (v) elements.set(String(v), n); },
+      get className() { return Array.from(classSet).join(' '); },
+      set className(v) { classSet.clear(); String(v || '').split(/\s+/).filter(Boolean).forEach(c => classSet.add(c)); },
+      classList: {
+        add(c) { classSet.add(c); },
+        remove(c) { classSet.delete(c); },
+        contains(c) { return classSet.has(c); }
+      },
+      setAttribute(k, v) { attrs.set(k, String(v)); if (k === 'id') n.id = v; },
+      getAttribute(k) { return attrs.get(k) ?? null; },
+      removeAttribute(k) { attrs.delete(k); },
+      addEventListener(type, fn) {
+        if (!nodeListeners.has(type)) nodeListeners.set(type, []);
+        nodeListeners.get(type).push(fn);
+      },
+      removeEventListener(type, fn) {
+        if (!nodeListeners.has(type)) return;
+        nodeListeners.set(type, nodeListeners.get(type).filter(x => x !== fn));
+      },
+      appendChild(c) { if (c) { c.parentElement = this; this.children.push(c); } return c; },
+      replaceChildren(...arr) { this.children = [...arr]; },
+      querySelectorAll() { return []; },
+      querySelector() { return null; },
+      getBoundingClientRect() { return { left: 100, top: 100, width: 120, height: 24, right: 220, bottom: 124 }; },
+      contains(other) {
+        let cur = other;
+        while (cur) { if (cur === n) return true; cur = cur.parentElement; }
+        return false;
+      },
+      closest(sel) {
+        const selectors = String(sel).split(',').map(s => s.trim().toLowerCase());
+        let cur = n;
+        while (cur) {
+          const t = String(cur.tagName || '').toLowerCase();
+          for (const s of selectors) {
+            if (s === t) return cur;
+            if (s === '[contenteditable]' && cur.getAttribute('contenteditable') != null) return cur;
+            if (s.startsWith('#') && cur.id === s.slice(1)) return cur;
+          }
+          cur = cur.parentElement;
+        }
+        return null;
+      },
+      click() { (nodeListeners.get('click') || []).forEach(fn => fn({ target: n })); },
+      trigger(t, e) { (nodeListeners.get(t) || []).forEach(fn => fn(e || { target: n })); }
+    };
+    return n;
+  };
+
+  const rightEditor = makeNode('textarea', 'host-right-editor');
+  let activeElement = rightEditor;
+  let shadowActive = null;
+  let focusCalls = [];
+
+  const wrapFocus = (node, label) => {
+    node.focus = () => {
+      focusCalls.push(label);
+      activeElement = node;
+    };
+    return node;
+  };
+
+  let hostNode = makeNode('div', 'ag-context-meter');
+  const auxBox = makeNode('div', 'aux-pane');
+  auxBox.getBoundingClientRect = () => ({ left: 900, top: 0, width: 320, height: 900, right: 1220, bottom: 900 });
+  const shadowObj = {
+    get activeElement() { return shadowActive; },
+    set innerHTML(_) { },
+    getElementById(id) {
+      if (!elements.has(id)) {
+        const tag = id.includes('input') ? 'input' : (id.includes('select') ? 'select' : 'button');
+        const created = makeNode(tag, id);
+        if (id === 'panel' || id === 'panel-tokens' || id === 'panel-quota' || id === 'overflow-menu' || id === 'color-picker-popover') {
+          created.hidden = true;
+        }
+        created.remove = () => { };
+        created.prepend = (...nodes) => { created.children.unshift(...nodes); };
+        created.insertBefore = (c) => { created.appendChild(c); return c; };
+        wrapFocus(created, id);
+        elements.set(id, created);
+      }
+      return elements.get(id);
+    },
+    addEventListener(type, fn) {
+      if (!shadowListeners.has(type)) shadowListeners.set(type, []);
+      shadowListeners.get(type).push(fn);
+    },
+    removeEventListener(type, fn) {
+      if (!shadowListeners.has(type)) return;
+      shadowListeners.set(type, shadowListeners.get(type).filter(x => x !== fn));
+    }
+  };
+
+  const docMock = {
+    documentElement: makeNode('html'),
+    body: makeNode('body'),
+    hidden: false,
+    get activeElement() { return activeElement; },
+    getElementById(id) { return id === 'ag-context-meter' ? hostNode : elements.get(id) || null; },
+    createElement(tag) {
+      const node = makeNode(tag);
+      node.remove = () => { };
+      node.prepend = (...nodes) => { node.children.unshift(...nodes); };
+      node.insertBefore = (c) => { node.appendChild(c); return c; };
+      if (String(tag).toLowerCase() === 'div') {
+        node.attachShadow = () => {
+          hostNode = node;
+          return shadowObj;
+        };
+      }
+      return node;
+    },
+    querySelectorAll() { return []; },
+    querySelector(sel) {
+      if (sel && sel.includes('data-aux-pane-focus-scope')) return auxBox;
+      return null;
+    },
+    addEventListener(type, fn) {
+      if (!docListeners.has(type)) docListeners.set(type, []);
+      docListeners.get(type).push(fn);
+    },
+    removeEventListener(type, fn) {
+      if (!docListeners.has(type)) return;
+      docListeners.set(type, docListeners.get(type).filter(x => x !== fn));
+    },
+    dispatchEvent(typeOrEv) {
+      const ev = typeof typeOrEv === 'string' ? { type: typeOrEv } : typeOrEv;
+      (docListeners.get(ev.type) || []).forEach(fn => fn(ev));
+    }
+  };
+  docMock.body.prepend = (...nodes) => { docMock.body.children.unshift(...nodes); };
+  docMock.body.insertBefore = (c) => { docMock.body.appendChild(c); return c; };
+
+  const sandbox = {
+    console, Math, Date, JSON, Number, String, Boolean, Array, Object, Set, Map, RegExp, Error, Promise,
+    parseInt, parseFloat, isNaN, isFinite,
+    setTimeout: () => 0, clearTimeout: () => { }, setInterval: () => 0, clearInterval: () => { },
+    requestAnimationFrame: cb => { cb(); return 1; }, cancelAnimationFrame: () => { },
+    location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/split-test', search: '' },
+    document: docMock,
+    localStorage: { _m: new Map(), getItem(k) { return this._m.get(k) ?? null; }, setItem(k, v) { this._m.set(k, String(v)); } },
+    __AGContextMeterCore: core,
+    ANTIGRAVITY_CONTEXT: { scan: async () => ({ activeConversationId: 'split-test', latest: {}, session: session() }) }
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+  vm.runInNewContext(source, sandbox);
+
+  const api = sandbox.__AGContextMeter;
+  try {
+    // 1. 聚焦右窗格编辑器后点击额度/上下文/速度/用量与非可编辑按钮：必须 preventDefault + stopPropagation 且不丢焦点
+    const dispatchShadowMouse = (type, target) => {
+      let prevented = false;
+      let stopped = false;
+      const ev = {
+        target,
+        composedPath: () => [target, hostNode],
+        preventDefault() { prevented = true; },
+        stopPropagation() { stopped = true; }
+      };
+      (shadowListeners.get(type) || []).forEach(fn => fn(ev));
+      return { prevented, stopped, ev };
+    };
+
+    for (const id of ['badge-quota', 'badge', 'badge-overflow', 'overflow-speed-btn', 'overflow-requests-btn']) {
+      const btn = shadowObj.getElementById(id);
+      const rDown = dispatchShadowMouse('mousedown', btn);
+      const rPtr = dispatchShadowMouse('pointerdown', btn);
+      const rClk = dispatchShadowMouse('click', btn);
+      assert.equal(rDown.prevented, true, `${id} mousedown 必须阻止默认聚焦转移`);
+      assert.equal(rDown.stopped, true);
+      assert.equal(rPtr.stopped, true);
+      assert.equal(rClk.stopped, true);
+      assert.equal(activeElement, rightEditor, `点击 ${id} 后宿主右分屏焦点必须保持在 rightEditor`);
+    }
+
+    // 2. 可编辑控件 (input / textarea / select / option / label / [contenteditable]) 保留默认聚焦但隔离冒泡
+    const editableInput = shadowObj.getElementById('ctx-custom-limit-input');
+    const editableSelect = makeNode('select', 'ctx-model-select');
+    const editableOption = makeNode('option');
+    editableOption.parentElement = editableSelect;
+    const editableLabel = makeNode('label');
+    const editableDiv = makeNode('div');
+    editableDiv.setAttribute('contenteditable', 'true');
+    for (const ed of [editableInput, editableSelect, editableOption, editableLabel, editableDiv]) {
+      const rEd = dispatchShadowMouse('mousedown', ed);
+      assert.equal(rEd.prevented, false, `${ed.tagName} 必须保留原生聚焦与下拉/输入能力`);
+      assert.equal(rEd.stopped, true);
+    }
+
+    // 3. 插件内部点击非触发空白区域应关闭取色器与 overflow-menu
+    const pop = shadowObj.getElementById('color-picker-popover');
+    const om = shadowObj.getElementById('overflow-menu');
+    pop.hidden = false;
+    om.hidden = false;
+    const emptyDiv = makeNode('div');
+    dispatchShadowMouse('click', emptyDiv);
+    assert.equal(pop.hidden, true, '点击插件内部空白应关闭取色器');
+    assert.equal(om.hidden, true, '点击插件内部空白应关闭溢出菜单');
+
+    // 4. 在宿主右窗格按 Esc（焦点不在插件内）应关闭浮层且绝不调用任何 *.focus() 抢走焦点
+    om.hidden = false;
+    focusCalls = [];
+    docMock.dispatchEvent({ type: 'keydown', key: 'Escape' });
+    assert.equal(om.hidden, true);
+    assert.equal(focusCalls.length, 0, '焦点不在插件内时 Esc 禁止抢回插件按钮');
+    assert.equal(activeElement, rightEditor);
+
+    // 5. 当焦点在插件内按 Esc 才归还聚焦到触发器；且 aux 停靠态点击宿主外部空白不关闭主面板
+    activeElement = hostNode;
+    shadowActive = om;
+    om.hidden = false;
+    focusCalls = [];
+    docMock.dispatchEvent({ type: 'keydown', key: 'Escape' });
+    assert.equal(om.hidden, true);
+    assert.ok(focusCalls.length > 0, '焦点在插件内按 Esc 应归还聚焦到对应触发器');
+
+    activeElement = rightEditor;
+    shadowActive = null;
+    api.setDockPosition('aux');
+    const panelTokens = shadowObj.getElementById('panel-tokens');
+    panelTokens.hidden = false;
+    docMock.dispatchEvent({ type: 'click', target: rightEditor, composedPath: () => [rightEditor] });
+    assert.equal(hostNode.getAttribute('data-dock'), 'aux');
+    assert.equal(panelTokens.hidden, false, 'aux 常驻停靠态点击宿主空白不应关闭主面板');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('v0.9.0-beta.1: 当前会话 4 行 Bento 3 档宽度断点、双轨 <25% 构成切换、历史点保持、键盘导航与审计跳步联动', async () => {
+  const extScans = [];
+  const timelineMock = {
+    cascadeId: 'c-bento',
+    sessionTitle: '重构测试会话',
+    totalCalls: 3,
+    mainCallsCount: 2,
+    subagentCallsCount: 1,
+    sessionTokenTotals: { callCount: 3, totalTokens: 32000, inputTokens: 10000, cacheReadTokens: 20000, outputTokens: 2000 },
+    cacheSummary: { evaluatedRequestCount: 3, totalInput: 30000, totalUncachedInput: 10000, totalCacheRead: 20000, cacheReadPct: 66.7, cacheStatus: 'hit' },
+    timingSummary: {
+      totalTtftSec: 1.5, ttftCount: 3, totalStreamingSec: 8.5, streamingCount: 3,
+      totalToolExecSec: 4.0, toolExecCount: 2, activeWallSec: 14.0,
+      wallClockActiveSec: 11.2, cumulativeTaskSec: 14.0, concurrencySavedSec: 2.8,
+      hasConcurrentCalls: true, hasIndependentThinkingTimestamps: false,
+      ttftPct: 10.7, streamingPct: 60.7, toolExecPct: 28.6
+    },
+    contextChangeEvents: [
+      { id: 'ev-1', type: 'unknown_drop', source: 'call_sequence', stepIndex: 3, turnIndex: 2, callId: 'call-2', beforeTokens: 48000, afterTokens: 16000, deltaTokens: -32000, detail: 'context_drop_unknown' }
+    ],
+    fileActivities: [
+      { path: 'D:/repo/src/main.js', basename: 'main.js', readCount: 1, writeCount: 2, searchCount: 0, totalCount: 3, addedLines: 20, removedLines: 5, turnNumbers: [1], lastStepIndex: 1 }
+    ],
+    commandExecutions: [
+      { id: 'cmd-1', stepIndex: 2, turnNumber: 1, program: 'npm', command: 'npm test', status: 'done', isSlow: false, isBackground: false, durationSec: 2.1 }
+    ],
+    agentFleetSummary: {
+      mainAgent: { callCount: 2, models: ['Gemini 4'], totalTokens: 26000 },
+      subagents: [{ childCid: 'sub-1', type: 'research', parentStepIndex: 1, confidence: 'verified', callCount: 1, totalTokens: 6000, modelBreakdown: [{ modelLabel: 'Gemini 3.8 Flash', callCount: 1, totalTokens: 6000 }] }],
+      unlinkedCount: 0, mainOnlyTotalTokens: 26000, fleetCombinedTotalTokens: 32000, dedupVerified: true
+    },
+    turns: [
+      {
+        turnIndex: 1, stepIndex: 0, preview: 'turn 1 question', inputTokens: 8000, cacheReadTokens: 40000, outputTokens: 800,
+        lastContextTokens: 48000, deltaFromPrevTurn: 48000,
+        calls: [{ callId: 'call-1', stepIndex: 1, turnIndex: 1, modelLabel: 'Gemini 4', agentRole: 'main', hasInputCacheFields: true, inputTokens: 8000, cacheReadTokens: 40000, totalInputTokens: 48000, outputTokens: 800, contextWindowTokens: 48000, deltaFromPrevStep: 48000, outcomeStatus: 'success', created_at: '2026-11-23T00:01:00Z' }]
+      },
+      {
+        turnIndex: 2, stepIndex: 2, preview: 'turn 2 follow-up', inputTokens: 2000, cacheReadTokens: 14000, outputTokens: 1200,
+        lastContextTokens: 16000, deltaFromPrevTurn: -32000,
+        calls: [{ callId: 'call-2', stepIndex: 3, turnIndex: 2, modelLabel: 'Gemini 4', agentRole: 'main', hasInputCacheFields: true, inputTokens: 2000, cacheReadTokens: 14000, totalInputTokens: 16000, outputTokens: 1200, contextWindowTokens: 16000, deltaFromPrevStep: -32000, outcomeStatus: 'success', created_at: '2026-11-23T00:02:00Z' }]
+      }
+    ]
+  };
+  const h = harness(session(), {
+    window: {
+      __APP_CONFIG__: { csrfToken: 'test' },
+      contextMeterAPI: {
+        scan: id => new Promise(resolve => extScans.push({ id, resolve })),
+        getSettings: async () => ({ ok: true, settings: {} }),
+        getSessionTimeline: async () => ({ ok: true, data: timelineMock })
+      }
+    }
+  });
+  try {
+    const sess = {
+      ...session(),
+      title: '重构测试会话',
+      definitionsCount: 12,
+      groups: {
+        system: { chars: 2000, bytes: 2000, low: 400, high: 600 },
+        definitions: { chars: 4000, bytes: 4000, low: 800, high: 1200 },
+        user: { chars: 1200, bytes: 1200, low: 200, high: 400 },
+        assistant: { chars: 2400, bytes: 2400, low: 500, high: 700 },
+        thinking: { chars: 0, bytes: 0, low: 0, high: 0 },
+        tools: { chars: 1600, bytes: 1600, low: 300, high: 500 },
+        summaries: { chars: 0, bytes: 0, low: 0, high: 0 }
+      },
+      stepCompositionItems: {
+        user: [{ stepIndex: 0, label: 'U#1', tokens: 150, chars: 600, preview: 'turn 1 question' }, { stepIndex: 2, label: 'U#2', tokens: 150, chars: 600, preview: 'turn 2 follow-up' }],
+        assistant: [{ stepIndex: 1, label: 'A#1', tokens: 300, chars: 1200, preview: 'resp 1' }, { stepIndex: 3, label: 'A#2', tokens: 300, chars: 1200, preview: 'resp 2' }],
+        tools: [{ stepIndex: 2, label: 'run_command@2', tokens: 400, chars: 1600, preview: 'npm test' }]
+      }
+    };
+    // 1. 低占用 16K / 256K = 6.25% (<25%) 应自动开启「已用构成 100%」，隐藏缓存条且保留未归类残差段
+    extScans[0]?.resolve({ ok: true, data: { session: sess, scannedAt: Date.now(), latest: { actual: 16000, budget: 256000 } } });
+    h.pending[0]?.resolve(response({
+      usage: { inputTokens: 2000, cacheReadTokens: 14000, outputTokens: 1200 },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
+    }));
+    await h.flush();
+
+    h.elements.get('badge').click();
+    await h.flush();
+
+    const api = h.sandbox.__AGContextMeter;
+    // 3 档宽度断点校验
+    assert.equal(api.setPanelWidthForTest(420).tier, 'narrow');
+    assert.equal(api.setPanelWidthForTest(680).tier, 'medium');
+    assert.equal(api.setPanelWidthForTest(980).tier, 'wide');
+
+    let dash = api.getSessionDashboardStateForTest();
+    assert.equal(dash.widthTier, 'wide');
+    assert.equal(dash.ovTitle, '重构测试会话');
+    assert.equal(dash.subtrackMode, 'comp', '<25% 低占用默认应展示已用构成 100%');
+    assert.equal(dash.subtrackCompHidden, false);
+    assert.equal(dash.keySegTrackHidden, true, '内容构成与缓存构成禁止混在同一条显示');
+    assert.equal(dash.unaccountedHidden, false, '实报高于估算时应独立展示灰色斜纹未归类开销');
+
+    // 手动切换至「缓存结构」副轨，验证互相切换彻底隔离
+    h.elements.get('ctx-subtrack-mode-cache').click();
+    dash = api.getSessionDashboardStateForTest();
+    assert.equal(dash.subtrackMode, 'cache');
+    assert.equal(dash.subtrackCompHidden, true);
+    assert.equal(dash.keySegTrackHidden, false);
+
+    // 切换树 Delta 模式与对比基准
+    h.elements.get('ctx-tree-mode-delta').click();
+    h.elements.get('btn-ctx-cmp-turn').click();
+    dash = api.getSessionDashboardStateForTest();
+    assert.equal(dash.treeMode, 'delta');
+    assert.equal(dash.compareBase, 'prev_turn');
+
+    // 2. 固定历史点后，触发新轮询不得冲掉已固定的 callId，且显示返回最新按钮
+    api.jumpToStepOrTurnForTest({ stepIndex: 1, callId: 'call-1' });
+    let trend = api.getContextTrendStateForTest();
+    assert.equal(trend.pinnedCallId, 'call-1');
+    dash = api.getSessionDashboardStateForTest();
+    assert.equal(dash.returnLatestHidden, false);
+
+    // 模拟刷新动作，仍应保持 call-1 固定不动
+    h.elements.get('ctx-subtrack-mode-comp').click();
+    trend = api.getContextTrendStateForTest();
+    assert.equal(trend.pinnedCallId, 'call-1', '新请求或刷新不得覆盖用户已固定的历史步骤');
+
+    // 键盘右键移动到下一步 call-2，按 Escape 回到最新
+    h.elements.get('ctx-trend-card').trigger('keydown', { key: 'ArrowRight', preventDefault() { } });
+    assert.equal(api.getContextTrendStateForTest().pinnedCallId, 'call-2');
+    h.elements.get('ctx-trend-card').trigger('keydown', { key: 'Escape', preventDefault() { } });
+    assert.equal(api.getContextTrendStateForTest().pinnedCallId, null);
+    assert.equal(api.getSessionDashboardStateForTest().returnLatestHidden, true);
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('v0.9.0-beta.1: Customizations/插件市场/详情子页(含搜索框)全面避让所有弹窗浮层与辅助栏，返回聊天后恢复', async () => {
+  const elements = new Map();
+  const docElements = new Map();
+  const listeners = new Map();
+  const docListeners = new Map();
+  let mode = 'chat'; // 'chat' | 'customizations' | 'plugin_detail'
+  const capturedObserverCbs = [];
+  const scheduledTimers = [];
+
+  const mkEl = () => {
+    const attrs = new Map();
+    const el = {
+      style: { display: '', opacity: '', pointerEvents: '', setProperty() { }, removeProperty() { }, getPropertyValue() { return ''; } },
+      children: [], hidden: false, textContent: '',
+      get id() { return attrs.get('id') || ''; },
+      set id(v) { attrs.set('id', String(v)); if (v) docElements.set(String(v), el); },
+      get className() { return attrs.get('class') || ''; },
+      set className(v) { attrs.set('class', String(v || '')); },
+      classList: {
+        add(c) { const a = (attrs.get('class') || '').split(/\s+/).filter(Boolean); if (!a.includes(c)) a.push(c); attrs.set('class', a.join(' ')); },
+        remove(c) { attrs.set('class', (attrs.get('class') || '').split(/\s+/).filter(x => x !== c).join(' ')); },
+        contains(c) { return (attrs.get('class') || '').split(/\s+/).includes(c); },
+        toggle(c, f) { const h = this.contains(c); const w = f !== undefined ? Boolean(f) : !h; if (w) this.add(c); else this.remove(c); return w; }
+      },
+      addEventListener(t, fn) { if (!listeners.has(el)) listeners.set(el, new Map()); listeners.get(el).set(t, fn); },
+      setAttribute(k, v) { attrs.set(k, String(v)); if (k === 'id' && v) docElements.set(String(v), el); },
+      getAttribute(k) { return attrs.get(k) ?? null; },
+      removeAttribute(k) { attrs.delete(k); },
+      remove() { },
+      appendChild(x) { if (x) { x.parentElement = el; el.children.push(x); } },
+      contains(t) { return t === el || el.children.some(c => c?.contains?.(t)); },
+      closest() { return null; },
+      querySelectorAll() { return []; },
+      replaceChildren() { el.children = []; },
+      click() { listeners.get(el)?.get('click')?.(); },
+      getBoundingClientRect() { return { left: 100, top: 100, width: 300, height: 400, right: 400, bottom: 500 }; },
+      trigger(t, ev = {}) { listeners.get(el)?.get(t)?.(ev); }
+    };
+    return el;
+  };
+
+  const host = mkEl();
+  host.isConnected = true;
+  host.attachShadow = () => ({
+    set innerHTML(_) { },
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, mkEl());
+      return elements.get(id);
+    }
+  });
+  const searchTextboxNode = { tagName: 'INPUT', type: 'text', getAttribute: k => (k === 'placeholder' ? 'Search plugins...' : (k === 'role' ? 'textbox' : null)), closest: () => null, getBoundingClientRect: () => ({ width: 200, height: 32 }) };
+  const chatComposerNode = { tagName: 'DIV', isContentEditable: true, getAttribute: () => null, closest: () => null, getBoundingClientRect: () => ({ width: 500, height: 80 }) };
+  const customHeadingNode = { textContent: 'Customizations', closest: () => null };
+  const sideNavCustomLink = { tagName: 'A', textContent: '自定义扩展', getAttribute: k => (k === 'href' ? '/customizations' : null), closest: sel => (sel && sel.includes('nav') ? {} : null) };
+  const sideAuxPluginItem = { textContent: '插件', closest: sel => (sel && sel.includes('data-side-panel-open') ? {} : null) };
+  const convToolbarNode = { getAttribute: k => (k === 'data-testid' ? 'cascade-system-message-toolbar' : null), closest: () => null };
+  const backBtnNode = { getAttribute: k => k === 'aria-label' ? 'Back' : null, closest: sel => (mode === 'archived_chat' && sel && sel.includes('nav') ? {} : null) };
+  const installBtnNode = { textContent: 'Install', closest: () => null };
+  const auxContainer = mkEl();
+  auxContainer.insertBefore = (n) => { auxContainer.children.unshift(n); n.parentElement = auxContainer; };
+
+  let first = true;
+  const sandbox = {
+    location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111', hash: '' },
+    document: {
+      body: mkEl(), head: mkEl(), documentElement: mkEl(), hidden: false,
+      createElement() { if (first) { first = false; return host; } return mkEl(); },
+      getElementById: id => docElements.get(id) || null,
+      querySelector(sel) {
+        if (!sel) return null;
+        if (sel.includes('aux-pane') || sel.includes('side-panel-focus-scope')) return auxContainer;
+        if ((mode === 'plugin_detail' || mode === 'archived_chat') && sel.includes('Back')) return backBtnNode;
+        if (mode === 'archived_chat' && sel.includes('cascade-system-message-toolbar')) return convToolbarNode;
+        if (mode === 'chat' && sel.includes('[contenteditable="true"]')) return chatComposerNode;
+        return null;
+      },
+      querySelectorAll(sel) {
+        if (!sel) return [];
+        if (sel.includes('role="textbox"')) return mode === 'chat' ? [chatComposerNode] : [searchTextboxNode];
+        if (sel.includes('role="heading"')) {
+          if (mode === 'customizations') return [customHeadingNode];
+          if (mode === 'archived_chat') return [sideNavCustomLink, sideAuxPluginItem];
+          return [];
+        }
+        if (mode === 'plugin_detail' && sel === 'button, [role="button"]') return [installBtnNode];
+        return [];
+      },
+      addEventListener(t, fn) { if (!docListeners.has(t)) docListeners.set(t, new Set()); docListeners.get(t).add(fn); },
+      removeEventListener(t, fn) { docListeners.get(t)?.delete(fn); },
+      dispatchEvent(ev) { for (const fn of (docListeners.get(ev?.type || ev) || [])) fn(ev); }
+    },
+    window: { __APP_CONFIG__: { csrfToken: 'test' }, contextMeterAPI: { scan: async () => ({ ok: true, data: { session: session(), scannedAt: Date.now() } }) } },
+    __AGContextMeterCore: core,
+    AbortController, Date,
+    MutationObserver: function (cb) { capturedObserverCbs.push(cb); return { observe() { }, disconnect() { } }; },
+    setTimeout(fn, ms) { scheduledTimers.push({ fn, ms }); return scheduledTimers.length; },
+    clearTimeout() { }, setInterval: () => 1, clearInterval() { },
+    fetch: async () => response({ usage: { inputTokens: 1000 } })
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox);
+  let timerCursor = 0;
+  const flushScheduledTimers = () => {
+    while (timerCursor < scheduledTimers.length) {
+      const t = scheduledTimers[timerCursor++];
+      try { t?.fn?.(); } catch { }
+    }
+  };
+  try {
+    await new Promise(r => setImmediate(r));
+    flushScheduledTimers();
+    const api = sandbox.__AGContextMeter;
+    api.setRadialOrbEnabledForTest(true, { persist: false });
+    api.setDockPosition('aux');
+    elements.get('badge').click();
+    assert.equal(elements.get('panel').hidden, false);
+    assert.equal(elements.get('dock-aux-context-bar').hidden, false);
+
+    // 切入 Customizations 页面（含搜索框）-> 自动全面避让且阻止一切弹窗/菜单打开
+    mode = 'customizations';
+    capturedObserverCbs.forEach(cb => { try { cb([{ type: 'childList', addedNodes: [{}] }]); } catch { } });
+    flushScheduledTimers();
+
+    assert.equal(host.getAttribute('data-marketplace-active'), 'true');
+    assert.equal(elements.get('panel').hidden, true);
+    assert.equal(elements.get('dock-aux-context-bar').hidden, true);
+    assert.equal(elements.get('ctx-radial-orb').hidden, true, '自定义扩展页必须隐藏悬浮球');
+    assert.equal(elements.get('ctx-radial-layer').hidden, true, '自定义扩展页必须收起径向菜单');
+    elements.get('badge-overflow').click();
+    assert.equal(elements.get('overflow-menu').hidden, true, '自定义扩展页点击溢出口禁止弹出 picker 菜单');
+    elements.get('badge').trigger('mouseenter');
+    assert.equal(elements.get('overflow-menu').hidden, true, '自定义扩展页悬停顶栏禁止弹出 picker 菜单');
+    assert.equal(elements.get('context-tooltip').getAttribute('data-visible'), 'false');
+
+    // 切入插件详情子页 (只有 Back + Install 按钮，无 Heading) -> 依然持续避让
+    mode = 'plugin_detail';
+    capturedObserverCbs.forEach(cb => { try { cb([{ type: 'childList', addedNodes: [{}] }]); } catch { } });
+    flushScheduledTimers();
+    assert.equal(host.getAttribute('data-marketplace-active'), 'true');
+    elements.get('badge-overflow').click();
+    assert.equal(elements.get('overflow-menu').hidden, true);
+
+    // 切入已归档历史会话 (/c/... 无输入框，但左侧栏含「自定义扩展」链接与全局 Back 箭头、右侧含「插件」字样) -> 不得误触发避让
+    mode = 'archived_chat';
+    sandbox.location.pathname = '/c/1602135e-da38-4837-a3bc-3e993d35efab';
+    capturedObserverCbs.forEach(cb => { try { cb([{ type: 'childList', addedNodes: [{}] }]); } catch { } });
+    flushScheduledTimers();
+    assert.equal(host.getAttribute('data-marketplace-active'), null, '已归档历史会话不得被左侧导航/全局后退误判为自定义扩展');
+    elements.get('badge').click();
+    assert.equal(elements.get('panel').hidden, false, '已归档历史会话中点击上下文入口应能正常打开面板');
+    elements.get('badge').click();
+    assert.equal(elements.get('panel').hidden, true, '再次点击上下文入口应正常收起面板');
+
+    // 返回普通对话页 -> 自动恢复正常响应
+    mode = 'chat';
+    capturedObserverCbs.forEach(cb => { try { cb([{ type: 'childList', addedNodes: [{}] }]); } catch { } });
+    flushScheduledTimers();
+    assert.equal(host.getAttribute('data-marketplace-active'), null);
+    assert.equal(elements.get('ctx-radial-orb').hidden, false, '返回聊天页应恢复悬浮球');
+    elements.get('badge').click();
+    assert.equal(elements.get('panel').hidden, false, '退出返回聊天页面后应恢复正常打开面板');
+  } finally {
+    sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('v0.9.0-beta.1: 正常状态隐藏空蓝框(#ctx-ov-pinned-banner / #dock-fallback-note / #dock-open-feedback)，有有效内容展示且解除后完整收起', async () => {
+  const h = harness();
+  const stylesSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+  assert.match(stylesSrc, /:host\s+\[hidden\]:not\(\.ag-panel\)\s*\{[^}]*display:\s*none\s*!important/s);
+  assert.match(stylesSrc, /\.ctx-dock-note\[hidden\],\s*\.ctx-dock-note:empty\s*\{[^}]*display:\s*none\s*!important/s);
+  assert.match(stylesSrc, /\.ctx-ov-pinned-banner\[hidden\],\s*\.ctx-ov-pinned-banner:empty\b[^}]*display:\s*none\s*!important/s);
+  assert.match(stylesSrc, /\.ctx-subtrack-wrap\s+\.key-seg-track\s*\{[^}]*margin:\s*0/s);
+
+  try {
+    const api = h.sandbox.__AGContextMeter;
+    h.finishScan();
+    h.pending[0]?.resolve?.(response({ usage: { inputTokens: 1000 } }));
+    await h.flush();
+    api.setSessionCallsForTest([
+      { callId: 'c1', stepIndex: 10, inputTokens: 1000, outputTokens: 200, timestamp: 1000 },
+      { callId: 'c2', stepIndex: 20, inputTokens: 1500, outputTokens: 300, timestamp: 2000 }
+    ]);
+    await api.setPanelLanguage('zh-CN', { persist: false });
+
+    const pinnedBanner = h.elements.get('ctx-ov-pinned-banner');
+    const dockFallbackNote = h.elements.get('dock-fallback-note');
+    const dockOpenFeedback = h.elements.get('dock-open-feedback');
+
+    // 1. 正常初始态：无内容且必须隐藏
+    assert.equal(pinnedBanner.hidden, true);
+    assert.equal(pinnedBanner.textContent, '');
+    assert.equal(dockFallbackNote.hidden, true);
+    assert.equal(dockFallbackNote.textContent, '');
+    assert.equal(dockOpenFeedback.hidden, true);
+    assert.equal(dockOpenFeedback.textContent, '');
+
+    // 2. 固定历史步骤：#ctx-ov-pinned-banner 出现有效内容；返回最新后清空并隐藏
+    h.elements.get('csb-group-context').click();
+    api.jumpToStepOrTurnForTest({ callId: 'c1', stepIndex: 10 });
+    assert.equal(pinnedBanner.hidden, false);
+    assert.match(pinnedBanner.textContent, /S10/);
+    h.elements.get('btn-ctx-return-latest')?.click();
+    assert.equal(pinnedBanner.hidden, true);
+    assert.equal(pinnedBanner.textContent, '');
+
+    // 3. 配置页反馈条：进入不存在 aux 容器的回退态或打开反馈时正常显示，恢复后清空并隐藏
+    api.setDockPosition('aux', { persist: false });
+    assert.equal(dockFallbackNote.hidden, false);
+    assert.ok(dockFallbackNote.textContent.trim().length > 0);
+    api.setDockPosition('flow', { persist: false });
+    assert.equal(dockFallbackNote.hidden, true);
+    assert.equal(dockFallbackNote.textContent, '');
+
+    await api.openStandaloneBrowserPageForTest();
+    assert.equal(dockOpenFeedback.hidden, false);
+    assert.ok(dockOpenFeedback.textContent.trim().length > 0);
+  } finally {
+    h.sandbox?.__AGContextMeter?.dispose?.();
+  }
+});
+
+test('v0.9.0-beta.1: 径向菜单 3 形态 / 锁定物理动效参数 / 靠边安全扇区 / 拖拽阈值 / CLI 右键直达配置 / Customizations 避让', async () => {
+  const h = harness(session());
+  const api = h.sandbox.__AGContextMeter;
+  const stylesSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+  try {
+    h.finishScan();
+    await h.flush();
+
+    // 1. CSS 与常量严格锁定验证（含原型双层极坐标外向内汇聚 + 正向抵消旋转）
+    assert.match(stylesSrc, /border-radius:\s*50%/);
+    assert.match(stylesSrc, /width:\s*38px;\s*height:\s*38px/);
+    assert.match(stylesSrc, /340ms\s+cubic-bezier\(0\.22,\s*1\.18,\s*0\.36,\s*1\)\s+calc\(var\(--i\)\s*\*\s*34ms\)/);
+    assert.match(stylesSrc, /240ms\s+ease-out\s+calc\(var\(--i\)\s*\*\s*34ms\)/);
+    assert.match(stylesSrc, /280ms\s+ease-out\s+calc\(var\(--i\)\s*\*\s*34ms\)/);
+    assert.match(stylesSrc, /190ms\s+cubic-bezier\(0\.4,\s*0,\s*1,\s*1\)\s+0ms/);
+    assert.match(stylesSrc, /scale\(1\.09\)/);
+    assert.match(stylesSrc, /scale\(0\.94\)/);
+    assert.match(stylesSrc, /blur\(10px\)/);
+    assert.match(stylesSrc, /\.ctx-radial-slot[\s\S]*rotate\(var\(--angle\)\)[\s\S]*translateY\(calc\(-1\s*\*\s*var\(--r-far\)\)\)[\s\S]*rotate\(calc\(-1\s*\*\s*var\(--angle\)\)\)/);
+    assert.match(stylesSrc, /\.ctx-radial-layer\[data-state="open"\]\s+\.ctx-radial-slot[\s\S]*translateY\(calc\(-1\s*\*\s*var\(--r-rest\)\)\)[\s\S]*rotate\(calc\(-1\s*\*\s*var\(--angle\)\)\)/);
+    assert.ok(!fs.existsSync(require('node:path').join(__dirname, 'antigravity_contextmeter.html')), '不得将只读原型 HTML 复制进项目目录');
+
+    api.setRadialOrbEnabledForTest(true, { persist: false });
+    const rSt0 = api.getRadialMenuStateForTest();
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(rSt0.constants)), {
+      STAGGER_MS: 34,
+      R_REST_360: 56,
+      R_REST_180: 92,
+      R_FAR_MULTIPLIER: 1.85,
+      R_CLOSE_MULTIPLIER: 1.75,
+      BLUR_START_PX: 10
+    });
+    assert.equal(rSt0.quickMenuStyle, 'floating');
+    assert.equal(h.elements.get('ctx-radial-orb').hidden, false);
+
+    // 2. 四周留白 >= 84px 展开完整 360° 六瓣花环；四角与四边靠边收束安全扇区且 100% 不越界
+    const gCenter = api.computeRadialGeometryForTest('floating', { left: 500, top: 380, width: 40, height: 40 }, 1280, 800);
+    assert.equal(gCenter.isFull360, true);
+    assert.equal(gCenter.restRadius, 56);
+    assert.equal(gCenter.items.length, 6);
+    assert.equal(gCenter.items[0].angleDeg, 0);
+    assert.equal(gCenter.items[3].angleDeg, 180);
+
+    const checkSafeBounds = (geom, msg) => {
+      for (const it of geom.items) {
+        assert.ok(it.absX >= 20 && it.absX <= 1260 && it.absY >= 20 && it.absY <= 780, msg);
+      }
+    };
+    const gCornerTL = api.computeRadialGeometryForTest('floating', { left: 10, top: 10, width: 40, height: 40 }, 1280, 800);
+    const gCornerTR = api.computeRadialGeometryForTest('floating', { left: 1230, top: 10, width: 40, height: 40 }, 1280, 800);
+    const gCornerBL = api.computeRadialGeometryForTest('floating', { left: 10, top: 750, width: 40, height: 40 }, 1280, 800);
+    const gCornerBR = api.computeRadialGeometryForTest('floating', { left: 1230, top: 750, width: 40, height: 40 }, 1280, 800);
+    assert.equal(gCornerTR.isFull360, false);
+    checkSafeBounds(gCornerTL, '左上角安全扇区不得被视口裁切');
+    checkSafeBounds(gCornerTR, '右上角安全扇区不得被视口裁切');
+    checkSafeBounds(gCornerBL, '左下角安全扇区不得被视口裁切');
+    checkSafeBounds(gCornerBR, '右下角安全扇区不得被视口裁切');
+    checkSafeBounds(api.computeRadialGeometryForTest('floating', { left: 500, top: 10, width: 40, height: 40 }, 1280, 800), '顶边避让不得越界');
+    checkSafeBounds(api.computeRadialGeometryForTest('floating', { left: 500, top: 750, width: 40, height: 40 }, 1280, 800), '底边避让不得越界');
+    checkSafeBounds(api.computeRadialGeometryForTest('floating', { left: 10, top: 380, width: 40, height: 40 }, 1280, 800), '左边避让不得越界');
+    checkSafeBounds(api.computeRadialGeometryForTest('floating', { left: 1230, top: 380, width: 40, height: 40 }, 1280, 800), '右边避让不得越界');
+
+    const gTopCenter = api.computeRadialGeometryForTest('topbar', { left: 600, top: 6, width: 40, height: 28 }, 1280, 800);
+    assert.equal(gTopCenter.restRadius, 92);
+    for (const it of gTopCenter.items) {
+      assert.ok(it.absY - 18 >= 34 + 6, '顶栏居中展开时 36px 卫星上边缘必须在工具栏底边下方净空区');
+    }
+
+    const gTop = api.computeRadialGeometryForTest('topbar', { left: 1220, top: 6, width: 40, height: 28 }, 1280, 800);
+    assert.equal(gTop.restRadius, 96);
+    for (const it of gTop.items) {
+      assert.ok(it.absY - 18 >= 34 + 6 && it.absX >= 22 && it.absX <= 1258, '顶栏贴边向下扇形及防右裁切不得压顶栏或越界');
+    }
+
+    const gBot = api.computeRadialGeometryForTest('bottombar', { left: 12, top: 750, width: 60, height: 24 }, 1280, 800);
+    assert.equal(gBot.restRadius, 96);
+    for (const it of gBot.items) {
+      assert.ok(it.absY + 18 <= 750 - 6 && it.absX >= 22 && it.absY >= 22, '底栏贴边向上扇形及防左裁切不得压底栏或越界');
+    }
+
+    // 3. 悬浮圆环点击展开 -> 右键第 6 颗 CLI 直达配置；切顶栏/底栏/经典模式验证切换与隐藏悬浮球
+    h.elements.get('ctx-radial-orb').click();
+    assert.equal(api.getRadialMenuStateForTest().open, true);
+    assert.equal(h.elements.get('ctx-radial-layer').hidden, false);
+
+    h.elements.get('radial-item-cli').trigger('contextmenu', { preventDefault() { }, stopPropagation() { } });
+    assert.equal(api.getRadialMenuStateForTest().open, false);
+    assert.equal(h.elements.get('panel').hidden, false);
+    assert.equal(api.getContextPreferencesState().activeContextTab, 'settings');
+
+    api.setQuickMenuStyleForTest('topbar', { persist: false });
+    assert.equal(h.elements.get('ctx-radial-orb').hidden, true);
+    h.elements.get('badge').click();
+    assert.equal(api.getRadialMenuStateForTest().open, true);
+    assert.equal(api.getRadialMenuStateForTest().anchorMode, 'topbar');
+
+    api.setQuickMenuStyleForTest('bottombar', { persist: false });
+    assert.equal(api.getRadialMenuStateForTest().open, false);
+    h.elements.get('csb-group-context').click();
+    assert.equal(api.getRadialMenuStateForTest().open, true);
+    assert.equal(api.getRadialMenuStateForTest().anchorMode, 'bottombar');
+
+    api.setQuickMenuStyleForTest('classic', { persist: false });
+    assert.equal(h.elements.get('ctx-radial-orb').hidden, true);
+    assert.equal(h.elements.get('ctx-radial-layer').hidden, true);
+  } finally {
+    api.dispose();
+  }
+});
+
+test('v0.9.0-beta.1: 当前会话双栏驾驶舱(>=860/窄屏) + 零删除既有ID + 统一6Tab与组成树真实预览 + 标题栏color-mix/color(srgb)采样', async () => {
+  const tplSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
+  const stylesSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+
+  // 1. 浅/深色作用域无黑色槽位 & 零蓝调炭黑与珍珠白 CSS 校验
+  assert.match(stylesSrc, /#pane-ctx-session[\s\S]*--ctx-ck-canvas:\s*#0C0C0D[\s\S]*--ctx-ck-card:\s*#151517/);
+  assert.match(stylesSrc, /:host\(\[data-theme="light"\]\)\s*#pane-ctx-session[\s\S]*--ctx-ck-canvas:\s*#F2F2F4[\s\S]*--ctx-ck-card:\s*#FCFCFD[\s\S]*--ctx-ck-track:\s*#EAEAEF/);
+  assert.match(stylesSrc, /#pane-ctx-session\s+\.ctx-main-track\s*\{[^}]*height:\s*14px/);
+  assert.match(stylesSrc, /#pane-ctx-session\s+\.ctx-cockpit-grid\s*\{[^}]*repeat\(12,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(stylesSrc, /#pane-ctx-session\s+\.ctx-ov-kpi-row\.ctx-ov-kpi-row-bottom\s*\{[^}]*repeat\(3,/);
+  assert.match(tplSrc, /id="ctx-timing-donut-wrap"|class="ctx-timing-donut-wrap"\s+hidden/);
+  assert.ok(tplSrc.includes('id="ctx-bento-row3"'), '必须保留 #ctx-bento-row3 确保 0 个既有 ID 被移除');
+
+  const overlayCalls = [];
+  const h = harness(session(), {
+    getComputedStyle: (target) => {
+      if (target && target._tag === 'title-menu-bar') {
+        return {
+          backgroundColor: 'color-mix(in srgb, #ffffff 4%, #181818)',
+          color: 'color(srgb 0.941176 0.941176 0.941176)',
+          getPropertyValue: () => ''
+        };
+      }
+      return { getPropertyValue: () => '' };
+    }
+  });
+  h.sandbox.document.querySelector = (sel) => sel === '[data-testid="title-menu-bar"]'
+    ? { _tag: 'title-menu-bar' }
+    : null;
+  h.sandbox.window.contextMeterAPI.syncOverlay = (opts) => overlayCalls.push(opts);
+  h.sandbox.window.contextMeterAPI.getSessionTimeline = async () => ({ ok: true, data: { turns: [], totalCalls: 0 } });
+
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    h.finishScan();
+    h.elements.get('theme-toggle').click();
+    await h.flush();
+
+    // 2. title-menu-bar 的 color-mix(in srgb, #ffffff 4%, #181818) 必须精准算出 #212121 并同步给宿主
+    assert.ok(overlayCalls.some(o => o && o.color === '#212121'), `预期 #212121，实际: ${JSON.stringify(overlayCalls)}`);
+
+    // 3. 宽屏 >=860 与窄屏 <860 容器档位 + 统一 6 Tab 与右子栏真实预览联动
+    const sess = session();
+    sess.userMessages = 2;
+    sess.steps = 12;
+    sess.stepCompositionItems = {
+      system: [{ stepIndex: 1, label: 'System Rules', tokens: 1200, preview: 'Strictly follow evidence from tools.' }],
+      tools: [{ stepIndex: 12, label: 'read_file', tokens: 800, preview: 'D:/path/to/secret/file' }]
+    };
+    h.elements.get('csb-group-context').click();
+    api.setContextLatestForTest({ model: 'Gemini 4 Neon', actual: 18000, budget: 512000, percent: 3.5 });
+    const wWide = api.setPanelWidthForTest(960);
+    assert.equal(wWide.tier, 'wide');
+    const wNarrow = api.setPanelWidthForTest(520);
+    assert.equal(wNarrow.tier, 'narrow');
+
+    api.switchCockpitAuditTabForTest('files');
+    assert.equal(h.elements.get('ctx-composition-tree-card').hidden, true);
+    assert.equal(h.elements.get('ctx-audit-workbench').hidden, false);
+    api.switchCockpitAuditTabForTest('tree');
+    assert.equal(h.elements.get('ctx-composition-tree-card').hidden, false);
+    assert.equal(h.elements.get('ctx-audit-workbench').hidden, true);
+
+    const dash = api.getSessionDashboardStateForTest();
+    assert.equal(dash.cockpitTab, 'tree');
+    assert.ok(h.elements.get('ctx-ov-pct-summary').textContent.includes('%'));
+
+    // 4. blocked_missing_pool 按 reason 精准展示且非 noPermission 不得误报无权限
+    api.setAccountsOverviewForTest({
+      activeAccountEmail: 'elvis@example.com',
+      accounts: [{ email: 'elvis@example.com', isActive: true, hasRefreshToken: true }],
+      autoSwitch: { enabled: true, poolKey: 'shared_3p_pool', metricMode: 'remaining_pct', windowKey: '5h', thresholdPct: 10, candidates: [] },
+      autoSwitchStatus: {
+        state: 'blocked_missing_pool',
+        blockedReason: 'target_pool_missing_in_snapshot',
+        blockedMeta: { poolKey: 'shared_3p_pool', windowKey: '5h' }
+      }
+    });
+    assert.equal(h.elements.get('auto-switch-status-pill').textContent, '已开启 · 受阻 · 所选池不可用');
+    assert.match(h.elements.get('auto-switch-last-note').textContent, /尚未返回监控池/);
+    assert.doesNotMatch(h.elements.get('auto-switch-last-note').textContent, /无模型权限|无权限/);
+
+    // 5. 打开看板/复制链接 4 分支文案核验（无硬编码括号）
+    await api.setPanelLanguage('zh-CN', { persist: false });
+    const sCopy = api.translateForTest('settings.dock.openRightCopiedSession');
+    const lCopy = api.translateForTest('settings.dock.openRightCopiedList');
+    const nSess = api.translateForTest('settings.dock.openRightNoSession', { copyNote: lCopy });
+    assert.match(nSess, /未识别到当前会话，已打开看板列表/);
+    assert.doesNotMatch(nSess, /[()（）]/);
+    assert.doesNotMatch(sCopy + lCopy, /[()（）]/);
+  } finally {
+    api.dispose();
+  }
+});
+
+test('v0.9.0-beta.1: 顶栏悬停/点击严格互斥状态机 + 顶栏/底栏去假圆盖子原位变形 + 悬浮圆球三态与二级菜单联动', async () => {
+  const stylesSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+  const tplSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
+  const mainSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'main.js'), 'utf8');
+
+  assert.ok(tplSrc.includes('id="badge-radial-close-svg"'), '顶栏 #badge 必须内置原地变形关闭图标');
+  assert.ok(tplSrc.includes('id="csb-radial-close-svg"'), '底栏 #csb-group-context 必须内置原地变形关闭图标');
+  assert.match(stylesSrc, /\.ctx-radial-layer\[data-mode="topbar"\]\s+\.ctx-radial-center-close/);
+  assert.match(stylesSrc, /\.ctx-radial-layer\[data-mode="bottombar"\]\s+\.ctx-radial-center-close/);
+  assert.match(stylesSrc, /#badge\.ag-unit-ring\[data-radial-open="true"\]\s+\.ag-ring-close-svg[\s\S]*rotate\(45deg\)/);
+  assert.match(stylesSrc, /#csb-group-context\[data-radial-open="true"\]\s+\.csb-ring-close-svg[\s\S]*rotate\(45deg\)/);
+  assert.match(stylesSrc, /\.ctx-radial-layer\[data-mode="topbar"\]\s+\.ctx-radial-item[\s\S]*width:\s*36px;\s*height:\s*36px/);
+  assert.match(stylesSrc, /\.ctx-radial-orb\s*\{[^}]*width:\s*46px;\s*height:\s*46px/);
+  assert.match(stylesSrc, /ctx-orb-swap-in\s+160ms/);
+  assert.match(mainSrc, /#composer-status-bar\s+#csb-group-context\[data-radial-open="true"\]\s+\.csb-ring-close-svg[\s\S]*rotate\(45deg\)/, '宿主 Light DOM #composer-status-bar 必须同步注入底栏原地变形样式');
+
+  const capturedTimeouts = [];
+  let nextTimerId = 10;
+  const h = harness(session(), {
+    setTimeout: (fn, ms) => {
+      const id = ++nextTimerId;
+      capturedTimeouts.push({ id, fn, ms });
+      return id;
+    },
+    clearTimeout: (id) => {
+      const idx = capturedTimeouts.findIndex(t => t.id === id);
+      if (idx >= 0) capturedTimeouts.splice(idx, 1);
+    }
+  });
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    h.finishScan();
+    await h.flush();
+
+    const badge = h.elements.get('badge');
+    const bOverflow = h.elements.get('badge-overflow');
+    const om = h.elements.get('overflow-menu');
+    const csbCtx = h.elements.get('csb-group-context');
+
+    badge.focus = () => badge.trigger('focus');
+
+    // 1. 顶栏互斥状态机
+    api.setQuickMenuStyleForTest('topbar', { persist: false });
+    badge.trigger('mouseenter');
+    const tip = h.elements.get('context-tooltip');
+    assert.equal(om.hidden, true, 'topbar 模式下 mouseenter #badge 禁止弹出 #overflow-menu');
+    assert.equal(tip.getAttribute('data-visible'), 'true', 'topbar 模式下未展开时悬停应展示轻 #context-tooltip');
+
+    badge.trigger('focus');
+    assert.equal(om.hidden, true, 'topbar 模式下 focus #badge 禁止弹出 #overflow-menu');
+
+    badge.click();
+    const layer = h.elements.get('ctx-radial-layer');
+    const centerClose = h.elements.get('ctx-radial-center-close');
+    assert.equal(api.getRadialMenuStateForTest().open, true);
+    assert.equal(layer.getAttribute('data-mode'), 'topbar');
+    assert.equal(tip.getAttribute('data-visible'), 'false', '点击展开径向菜单瞬间必须强关 #context-tooltip');
+    assert.equal(om.hidden, true, '点击展开径向菜单瞬间必须强关 #overflow-menu');
+    assert.equal(centerClose.hidden, true, 'topbar 模式必须隐藏独立假大圆盖子');
+    assert.equal(badge.getAttribute('data-radial-open'), 'true', 'topbar 展开态必须原位激活 #badge');
+    assert.equal(badge.getAttribute('aria-expanded'), 'true');
+
+    badge.trigger('mouseenter');
+    badge.trigger('focus');
+    assert.equal(om.hidden, true);
+    assert.equal(tip.getAttribute('data-visible'), 'false', '径向展开期间必须彻底屏蔽悬停浮层');
+
+    h.sandbox.document.dispatchEvent({ type: 'keydown', key: 'Escape' });
+    assert.equal(api.getRadialMenuStateForTest().open, false);
+    assert.equal(badge.getAttribute('data-radial-open'), null);
+    assert.equal(om.hidden, true);
+
+    bOverflow.click();
+    assert.equal(om.hidden, false, '显式点击 #badge-overflow 应正常展开列表');
+    om.hidden = true;
+
+    // 2. 底栏贴边原生原地变形 + 外部点击收起
+    api.setQuickMenuStyleForTest('bottombar', { persist: false });
+    csbCtx.click();
+    assert.equal(api.getRadialMenuStateForTest().open, true);
+    assert.equal(layer.getAttribute('data-mode'), 'bottombar');
+    assert.equal(centerClose.hidden, true, 'bottombar 模式必须隐藏独立假大圆盖子');
+    assert.equal(csbCtx.getAttribute('data-radial-open'), 'true', 'bottombar 展开态必须原位激活 #csb-group-context');
+    assert.equal(csbCtx.getAttribute('aria-expanded'), 'true');
+
+    h.sandbox.document.dispatchEvent({ type: 'click', composedPath: () => [] });
+    assert.equal(api.getRadialMenuStateForTest().open, false);
+    assert.equal(csbCtx.getAttribute('data-radial-open'), null);
+
+    // 3. 悬浮圆球实时三态 + 6 项二级菜单联动 + 新请求抢占 + CLI 1.2s 回落
+    api.setQuickMenuStyleForTest('floating', { persist: false });
+    api.setContextLatestForTest({ model: 'Gemini 4 Neon', modelId: 'gemini-4-neon', actual: 30720, budget: 512000, percent: 6 });
+    const nowTs = Date.now();
+    api.setQuotaSnapshotForTest({
+      snapshot: {
+        fetchedAtMs: nowTs,
+        currentModel: { productKey: 'product:google:gemini-4-neon', productLabel: 'Gemini 4 Neon', poolKey: 'shared_gemini_main' },
+        activeStatus: 'available',
+        pools: [{
+          poolKey: 'shared_gemini_main',
+          title: 'Gemini 主池',
+          models: [{ productKey: 'product:google:gemini-4-neon', productLabel: 'Gemini 4 Neon', modelIds: ['gemini-4-neon'] }],
+          buckets: [{ bucketId: 'b5h', windowKey: '5h', windowShort: '5h', remainingFraction: 0.43, percentText: '43%' }]
+        }]
+      }
+    }, nowTs);
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      dailyMap: { '2026-11-23': { total: 6400000, input: 1400000, cache: 4800000, output: 200000, costUSD: 2.0 } },
+      summary: { grandTotalTokens: 6400000, todayTokens: 6400000, monthTokens: 6400000, yearTokens: 6400000, totalConversations: 1 }
+    });
+    api.setSpeedEvaluationForTest({ phase: 'final', streamSpeed: 114, overallTps: 114, outputTokens: 200, streamingSec: 1.75 });
+    api.setSessionCallsForTest([
+      { callId: 'c_orb_1', stepIndex: 2, modelLabel: 'Gemini 4 Neon', inputTokens: 20000, outputTokens: 200, streamingTps: 114, status: 'final' }
+    ], { replace: true });
+
+    let orbSt = api.getFloatingOrbStateForTest();
+    assert.equal(orbSt.mode, 'idle');
+    assert.equal(orbSt.text, '6%');
+
+    h.elements.get('ctx-radial-orb').click();
+    h.elements.get('radial-item-quota').click();
+    orbSt = api.getFloatingOrbStateForTest();
+    assert.equal(orbSt.mode, 'panel');
+    assert.equal(orbSt.subKind, 'quota');
+    assert.equal(orbSt.text, '43%');
+
+    orbSt = api.setFloatingOrbLiveOverrideForTest({ phase: 'waiting', elapsedSec: 6 });
+    assert.equal(orbSt.mode, 'waiting');
+    assert.equal(orbSt.text, '6s');
+    assert.equal(orbSt.tone, 'mid');
+
+    orbSt = api.setFloatingOrbLiveOverrideForTest({ phase: 'waiting', elapsedSec: 78 });
+    assert.equal(orbSt.mode, 'waiting');
+    assert.equal(orbSt.text, '1m18s');
+    assert.equal(orbSt.tone, 'slow');
+
+    orbSt = api.setFloatingOrbLiveOverrideForTest({ phase: 'streaming', streamSpeed: 129 });
+    assert.equal(orbSt.mode, 'streaming');
+    assert.equal(orbSt.text, '129/s');
+    assert.equal(orbSt.tone, 'fast');
+
+    orbSt = api.setFloatingOrbLiveOverrideForTest(null);
+    assert.equal(orbSt.mode, 'panel');
+    assert.equal(orbSt.text, '43%');
+
+    h.elements.get('ctx-radial-orb').click();
+    h.elements.get('radial-item-tokens').click();
+    assert.equal(api.getFloatingOrbStateForTest().text, '6.4M');
+
+    h.elements.get('ctx-radial-orb').click();
+    h.elements.get('radial-item-speed').click();
+    assert.equal(api.getFloatingOrbStateForTest().text, '114/s');
+
+    h.elements.get('ctx-radial-orb').click();
+    h.elements.get('radial-item-requests').click();
+    assert.equal(api.getFloatingOrbStateForTest().text, '1');
+
+    h.elements.get('ctx-radial-orb').click();
+    h.elements.get('radial-item-context').click();
+    assert.equal(api.getFloatingOrbStateForTest().text, '6%');
+
+    api.toggle(false);
+    orbSt = api.getFloatingOrbStateForTest();
+    assert.equal(orbSt.mode, 'idle');
+    assert.equal(orbSt.linkedPanel, null);
+    assert.equal(orbSt.text, '6%');
+
+    h.elements.get('ctx-radial-orb').click();
+    h.elements.get('radial-item-cli').click();
+    orbSt = api.getFloatingOrbStateForTest();
+    assert.equal(orbSt.mode, 'cli');
+    assert.equal(orbSt.text, '>_');
+    const cliTimer = capturedTimeouts.find(t => t.ms === 1200);
+    assert.ok(cliTimer, '点击 CLI 卫星必须注册 1200ms 自动回落定时器');
+    cliTimer.fn();
+    orbSt = api.getFloatingOrbStateForTest();
+    assert.equal(orbSt.mode, 'idle');
+    assert.equal(orbSt.text, '6%');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('v0.9.0 三项 UI 精修: 独立顶层挂载至 body 末尾 + 快捷隐藏悬浮球 + 顶/底栏正圆收缩与白滑块 Tab', async () => {
+  const stylesSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+  const tplSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
+  const mainSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'main.js'), 'utf8');
+  const bundleSrc = fs.readFileSync(require('node:path').join(__dirname, 'meter-renderer.js'), 'utf8');
+
+  // 1. 静态 DOM 与 CSS 契约断言（源 + 构建产物同步验证）
+  for (const labelSrc of [stylesSrc, bundleSrc]) {
+    assert.match(labelSrc, /#badge\.ag-unit-ring\[data-radial-open="true"\][\s\S]*width:\s*26px\s*!important;[\s\S]*height:\s*26px\s*!important;[\s\S]*border-radius:\s*50%\s*!important;[\s\S]*padding:\s*0\s*!important/);
+    assert.match(labelSrc, /#badge\.ag-unit-ring\[data-radial-open="true"\]\s+#badge-pct-val[\s\S]*max-width:\s*0\s*!important;[\s\S]*opacity:\s*0\s*!important/);
+    assert.match(labelSrc, /#csb-group-context\[data-radial-open="true"\]\s*\{[\s\S]*width:\s*22px\s*!important;[\s\S]*height:\s*22px\s*!important;[\s\S]*border-radius:\s*50%\s*!important;[\s\S]*padding:\s*0\s*!important/);
+    assert.match(labelSrc, /#csb-group-context\[data-radial-open="true"\]\s+#csb-context-text[\s\S]*max-width:\s*0\s*!important;[\s\S]*opacity:\s*0\s*!important/);
+    assert.match(labelSrc, /#ctx-tabs-bar\s+\.ctx-tab-btn\.active\s*\{[\s\S]*background:\s*#2A2A2E;[\s\S]*color:\s*#FAFAFA;[\s\S]*rgba\(255,\s*255,\s*255,\s*0\.14\)/);
+    assert.match(labelSrc, /:host\(\[data-theme="light"\]\)\s+#ctx-tabs-bar\s+\.ctx-tab-btn\.active[\s\S]*background:\s*#FFFFFF;[\s\S]*color:\s*#111111;[\s\S]*1px\s+solid\s+#E4E4E7;[\s\S]*0\s+1px\s+2px\s+rgba\(0,\s*0,\s*0,\s*0\.06\)/);
+  }
+  const tabBlockMatch = stylesSrc.match(/#ctx-tabs-bar\s*\{[\s\S]*?#pane-ctx-session\s+\.ctx-cockpit-grid/);
+  assert.ok(tabBlockMatch, '应定位到 #ctx-tabs-bar 样式块');
+  assert.doesNotMatch(tabBlockMatch[0], /#FF2E88|#FCE7F3|#BE185D/i, '#ctx-tabs-bar 严禁残留旧洋红配色');
+  assert.match(mainSrc, /#composer-status-bar\s+#csb-group-context\[data-radial-open="true"\]\s*\{[\s\S]*width:\s*22px\s*!important;[\s\S]*height:\s*22px\s*!important;[\s\S]*border-radius:\s*50%\s*!important/);
+  assert.match(mainSrc, /#composer-status-bar\s+#csb-group-context\[data-radial-open="true"\]\s+#csb-context-text[\s\S]*max-width:\s*0\s*!important;[\s\S]*opacity:\s*0\s*!important/);
+  assert.ok(tplSrc.includes('id="chk-hide-radial-orb"'), '配置页必须包含隐藏悬浮圆球开关');
+  assert.ok(tplSrc.includes('id="overflow-show-orb-btn"'), '顶栏菜单必须包含一键恢复悬浮圆球项');
+
+  // 2. 独立顶层容器 #ag-context-meter-radial-host + 孤儿清理 + 属性镜像 + 点击防误关 + 快捷隐藏全链路
+  const store = new Map();
+  const mockLocalStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k)
+  };
+  const docListeners = new Map();
+  const listeners = new Map();
+  const makeNode = (tag = 'div') => {
+    const attrs = new Map();
+    const props = new Map();
+    const node = {
+      tagName: String(tag).toUpperCase(),
+      children: [],
+      hidden: false,
+      checked: false,
+      textContent: '',
+      _innerHTML: '',
+      _styleCssText: '',
+      style: {
+        display: '',
+        zIndex: '',
+        setProperty(k, v) { props.set(k, v); },
+        removeProperty(k) { props.delete(k); },
+        getPropertyValue(k) { return props.get(k) || ''; },
+        get cssText() { return node._styleCssText; },
+        set cssText(v) {
+          node._styleCssText = String(v || '');
+          const zM = node._styleCssText.match(/z-index\s*:\s*([^;!]+)/i);
+          if (zM) node.style.zIndex = zM[1].trim();
+        }
+      },
+      get lastElementChild() { return node.children[node.children.length - 1] || null; },
+      get id() { return attrs.get('id') || ''; },
+      set id(v) { attrs.set('id', String(v)); },
+      get className() { return attrs.get('class') || ''; },
+      set className(v) { attrs.set('class', String(v || '')); },
+      classList: {
+        add(c) {
+          const cur = (attrs.get('class') || '').split(/\s+/).filter(Boolean);
+          if (!cur.includes(c)) cur.push(c);
+          attrs.set('class', cur.join(' '));
+        },
+        remove(c) {
+          attrs.set('class', (attrs.get('class') || '').split(/\s+/).filter(x => x && x !== c).join(' '));
+        },
+        contains(c) { return (attrs.get('class') || '').split(/\s+/).includes(c); }
+      },
+      setAttribute(k, v) { attrs.set(k, String(v)); },
+      getAttribute(k) { return attrs.get(k) ?? null; },
+      removeAttribute(k) { attrs.delete(k); },
+      addEventListener(type, fn) {
+        if (!listeners.has(node)) listeners.set(node, new Map());
+        listeners.get(node).set(type, fn);
+      },
+      removeEventListener(type, fn) {
+        const m = listeners.get(node);
+        if (m && m.get(type) === fn) m.delete(type);
+      },
+      trigger(type, ev = {}) { listeners.get(node)?.get(type)?.(ev); },
+      click() { listeners.get(node)?.get('click')?.({ stopPropagation() { }, preventDefault() { } }); },
+      appendChild(child) {
+        if (!child) return child;
+        if (child.parentElement && Array.isArray(child.parentElement.children)) {
+          const idx = child.parentElement.children.indexOf(child);
+          if (idx >= 0) child.parentElement.children.splice(idx, 1);
+        }
+        child.parentElement = node;
+        node.children.push(child);
+        return child;
+      },
+      remove() {
+        if (node.parentElement && Array.isArray(node.parentElement.children)) {
+          const idx = node.parentElement.children.indexOf(node);
+          if (idx >= 0) node.parentElement.children.splice(idx, 1);
+          node.parentElement = null;
+        }
+      },
+      contains(target) {
+        if (!target) return false;
+        if (target === node) return true;
+        return node.children.some(c => c.contains?.(target));
+      },
+      getElementById(id) {
+        const dfs = (cur) => {
+          if (!cur) return null;
+          if (cur.id === id || cur.getAttribute?.('id') === id) return cur;
+          for (const ch of (cur.children || [])) {
+            const found = dfs(ch);
+            if (found) return found;
+          }
+          return null;
+        };
+        return dfs(node);
+      },
+      querySelector(sel) {
+        if (sel === 'style') return node.children.find(c => c.tagName === 'STYLE') || null;
+        if (sel.startsWith('#')) return node.getElementById(sel.slice(1));
+        return null;
+      },
+      querySelectorAll(sel) {
+        const out = [];
+        const parts = sel.split(',').map(s => s.trim());
+        const ids = parts.filter(s => s.startsWith('#')).map(s => s.slice(1));
+        const hasRadialAttr = parts.includes('[data-ag-radial-top-layer]');
+        const visit = (cur) => {
+          if (!cur) return;
+          if (ids.includes(cur.id) || (hasRadialAttr && cur.getAttribute?.('data-ag-radial-top-layer') !== null)) out.push(cur);
+          for (const ch of (cur.children || [])) visit(ch);
+        };
+        visit(node);
+        return out;
+      },
+      replaceChildren(...items) {
+        node.children = [];
+        for (const it of items) node.appendChild(it);
+      },
+      getBoundingClientRect() { return { left: 100, top: 100, width: 46, height: 46, right: 146, bottom: 146 }; }
+    };
+    return node;
+  };
+
+  const attachShadowPoly = (targetNode) => {
+    const sr = makeNode('shadow-root');
+    Object.defineProperty(sr, 'innerHTML', {
+      get() { return sr._innerHTML; },
+      set(val) {
+        sr._innerHTML = String(val || '');
+        sr.children = [];
+        const styleM = sr._innerHTML.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
+        if (styleM) {
+          const st = makeNode('style');
+          st.textContent = styleM[1];
+          sr.appendChild(st);
+        }
+        const createdById = new Map();
+        const reId = /\bid="([^"]+)"/g;
+        let m;
+        while ((m = reId.exec(sr._innerHTML)) !== null) {
+          const id = m[1];
+          if (createdById.has(id)) continue;
+          const elNode = makeNode('div');
+          elNode.id = id;
+          elNode.className = id.startsWith('overflow-') ? 'overflow-item' : '';
+          createdById.set(id, elNode);
+          if (id.startsWith('ctx-orb-') && id !== 'ctx-radial-orb' && createdById.has('ctx-radial-orb')) {
+            createdById.get('ctx-radial-orb').appendChild(elNode);
+          } else if ((id === 'ctx-radial-center-close' || id.startsWith('radial-slot-') || id.startsWith('radial-item-')) && createdById.has('ctx-radial-layer')) {
+            createdById.get('ctx-radial-layer').appendChild(elNode);
+          } else {
+            sr.appendChild(elNode);
+          }
+        }
+      }
+    });
+    targetNode.shadowRoot = sr;
+    return sr;
+  };
+
+  const runInTopLayerSandbox = () => {
+    docListeners.clear();
+    const body = makeNode('body');
+    const docEl = makeNode('html');
+    docEl.appendChild(body);
+    const orphanRadial = makeNode('div');
+    orphanRadial.id = 'ag-context-meter-radial-host';
+    attachShadowPoly(orphanRadial).innerHTML = '<button id="ctx-radial-orb">staleA</button>';
+    body.appendChild(orphanRadial);
+    const orphanExtra = makeNode('div');
+    orphanExtra.setAttribute('data-ag-radial-top-layer', 'true');
+    attachShadowPoly(orphanExtra).innerHTML = '<button id="ctx-radial-orb">staleB</button>';
+    body.appendChild(orphanExtra);
+    const sidebarSibling = makeNode('div');
+    sidebarSibling.id = 'mock-left-sidebar';
+    body.appendChild(sidebarSibling);
+
+    const pending = [], scans = [];
+    const sandbox = {
+      location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' },
+      localStorage: mockLocalStorage,
+      document: {
+        body,
+        documentElement: docEl,
+        createElement: (tag) => {
+          const n = makeNode(tag);
+          if (String(tag).toLowerCase() === 'div') {
+            n.attachShadow = () => attachShadowPoly(n);
+          }
+          return n;
+        },
+        getElementById: (id) => docEl.getElementById(id),
+        querySelector: (sel) => docEl.querySelector(sel),
+        querySelectorAll: (sel) => docEl.querySelectorAll(sel),
+        addEventListener(type, fn) {
+          if (!docListeners.has(type)) docListeners.set(type, new Set());
+          docListeners.get(type).add(fn);
+        },
+        removeEventListener(type, fn) { docListeners.get(type)?.delete(fn); },
+        dispatchEvent(ev) {
+          for (const fn of (docListeners.get(ev?.type || ev) || [])) fn(ev);
+        },
+        hidden: false
+      },
+      window: { __APP_CONFIG__: { csrfToken: 'test' }, contextMeterAPI: { scan: id => new Promise(resolve => scans.push({ id, resolve })) } },
+      __AGContextMeterCore: core,
+      AbortController,
+      Date,
+      setTimeout: () => 1,
+      clearTimeout() { },
+      setInterval: () => 1,
+      clearInterval() { },
+      fetch(url, options) { return new Promise(resolve => pending.push({ url, options, resolve })); }
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(bundleSrc, sandbox);
+    return { sandbox, body, pending, scans, orphanRadial, orphanExtra };
+  };
+
+  const env1 = runInTopLayerSandbox();
+  const api1 = env1.sandbox.__AGContextMeter;
+  try {
+    assert.equal(env1.orphanRadial.parentElement, null, '必须清除旧 #ag-context-meter-radial-host');
+    assert.equal(env1.orphanExtra.parentElement, null, '必须清除无 ID 但带 data-ag-radial-top-layer 的第二颗悬浮球宿主');
+    assert.equal(env1.orphanRadial.shadowRoot.innerHTML, '', '清除孤儿宿主时必须清空 shadowRoot');
+    assert.equal(env1.orphanExtra.shadowRoot.innerHTML, '', '清除第二颗残留宿主时必须清空 shadowRoot');
+    const topHosts = env1.body.querySelectorAll('#ag-context-meter-radial-host, [data-ag-radial-top-layer]');
+    assert.equal(topHosts.length, 1, '启动时必须清除旧孤儿 #ag-context-meter-radial-host 且仅保留唯一实例');
+    const radialHost = topHosts[0];
+    const meterHost = env1.body.getElementById('ag-context-meter');
+    assert.ok(radialHost && meterHost);
+    assert.equal(env1.body.lastElementChild, radialHost, '#ag-context-meter-radial-host 必须位于 document.body 末尾');
+    assert.match(radialHost.style.cssText, /position:\s*fixed/i);
+    assert.match(radialHost.style.cssText, /width:\s*0\s*!important;\s*height:\s*0\s*!important/i);
+    assert.doesNotMatch(radialHost.style.cssText, /app-region/);
+    assert.match(radialHost.style.cssText, /pointer-events:\s*none/i);
+    assert.equal(radialHost.style.zIndex, '2147483000');
+
+    const radialShadow = radialHost.shadowRoot;
+    const mainShadow = meterHost.shadowRoot;
+    const orbNode = radialShadow.getElementById('ctx-radial-orb');
+    const layerNode = radialShadow.getElementById('ctx-radial-layer');
+    assert.ok(orbNode && layerNode, '悬浮球与径向菜单必须位于独立顶层 radialShadow 中');
+    assert.equal(mainShadow.getElementById('ctx-radial-orb'), null, '主 shadow 内不应保留悬浮球重复节点');
+    assert.equal(mainShadow.getElementById('ctx-radial-layer'), null, '主 shadow 内不应保留径向层重复节点');
+    const radialStyle = radialShadow.querySelector('style')?.textContent || '';
+    assert.doesNotMatch(radialStyle.match(/:host\s*\{[^}]*\}/)?.[0] || '', /app-region/);
+    assert.match(radialStyle, /:host\s*\{[\s\S]*z-index:\s*2147483000\s*!important[\s\S]*pointer-events:\s*none\s*!important/);
+    assert.match(radialStyle, /\.ctx-radial-orb\s*\{[\s\S]*pointer-events:\s*auto/);
+    assert.match(radialStyle, /:host\(\[data-marketplace-active="true"\]\)\s+#ctx-radial-orb/);
+
+    api1.setRadialOrbEnabledForTest(true, { persist: false });
+    api1.setTheme('light');
+    assert.equal(radialHost.getAttribute('data-theme'), 'light', 'data-theme 必须实时镜像到独立顶层宿主');
+    const rSt = api1.getRadialMenuStateForTest();
+    assert.equal(rSt.topLayerMounted, true);
+    assert.equal(rSt.topLayerHostId, 'ag-context-meter-radial-host');
+    assert.equal(rSt.topLayerParentTag, 'BODY');
+    assert.equal(rSt.topLayerZIndex, '2147483000');
+    assert.equal(rSt.radialOrbHidden, false);
+
+    const lateOverlay = env1.sandbox.document.createElement('div');
+    lateOverlay.id = 'late-host-panel';
+    env1.body.appendChild(lateOverlay);
+    orbNode.click();
+    assert.equal(env1.body.lastElementChild, radialHost, '展开径向菜单前必须确保顶层容器位于 body 末尾');
+    assert.equal(api1.getRadialMenuStateForTest().open, true);
+    env1.sandbox.document.dispatchEvent({ type: 'click', composedPath: () => [orbNode, radialHost] });
+    assert.equal(api1.getRadialMenuStateForTest().open, true, '点击独立顶层中的悬浮球路径不得被 outside 误关');
+    env1.sandbox.document.dispatchEvent({ type: 'click', composedPath: () => [lateOverlay] });
+    assert.equal(api1.getRadialMenuStateForTest().open, false, '点击外部宿主区域必须干净关闭径向菜单');
+
+    let prevented = false;
+    let stopped = false;
+    orbNode.trigger('contextmenu', {
+      preventDefault() { prevented = true; },
+      stopPropagation() { stopped = true; }
+    });
+    assert.equal(prevented, true);
+    assert.equal(stopped, true);
+    assert.equal(orbNode.hidden, true, '右键悬浮球必须立即隐藏悬浮球');
+    assert.equal(store.get('ag_radial_orb_hidden'), 'true', '快捷隐藏状态必须持久化到 localStorage');
+    const toast = mainShadow.getElementById('cli-launch-toast');
+    const chkHideOrb = mainShadow.getElementById('chk-hide-radial-orb');
+    const showOrbBtn = mainShadow.getElementById('overflow-show-orb-btn');
+    assert.equal(toast.hidden, false, '右键隐藏悬浮球后应弹出轻提示');
+    assert.equal(chkHideOrb.checked, true, '配置页隐藏悬浮球开关必须同步勾选');
+    assert.equal(showOrbBtn.hidden, false, '隐藏悬浮球后顶栏恢复入口必须显现');
+
+    showOrbBtn.click();
+    assert.equal(orbNode.hidden, false, '点击顶栏恢复入口必须重新显示悬浮球');
+    assert.equal(store.get('ag_radial_orb_hidden'), 'false');
+    assert.equal(chkHideOrb.checked, false);
+    assert.equal(showOrbBtn.hidden, true, '悬浮球显示后应自动收起顶栏恢复入口');
+
+    chkHideOrb.checked = true;
+    chkHideOrb.trigger('change', { target: chkHideOrb });
+    assert.equal(orbNode.hidden, true);
+    assert.equal(store.get('ag_radial_orb_hidden'), 'true');
+  } finally {
+    api1.dispose();
+  }
+  assert.equal(env1.body.getElementById('ag-context-meter-radial-host'), null, 'dispose 后必须移除独立顶层宿主容器');
+  api1.setRadialOrbHiddenForTest(false, { persist: false });
+  assert.equal(env1.body.querySelectorAll('[data-ag-radial-top-layer]').length, 0, 'dispose 后调用显隐控制不得将悬浮球重新插回 body');
+
+  const env2 = runInTopLayerSandbox();
+  const api2 = env2.sandbox.__AGContextMeter;
+  try {
+    const radialHost2 = env2.body.getElementById('ag-context-meter-radial-host');
+    const meterHost2 = env2.body.getElementById('ag-context-meter');
+    assert.equal(radialHost2.shadowRoot.getElementById('ctx-radial-orb').hidden, true, '重启后应保留悬浮球隐藏持久化状态');
+    assert.equal(meterHost2.shadowRoot.getElementById('chk-hide-radial-orb').checked, true);
+    assert.equal(meterHost2.shadowRoot.getElementById('overflow-show-orb-btn').hidden, false);
+    api2.setRadialOrbHiddenForTest(false, { persist: true });
+    assert.equal(radialHost2.shadowRoot.getElementById('ctx-radial-orb').hidden, false);
+  } finally {
+    api2.dispose();
+  }
+});
+
+test('径向Tooltip朝外防遮挡 + 去套娃叠环去12点圆点 + 溢出菜单CLI树莓色与缓存命中率 + 会话缓存命中率直达实时请求', () => {
+  const stylesSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+  const i18nSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'i18n.js'), 'utf8');
+  const tplSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
+
+  // A. CSS 与模板契约验证（z-index、去套娃叠环与光晕、12点圆点属性、56px 半径与极细描边、树莓色 CLI 图标）
+  const orbZ = Number((stylesSrc.match(/\.ctx-radial-orb\s*\{[^}]*z-index\s*:\s*(\d+)/) || [])[1] || 0);
+  const layerZ = Number((stylesSrc.match(/\.ctx-radial-layer\s*\{[^}]*z-index\s*:\s*(\d+)/) || [])[1] || 0);
+  assert.ok(layerZ > orbZ && orbZ >= 2147483645, `径向浮层 z-index(${layerZ}) 必须严格高于悬浮球 z-index(${orbZ})`);
+  assert.match(stylesSrc, /\.ctx-radial-label\s*\{[\s\S]*z-index:\s*90;/);
+  assert.match(stylesSrc, /\.ctx-radial-slot:hover,\s*\.ctx-radial-slot:focus-within\s*\{\s*z-index:\s*40;/);
+  assert.match(stylesSrc, /\.ctx-radial-item\[data-label-pos="bottom"\]\s+\.ctx-radial-label/);
+  assert.match(stylesSrc, /\.ctx-radial-item\[data-label-pos="right"\]\s+\.ctx-radial-label/);
+  assert.match(stylesSrc, /\.ctx-radial-item\[data-label-pos="left"\]\s+\.ctx-radial-label/);
+  assert.match(stylesSrc, /\.ctx-radial-orb\[aria-expanded="true"\]\s+\.ctx-orb-ring-svg\s*\{[^}]*opacity:\s*0;/);
+  assert.doesNotMatch(stylesSrc, /\.ctx-radial-orb\[aria-expanded="true"\][^{]*\{[^}]*0 0 0 4px/);
+  assert.match(stylesSrc, /\.ctx-orb-ring-fill\[data-empty="true"\]\s*\{[^}]*opacity:\s*0;[^}]*stroke:\s*none;/);
+  assert.match(stylesSrc, /\.ctx-radial-slot\s*\{[\s\S]*--r-rest:\s*56px;/);
+  assert.match(stylesSrc, /\.ctx-radial-item\s*\{[^}]*border:\s*1px solid rgba\(255,\s*255,\s*255,\s*0\.10\);/);
+  assert.match(stylesSrc, /#overflow-cli-btn\s+\.cli-icon\s*\{\s*color:\s*#FF2E88;/);
+  assert.match(stylesSrc, /:host\(\[data-theme="light"\]\)\s+#overflow-cli-btn\s+\.cli-icon[\s\S]*color:\s*#E11D74;/);
+  assert.match(i18nSrc, /'overflow\.cacheHit':\s*\{\s*'zh-CN':\s*'缓存命中率',\s*'zh-TW':\s*'快取命中率',\s*en:\s*'Cache hit rate'\s*\}/);
+  assert.match(tplSrc, /id="overflow-cache-btn"[\s\S]*id="overflow-cache-val"/);
+
+  // B. 四方向径向 Tooltip + 贴边翻转 + 12 点残余圆点彻底清除
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    const gCenter = api.computeRadialGeometryForTest('floating', { left: 500, top: 380, width: 40, height: 40 }, 1280, 800);
+    assert.deepStrictEqual(
+      Array.from(gCenter.items.map(it => it.labelPos)),
+      ['top', 'right', 'right', 'bottom', 'left', 'left'],
+      '360° 六瓣卫星必须按方位沿径向朝外弹出 Tooltip（top/right/right/bottom/left/left）'
+    );
+    const gRightEdge = api.computeRadialGeometryForTest('floating', { left: 1230, top: 380, width: 40, height: 40 }, 1280, 800);
+    assert.ok(gRightEdge.items.every(it => ['top', 'bottom', 'left'].includes(it.labelPos)), '贴右边缘不得向外右侧裁切');
+    const gTopEdge = api.computeRadialGeometryForTest('topbar', { left: 900, top: 4, width: 58, height: 26 }, 1280, 800);
+    assert.equal(gTopEdge.items[0].labelPos, 'right', 'topbar 最右翼应向右朝外弹出');
+    assert.equal(gTopEdge.items[gTopEdge.items.length - 1].labelPos, 'left', 'topbar 最左翼应向左朝外弹出');
+    const gBottomEdge = api.computeRadialGeometryForTest('bottombar', { left: 600, top: 760, width: 58, height: 22 }, 1280, 800);
+    assert.ok(gBottomEdge.items.every(it => it.labelPos !== 'bottom'), 'bottombar 卫星 Tooltip 严禁向下撞底栏');
+
+    const ringFill = h.elements.get('ctx-orb-ring-fill');
+    assert.equal(ringFill.getAttribute('data-empty'), 'true', '无数据 --% 初始必须隐藏进度弧以防 12 点小圆点');
+    assert.equal(ringFill.getAttribute('stroke-opacity'), '0');
+    api.setContextLatestForTest({ model: 'Gemini 4 Neon', actual: 0, budget: 512000, percent: 0 });
+    assert.equal(ringFill.getAttribute('data-empty'), 'true', '0% 时同样必须隐藏进度弧 stroke');
+    assert.equal(ringFill.getAttribute('stroke-opacity'), '0');
+    api.setContextLatestForTest({ model: 'Gemini 4 Neon', actual: 215040, budget: 512000, percent: 42 });
+    assert.equal(ringFill.getAttribute('data-empty'), null, '非零进度时必须恢复显示进度弧');
+    assert.equal(ringFill.getAttribute('stroke-opacity'), '1');
+
+    // C. 溢出菜单「缓存命中率」真实数据展示 + 点击直达实时请求 + 底部入口两次点击零闪烁直达「实时请求」
+    const oCacheVal = h.elements.get('overflow-cache-val');
+    const om = h.elements.get('overflow-menu');
+    assert.ok(oCacheVal && h.elements.get('overflow-cache-btn'));
+    h.elements.get('badge-overflow').click();
+    assert.equal(om.hidden, false);
+    assert.equal(oCacheVal.textContent, '--', '无会话调用记录时溢出菜单缓存命中率应显示 --');
+
+    api.setComposerStateForTest({
+      sessionCalls: [{ callId: 'c_hit_1', stepIndex: 1, inputTokens: 460, cacheReadTokens: 9540, outputTokens: 200, status: 'final' }],
+      sessionStats: { usedTokens: 10200, limitTokens: 512000, turnCount: 1, stepCount: 1 }
+    });
+    h.elements.get('badge-overflow').click();
+    assert.equal(oCacheVal.textContent, '95.4%', '有真实数据时溢出菜单缓存命中率必须复用会话数据并显示精确百分比');
+    h.elements.get('overflow-cache-btn').click();
+    assert.equal(h.elements.get('panel-tokens').hidden, false);
+    assert.equal(h.elements.get('requests-live-view').style.display, 'flex');
+
+    // 切回 Token 统计并关闭面板，测试第 7 项两次零闪烁点击
+    h.elements.get('tok-view-tokens').click();
+    assert.equal(h.elements.get('tokens-main-view').style.display, 'block');
+    api.toggle(false);
+    assert.equal(h.elements.get('panel-tokens').hidden, true);
+
+    // 通过劫持 panel-tokens.hidden setter 记录首次显现瞬间视图状态，证明 0 帧闪出旧页
+    const pTokens = h.elements.get('panel-tokens');
+    const reqView = h.elements.get('requests-live-view');
+    const mainView = h.elements.get('tokens-main-view');
+    const tokReqTab = h.elements.get('tok-view-requests');
+    const revealSnapshots = [];
+    let hiddenVal = pTokens.hidden;
+    Object.defineProperty(pTokens, 'hidden', {
+      configurable: true,
+      get() { return hiddenVal; },
+      set(v) {
+        const prev = hiddenVal;
+        hiddenVal = Boolean(v);
+        if (prev && !hiddenVal) {
+          revealSnapshots.push({
+            reqDisplay: reqView.style.display,
+            mainDisplay: mainView.style.display,
+            reqActive: tokReqTab.classList.contains('active')
+          });
+        }
+      }
+    });
+
+    const csbTokensBtn = h.elements.get('csb-group-tokens');
+    // 验证 A：首次从其他旧页记忆态直接点击「会话缓存命中率」
+    csbTokensBtn.click();
+    assert.equal(pTokens.hidden, false);
+    assert.equal(reqView.style.display, 'flex');
+    assert.equal(tokReqTab.classList.contains('active'), true);
+    assert.deepStrictEqual(revealSnapshots[0], { reqDisplay: 'flex', mainDisplay: 'none', reqActive: true }, '首次展开瞬间即须为实时请求，严禁先闪出 Token 统计');
+
+    // 验证 B：手动切到「Token 统计」→ 关闭 → 再次点击「会话缓存命中率」
+    h.elements.get('tok-view-tokens').click();
+    assert.equal(mainView.style.display, 'block');
+    api.toggle(false);
+    csbTokensBtn.click();
+    assert.equal(pTokens.hidden, false);
+    assert.equal(reqView.style.display, 'flex');
+    assert.equal(tokReqTab.classList.contains('active'), true);
+    assert.deepStrictEqual(revealSnapshots[1], { reqDisplay: 'flex', mainDisplay: 'none', reqActive: true }, '第二次展开瞬间同样即须为实时请求');
+
+    // 底栏 Token 胶囊作为唯一点击入口直达实时请求
+    api.toggle(false);
+    csbTokensBtn.click();
+    assert.equal(pTokens.hidden, false);
+    assert.equal(reqView.style.display, 'flex');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('上下文直达零闪烁 + 底栏消除硬裁切自适应换行 + 悬浮圆球悬停同心居中契约', async () => {
+  const stylesSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+  const tplSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
+  const mainSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'main.js'), 'utf8');
+
+  // 1. 第 2 项 CSS 与 Light DOM 样式契约（禁止全局 72px 裁切、允许 wrap + overflow visible、保留径向收缩）
+  assert.doesNotMatch(stylesSrc, /\.csb-text\s*\{[^}]*max-width:\s*72px/);
+  assert.match(stylesSrc, /\.composer-status-bar\s*\{[^}]*flex-wrap:\s*wrap;[^}]*overflow:\s*visible;/s);
+  assert.match(stylesSrc, /\.csb-quota-pill\s*\{[^}]*overflow:\s*visible;/s);
+  assert.match(mainSrc, /#composer-status-bar\s*\{[^}]*flex-wrap:\s*wrap\s*!important;[^}]*overflow:\s*visible\s*!important;/s);
+  assert.match(mainSrc, /#composer-status-bar\s+\.csb-text\s*\{[^}]*max-width:\s*none\s*!important;[^}]*overflow:\s*visible\s*!important;/s);
+  assert.match(mainSrc, /#composer-status-bar\s+\.csb-quota-pill\s*\{[^}]*overflow:\s*visible\s*!important;/s);
+
+  // 2. 第 3 项悬浮球同心居中契约（严格 border-box、grid 居中、hover 不放大位移、svg inset:0 100% 匹配 cx=cy=23）
+  assert.match(stylesSrc, /\.ctx-radial-orb\s*\{[^}]*box-sizing:\s*border-box;[^}]*width:\s*46px;[^}]*height:\s*46px;[^}]*margin:\s*0;[^}]*padding:\s*0;[^}]*display:\s*grid;[^}]*place-items:\s*center;/s);
+  assert.doesNotMatch(stylesSrc, /\.ctx-radial-orb:hover\s*\{[^}]*scale\(/);
+  assert.match(stylesSrc, /\.ctx-orb-ring-svg\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0;[^}]*width:\s*100%;[^}]*height:\s*100%;[^}]*display:\s*block;/s);
+  assert.match(tplSrc, /<svg class="ctx-orb-ring-svg" viewBox="0 0 46 46" aria-hidden="true">/);
+  assert.match(tplSrc, /class="ctx-orb-ring-track" cx="23" cy="23" r="19\.5"/);
+
+  // 3. 第 1 项行为与零闪烁验证
+  const h = harness(session());
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    h.finishScan();
+    await h.flush();
+
+    const pCtx = h.elements.get('panel');
+    const paneSess = h.elements.get('pane-ctx-session');
+    const paneSet = h.elements.get('pane-ctx-settings');
+    const tabSess = h.elements.get('tab-ctx-session');
+    const tabSet = h.elements.get('tab-ctx-accounts');
+    const revealSnaps = [];
+    let pHidden = pCtx.hidden;
+    Object.defineProperty(pCtx, 'hidden', {
+      configurable: true,
+      get() { return pHidden; },
+      set(v) {
+        const prev = pHidden;
+        pHidden = Boolean(v);
+        if (prev && !pHidden) {
+          revealSnaps.push({
+            sessHidden: paneSess.hidden,
+            setHidden: paneSet.hidden,
+            sessActive: tabSess.classList.contains('active'),
+            setActive: Boolean(tabSet?.classList?.contains('active'))
+          });
+        }
+      }
+    });
+
+    // (a) 切到配置 -> 不关闭直接点底栏 #csb-group-context / 径向上下文 / 溢出菜单上下文均立即回「当前会话」且面板不关闭
+    api.openContextSettingsForTest({ forceFallbackPane: true });
+    assert.equal(pCtx.hidden, false);
+    assert.equal(api.getContextPreferencesState().activeContextTab, 'settings');
+    assert.equal(api.getPanelPickerStateForTest().currentTarget, 'settings');
+
+    h.elements.get('csb-group-context').click();
+    assert.equal(pCtx.hidden, false, '停在配置页点底栏上下文入口应切回当前会话，不应直接关闭面板');
+    assert.equal(api.getContextPreferencesState().activeContextTab, 'session');
+    assert.equal(api.getContextPreferencesState().isContextSettingsView, false);
+
+    // 停在当前会话再次点击同一入口才执行关闭
+    h.elements.get('csb-group-context').click();
+    assert.equal(pCtx.hidden, true, '停在当前会话再次点击同一入口应正常关闭面板');
+
+    // (b) 停在「配置」后关闭面板 -> 分别点各上下文入口，首帧即须呈现「当前会话」零闪烁
+    api.openContextSettingsForTest();
+    api.toggle(false);
+    h.elements.get('csb-group-context').click();
+    assert.equal(pCtx.hidden, false);
+    assert.deepStrictEqual(revealSnaps[revealSnaps.length - 1], {
+      sessHidden: false,
+      setHidden: true,
+      sessActive: true,
+      setActive: false
+    }, '关闭后点底栏上下文入口，首帧即须是当前会话');
+
+    api.openContextSettingsForTest();
+    api.toggle(false);
+    h.elements.get('radial-item-context').click();
+    assert.equal(pCtx.hidden, false);
+    assert.deepStrictEqual(revealSnaps[revealSnaps.length - 1], {
+      sessHidden: false,
+      setHidden: true,
+      sessActive: true,
+      setActive: false
+    }, '关闭后点径向菜单上下文入口，首帧即须是当前会话');
+
+    api.openContextSettingsForTest();
+    api.toggle(false);
+    h.elements.get('overflow-context-btn').click();
+    assert.equal(pCtx.hidden, false);
+    assert.deepStrictEqual(revealSnaps[revealSnaps.length - 1], {
+      sessHidden: false,
+      setHidden: true,
+      sessActive: true,
+      setActive: false
+    }, '关闭后点溢出菜单上下文入口，首帧即须是当前会话');
+
+    // 非径向模式下直接点顶栏 #badge 也遵循同规则（先停在配置时切回当前会话，再点才关闭）
+    api.setQuickMenuStyleForTest('floating', { persist: false });
+    api.openContextSettingsForTest();
+    h.elements.get('badge').click();
+    assert.equal(pCtx.hidden, false);
+    assert.equal(api.getContextPreferencesState().activeContextTab, 'session');
+    h.elements.get('badge').click();
+    assert.equal(pCtx.hidden, true);
+
+    // (c) 专用配置入口与右键 CLI 仍直达配置
+    h.elements.get('btn-quick-settings').click();
+    assert.equal(pCtx.hidden, false);
+    assert.equal(api.getContextPreferencesState().activeContextTab, 'settings');
+    api.toggle(false);
+    h.elements.get('radial-item-cli').trigger('contextmenu', { preventDefault() { }, stopPropagation() { } });
+    assert.equal(pCtx.hidden, false);
+    assert.equal(api.getContextPreferencesState().activeContextTab, 'settings');
+  } finally {
+    api.dispose();
+  }
+});
+
+
+
+test('v0.9.1 第19轮 / A: 三算法切换数值与冠军同步重算', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+  assert.match(src, /const speedResolvedMetrics = \(group\) =>/, '必须有统一的算法解析函数');
+  assert.match(src, /speedAlgorithm === 'composite'/, '必须实现综合效率分支');
+  assert.match(src, /500 \/ \(medianTtft \+ 500 \/ medianTps\)/, '综合效率公式必须是 500 / (TTFT + 500 / tok_s)');
+  assert.match(src, /: medianTps;/, '缺 TTFT 时必须回退 tok_s');
+  assert.match(src, /if \(speedAlgorithm === 'mean'\)/, '必须实现均值分支');
+  // 冠军判定不得再依赖下标 0
+  assert.doesNotMatch(src, /if \(index === 0\) \{\s*const badge/, '冠军判定不得写死第一张卡');
+  assert.match(src, /const championId = \(\(\) => \{/, '必须有动态冠军判定');
+  assert.match(src, /speedMetric === 'tps' \? b\.v - a\.v : a\.v - b\.v/, '冠军排序必须区分越大越快与越小越快');
+});
+
+test('v0.9.1 第19轮 / B: 折线图按日聚合 + P95 压平 + Y 轴锁 0', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+  assert.match(src, /Math\.floor\(ts \/ 86400000\)/, '必须按自然日分桶');
+  assert.match(src, /const val = speedAlgorithm === 'mean'/, '每日聚合必须随算法联动');
+  assert.match(src, /Math\.floor\(sortedVals\.length \* 0\.95\)/, '必须有 P95 上限保护');
+  assert.match(src, /if \(pt\.val > cap\) pt\.val = cap;/, '超过 P95 的点必须被压平');
+  assert.match(src, /const yMin = Math\.max\(0, rawMin - span \* 0\.15\);/, 'Y 轴下限必须锁 0');
+  assert.match(src, /const yMax = Math\.max\(yMin \+ 1,/, '必须保证 yMax > yMin');
+});
+
+test('v0.9.1 第19轮 / C: 折线图图例使用 speedDisplayName 区分档位且零括号', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+  assert.match(src, /text\.textContent = speedDisplayName\(group\);/, '图例必须走 speedDisplayName');
+  assert.doesNotMatch(src, /text\.textContent = String\(group\.productLabel \|\| group\.modelExactId \|\| ''\)\.split/, '不得再截断到无档位的短名');
+  // 档位分隔符与零括号契约
+  assert.match(src, /\.join\(' · '\)/, '档位必须用中点连接');
+  assert.match(src, /composed\.replace\(/, 'speedDisplayName must strip brackets');
+});
+
+function openSpeedTrend() {
+  const h = harness();
+  const doc = h.sandbox.document;
+  doc.createElementNS = (_ns, tag) => Object.assign(doc.createElement(tag), { tagName: tag });
+  const api = h.sandbox.__AGContextMeter;
+  api.switchContextTabForTest('speed');
+  return { h, api, svg: h.elements.get('speed-line-svg') };
+}
+
+test('speed trend selects local days, hours and raw timestamps from plottable samples', () => {
+  const { h, api, svg } = openSpeedTrend();
+  const now = Date.now() - 10_000;
+  try {
+    for (const [interval, label] of [[86400000, '按日聚合'], [3600000, '按小时聚合'], [1100, '按采样序列']]) {
+      api.setSpeedRecordsForTest([0, 1, 2, 3].map(i => ({
+        callId: 'trend-' + i, modelExactId: 'gemini-4-hydrogen', status: 'final', timestamp: now - i * interval,
+        outputTokens: 400, durationSec: 10, tps: 40 + i * 3
+      })));
+      assert.equal(h.elements.get('speed-trend-foot').children[0].textContent, label);
+      const marks = svg.children.filter(node => node.className === 'ctx-speed-x-tick' || node.getAttribute('class') === 'ctx-speed-x-tick');
+      assert.ok(marks.length >= 3 && marks.length <= 7);
+      assert.equal(new Set(marks.map(node => node.textContent)).size, marks.length);
+      assert.equal(svg.children.find(node => node.tagName === 'polyline').getAttribute('points').split(' ').length, 4);
+    }
+    api.setSpeedRecordsForTest([]);
+    assert.equal(svg.children.length, 0);
+    assert.equal(h.elements.get('speed-trend-foot').children.length, 0);
+  } finally {
+    api.dispose();
+  }
+});
+
+test('speed trend colors and names match each plotted model, including duplicate display names', () => {
+  const { h, api, svg } = openSpeedTrend();
+  const ids = ['gemini-4-hydrogen-ultra', 'gemini-4-hydrogen-ultra-preview', 'gemini-4-hydrogen-low',
+    'gemini-4-carbon-mid', 'gemini-3.8-flash-high', 'claude-opus-4-6', 'gpt-5.4', 'gemini-3.1-pro-high'];
+  try {
+    api.setSpeedRecordsForTest(ids.map((modelExactId, i) => ({
+      callId: 'color-' + i, modelExactId, status: 'final', timestamp: Date.now() - 2000 + i,
+      modelLabel: i < 2 ? 'Gemini 4 Hydrogen (Ultra)' : modelExactId, effort: i < 2 ? 'ultra' : undefined,
+      outputTokens: 400, durationSec: 10, tps: 40 + i
+    })));
+    for (const id of ids) {
+      const row = h.elements.get('speed-rank-rows').children.find(node => node.getAttribute('data-rank-id') === id);
+      const checkbox = row.children[0].children[0];
+      checkbox.checked = true;
+      checkbox.trigger('change');
+    }
+    const legend = h.elements.get('speed-trend-legend').children;
+    const names = legend.map(item => item.children[1].textContent);
+    const colors = legend.map(item => item.children[0].style.background);
+    assert.equal(new Set(names).size, 8);
+    assert.equal(new Set(colors).size, 8);
+    assert.ok(names.every(name => !/[（）()]/.test(name)));
+    assert.deepEqual(svg.children.filter(node => node.tagName === 'polyline').map(node => node.getAttribute('stroke')), colors);
+  } finally {
+    api.dispose();
+  }
+});
+
+
+test('Phase 1.3: 账号与自动切号迁入设置页专卡、移除弹窗顶层化、双入口共享状态与草稿', async () => {
+  const tpl = fs.readFileSync(path.join(__dirname, 'src/renderer/template.html'), 'utf8');
+  const i18nSrc = fs.readFileSync(path.join(__dirname, 'src/renderer/i18n.js'), 'utf8');
+  const settingsPaneIdx = tpl.indexOf('id="pane-ctx-settings"');
+  const settingsAcctsIdx = tpl.indexOf('id="settings-accounts-card"');
+  const restartModalIdx = tpl.indexOf('id="global-restart-modal"');
+  const removeModalIdx = tpl.indexOf('id="account-remove-modal"');
+  const quotaPanelIdx = tpl.indexOf('id="panel-quota"');
+  const quotaEntryIdx = tpl.indexOf('id="quota-accounts-entry-card"');
+  const keepaliveIdx = tpl.indexOf('id="quota-keepalive-section"');
+  assert.ok(settingsPaneIdx > 0 && settingsAcctsIdx > settingsPaneIdx, '设置页必须包含 #settings-accounts-card');
+  assert.ok(settingsAcctsIdx < restartModalIdx, '#settings-accounts-card 必须在 #pane-ctx-settings 内部');
+  assert.ok(removeModalIdx > restartModalIdx && removeModalIdx < quotaPanelIdx, '#account-remove-modal 必须提升至顶层且位于 #panel-quota 外部');
+  assert.ok(quotaEntryIdx > quotaPanelIdx && keepaliveIdx > quotaEntryIdx, '额度面板必须保留摘要入口卡与缓存保活诊断');
+  assert.match(tpl, /data-nav-target="settings-accounts-card"/, '设置页快捷导航必须包含账号与切号入口');
+
+  for (const key of [
+    'settings.nav.accounts', 'accounts.manageBtn', 'accounts.refreshEntry',
+    'accounts.entryActiveLabel', 'accounts.entryNoActive', 'accounts.entryRuleUnsaved', 'accounts.entryRuleSummary'
+  ]) {
+    const m = i18nSrc.match(new RegExp(`'${key.replace(/\./g, '\\.')}'\\s*:\\s*\\{[^\\n]+\\}`));
+    assert.ok(m, `必须包含词条 ${key}`);
+    assert.doesNotMatch(m[0], /[（）()]/, `新增三语词条 ${key} 不得包含括号`);
+  }
+
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    api.setAccountsOverviewForTest({
+      accounts: [
+        { email: 'a@example.com', maskedEmail: 'a***@example.com', isActive: true, hasRefreshToken: true, quotaSnapshot: { pools: [] } },
+        { email: 'b@example.com', maskedEmail: 'b***@example.com', isActive: false, hasRefreshToken: true, quotaSnapshot: { pools: [] } }
+      ],
+      autoSwitch: { enabled: true, poolKey: 'shared_gemini_main', metricMode: 'remaining_pct', windowKey: '5h', thresholdPct: 20, candidates: ['b@example.com'] },
+      autoSwitchStatus: { state: 'watching' }
+    });
+    assert.match(h.elements.get('quota-entry-active-account').textContent, /a@example\.com/);
+    assert.equal(h.elements.get('quota-entry-autoswitch-pill').textContent, '已开启 · 监控中');
+    assert.match(h.elements.get('quota-entry-rule-summary').textContent, /20%/);
+
+    const th = h.elements.get('inp-auto-switch-threshold');
+    th.value = '35';
+    th.trigger('input');
+    assert.match(h.elements.get('quota-entry-rule-summary').textContent, /未保存/);
+    assert.match(h.elements.get('auto-switch-save-status').textContent, /未保存/);
+    api.setAccountsOverviewForTest({
+      accounts: [
+        { email: 'a@example.com', maskedEmail: 'a***@example.com', isActive: true, hasRefreshToken: true, quotaSnapshot: { pools: [] } },
+        { email: 'b@example.com', maskedEmail: 'b***@example.com', isActive: false, hasRefreshToken: true, quotaSnapshot: { pools: [] } }
+      ],
+      autoSwitch: { enabled: true, poolKey: 'shared_gemini_main', metricMode: 'remaining_pct', windowKey: '5h', thresholdPct: 20, candidates: ['b@example.com'] },
+      autoSwitchStatus: { state: 'watching' }
+    });
+    assert.equal(th.value, '35', '后台刷新不得冲掉正在编辑的草稿');
+
+    h.elements.get('btn-quota-open-accounts-settings').click();
+    assert.equal(h.elements.get('panel').hidden, false);
+    assert.equal(h.elements.get('pane-ctx-accounts').hidden, false);
+  } finally {
+    api.dispose();
+  }
+});
+
+
+test('Phase 2C (PR #102 & Issue #106): 无独立菜单栏/macOS隐藏标题栏注入空白拖区且全屏径向宿主保持0x0无全屏no-drag', async () => {
+  const h = harness();
+  try {
+    if (!h.sandbox.document.head) h.sandbox.document.head = h.sandbox.document.createElement();
+    const api = h.sandbox.__AGContextMeter;
+
+    // 1. 径向顶层容器保持 0x0 不覆盖视口
+    const src = fs.readFileSync(path.join(__dirname, 'src/renderer/main.js'), 'utf8');
+    assert.match(src, /radialHost\.style\.cssText\s*=\s*`position:fixed!important;top:0!important;left:0!important;width:0!important;height:0!important;/);
+    assert.doesNotMatch(src.slice(src.indexOf('function extractRadialTopLayerCss()'), src.indexOf('function ensureRadialHostAtBodyEnd()')), /-webkit-app-region:\s*no-drag/);
+
+    // 2. Windows 顶栏 WCO / 无独立菜单栏时声明 @container/titlebar -webkit-app-region: drag，交互按钮保持 no-drag
+    h.sandbox.navigator = { platform: 'Win32' };
+    h.sandbox.window.innerWidth = 1280;
+    h.sandbox.window.outerWidth = 1280;
+    const tb = h.sandbox.document.createElement();
+    tb.getBoundingClientRect = () => ({ top: 0, left: 0, right: 1280, bottom: 40, width: 1280, height: 40 });
+    h.sandbox.document.querySelector = sel => (sel.includes('@container/titlebar') ? tb : null);
+    api.syncWindowControlsOverlayForTest();
+    const fixEl = h.sandbox.document.getElementById('ag-topbar-host-fix');
+    assert.ok(fixEl);
+    assert.match(fixEl.textContent, /\[class\*="@container\/titlebar"\][\s\S]*-webkit-app-region:\s*drag;/);
+    assert.match(fixEl.textContent, /#ag-context-meter:not\(\[hidden\]\):not\(\[data-collapsed-hidden="true"\]\),\s*#ag-context-meter:not\(\[hidden\]\):not\(\[data-collapsed-hidden="true"\]\) \*:not\(\[hidden\]\) \{ -webkit-app-region: no-drag !important;/);
+
+    // 3. macOS 隐藏标题栏（computeWindowControlsWidth 为 0）仍补齐空白拖动区
+    h.sandbox.navigator = { platform: 'MacIntel' };
+    api.syncWindowControlsOverlayForTest();
+    assert.match(fixEl.textContent, /-webkit-app-region:\s*drag;/);
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('Phase 4A (图 3): 右侧辅助分栏插件/浏览器共存切换(浏览器在最右)、保留滚动与网页状态、左缘宽窄拖拽与收起展开及设置持久化', async () => {
+  const tpl = fs.readFileSync(path.join(__dirname, 'src/renderer/template.html'), 'utf8');
+  const auxBarPos = tpl.indexOf('id="dock-aux-context-bar"');
+  const panelPos = tpl.indexOf('id="panel"');
+  assert.ok(auxBarPos > 0 && panelPos > auxBarPos, '#dock-aux-context-bar 必须位于 #panel 外部，切换浏览器或收起后仍保留入口');
+  const tabPlugPos = tpl.indexOf('id="btn-dock-aux-view-plugin"');
+  const tabBrwPos = tpl.indexOf('id="btn-dock-aux-view-browser"');
+  assert.ok(tabPlugPos > 0 && tabBrwPos > tabPlugPos, '辅助栏标签切换中 浏览器 按钮必须位于最右侧');
+
+  const h = harness();
+  try {
+    if (!h.sandbox.document.head) h.sandbox.document.head = h.sandbox.document.createElement();
+    const api = h.sandbox.__AGContextMeter;
+
+    // 构造模拟宿主右侧辅助栏与 webview 浏览器节点
+    const hostSidebar = h.sandbox.document.createElement('div');
+    hostSidebar.setAttribute('data-aux-pane-focus-scope', 'true');
+    hostSidebar.getBoundingClientRect = () => ({ left: 800, top: 0, width: 420, height: 800, right: 1220, bottom: 800 });
+    const hostWebviewContainer = h.sandbox.document.createElement('div');
+    hostWebviewContainer.id = 'mock-host-browser-pane';
+    const webview = h.sandbox.document.createElement('webview');
+    webview.style.pointerEvents = 'auto';
+    hostSidebar.appendChild(hostWebviewContainer);
+    h.sandbox.document.body = h.sandbox.document.createElement('body');
+    h.sandbox.document.body.appendChild(hostSidebar);
+
+    const winListeners = new Map();
+    h.sandbox.window.addEventListener = (type, fn) => {
+      if (!winListeners.has(type)) winListeners.set(type, new Set());
+      winListeners.get(type).add(fn);
+    };
+    h.sandbox.window.removeEventListener = (type, fn) => {
+      winListeners.get(type)?.delete(fn);
+    };
+    h.sandbox.window.trigger = (type, ev = {}) => {
+      for (const fn of (winListeners.get(type) || [])) fn(ev);
+    };
+
+    const prevQueryAll = h.sandbox.document.querySelectorAll;
+    const prevQuery = h.sandbox.document.querySelector;
+    h.sandbox.document.querySelector = sel => (sel.includes('aux-pane-focus-scope') ? hostSidebar : prevQuery(sel));
+    h.sandbox.document.querySelectorAll = sel => {
+      if (sel.includes('webview')) return [webview];
+      return prevQueryAll ? prevQueryAll(sel) : [];
+    };
+
+    api.setDockPosition('aux', { persist: false });
+    let st = api.getAuxDockStateForTest();
+    assert.equal(st.auxBarHidden, false);
+    assert.equal(st.auxResizerHidden, false);
+    assert.equal(st.auxViewTab, 'plugin');
+    assert.equal(hostWebviewContainer.style.display, 'none', '插件态时宿主兄弟容器仅隐藏而不销毁 DOM');
+
+    // 记录面板滚动位置 -> 切至浏览器保留浏览器容器与面板滚动位置 -> 切回插件还原滚动位置
+    h.elements.get('panel').scrollTop = 240;
+    h.elements.get('btn-dock-aux-view-browser').click();
+    st = api.getAuxDockStateForTest();
+    assert.equal(st.auxViewTab, 'browser');
+    assert.equal(h.host.getAttribute('data-aux-view'), 'browser');
+    assert.equal(hostWebviewContainer.style.display, '', '切换浏览器后宿主原生浏览器内容立即可见且未被卸载');
+    assert.equal(st.auxBarHidden, false, '浏览器态仍保留辅助切换栏以便一键切回插件');
+
+    h.elements.get('btn-dock-aux-view-plugin').click();
+    st = api.getAuxDockStateForTest();
+    assert.equal(st.auxViewTab, 'plugin');
+    assert.equal(h.elements.get('panel').scrollTop, 240, '切回插件必须无损恢复先前滚动位置');
+    assert.equal(hostWebviewContainer.style.display, 'none');
+
+    // 收起 / 展开测试
+    h.elements.get('btn-dock-aux-collapse').click();
+    assert.equal(api.getAuxDockStateForTest().auxCollapsed, true);
+    assert.equal(h.host.getAttribute('data-aux-collapsed'), 'true');
+    h.elements.get('btn-dock-aux-collapse').click();
+    assert.equal(api.getAuxDockStateForTest().auxCollapsed, false);
+
+    // 拖拽左缘 resizer 期间禁用 webview pointer-events，结束后必还原并钳位宽度
+    const resizer = h.elements.get('dock-aux-resizer');
+    resizer.trigger('pointerdown', { pointerId: 1, button: 0, isPrimary: true, clientX: 900, preventDefault() { } });
+    assert.equal(webview.style.pointerEvents, 'none', '拖拽分栏宽窄期间必须禁用 webview pointer-events');
+    h.sandbox.window.trigger('pointermove', { clientX: 820 });
+    h.sandbox.window.trigger('pointerup', { clientX: 820 });
+    assert.equal(webview.style.pointerEvents, 'auto', '拖拽结束后必须恢复 webview pointer-events');
+    st = api.getAuxDockStateForTest();
+    assert.ok(st.auxWidthPx >= 280 && st.auxWidthPx <= 920);
+    assert.equal(hostSidebar.style.width, `${st.auxWidthPx}px`);
+
+    // 退出 aux 模式后必须清理隐藏标记恢复宿主浏览器显示
+    h.elements.get('btn-dock-aux-back').click();
+    assert.equal(hostWebviewContainer.style.display, '');
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('01 批回归：对调标签顺序、唯一 speed-line-empty ID 与真实模板下 v0.9.2 vs 候选版全维度对照', async () => {
+  const pathMod = require('node:path');
+  const { execFileSync } = require('node:child_process');
+  const tplHtml = fs.readFileSync(pathMod.join(__dirname, 'src/renderer/template.html'), 'utf8');
+  const stylesCss = fs.readFileSync(pathMod.join(__dirname, 'src/renderer/styles.css'), 'utf8');
+  const candidateSource = fs.readFileSync(pathMod.join(__dirname, 'meter-renderer.js'), 'utf8');
+
+  // 1. 静态模板检查：ID 零重复、speed-line-empty 唯一落于趋势面板、标签顺序为 会话 -> 速度对比 -> 模型设置 -> 配置
+  const allIds = [...tplHtml.matchAll(/\bid="([^"]+)"/g)].map(m => m[1]);
+  const seenIds = new Set();
+  const dupIds = [];
+  for (const id of allIds) {
+    if (seenIds.has(id)) dupIds.push(id);
+    seenIds.add(id);
+  }
+  assert.deepEqual(dupIds, [], `template.html 不应存在重复 DOM ID: ${dupIds.join(', ')}`);
+  assert.equal(allIds.filter(id => id === 'speed-line-empty').length, 1, 'speed-line-empty 只能保留唯一节点');
+
+  const tabsBarStart = tplHtml.indexOf('id="ctx-tabs-bar"');
+  const tabsBarEnd = tplHtml.indexOf('</div>', tabsBarStart);
+  const tabsBarSlice = tplHtml.slice(tabsBarStart, tabsBarEnd);
+  const tabOrder = [...tabsBarSlice.matchAll(/data-ctx-tab="([^"]+)"/g)].map(m => m[1]);
+  assert.deepEqual(tabOrder, ['session', 'speed', 'models', 'accounts'], '标签顺序必须为 当前会话 -> 速度对比 -> 模型设置 -> 账号与共享池');
+
+  const speedPaneStart = tplHtml.indexOf('id="pane-ctx-speed"');
+  const settingsPaneStart = tplHtml.indexOf('id="pane-ctx-settings"', speedPaneStart);
+  const speedPaneSlice = tplHtml.slice(speedPaneStart, settingsPaneStart);
+  assert.ok(speedPaneSlice.indexOf('id="speed-hero"') > 0 && speedPaneSlice.indexOf('id="speed-line-empty"') > speedPaneSlice.indexOf('id="speed-hero"'));
+  assert.ok(speedPaneSlice.indexOf('id="speed-line-empty"') < speedPaneSlice.indexOf('class="ctx-speed-legacy"'), '唯一 speed-line-empty 必须位于趋势面板内而非 legacy 隐藏区');
+
+  // 校验窄栏 CSS 容器查询与防溢出规则，以及排行方形复选框不被全局胶囊开关劫持
+  assert.match(stylesCss, /#pane-ctx-speed\s*\{[\s\S]*container-type:\s*inline-size/);
+  assert.match(stylesCss, /@container\s*\(max-width:\s*760px\)\s*\{\s*\.ctx-speed-hero-body\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  assert.match(stylesCss, /@container\s*\(max-width:\s*560px\)\s*\{\s*\.ctx-speed-pk-grid\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  assert.match(stylesCss, /:not\(\.ctx-toggle-input,\s*\.ctx-speed-rank-check\)/);
+
+  // 2. 真实模板 HTML 解析沙箱：禁止暗自伪造不存在的 DOM，getElementById 严格只返回真实模板挂载节点
+  function parseHtmlIntoRoot(html, makeNode) {
+    const body = String(html || '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<!--[\s\S]*?-->/g, '');
+    const root = makeNode('shadow-root');
+    const byId = new Map();
+    const stack = [root];
+    const voidTags = new Set(['input', 'br', 'hr', 'img', 'meta', 'link', 'circle', 'line', 'rect', 'path', 'polygon', 'polyline']);
+    const tagRe = /<\/?([a-zA-Z0-9-]+)([^>]*)>|([^<]+)/g;
+    let m;
+    while ((m = tagRe.exec(body)) !== null) {
+      if (m[3]) {
+        const text = m[3].replace(/\s+/g, ' ');
+        if (text.trim() && stack.length > 1) {
+          const cur = stack[stack.length - 1];
+          cur.textContent = (cur.textContent ? cur.textContent + ' ' : '') + text.trim();
+        }
+        continue;
+      }
+      const raw = m[0];
+      const tag = m[1].toLowerCase();
+      const attrStr = m[2] || '';
+      if (raw.startsWith('</')) {
+        for (let i = stack.length - 1; i >= 1; i--) {
+          if (stack[i].tagName === tag) {
+            stack.length = i;
+            break;
+          }
+        }
+        continue;
+      }
+      const node = makeNode(tag);
+      const attrRe = /([a-zA-Z0-9_:-]+)(?:\s*=\s*"([^"]*)"|\s*=\s*'([^']*)'|\s*=\s*([^\s>]+))?/g;
+      let am;
+      while ((am = attrRe.exec(attrStr)) !== null) {
+        const k = am[1];
+        const v = am[2] ?? am[3] ?? am[4] ?? '';
+        if (k === 'hidden') node.hidden = true;
+        else if (k === 'value') node.value = v;
+        else node.setAttribute(k, v);
+        if (k === 'id' && v && !byId.has(v)) byId.set(v, node);
+      }
+      stack[stack.length - 1].appendChild(node);
+      if (!raw.endsWith('/>') && !voidTags.has(tag)) {
+        stack.push(node);
+      }
+    }
+    return { root, byId };
+  }
+
+  function createRealTemplateHarness(bundleSource, initialSavedPrefs = null) {
+    const docListeners = new Map();
+    const listeners = new Map();
+    const blobs = [];
+    const anchors = [];
+    const savedCalls = [];
+    const lStore = new Map();
+    let shadowById = new Map();
+    let shadowRootTree = null;
+
+    function makeNode(tag = 'div') {
+      const attrs = new Map();
+      const props = new Map();
+      const node = {
+        tagName: String(tag).toLowerCase(),
+        style: {
+          display: '', opacity: '', width: '', left: '', top: '', right: '', background: '',
+          setProperty(k, v) { props.set(k, v); },
+          removeProperty(k) { props.delete(k); },
+          getPropertyValue(k) { return props.get(k) || ''; }
+        },
+        children: [],
+        parentElement: null,
+        hidden: false,
+        disabled: false,
+        checked: false,
+        focused: false,
+        scrolledIntoView: false,
+        value: '',
+        textContent: '',
+        offsetWidth: 140,
+        clientWidth: 520,
+        get id() { return attrs.get('id') || ''; },
+        set id(v) { attrs.set('id', String(v)); },
+        get className() { return attrs.get('class') || ''; },
+        set className(v) { attrs.set('class', String(v || '')); },
+        classList: {
+          add(c) {
+            const cur = (attrs.get('class') || '').split(/\s+/).filter(Boolean);
+            if (!cur.includes(c)) cur.push(c);
+            attrs.set('class', cur.join(' '));
+          },
+          remove(c) {
+            const cur = (attrs.get('class') || '').split(/\s+/).filter(x => x && x !== c);
+            attrs.set('class', cur.join(' '));
+          },
+          toggle(c, force) {
+            const on = force === undefined ? !this.contains(c) : Boolean(force);
+            if (on) this.add(c); else this.remove(c);
+            return on;
+          },
+          contains(c) { return (attrs.get('class') || '').split(/\s+/).includes(c); }
+        },
+        addEventListener(type, fn) {
+          if (!listeners.has(node)) listeners.set(node, new Map());
+          listeners.get(node).set(type, fn);
+        },
+        removeEventListener(type) { listeners.get(node)?.delete(type); },
+        setAttribute(k, v) {
+          attrs.set(k, String(v));
+          if (k === 'hidden') node.hidden = true;
+        },
+        getAttribute(k) { return attrs.get(k) ?? null; },
+        removeAttribute(k) {
+          attrs.delete(k);
+          if (k === 'hidden') node.hidden = false;
+        },
+        append(...items) { for (const it of items) node.appendChild(it); },
+        appendChild(x) {
+          if (x) {
+            x.parentElement = node;
+            node.children.push(x);
+          }
+          return x;
+        },
+        replaceChildren(...items) {
+          node.children = [];
+          for (const it of items) node.appendChild(it);
+        },
+        remove() {
+          if (node.tagName === 'a') anchors.push({ href: node.href, download: node.download, clicked: Boolean(node._clicked) });
+        },
+        focus() { node.focused = true; },
+        scrollIntoView() { node.scrolledIntoView = true; },
+        click() {
+          node._clicked = true;
+          const fn = listeners.get(node)?.get('click');
+          if (fn) fn({ target: node, currentTarget: node, preventDefault() {}, stopPropagation() {} });
+        },
+        trigger(type, ev = {}) {
+          const payload = { target: node, currentTarget: node, preventDefault() {}, stopPropagation() {}, ...ev };
+          const fn = listeners.get(node)?.get(type);
+          if (fn) fn(payload);
+          const propHandler = node[`on${type}`];
+          if (typeof propHandler === 'function') propHandler(payload);
+        },
+        matches(sel) {
+          if (!sel) return false;
+          if (sel.startsWith('#')) return node.id === sel.slice(1);
+          if (sel.startsWith('.')) return node.classList.contains(sel.slice(1));
+          const attrM = sel.match(/^\[([a-zA-Z0-9_-]+)(?:="([^"]*)")?\]$/);
+          if (attrM) {
+            const actual = node.getAttribute(attrM[1]);
+            return attrM[2] !== undefined ? actual === attrM[2] : actual !== null;
+          }
+          return node.tagName === sel.toLowerCase();
+        },
+        closest(sel) {
+          let cur = node;
+          while (cur) {
+            if (cur.matches?.(sel)) return cur;
+            cur = cur.parentElement;
+          }
+          return null;
+        },
+        querySelectorAll(sel) {
+          const found = [];
+          const walk = (n) => {
+            for (const c of n.children || []) {
+              if (c.matches?.(sel)) found.push(c);
+              walk(c);
+            }
+          };
+          walk(node);
+          return found;
+        },
+        querySelector(sel) { return node.querySelectorAll(sel)[0] || null; },
+        getBoundingClientRect() { return { left: 0, top: 0, width: node.clientWidth || 520, height: 200, right: node.clientWidth || 520, bottom: 200 }; }
+      };
+      return node;
+    }
+
+    const host = makeNode('div');
+    const shadow = {
+      _html: '',
+      set innerHTML(val) {
+        this._html = String(val || '');
+        const parsed = parseHtmlIntoRoot(this._html, makeNode);
+        shadowRootTree = parsed.root;
+        shadowById = parsed.byId;
+      },
+      get innerHTML() { return this._html; },
+      getElementById(id) { return shadowById.get(id) || null; },
+      querySelectorAll(sel) { return shadowRootTree ? shadowRootTree.querySelectorAll(sel) : []; },
+      querySelector(sel) { return shadowRootTree ? shadowRootTree.querySelector(sel) : null; }
+    };
+    host.attachShadow = () => shadow;
+
+    let firstCreate = true;
+    const sandbox = {
+      location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/speed-real-tpl-1' },
+      document: {
+        hidden: false,
+        body: makeNode('body'),
+        documentElement: makeNode('html'),
+        createElement: (tag) => {
+          if (firstCreate) { firstCreate = false; return host; }
+          return makeNode(tag);
+        },
+        createElementNS: (_ns, tag) => makeNode(tag),
+        getElementById: () => null,
+        querySelectorAll: () => [],
+        querySelector: () => null,
+        addEventListener: (t, fn) => {
+          if (!docListeners.has(t)) docListeners.set(t, new Set());
+          docListeners.get(t).add(fn);
+        },
+        removeEventListener: (t, fn) => docListeners.get(t)?.delete(fn)
+      },
+      window: {
+        innerWidth: 1280,
+        innerHeight: 800,
+        __APP_CONFIG__: { csrfToken: 'test-csrf' },
+        contextMeterAPI: {
+          scan: async () => ({ ok: true, data: { session: session(), scannedAt: Date.now(), latest: null } }),
+          getSettings: async () => ({
+            ok: true,
+            ...(initialSavedPrefs ? { defaultViewPrefs: initialSavedPrefs, uiPreferences: { defaultViewPrefs: initialSavedPrefs } } : {})
+          }),
+          saveSettings: async (payload) => { savedCalls.push(payload); return { ok: true }; }
+        }
+      },
+      localStorage: {
+        getItem: k => lStore.get(k) ?? null,
+        setItem: (k, v) => lStore.set(k, String(v)),
+        removeItem: k => lStore.delete(k)
+      },
+      Blob: class MockBlob {
+        constructor(parts, opts) { this.text = parts.join(''); this.type = opts?.type || ''; blobs.push(this); }
+      },
+      URL: {
+        createObjectURL: () => 'blob:mock-speed-csv',
+        revokeObjectURL: () => {}
+      },
+      __AGContextMeterCore: core,
+      AbortController,
+      Date,
+      setTimeout: () => 1,
+      clearTimeout() {},
+      setInterval: () => 1,
+      clearInterval() {},
+      fetch: async () => ({ ok: true, json: async () => ({ generatorMetadata: [] }) })
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(bundleSource, sandbox);
+    return {
+      sandbox,
+      api: sandbox.__AGContextMeter,
+      el: id => shadow.getElementById(id),
+      shadow,
+      blobs,
+      anchors,
+      savedCalls
+    };
+  }
+
+  // 3. 构造同一组历史样本（严格锚定今日零点，跨 1d/3d/5d/7d/30d/all、含 chat 与 speed-test 来源、含 <3 低样本）
+  const dayMs = 86400000;
+  const hourMs = 3600000;
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const today0 = todayStart.getTime();
+  const fmtYmd = (ms) => {
+    const d = new Date(ms);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const fixedRecords = [
+    // Gemini 4 Carbon (4 条 chat: 今日 1 条, 1 天前 1 条, 2 天前 1 条, 4 天前 1 条)
+    { callId: 'sp-c1', modelExactId: 'gemini-4-carbon', modelLabel: 'Gemini 4 Carbon', status: 'final', origin: 'chat', outputTokens: 300, durationSec: 3.0, ttftSec: 0.6, tps: 100, timestamp: today0 + 2 * hourMs },
+    { callId: 'sp-c2', modelExactId: 'gemini-4-carbon', modelLabel: 'Gemini 4 Carbon', status: 'final', origin: 'chat', outputTokens: 400, durationSec: 3.5, ttftSec: 0.8, tps: 120, timestamp: today0 - 1 * dayMs + 12 * hourMs },
+    { callId: 'sp-c3', modelExactId: 'gemini-4-carbon', modelLabel: 'Gemini 4 Carbon', status: 'final', origin: 'chat', outputTokens: 500, durationSec: 4.0, ttftSec: 1.0, tps: 140, timestamp: today0 - 2 * dayMs + 12 * hourMs },
+    { callId: 'sp-c4', modelExactId: 'gemini-4-carbon', modelLabel: 'Gemini 4 Carbon', status: 'final', origin: 'chat', outputTokens: 600, durationSec: 4.5, ttftSec: 1.2, tps: 160, timestamp: today0 - 4 * dayMs + 12 * hourMs },
+    // Gemini 4 Hydrogen High (3 条 chat + 1 条 speed-test 探针 -> 检验 origin='all' vs 'chat')
+    { callId: 'sp-h1', modelExactId: 'gemini-4-hydrogen-high', modelLabel: 'Gemini 4 Hydrogen (High)', effort: 'high', status: 'final', origin: 'chat', outputTokens: 240, durationSec: 3.0, ttftSec: 0.9, tps: 80, timestamp: today0 + 1 * hourMs },
+    { callId: 'sp-h2', modelExactId: 'gemini-4-hydrogen-high', modelLabel: 'Gemini 4 Hydrogen (High)', effort: 'high', status: 'final', origin: 'chat', outputTokens: 270, durationSec: 3.2, ttftSec: 1.1, tps: 90, timestamp: today0 - 1 * dayMs + 10 * hourMs },
+    { callId: 'sp-h3', modelExactId: 'gemini-4-hydrogen-high', modelLabel: 'Gemini 4 Hydrogen (High)', effort: 'high', status: 'final', origin: 'chat', outputTokens: 300, durationSec: 3.5, ttftSec: 1.3, tps: 100, timestamp: today0 - 2 * dayMs + 10 * hourMs },
+    { callId: 'sp-h4', modelExactId: 'gemini-4-hydrogen-high', modelLabel: 'Gemini 4 Hydrogen (High)', effort: 'high', status: 'final', origin: 'speed-test', outputTokens: 500, durationSec: 2.5, ttftSec: 0.4, tps: 200, timestamp: today0 + 2.5 * hourMs },
+    // Claude Sonnet 4.6 (2 条 <3 低样本, 位于 12-13 天前 -> 7d 不含, 30d 含)
+    { callId: 'sp-a1', modelExactId: 'claude-sonnet-4-6', modelLabel: 'Claude Sonnet 4.6', status: 'final', origin: 'chat', outputTokens: 200, durationSec: 4.0, ttftSec: 1.5, tps: 50, timestamp: today0 - 12 * dayMs + 12 * hourMs },
+    { callId: 'sp-a2', modelExactId: 'claude-sonnet-4-6', modelLabel: 'Claude Sonnet 4.6', status: 'final', origin: 'chat', outputTokens: 280, durationSec: 4.0, ttftSec: 1.7, tps: 70, timestamp: today0 - 13 * dayMs + 12 * hourMs },
+    // Gemini 3.8 Flash (2 条位于 45-46 天前 -> 30d 不含, all 含)
+    { callId: 'sp-f1', modelExactId: 'gemini-3-8-flash', modelLabel: 'Gemini 3.8 Flash', status: 'final', origin: 'chat', outputTokens: 450, durationSec: 2.5, ttftSec: 0.3, tps: 180, timestamp: today0 - 45 * dayMs + 12 * hourMs },
+    { callId: 'sp-f2', modelExactId: 'gemini-3-8-flash', modelLabel: 'Gemini 3.8 Flash', status: 'final', origin: 'chat', outputTokens: 550, durationSec: 2.5, ttftSec: 0.5, tps: 220, timestamp: today0 - 46 * dayMs + 12 * hourMs }
+  ];
+  const flashCustomStart = fmtYmd(today0 - 47 * dayMs);
+  const flashCustomEnd = fmtYmd(today0 - 44 * dayMs);
+
+  function runFullSpeedSuite(bundleSource, label) {
+    const h = createRealTemplateHarness(bundleSource);
+    const api = h.api;
+    try {
+      // 验证真实模板下所有正式版速度对照 DOM ID 均真实存在（绝非假节点）
+      for (const reqId of [
+        'speed-filter-bar', 'speed-range-1d', 'speed-range-3d', 'speed-range-5d', 'speed-range-7d',
+        'speed-range-30d', 'speed-range-all', 'speed-range-custom', 'speed-custom-dates',
+        'speed-date-start', 'speed-date-end', 'speed-date-error',
+        'speed-origin-all', 'speed-origin-chat', 'speed-metric-tps', 'speed-metric-ttft', 'speed-metric-duration',
+        'speed-algo-median', 'speed-algo-mean', 'speed-algo-composite', 'btn-save-default-view-speed',
+        'speed-hero', 'speed-pk-count', 'speed-pk-chips', 'speed-pk-add', 'speed-pk-clear', 'speed-pk-cards',
+        'speed-trend-title', 'speed-trend-legend', 'speed-line-chart-wrap', 'speed-line-svg', 'speed-line-empty', 'speed-trend-foot',
+        'speed-rank', 'speed-rank-count', 'speed-rank-search', 'speed-rank-sort', 'speed-rank-rows', 'speed-rank-export', 'speed-rank-reset'
+      ]) {
+        assert.ok(h.el(reqId), `${label}: 真实模板必须存在 #${reqId}`);
+      }
+
+      // 确认唯一 speed-line-empty 位于 #speed-hero 内（仅候选版去重后唯一）
+      assert.ok(h.el('speed-line-empty').closest('#speed-hero'), `${label}: #speed-line-empty 必须在 #speed-hero 内`);
+      const speedLineEmptyNodes = h.shadow.querySelectorAll('[id="speed-line-empty"]');
+      if (label === 'candidate') {
+        assert.equal(speedLineEmptyNodes.length, 1, '候选版只能有 1 个 #speed-line-empty');
+      } else {
+        assert.equal(speedLineEmptyNodes.length, 2, 'v0.9.2 原模板存在重复 #speed-line-empty');
+      }
+
+      h.el('badge').click();
+      h.el('tab-ctx-speed').click();
+      api.setContextLatestForTest({
+        model: 'Gemini 4 Carbon',
+        modelId: 'gemini-4-carbon',
+        status: 'reported',
+        used: 12000,
+        budget: 256000
+      });
+      api.setSpeedRecordsForTest(fixedRecords);
+
+      // A. 默认 7d 视图：Carbon + Hydrogen High（2 款模型）
+      const defaultRankIds = h.el('speed-rank-rows').children.map(r => r.getAttribute('data-rank-id'));
+      assert.deepEqual(defaultRankIds, ['gemini-4-carbon', 'gemini-4-hydrogen-high'], `${label}: 默认 7d 仅包含近 7 天模型`);
+      assert.equal(h.el('speed-pk-count').textContent, '2');
+
+      // B. 时间范围切换：1d / 3d / 5d / 30d / all / custom
+      h.el('speed-range-30d').click();
+      assert.deepEqual(
+        h.el('speed-rank-rows').children.map(r => r.getAttribute('data-rank-id')),
+        ['gemini-4-carbon', 'gemini-4-hydrogen-high', 'claude-sonnet-4-6']
+      );
+      h.el('speed-range-all').click();
+      const allRankIds = h.el('speed-rank-rows').children.map(r => r.getAttribute('data-rank-id'));
+      assert.deepEqual(allRankIds, ['gemini-3-8-flash', 'gemini-4-carbon', 'gemini-4-hydrogen-high', 'claude-sonnet-4-6']);
+
+      // 1d / 3d / 5d 检查
+      h.el('speed-range-1d').click();
+      assert.equal(h.el('speed-rank-rows').children.length, 2);
+      h.el('speed-range-3d').click();
+      assert.equal(h.el('speed-rank-rows').children.length, 2);
+      h.el('speed-range-5d').click();
+      assert.equal(h.el('speed-rank-rows').children.length, 2);
+
+      // custom 自定义起止日期 + 非法日期校验
+      h.el('speed-range-custom').click();
+      assert.equal(h.el('speed-custom-dates').hidden, false);
+      h.el('speed-date-start').value = '2026-11-20';
+      h.el('speed-date-end').value = '2026-11-10';
+      h.el('speed-custom-dates').trigger('submit');
+      assert.equal(h.el('speed-date-error').hidden, false, `${label}: 起止日期倒挂必须报错`);
+
+      h.el('speed-date-start').value = flashCustomStart;
+      h.el('speed-date-end').value = flashCustomEnd;
+      h.el('speed-custom-dates').trigger('submit');
+      assert.equal(h.el('speed-date-error').hidden, true);
+      assert.deepEqual(
+        h.el('speed-rank-rows').children.map(r => r.getAttribute('data-rank-id')),
+        ['gemini-3-8-flash'],
+        `${label}: 自定义 10-01~10-15 仅命中 45 天前的 Flash`
+      );
+
+      // 回到 all（先点重置筛选验证 resetSpeedFilters 恢复默认选中，再切 all）检查算法（median / mean / composite）与来源（all vs chat）
+      h.el('speed-rank-reset').click();
+      h.el('speed-range-all').click();
+      const readPkCardVal = (id) => {
+        const card = h.el('speed-pk-cards').children.find(c => c.getAttribute('data-pk-id') === id);
+        return card ? card.querySelector('.ctx-speed-pk-value').textContent : null;
+      };
+      // Hydrogen High 在 all+median 下含 speed-test=200 -> 样本 [80,90,100,200] 中位数 95.0；切 chat 后 [80,90,100] 中位数 90.0
+      h.el('speed-origin-all').click();
+      const hydrogenAllMedian = readPkCardVal('gemini-4-hydrogen-high');
+      h.el('speed-origin-chat').click();
+      const hydrogenChatMedian = readPkCardVal('gemini-4-hydrogen-high');
+      h.el('speed-origin-all').click();
+
+      h.el('speed-algo-mean').click();
+      const hydrogenAllMean = readPkCardVal('gemini-4-hydrogen-high');
+      h.el('speed-algo-composite').click();
+      const hydrogenAllComposite = readPkCardVal('gemini-4-hydrogen-high');
+      h.el('speed-algo-median').click();
+
+      // C. 指标切换 (ttft / duration / tps) 与走势图标题联动
+      h.el('speed-metric-ttft').click();
+      assert.match(h.el('speed-trend-title').textContent, /首字延迟/);
+      const carbonTtftVal = readPkCardVal('gemini-4-carbon');
+      h.el('speed-metric-duration').click();
+      assert.match(h.el('speed-trend-title').textContent, /总耗时/);
+      h.el('speed-metric-tps').click();
+      assert.match(h.el('speed-trend-title').textContent, /速度走势/);
+
+      // D. 全量排行搜索过滤、空匹配与三档排序
+      h.el('speed-rank-search').value = 'claude';
+      h.el('speed-rank-search').trigger('input', { target: h.el('speed-rank-search') });
+      assert.deepEqual(h.el('speed-rank-rows').children.map(r => r.getAttribute('data-rank-id')), ['claude-sonnet-4-6']);
+
+      h.el('speed-rank-search').value = 'non-existent-model-xyz';
+      h.el('speed-rank-search').trigger('input', { target: h.el('speed-rank-search') });
+      assert.equal(h.el('speed-rank-rows').children[0].textContent, '没有匹配的模型');
+
+      h.el('speed-rank-search').value = '';
+      h.el('speed-rank-search').trigger('input', { target: h.el('speed-rank-search') });
+
+      const clickSort = (sortKey) => {
+        const btn = h.el('speed-rank-sort').querySelector(`[data-rank-sort="${sortKey}"]`);
+        assert.ok(btn);
+        h.el('speed-rank-sort').trigger('click', { target: btn });
+        return h.el('speed-rank-rows').children.map(r => r.getAttribute('data-rank-id'));
+      };
+      const sortTps = clickSort('tps');
+      const sortTtft = clickSort('ttft');
+      const sortSamples = clickSort('samples');
+      assert.deepEqual(sortTps, ['gemini-3-8-flash', 'gemini-4-carbon', 'gemini-4-hydrogen-high', 'claude-sonnet-4-6']);
+      assert.deepEqual(sortTtft, ['gemini-3-8-flash', 'gemini-4-carbon', 'gemini-4-hydrogen-high', 'claude-sonnet-4-6']);
+      assert.equal(sortSamples[3], 'claude-sonnet-4-6');
+
+      // E. 两模型 PK 对比、+ 添加模型对比聚焦、多系列走势图与 tooltip
+      h.el('speed-pk-clear').click();
+      if (label === 'candidate') {
+        assert.equal(h.el('speed-pk-count').textContent, '0', '候选版清空选择后计数必须归零');
+      }
+      assert.equal(h.el('speed-line-empty').hidden, false);
+      assert.equal(h.el('speed-line-chart-wrap').hidden, true);
+
+      h.el('speed-pk-add').click();
+      assert.equal(h.el('speed-rank-search').focused, true);
+
+      for (const pickId of ['gemini-4-carbon', 'gemini-4-hydrogen-high']) {
+        const row = h.el('speed-rank-rows').children.find(r => r.getAttribute('data-rank-id') === pickId);
+        const cb = row.querySelector('.ctx-speed-rank-check');
+        cb.checked = true;
+        cb.trigger('change');
+      }
+      assert.equal(h.el('speed-pk-count').textContent, '2');
+      assert.equal(h.el('speed-pk-chips').children.length, 2);
+      assert.equal(h.el('speed-pk-cards').children.length, 2);
+      const pkTwoSnapshots = h.el('speed-pk-cards').children.map(c => ({
+        id: c.getAttribute('data-pk-id'),
+        top: c.querySelector('.ctx-speed-pk-top').textContent,
+        val: c.querySelector('.ctx-speed-pk-value').textContent
+      }));
+
+      // 多系列走势图校验（2 条 polyline、图例零括号、粒度注脚、pointermove tooltip）
+      assert.equal(h.el('speed-line-empty').hidden, true);
+      assert.equal(h.el('speed-line-chart-wrap').hidden, false);
+      const polylines = h.el('speed-line-svg').querySelectorAll('polyline');
+      assert.equal(polylines.length, 2);
+      const legendTexts = h.el('speed-trend-legend').children.map(n => n.children[1].textContent);
+      assert.ok(legendTexts.every(s => !/[()（）]/.test(s)), `${label}: 走势图例严禁含括号`);
+      const trendFootTexts = h.el('speed-trend-foot').children.map(n => n.textContent);
+      h.el('speed-line-svg').trigger('pointermove', { clientX: 240 });
+      assert.equal(h.el('speed-line-tooltip').hidden, false);
+      h.el('speed-line-svg').trigger('pointerleave');
+      assert.equal(h.el('speed-line-tooltip').hidden, true);
+
+      // F. 导出 CSV
+      h.el('speed-rank-export').click();
+      assert.equal(h.blobs.length, 1);
+      const csvText = h.blobs[0].text.replace(/^\uFEFF/, '');
+      assert.equal(h.anchors[0].download, 'speed-alld.csv');
+
+      // G. 窄栏容器宽度下走势图自适应 viewBox
+      h.el('speed-line-chart-wrap').clientWidth = 260;
+      api.setSpeedRecordsForTest(fixedRecords);
+      const narrowViewBox = h.el('speed-line-svg').getAttribute('viewBox');
+      assert.equal(narrowViewBox, '0 0 260 200');
+      h.el('speed-line-chart-wrap').clientWidth = 520;
+
+      // H. 设为默认视图并校验持久化参数
+      h.el('speed-range-30d').click();
+      h.el('btn-save-default-view-speed').click();
+      const savedSpeedPrefs = h.savedCalls[h.savedCalls.length - 1]?.defaultViewPrefs;
+
+      // I. 空数据空态
+      api.setSpeedRecordsForTest([]);
+      if (label === 'candidate') {
+        assert.equal(h.el('speed-pk-count').textContent, '0', '候选版空数据时计数必须归零');
+      }
+      assert.equal(h.el('speed-line-empty').hidden, false);
+      assert.equal(h.el('speed-line-empty').textContent, '暂无对比曲线');
+      assert.equal(h.el('speed-line-chart-wrap').hidden, true);
+      assert.equal(h.el('speed-rank-rows').children[0].textContent, '没有匹配的模型');
+      assert.match(h.el('speed-pk-cards').children[0].textContent, /还没有可用的速度记录/);
+
+      return {
+        hydrogenAllMedian,
+        hydrogenChatMedian,
+        hydrogenAllMean,
+        hydrogenAllComposite,
+        carbonTtftVal,
+        pkTwoSnapshots,
+        legendTexts,
+        trendFootTexts,
+        csvText,
+        savedSpeedRange: savedSpeedPrefs?.speedRangeDays
+      };
+    } finally {
+      api.dispose();
+    }
+  }
+
+  // 4. 运行当前候选版，并在有 git history 时同数据跑正式版 v0.9.2 (2303c0bdd268067f) 对照
+  const candResult = runFullSpeedSuite(candidateSource, 'candidate');
+  assert.equal(candResult.hydrogenAllMedian, '95.0');
+  assert.equal(candResult.hydrogenChatMedian, '90.0');
+  assert.equal(candResult.hydrogenAllMean, '117.5');
+  assert.equal(candResult.hydrogenAllComposite, '79.8');
+  assert.equal(candResult.carbonTtftVal, '0.90s');
+  assert.equal(candResult.savedSpeedRange, '30');
+
+  let v092Source = null;
+  try {
+    v092Source = execFileSync('git', ['show', 'v0.9.2:meter-renderer.js'], { cwd: __dirname, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 });
+  } catch { }
+  if (v092Source) {
+    assert.match(v092Source, /2303c0bdd268067f/, 'v0.9.2 正式版构建 ID 必须为 2303c0bdd268067f');
+    const v092Result = runFullSpeedSuite(v092Source, 'v0.9.2');
+    assert.deepEqual(candResult, v092Result, '同一历史样本下候选版与正式版 v0.9.2 全部计算与 CSV 口径必须一致');
+  }
+
+  // 5. 默认视图冷恢复到新候选实例（基于真实模板验证 active 状态）
+  const hCold = createRealTemplateHarness(candidateSource, { speedRangeDays: '30' });
+  try {
+    await hCold.api.restoreSettingsForTest();
+    hCold.api.switchContextTabForTest('speed');
+    assert.equal(hCold.el('speed-range-30d').classList.contains('active'), true);
+    assert.equal(hCold.el('speed-range-7d').classList.contains('active'), false);
+  } finally {
+    hCold.api.dispose();
   }
 });

@@ -10,6 +10,11 @@ const {
   applyProxyEnvironment,
   buildCliProxyEnv,
   getProxyCandidatePaths,
+  resolveAntigravityExecutable,
+  buildHostProxyLaunchSpec,
+  generateWindowsNoTunVbs,
+  generatePosixNoTunLauncher,
+  createStandaloneNoTunLauncher,
   DEFAULT_NO_PROXY
 } = require('./meter-proxy');
 const {
@@ -820,4 +825,281 @@ test('meter-main.js 模块 IPC: 跨平台提示无 install.bat、代理校验与
     if (prevXdgState === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = prevXdgState;
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
+});
+
+test('Issue #51: 锁文件残留/空锁/跨进程竞争下事件循环阻塞 < 100ms 且支持超时与过期回收', async () => {
+  const { spawn } = require('child_process');
+  const { withFileLockAsync, parseLockFileMetadata } = require('./meter-storage');
+  const { recordModelCallsLockedAsync, repairAndMigrateAccountLedgerAsync } = require('./meter-collector');
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-issue51-lock-'));
+  const targetPath = path.join(tempDir, 'pricing_ledger_v1.json');
+  const lockPath = `${targetPath}.lock`;
+  fs.writeFileSync(targetPath, JSON.stringify({ version: 1, calls: {} }), 'utf8');
+
+  async function measureEventLoopMaxLag(fn) {
+    let maxLagMs = 0;
+    let lastTick = Date.now();
+    const timer = setInterval(() => {
+      const now = Date.now();
+      const lag = Math.max(0, now - lastTick - 10);
+      if (lag > maxLagMs) maxLagMs = lag;
+      lastTick = now;
+    }, 10);
+    const immStart = Date.now();
+    let immLagMs = 0;
+    setImmediate(() => {
+      immLagMs = Date.now() - immStart;
+    });
+    try {
+      const res = await fn();
+      return { res, maxLagMs: Math.max(maxLagMs, immLagMs) };
+    } finally {
+      clearInterval(timer);
+    }
+  }
+
+  try {
+    // 1. 锁文件残留（不存在的 PID 999999）
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: 999999, createdAtMs: Date.now() - 5000, nonce: 'dead' }), 'utf8');
+    const rDead = await measureEventLoopMaxLag(() =>
+      withFileLockAsync(targetPath, async () => 'ok-dead', { timeoutMs: 2000 })
+    );
+    assert.equal(rDead.res, 'ok-dead');
+    assert.ok(rDead.maxLagMs < 100, `死锁残留回收期间事件循环阻塞应 < 100ms，实际 ${rDead.maxLagMs}ms`);
+    assert.equal(fs.existsSync(lockPath), false);
+
+    // 2. 锁文件为空（0 字节残留空锁，曾导致 15s 卡死）
+    fs.writeFileSync(lockPath, '', 'utf8');
+    const rEmpty = await measureEventLoopMaxLag(() =>
+      withFileLockAsync(targetPath, async () => 'ok-empty', { timeoutMs: 2000, emptyGraceMs: 40 })
+    );
+    assert.equal(rEmpty.res, 'ok-empty');
+    assert.ok(rEmpty.maxLagMs < 100, `空锁回收期间事件循环阻塞应 < 100ms，实际 ${rEmpty.maxLagMs}ms`);
+    assert.equal(fs.existsSync(lockPath), false);
+
+    // 3. 跨进程竞争（真实子进程持有锁 ~220ms 后释放，主进程异步等锁不得阻塞事件循环）
+    const holderReadyFile = path.join(tempDir, 'holder.ready');
+    const childCode = `
+      const fs = require('fs');
+      const { withFileLockSync } = require(${JSON.stringify(path.join(__dirname, 'meter-storage.js'))});
+      withFileLockSync(${JSON.stringify(targetPath)}, () => {
+        fs.writeFileSync(${JSON.stringify(holderReadyFile)}, '1', 'utf8');
+        const end = Date.now() + 220;
+        while (Date.now() < end) {}
+      }, { timeoutMs: 5000 });
+    `;
+    const child = spawn(process.execPath, ['-e', childCode], { stdio: 'ignore' });
+    const waitStart = Date.now();
+    while (!fs.existsSync(holderReadyFile)) {
+      if (Date.now() - waitStart > 4000) break;
+      await new Promise(r => setTimeout(r, 10));
+    }
+    const rContend = await measureEventLoopMaxLag(() =>
+      withFileLockAsync(targetPath, async () => {
+        const meta = parseLockFileMetadata(fs.readFileSync(lockPath, 'utf8'));
+        assert.equal(meta.validOwner, true);
+        assert.equal(meta.pid, process.pid);
+        return 'ok-contend';
+      }, { timeoutMs: 5000, staleMs: 10000 })
+    );
+    if (child.exitCode === null) {
+      await Promise.race([
+        new Promise(resolve => child.once('exit', resolve)),
+        new Promise(resolve => setTimeout(resolve, 3000))
+      ]);
+    }
+    assert.equal(rContend.res, 'ok-contend');
+    assert.ok(rContend.maxLagMs < 100, `跨进程等锁期间事件循环阻塞应 < 100ms，实际 ${rContend.maxLagMs}ms`);
+
+    // 4. 过期回收（即使持锁 PID 是当前存活进程，超过 staleMs 也应回收）+ 超时报错
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, createdAtMs: Date.now() - 1000, nonce: 'expired' }), 'utf8');
+    const rStale = await withFileLockAsync(targetPath, async () => 'ok-stale', { timeoutMs: 1000, staleMs: 200 });
+    assert.equal(rStale, 'ok-stale');
+
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, createdAtMs: Date.now(), nonce: 'active' }), 'utf8');
+    await assert.rejects(
+      withFileLockAsync(targetPath, async () => 'never', { timeoutMs: 120, staleMs: 30000 }),
+      /获取文件写锁超时/
+    );
+    fs.unlinkSync(lockPath);
+
+    // 5. 主进程异步账本写入与纠偏 API 在空锁存在时同样 < 100ms 阻塞并正常落盘
+    fs.writeFileSync(lockPath, '', 'utf8');
+    const recRes = await measureEventLoopMaxLag(() =>
+      recordModelCallsLockedAsync([{
+        callId: 'call_issue51_async_1',
+        source: 'desktop',
+        model: 'gemini-4-hydrogen',
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        date: '2026-11-19',
+        allowSynthetic: true
+      }], { ledgerPath: targetPath, allowSynthetic: true, lockOptions: { timeoutMs: 2000, emptyGraceMs: 40 } })
+    );
+    assert.equal(recRes.res.ok, true);
+    assert.equal(recRes.res.changed, true);
+    assert.ok(recRes.maxLagMs < 100);
+
+    const repRes = await repairAndMigrateAccountLedgerAsync({ ledgerPath: targetPath, lockOptions: { timeoutMs: 2000 } });
+    assert.equal(repRes.ok, true);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('免改盘独立免 TUN 启动器: 环境变量/Chromium 参数构造、防注入转义与跨平台脚本生成', () => {
+  // 1. buildHostProxyLaunchSpec: socks5h -> socks5 转换、剥离 ELECTRON_RUN_AS_NODE、不污染原环境
+  const baseEnv = { PATH: '/usr/bin', ELECTRON_RUN_AS_NODE: '1', NO_PROXY: 'old.example' };
+  const spec = buildHostProxyLaunchSpec({
+    proxyUrl: 'socks5h://127.0.0.1:7897/',
+    noProxy: 'localhost,127.0.0.1,::1',
+    baseEnv,
+    extraArgs: ['--remote-debugging-port=9222']
+  });
+  assert.equal(spec.proxyUrl, 'socks5h://127.0.0.1:7897');
+  assert.equal(spec.chromiumProxyUrl, 'socks5://127.0.0.1:7897');
+  assert.equal(spec.env.HTTP_PROXY, 'socks5h://127.0.0.1:7897');
+  assert.equal(spec.env.HTTPS_PROXY, 'socks5h://127.0.0.1:7897');
+  assert.equal(spec.env.ALL_PROXY, 'socks5h://127.0.0.1:7897');
+  assert.equal(spec.env.NO_PROXY, 'localhost,127.0.0.1,::1');
+  assert.equal(spec.env.NODE_USE_ENV_PROXY, '1');
+  assert.equal('ELECTRON_RUN_AS_NODE' in spec.env, false);
+  assert.equal(baseEnv.ELECTRON_RUN_AS_NODE, '1');
+  assert.deepEqual(spec.args, [
+    '--proxy-server=socks5://127.0.0.1:7897',
+    '--proxy-bypass-list=localhost,127.0.0.1,::1',
+    '--remote-debugging-port=9222'
+  ]);
+
+  // 空 bypassList 应清除 NO_PROXY 且不附加 --proxy-bypass-list
+  const specEmptyBypass = buildHostProxyLaunchSpec({
+    proxyUrl: 'http://127.0.0.1:7897',
+    noProxy: '',
+    baseEnv: { NO_PROXY: 'legacy', no_proxy: 'legacy' }
+  });
+  assert.equal('NO_PROXY' in specEmptyBypass.env, false);
+  assert.equal('no_proxy' in specEmptyBypass.env, false);
+  assert.deepEqual(specEmptyBypass.args, ['--proxy-server=http://127.0.0.1:7897']);
+
+  // 非法代理地址报错
+  assert.throws(() => buildHostProxyLaunchSpec({ proxyUrl: 'ftp://127.0.0.1:21' }), /代理地址/);
+
+  // 2. resolveAntigravityExecutable 支持按 asarPath 推导各平台可执行程序
+  const fakeExisting = new Set([
+    'C:\\Apps\\antigravity\\Antigravity.exe',
+    '/Applications/Antigravity.app/Contents/MacOS/Antigravity',
+    '/opt/antigravity/antigravity'
+  ]);
+  const mockFs = { existsSync: (p) => fakeExisting.has(p) };
+  assert.equal(
+    resolveAntigravityExecutable({ platform: 'win32', asarPath: 'C:\\Apps\\antigravity\\resources\\app.asar', fs: mockFs }),
+    'C:\\Apps\\antigravity\\Antigravity.exe'
+  );
+  assert.equal(
+    resolveAntigravityExecutable({ platform: 'darwin', asarPath: '/Applications/Antigravity.app/Contents/Resources/app.asar', fs: mockFs }),
+    '/Applications/Antigravity.app/Contents/MacOS/Antigravity'
+  );
+  assert.equal(
+    resolveAntigravityExecutable({ platform: 'linux', asarPath: '/opt/antigravity/resources/app.asar', fs: mockFs }),
+    '/opt/antigravity/antigravity'
+  );
+
+  // 3. Windows VBS 必须为纯 ASCII（避免中文系统 ANSI/UTF-8 编码冲突）且拒绝换行注入
+  const vbs = generateWindowsNoTunVbs({
+    exePath: 'C:\\Users\\demo\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe',
+    proxyUrl: 'http://127.0.0.1:7897',
+    noProxy: 'localhost,127.0.0.1'
+  });
+  assert.equal(/^[\x00-\x7F]+$/.test(vbs), true, 'VBS 启动器必须为纯 ASCII');
+  assert.match(vbs, /shell\.Environment\("PROCESS"\)/);
+  assert.match(vbs, /env\("NODE_USE_ENV_PROXY"\) = "1"/);
+  assert.match(vbs, /--proxy-server=/);
+  const localizedVbs = generateWindowsNoTunVbs({
+    exePath: "D:\\测试 Workspace\\Bob's Antigravity\\Antigravity.exe",
+    recoverCliPath: 'D:\\工具\\cli.js',
+    proxyUrl: 'http://127.0.0.1:7897'
+  });
+  assert.match(localizedVbs, /^[\x00-\x7f]+$/);
+  assert.match(localizedVbs, /ChrW\(&H6d4b\) & ChrW\(&H8bd5\)/);
+  assert.match(localizedVbs, /Workspace\\Bob's Antigravity/);
+  assert.match(localizedVbs, /env\("AG_METER_NO_TUN_LAUNCH"\) = "1"/);
+
+  // The Language Server wrapper runs this function after the login-shell merge.
+  const launch = buildHostProxyLaunchSpec({ proxyUrl: 'http://127.0.0.1:7897', noProxy: '', baseEnv: {} });
+  const merged = { ...launch.env, HTTPS_PROXY: 'http://127.0.0.1:9999', NO_PROXY: 'old-shell' };
+  require('./meter-proxy').applyProxyEnvironment(merged, { overrideExisting: true, launchEnv: launch.env, candidates: [] });
+  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) {
+    assert.equal(merged[key], 'http://127.0.0.1:7897');
+  }
+  assert.equal('NO_PROXY' in merged, false);
+  assert.throws(() => generateWindowsNoTunVbs({
+    exePath: 'C:\\a\r\nMsgBox 1',
+    proxyUrl: 'http://127.0.0.1:7897',
+    noProxy: 'localhost'
+  }), /控制字符/);
+
+  // 4. POSIX 脚本安全转义单引号并拒绝换行注入
+  const sh = generatePosixNoTunLauncher({
+    exePath: "/opt/it's/antigravity",
+    proxyUrl: 'http://127.0.0.1:7897',
+    noProxy: 'localhost,127.0.0.1'
+  });
+  assert.match(sh, /^#!\/bin\/sh/);
+  assert.match(sh, /exec '\/opt\/it'\\''s\/antigravity'/);
+  assert.match(sh, /export NODE_USE_ENV_PROXY=1/);
+  assert.throws(() => generatePosixNoTunLauncher({
+    exePath: '/opt/antigravity\nrm -rf /',
+    proxyUrl: 'http://127.0.0.1:7897',
+    noProxy: 'localhost'
+  }), /控制字符/);
+
+  // 5. createStandaloneNoTunLauncher 在隔离目录写入启动器与快捷方式（mock PowerShell 调用，不碰真实桌面）
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-notun-launcher-'));
+  try {
+    const fakeExe = path.join(tempDir, 'Antigravity.exe');
+    fs.writeFileSync(fakeExe, 'stub', 'utf8');
+    let capturedPsEnv = null;
+    const winRes = createStandaloneNoTunLauncher({
+      platform: 'win32',
+      exePath: fakeExe,
+      proxyUrl: 'http://127.0.0.1:7897',
+      noProxy: 'localhost,127.0.0.1',
+      outDir: path.join(tempDir, 'out-win'),
+      desktopDir: path.join(tempDir, 'desktop'),
+      shortcutName: 'Antigravity (No-TUN)',
+      _execFileSync: (_bin, _args, opts) => {
+        capturedPsEnv = opts.env;
+        return path.join(tempDir, 'desktop', 'Antigravity (No-TUN).lnk');
+      }
+    });
+    assert.equal(winRes.ok, true);
+    assert.equal(fs.existsSync(winRes.launcherPath), true);
+    assert.equal(winRes.launcherPath.endsWith('launch-antigravity-no-tun.vbs'), true);
+    assert.equal(capturedPsEnv.AG_VBS_PATH, winRes.launcherPath);
+    assert.equal(capturedPsEnv.AG_EXE_PATH, fakeExe);
+    assert.equal(winRes.shortcutPath, path.join(tempDir, 'desktop', 'Antigravity (No-TUN).lnk'));
+
+    const macRes = createStandaloneNoTunLauncher({
+      platform: 'darwin',
+      exePath: fakeExe,
+      proxyUrl: 'http://127.0.0.1:7897',
+      noProxy: 'localhost',
+      outDir: path.join(tempDir, 'out-mac')
+    });
+    assert.equal(macRes.ok, true);
+    assert.equal(macRes.launcherPath.endsWith('launch-antigravity-no-tun.sh'), true);
+    assert.equal(macRes.shortcutPath, null);
+    assert.equal(fs.existsSync(macRes.launcherPath), true);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+
+  // 6. cli.js parseCliArgs 正确接受 proxy:launch 与 proxy:launcher 及其参数
+  const { parseCliArgs } = require('./cli');
+  assert.deepEqual(parseCliArgs(['proxy:launch', 'http://127.0.0.1:7897', '--bypass', 'localhost']).cmd, 'proxy:launch');
+  assert.equal(parseCliArgs(['proxy:launch', 'http://127.0.0.1:7897', '--bypass', 'localhost']).showHelp, false);
+  assert.equal(parseCliArgs(['proxy:launcher', 'http://127.0.0.1:7897', '--no-shortcut', '--out', '/tmp/x', '--name', 'AG']).cmd, 'proxy:launcher');
+  assert.equal(parseCliArgs(['proxy:launcher', '--no-shortcut']).showHelp, false);
 });

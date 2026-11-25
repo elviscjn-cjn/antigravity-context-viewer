@@ -1,45 +1,29 @@
-# v0.8.8 α
+# v0.9.3
 
-**简体中文** · [English](#english)
+[English](#english)
 
-<details open>
-<summary><b>简体中文</b></summary>
+### 原生设置与界面交互
 
-本次版本重点新增多账号隔离与可控切号. 按模型每日堆叠统计. 累计总量图表改版. 请求时间线与速度体验评分. 并完善跨平台兼容与三语界面本地化.
+- 插件设置以同级独立页接入 Antigravity 2.35.1 原生设置侧栏. 支持单击直达. 页签往返切换恢复与键盘操作.
+- 统一原生设置页与面板内的下拉菜单和候选账号滑动开关视觉. 修复深色主题下原生下拉菜单白底白字与卡片裁切问题.
+- 修复 Windows 桌面端标题栏空白区无法拖动窗口的问题. 补齐顶栏额度圆环左右键分工与输入框底栏隐藏规则.
+- 客户端语言切换的重启确认升级为顶层原生弹窗. 解决设置弹窗打开时确认控件不可操作的问题.
 
-- 新增多账号与分账号用量隔离. 历史未归属请求统一保留在未归属账本. 绝不默认计入当前账号.
-- 新增受控手动与阈值自动切号及配额对照. 内置防抖. 冷却. 生成中等待. 多窗口锁与无 CDP 主进程核验失败回滚保护.
-- 新增按模型每日堆叠柱图. 支持 7 天或 30 天视图. 思考档位与来源筛选. 从会话数据库回填缺失模型显示名. 并支持 Orchestrator 与后台 worker 映射清洗.
-- 统一用量图表与年度气泡混合对数-幂律连续刻度. 修正跨档变小问题. 大于 1B 年度气泡封顶 58px 并保留外环提示.
-- 新增累计总量看板. 支持摘要卡片. 量级尺. 比例时间带. 零用量日标记与 460px 以下窄窗口自适应.
-- 新增缓存读取占比统计. 可折叠会话请求时间线. 最新调用动态替换与首字等待及纯流式速度评分.
-- 统一中简. 中繁与英文三语界面及货币显示规则. 英文下仅显示美元并支持预设地区自动转换. 替换日期输入为统一主题自定义日历选择器.
-- 界面展示版本为 0.8.8 α. 内部语义化版本号保持 0.8.8. 已安装 0.8.8 测试版的用户请先完全退出 Antigravity 客户端后执行 node cli.js install 覆盖安装. 也可运行 node cli.js watch 启用免改盘守护模式.
-- 感谢 @Lopution 提交 PR #26 贡献 Windows 下 WSL 发行版桌面端与 CLI 用量采集方案.
-- 感谢 @huron09280 提交 PR #28 贡献 macOS Apple Silicon arm64 的 Mach-O 增强. 上下文解锁与本地 API 适配.
-- 感谢 @kyrie21z 提交 PR #30 贡献按模型每日堆叠统计. 模型显示名回填. Orchestrator 与 worker 映射及旧归档清洗方案.
-- 感谢 @startips 提交 PR #31 贡献 runtime-check.js 跨平台端口路径修复与预发布测试期间问题反馈.
-- 感谢 @x1051445024 提交 PR #40 贡献 builtinAsar.createPackage 标准接口兼容与测试沙箱 ASAR 路径隔离.
+### 多账号与体验改进
 
-</details>
+- 多账号自动切号监控项收敛为 Gemini 与 Claude / GPT 的 5 小时和周额度四项并按池分组.
+- 持久化自动切号成功提示的消费记录. 修复历史切号提示在重启后重复弹出的问题.
+- 移出自绘模型选择器并复用 Antigravity 原生模型菜单. 新增下一句预测建议. 默认关闭并可在设置中按需开启.
+- 同步主分支代码与安装产物到 0.9.3. 修复直接从默认分支安装时的版本错配问题.
 
-<details id="english">
-<summary><b>English</b></summary>
+感谢 [@Evander-8](https://github.com/Evander-8). [@zhao33079-zhao](https://github.com/zhao33079-zhao). [@IpiggyI](https://github.com/IpiggyI) 和 [@jzPPP3333](https://github.com/jzPPP3333). 贡献来源和采纳范围见 [Contributors](https://github.com/elviscjn-cjn/antigravity-context-viewer/blob/v0.9.3/CONTRIBUTORS.md).
 
-This release introduces multi-account usage isolation with controlled account switching. daily stacked per-model usage charts. a redesigned cumulative usage view. collapsible turn timelines with speed scoring. cross-platform enhancements. and full trilingual localization.
+Antigravity 界面汉化基于 Antigravity-Chinese-Localization. 感谢 aabbWei 与 antigravity-cn-community 贡献者.
 
-- Added multi-account and per-account usage isolation. Historical unattributed calls remain in the unattributed ledger and are never assigned to the active account by default.
-- Added controlled manual and threshold-based automatic account switching alongside quota interval comparison. Includes debounce. cooldown. busy-generation wait. multi-window lock. and non-CDP main-process rollback protection on verification failure.
-- Added daily stacked per-model usage bars with 7-day and 30-day ranges. effort and source filters. missing model display name backfill from conversation databases. and Orchestrator plus background worker bucket normalization.
-- Unified chart bar heights and yearly bubble diameters with a continuous hybrid log-power scale to fix cross-tier shrinking. Yearly bubbles above 1B are capped at 58px with an outer glow ring.
-- Added the Cumulative Usage view featuring summary cards. a logarithmic magnitude ruler. proportional time strips. zero-usage day markers. and responsive layout below 460px.
-- Added weighted cache-read ratio telemetry. collapsible per-turn request timelines. dynamic latest-call card transitions. and TTFT plus pure-streaming speed scoring.
-- Unified Simplified Chinese. Traditional Chinese. and English UI copy plus currency display rules. English displays USD only for API estimates and converts preset regions automatically. Replaced native date inputs with a custom theme-matched calendar picker.
-- Displayed version is 0.8.8 α while internal semantic version remains 0.8.8. Users on 0.8.8 pre-release builds should fully quit Antigravity first and run node cli.js install to upgrade cleanly. You can also run node cli.js watch for patch-free background monitoring.
-- Thanks to @Lopution for PR #26 adding WSL desktop and CLI usage collection on Windows.
-- Thanks to @huron09280 for PR #28 adding macOS Apple Silicon arm64 Mach-O prompt enhancement. context unlock. and local API adaptation.
-- Thanks to @kyrie21z for PR #30 adding daily per-model stacked charts. database model label backfill. Orchestrator and worker mappings. and legacy archive cleanup.
-- Thanks to @startips for PR #31 fixing cross-platform port path resolution in runtime-check.js and reporting issues during pre-release testing.
-- Thanks to @x1051445024 for PR #40 implementing builtinAsar.createPackage compatibility and test sandbox ASAR path isolation.
+## English
 
-</details>
+- Integrated Context Meter as a peer page in Antigravity 2.35.1 native Settings with single-click navigation, tab switch recovery and keyboard support.
+- Unified custom dropdown menus and candidate toggle switches across native Settings and the panel, fixing white-background native select popups and card clipping in dark mode.
+- Fixed Windows titlebar drag regions when the title menu bar is present, and upgraded the language-switch restart prompt to a top-layer native dialog.
+- Scoped auto-switch targets to Gemini and Claude / GPT 5-hour and weekly quotas, persisted consumed switch notice IDs across cold restarts, removed the custom model picker in favor of the native menu, and added opt-in next-prompt suggestions.
+- Synced the default branch with 0.9.3 so repository-based installations match the latest release.

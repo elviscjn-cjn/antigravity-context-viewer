@@ -7,22 +7,46 @@ const crypto = require('crypto');
 const { connect, normalizeLoopbackOrigin, getAppDataDir } = require('./local-api');
 const {
   collect,
-  collectTokenHistoryAsync,
+  collectTurnState,
+  getTokenHistoryResponse,
   collectSessionTimelineAsync,
   fetchQuotaSnapshotFromHost,
   checkUpdateAsync,
   applyUpdateAsync,
-  recordModelCalls,
+  recordModelCallsAsync,
   getPluginSettings,
   savePluginSettings,
   launchCliSession,
   getContextUnlockStatus,
   applyContextUnlockAsync,
-  restoreContextUnlockAsync
+  restoreContextUnlockAsync,
+  syncPricingCatalogAsync
 } = require('./meter-collector');
-const { normalizeProxyUrl, normalizeBypassListForCompare, parseAndValidateProxyUrl } = require('./meter-proxy');
-const { getStateDir } = require('./asar-engine');
+const { normalizeProxyUrl, normalizeBypassListForCompare, parseAndValidateProxyUrl, redactProxyUrl } = require('./meter-proxy');
+const { getStateDir, findAsarPath, builtinAsar } = require('./asar-engine');
 const { PROJECT_VERSION, getHostCoreBuildId } = require('./modules-config');
+const { compareVersions } = require('./meter-core');
+
+function resolveLiveHostTargetVersion() {
+  const envVer = String(process.env.AG_HOST_VERSION || '').trim();
+  if (envVer) return envVer;
+  try {
+    const stateDir = getStateDir();
+    const manifestP = path.join(stateDir, 'installation.json');
+    if (fs.existsSync(manifestP)) {
+      const m = JSON.parse(fs.readFileSync(manifestP, 'utf8'));
+      if (m?.version) return String(m.version);
+    }
+  } catch { }
+  try {
+    const asarPath = findAsarPath(null);
+    if (asarPath && fs.existsSync(asarPath)) {
+      const pkg = JSON.parse(builtinAsar.extractFile(asarPath, 'package.json').toString('utf8'));
+      if (pkg?.version) return String(pkg.version);
+    }
+  } catch { }
+  return '2.34.0';
+}
 
 const liveBootProxySnapshot = (() => {
   const bootInfo = (typeof globalThis !== 'undefined' && globalThis.__AG_PROXY_BOOT_INFO__ && globalThis.__AG_PROXY_BOOT_INFO__.injectedAtStartup)
@@ -48,14 +72,24 @@ const liveBootProxySnapshot = (() => {
 
 const liveBootChineseSnapshots = new Map();
 
-function resolveLiveBootChineseSnapshot() {
-  const key = String(process.env.AG_METER_STATE_DIR || '__default__');
+function resolveLiveBootChineseSnapshot(customAsarPath = null) {
+  const key = `${String(process.env.AG_METER_STATE_DIR || '__default__')}|${String(customAsarPath || '__auto__')}`;
   if (liveBootChineseSnapshots.has(key)) return liveBootChineseSnapshots.get(key);
   let snap = { enabled: false, language: 'en' };
   try {
+    const { isIsolatedTestPath } = require('./asar-engine');
+    const inIsolatedEnv = Boolean(
+      process.env.AG_METER_TEST_MODE === '1' ||
+      isIsolatedTestPath(process.env.APPDATA) ||
+      isIsolatedTestPath(process.env.AG_METER_STATE_DIR)
+    );
+    if (inIsolatedEnv && !customAsarPath) {
+      liveBootChineseSnapshots.set(key, snap);
+      return snap;
+    }
     const { loadModulesConfig, inspectDiskModules } = require('./modules-config');
     const cfg = loadModulesConfig();
-    const disk = inspectDiskModules();
+    const disk = inspectDiskModules(customAsarPath || null);
     const ch = cfg?.modules?.chinese || {};
     const diskReady = disk.chineseReady !== undefined ? Boolean(disk.chineseReady) : Boolean(disk.chinese);
     const active = Boolean(ch.enabled && String(ch.language || '').toLowerCase() !== 'en' && diskReady);
@@ -63,13 +97,13 @@ function resolveLiveBootChineseSnapshot() {
       enabled: active,
       language: String(ch.language || (ch.enabled ? 'zh-CN' : 'en'))
     };
-  } catch {}
+  } catch { }
   liveBootChineseSnapshots.set(key, snap);
   return snap;
 }
-try { resolveLiveBootChineseSnapshot(); } catch {}
+try { resolveLiveBootChineseSnapshot(); } catch { }
 
-function buildLiveRuntimeModulesMeta(cfg) {
+function buildLiveRuntimeModulesMeta(cfg, customAsarPath = null) {
   const diskProxy = cfg?.modules?.proxy || {};
   const diskEnabled = Boolean(diskProxy.enabled);
   const diskUrl = normalizeProxyUrl(diskProxy.proxyUrl || '');
@@ -79,13 +113,13 @@ function buildLiveRuntimeModulesMeta(cfg) {
   const runtimeBypass = normalizeBypassListForCompare(liveBootProxySnapshot.bypassList || '');
   const proxyNeedsRestart = runtimeEnabled !== diskEnabled ||
     (diskEnabled && runtimeEnabled && (diskUrl !== runtimeUrl || diskBypass !== runtimeBypass));
-  const bootZh = resolveLiveBootChineseSnapshot();
+  const bootZh = resolveLiveBootChineseSnapshot(customAsarPath);
   const diskCh = cfg?.modules?.chinese || {};
   const diskZhActive = Boolean(diskCh.enabled && String(diskCh.language || '').toLowerCase() !== 'en');
   return {
     injectedAtStartup: Boolean(liveBootProxySnapshot.injectedAtStartup),
     proxyActive: runtimeEnabled,
-    runtimeProxyUrl: runtimeUrl || null,
+    runtimeProxyUrl: redactProxyUrl(runtimeUrl) || null,
     runtimeBypassList: typeof liveBootProxySnapshot.bypassList === 'string' ? liveBootProxySnapshot.bypassList : null,
     proxyNeedsRestart,
     chineseActive: Boolean(bootZh.enabled),
@@ -99,6 +133,7 @@ const MAX_RECORD_CALLS = 500; // 单批次最大记录数
 const ALLOWED_ROUTES = [
   '/runtime-info',
   '/scan',
+  '/turn-state',
   '/token-history',
   '/session-timeline',
   '/quota',
@@ -113,6 +148,11 @@ const ALLOWED_ROUTES = [
   '/enhance-apply',
   '/enhance-restore',
   '/restart-language-servers',
+  '/rehydrate-status',
+  '/rehydrate-apply',
+  '/rehydrate-disable',
+  '/rehydrate-restore',
+  '/rehydrate-install-python',
   '/modules-status',
   '/toggle-module',
   '/test-proxy',
@@ -120,6 +160,8 @@ const ALLOWED_ROUTES = [
   '/apply-update',
   '/accounts-overview',
   '/accounts-action',
+  '/sync-pricing',
+  '/open-dashboard-browser',
   '/shutdown',
   '/restart-host'
 ];
@@ -128,6 +170,7 @@ const LIVE_HOST_STARTED_AT = Date.now();
 const LIVE_HOST_BUILD_ID = getHostCoreBuildId(__dirname);
 const LIVE_CAPABILITIES = {
   scan: true,
+  turnState: true,
   tokenHistory: true,
   sessionTimeline: true,
   quota: true,
@@ -136,12 +179,14 @@ const LIVE_CAPABILITIES = {
   launchCli: true,
   contextUnlock: true,
   enhance: true,
+  rehydrate: true,
   modules: true,
   accounts: true,
   checkUpdate: true,
   applyUpdate: true,
   restartHost: false,
-  hotReload: true
+  hotReload: true,
+  syncPricing: true
 };
 
 function timingSafeTokenEqual(provided, expected) {
@@ -152,7 +197,9 @@ function timingSafeTokenEqual(provided, expected) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
-function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShutdown = null, startedAt = LIVE_HOST_STARTED_AT }) {
+function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShutdown = null, startedAt = LIVE_HOST_STARTED_AT, _applyUpdateAsync = applyUpdateAsync }) {
+  let activeApplyUpdateCount = 0;
+  let deferredShutdownRequested = false;
   const resolveAllowedSet = () => {
     const set = new Set();
     const addAllowed = (raw) => {
@@ -234,7 +281,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
               } : {})
             };
           } catch { }
-          const resCall = recordModelCalls(calls, recOpts);
+          const resCall = await recordModelCallsAsync(calls, recOpts);
           if (resCall && typeof resCall === 'object' && resCall.ok === false) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
@@ -319,6 +366,41 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           res.end(JSON.stringify(result));
           return;
         }
+        if (req.url === '/rehydrate-status') {
+          const { getRehydrateStatusAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+          const result = await getRehydrateStatusAsync(sanitizeRehydrateRendererOptions(request, 'status'));
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ok: true, data: result }));
+          return;
+        }
+        if (req.url === '/rehydrate-apply') {
+          const { applyRehydrateAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+          const result = await applyRehydrateAsync(sanitizeRehydrateRendererOptions(request, 'apply'));
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/rehydrate-disable') {
+          const { disableRehydrateAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+          const result = await disableRehydrateAsync(sanitizeRehydrateRendererOptions(request, 'disable'));
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/rehydrate-restore') {
+          const { restoreRehydrateAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+          const result = await restoreRehydrateAsync(sanitizeRehydrateRendererOptions(request, 'restore'));
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/rehydrate-install-python') {
+          const { installPythonRuntimeAsync, sanitizeRehydrateRendererOptions } = require('./meter-rehydrate');
+          const result = await installPythonRuntimeAsync(sanitizeRehydrateRendererOptions(request, 'install-python'));
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
         if (req.url === '/test-proxy') {
           const { testProxyHealth } = require('./modules-config');
           const report = await testProxyHealth(request?.proxyUrl);
@@ -334,7 +416,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
             ok: true,
             data: cfg,
             disk: inspectDiskModules(request?.asarPath || null),
-            runtime: buildLiveRuntimeModulesMeta(cfg),
+            runtime: buildLiveRuntimeModulesMeta(cfg, request?.asarPath || null),
             configCorrupted: Boolean(cfg.__configCorrupted),
             configError: cfg.__configError || null,
             corruptedConfigPath: cfg.__corruptedConfigPath || null
@@ -370,7 +452,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
               status: 'install_failed',
               data: cfg,
               disk,
-              runtime: buildLiveRuntimeModulesMeta(cfg),
+              runtime: buildLiveRuntimeModulesMeta(cfg, extra.asarPath || null),
               error: `当前客户端磁盘 ASAR 未注入${modLabel}组件（或组件不完整）。请先彻底退出 Antigravity（包含系统托盘），再${cmdHint} 完成持久化注入。`,
               restartRequired: false
             }));
@@ -378,7 +460,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           }
 
           // 在写盘更改前先确保本生命周期启动汉化快照已捕获
-          resolveLiveBootChineseSnapshot();
+          resolveLiveBootChineseSnapshot(extra.asarPath || null);
           const prevChineseEnabled = Boolean(cfg.modules.chinese?.enabled);
           const prevChineseLang = cfg.modules.chinese?.language || (prevChineseEnabled ? 'zh-CN' : 'en');
           if (mod === 'chinese') {
@@ -397,7 +479,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
                   status: 'invalid_config',
                   error: check.error,
                   data: cfg,
-                  runtime: buildLiveRuntimeModulesMeta(cfg)
+                  runtime: buildLiveRuntimeModulesMeta(cfg, extra.asarPath || null)
                 }));
                 return;
               }
@@ -412,7 +494,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
             }
           }
           saveModulesConfig(cfg);
-          const runtime = buildLiveRuntimeModulesMeta(cfg);
+          const runtime = buildLiveRuntimeModulesMeta(cfg, extra.asarPath || null);
           const langChanged = mod === 'chinese' && (
             Boolean(cfg.modules.chinese.enabled) !== prevChineseEnabled ||
             cfg.modules.chinese.language !== prevChineseLang
@@ -447,23 +529,107 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           return;
         }
         if (req.url === '/check-update') {
-          const result = await checkUpdateAsync({ ...(request || {}), currentVersion: PROJECT_VERSION });
+          const result = await checkUpdateAsync({
+            force: request?.force === true,
+            allowBetaUpdates: typeof request?.allowBetaUpdates === 'boolean' ? request.allowBetaUpdates : undefined,
+            currentVersion: PROJECT_VERSION,
+            liveOnly: true
+          });
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
           return;
         }
-        if (req.url === '/apply-update') {
-          const result = await applyUpdateAsync({ ...(request || {}), currentVersion: PROJECT_VERSION });
+        if (req.url === '/sync-pricing') {
+          const result = await syncPricingCatalogAsync({ force: request?.force !== false });
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/open-dashboard-browser') {
+          const { startCliUiServer } = require('./meter-cli-ui');
+          const rawSid = typeof request?.sessionId === 'string' ? request.sessionId.trim() : '';
+          const cleanSid = (rawSid && !/[/\\]|\.\./.test(rawSid)) ? rawSid : '';
+          const rawSrc = typeof request?.source === 'string' ? request.source.trim().toLowerCase() : 'desktop';
+          const cleanSrc = (rawSrc === 'cli' || rawSrc === 'desktop') ? rawSrc : 'desktop';
+          const shouldOpenExternal = request?.openExternal === true;
+          if (!globalThis.__agLiveDashboardServerPromise) {
+            globalThis.__agLiveDashboardServerPromise = startCliUiServer({ host: '127.0.0.1', port: 0, open: false }).catch(err => {
+              globalThis.__agLiveDashboardServerPromise = null;
+              throw err;
+            });
+          }
+          const srv = await globalThis.__agLiveDashboardServerPromise;
+          const baseUrl = srv?.baseUrl || srv?.url || `http://127.0.0.1:${srv?.port || 56780}`;
+          const dashboardUrl = cleanSid
+            ? `${baseUrl}/?sessionId=${encodeURIComponent(cleanSid)}&source=${encodeURIComponent(cleanSrc)}`
+            : baseUrl;
+          let openedExternal = false;
+          if (shouldOpenExternal) {
+            try {
+              const { spawn } = require('child_process');
+              if (process.platform === 'win32') {
+                spawn('cmd.exe', ['/c', 'start', '', dashboardUrl], { detached: true, stdio: 'ignore' }).unref();
+              } else if (process.platform === 'darwin') {
+                spawn('open', [dashboardUrl], { detached: true, stdio: 'ignore' }).unref();
+              } else {
+                spawn('xdg-open', [dashboardUrl], { detached: true, stdio: 'ignore' }).unref();
+              }
+              openedExternal = true;
+            } catch { }
+          }
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({
+            ok: true,
+            baseUrl,
+            url: dashboardUrl,
+            port: srv?.port || null,
+            pid: srv?.pid || null,
+            sessionId: cleanSid || null,
+            source: cleanSrc,
+            openedExternal
+          }));
+          return;
+        }
+        if (req.url === '/apply-update') {
+          activeApplyUpdateCount += 1;
+          let result;
+          try {
+            result = await _applyUpdateAsync({
+              ...(request || {}),
+              version: typeof request?.version === 'string' ? request.version : undefined,
+              allowBetaUpdates: request?.allowBetaUpdates === true || request?.prerelease === true,
+              prerelease: request?.prerelease === true,
+              currentVersion: PROJECT_VERSION,
+              backendSource: 'live-host',
+              bundleDir: process.env.AG_BUNDLE_SOURCE_DIR || __dirname,
+              callerLiveHostPid: process.pid,
+              liveOnly: request?.liveOnly !== undefined ? request.liveOnly === true : true
+            });
+          } finally {
+            activeApplyUpdateCount = Math.max(0, activeApplyUpdateCount - 1);
+          }
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          if (((result && result.ok && result.shouldShutdownCallerLiveHost) || deferredShutdownRequested) && typeof onShutdown === 'function') {
+            res.once('finish', () => {
+              setTimeout(() => {
+                try { onShutdown(); } catch { }
+              }, 250);
+            });
+          }
           return;
         }
         if (req.url === '/shutdown') {
           res.setHeader('Content-Type', 'application/json');
+          if (activeApplyUpdateCount > 0) {
+            deferredShutdownRequested = true;
+            res.end(JSON.stringify({ ok: true, shuttingDown: true, deferred: true, deferredForApplyUpdate: true, pid: process.pid, version: PROJECT_VERSION }));
+            return;
+          }
           res.end(JSON.stringify({ ok: true, shuttingDown: true, pid: process.pid, version: PROJECT_VERSION }));
           if (typeof onShutdown === 'function') {
             setImmediate(() => {
-              try { onShutdown(); } catch {}
+              try { onShutdown(); } catch { }
             });
           }
           return;
@@ -474,9 +640,9 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           return;
         }
         if (req.url === '/token-history') {
-          const data = await collectTokenHistoryAsync({ force: request.force === true });
+          const result = await getTokenHistoryResponse({ force: request.force === true, knownRevision: request.knownRevision, knownAccountKey: request.knownAccountKey });
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ ok: true, data }));
+          res.end(JSON.stringify(result));
           return;
         }
         if (req.url === '/session-timeline') {
@@ -516,19 +682,41 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           const { _raw, ...safeData } = resData || {};
           let accountSyncResult = null;
           try {
-            const { getSharedAccountsManager } = require('./meter-accounts');
+            const { getSharedAccountsManager, deriveTrustedAutoSwitchQuotaContext } = require('./meter-accounts');
             const mgr = getSharedAccountsManager({ origin: targetOrigin });
-            const email = resData?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null;
-            if (email && resData?.snapshot) {
-              mgr.syncActiveHostQuotaSnapshot(resData, email);
-              const ov = mgr.getOverviewState();
-              if (ov.autoSwitch?.enabled && !resData.error) {
-                accountSyncResult = await mgr.evaluateAutoSwitch({
-                  activeEmail: email,
-                  activeSnapshot: resData.snapshot,
-                  syncState: 'fresh',
-                  isGenerating: Boolean(request?.isGenerating)
-                });
+            const switchInFlight = Boolean(mgr.isSwitchInFlight?.());
+            const sourceEmail = !switchInFlight
+              ? (resData?.email || _raw?.planStatus?.email || _raw?.userStatus?.email || _raw?.email || resData?.planStatus?.email || null)
+              : null;
+            const activeDetectedEmail = !switchInFlight
+              ? (sourceEmail || (await mgr.detectCurrentActiveAccount())?.email || null)
+              : null;
+            const trustCtx = deriveTrustedAutoSwitchQuotaContext({
+              res: resData,
+              raw: _raw,
+              activeEmail: activeDetectedEmail
+            });
+            if (!switchInFlight && trustCtx.trusted && trustCtx.email && resData?.snapshot) {
+              mgr.syncActiveHostQuotaSnapshot(resData, trustCtx.email);
+            }
+            const ov = mgr.getOverviewState();
+            if (!switchInFlight && ov.autoSwitch?.enabled) {
+              const requiresClientRestart = compareVersions(resolveLiveHostTargetVersion(), '2.34.0') >= 0;
+              const evalSyncState = trustCtx.trusted
+                ? 'fresh'
+                : (trustCtx.syncState && trustCtx.syncState !== 'fresh' ? trustCtx.syncState : 'untrusted');
+              accountSyncResult = await mgr.evaluateAutoSwitch({
+                activeEmail: trustCtx.email || activeDetectedEmail,
+                activeSnapshot: resData?.snapshot || null,
+                syncState: evalSyncState,
+                allowLiveCandidateRefresh: true,
+                isGenerating: Boolean(request?.isGenerating),
+                hasUnsavedDraft: Boolean(request?.hasUnsavedDraft),
+                requiresClientRestart,
+                blockedRestartReason: requiresClientRestart ? 'live_mode_cannot_auto_restart' : undefined
+              });
+              if (accountSyncResult && typeof accountSyncResult === 'object') {
+                accountSyncResult.overview = mgr.getOverviewState();
               }
             }
           } catch { }
@@ -549,13 +737,56 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           const { getSharedAccountsManager, dispatchAccountsAction } = require('./meter-accounts');
           const targetOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
           const mgr = getSharedAccountsManager({ origin: targetOrigin });
-          const outRes = await dispatchAccountsAction(mgr, request || {});
+          const requiresClientRestart = compareVersions(resolveLiveHostTargetVersion(), '2.34.0') >= 0;
+          const outRes = await dispatchAccountsAction(mgr, request || {}, {
+            requiresClientRestart,
+            allowManualRestartPending: requiresClientRestart
+          });
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(outRes));
           return;
         }
         const scanOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
         const effectiveOrigin = allowedSet.has(scanOrigin) ? scanOrigin : reqOrigin;
+        if (req.url === '/turn-state') {
+          const data = await collectTurnState(effectiveOrigin, request.id);
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({
+            ok: true,
+            data: {
+              ...(data || {}),
+              backendVersion: PROJECT_VERSION,
+              backendSource: 'live-host'
+            }
+          }));
+          return;
+        }
+        if (req.url === '/predict-next-prompt') {
+          const settings = getPluginSettings();
+          if (settings.nextPromptEnabled !== true) {
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ ok: true, abstained: true, suggestion: '', reason: 'feature_disabled', requestCount: 0 }));
+            return;
+          }
+          const { predictNextPromptAsync } = require('./meter-next-prompt');
+          const safeInput = {
+            cascadeId: typeof request?.cascadeId === 'string' ? request.cascadeId : undefined,
+            turnId: typeof request?.turnId === 'string' ? request.turnId : undefined,
+            language: typeof request?.language === 'string' ? request.language : undefined,
+            turns: Array.isArray(request?.turns) ? request.turns : [],
+            preferences: Array.isArray(request?.preferences) ? request.preferences : [],
+            verificationEvidence: typeof request?.verificationEvidence === 'string' ? request.verificationEvidence : undefined,
+            taskMarkdown: typeof request?.taskMarkdown === 'string' ? request.taskMarkdown : undefined
+          };
+          const predRes = await predictNextPromptAsync(safeInput, {
+            origin: effectiveOrigin,
+            model: typeof request?.model === 'string' && request.model.trim() ? request.model.trim() : undefined,
+            allowGetModelResponseFallback: request?.allowGetModelResponseFallback === true
+          });
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ...predRes, backendVersion: PROJECT_VERSION, backendSource: 'live-host' }));
+          return;
+        }
         const data = await collect(effectiveOrigin, request.id, { force: request.force === true });
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({
@@ -584,7 +815,7 @@ function parseInitialOriginsEnv() {
   const cliOriginsB64 = getCliArgValue('--origins-b64');
   let raw = String(process.env.AG_LIVE_ORIGINS || '').trim();
   if (!raw && cliOriginsB64) {
-    try { raw = Buffer.from(cliOriginsB64, 'base64').toString('utf8').trim(); } catch {}
+    try { raw = Buffer.from(cliOriginsB64, 'base64').toString('utf8').trim(); } catch { }
   }
   if (!raw) return [];
   try {
@@ -594,7 +825,7 @@ function parseInitialOriginsEnv() {
         ? Array.from(new Set(parsed.map(normalizeLoopbackOrigin).filter(Boolean)))
         : [];
     }
-  } catch {}
+  } catch { }
   return Array.from(new Set(raw.split(/[,;\s]+/).map(normalizeLoopbackOrigin).filter(Boolean)));
 }
 
@@ -649,12 +880,29 @@ function probeOriginAlive(origin) {
 }
 
 async function startLiveHost() {
+  const cliStateDir = getCliArgValue('--state-dir');
+  if (cliStateDir) {
+    process.env.AG_METER_STATE_DIR = path.resolve(cliStateDir);
+  }
   const envOrigins = parseInitialOriginsEnv();
   let currentOrigins = envOrigins;
   let api = null;
   if (currentOrigins.length > 0) {
-    api = await connect({ origin: currentOrigins[0] });
-    api.origins = currentOrigins;
+    let lastConnectErr = null;
+    for (const candOrigin of currentOrigins) {
+      try {
+        api = await connect({ origin: candOrigin });
+        break;
+      } catch (err) {
+        lastConnectErr = err;
+      }
+    }
+    if (!api) {
+      throw lastConnectErr || new Error('Antigravity 本地连接信息尚未就绪，请稍后重试');
+    }
+    api.origins = currentOrigins.includes(api.origin)
+      ? currentOrigins
+      : [api.origin, ...currentOrigins];
   } else {
     api = await connect();
     currentOrigins = Array.isArray(api.origins) && api.origins.length ? api.origins : [api.origin];
@@ -685,7 +933,7 @@ async function startLiveHost() {
           const cur = JSON.parse(fs.readFileSync(candidateStamp, 'utf8'));
           if (cur && cur.pid === process.pid) fs.unlinkSync(candidateStamp);
         }
-      } catch {}
+      } catch { }
     }
     if (server) {
       try {
@@ -719,6 +967,7 @@ async function startLiveHost() {
       backendSource: 'live-host',
       hasQuota: true,
       hasRuntimeInfo: true,
+      hasTurnState: true,
       capabilities: Object.keys(LIVE_CAPABILITIES).filter(k => LIVE_CAPABILITIES[k]),
       startedAt: LIVE_HOST_STARTED_AT
     };

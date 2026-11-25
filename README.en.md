@@ -4,12 +4,6 @@
 
 See how much context your conversation uses, how fast the model responds, and how many tokens you have used across the desktop app and CLI, right from the Google Antigravity 2.x toolbar.
 
-## Demo
-
-https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
-
-[Download HD MP4](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
-
 ## Features
 
 - **Context and speed**. See context usage, the model budget, time to first token (TTFT), output rate, and total generation time. Server-reported usage and local estimates are shown separately.
@@ -25,7 +19,7 @@ https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
 ## Interface language
 
 - **Viewer panel (3 languages)**: Switch the plugin panel live between **简体中文**, **繁體中文**, and **English** across all tabs, charts, billing views, and enhancement settings.
-- **Client UI language & licensing**: The client localization module supports **Simplified Chinese** (`i18n/zh-CN.json`) and stock **English**. A Traditional Chinese client dictionary from `qqxpee/antigravity2-cn` is omitted because no open-source license is declared upstream; selecting `繁體中文` translates the plugin panel only.
+- **Client UI language & licensing**: The client localization module supports **Simplified Chinese** (`i18n/zh-CN.json`) and stock **English**. The Antigravity UI localization is based on [Antigravity-Chinese-Localization](https://github.com/antigravity-cn-community/Antigravity-Chinese-Localization) (Release `v2.34.0`), thanks to **aabbWei** and **antigravity-cn-community contributors**. Full MIT license terms and copyright notices are bundled in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). A Traditional Chinese client dictionary from `qqxpee/antigravity2-cn` is omitted because no open-source license is declared upstream; selecting `繁體中文` translates the plugin panel only.
 
 ---
 
@@ -58,12 +52,25 @@ node cli.js status
 ```bash
 node cli.js check
 node cli.js install
+node cli.js live              # Patch-free CDP injection (auto-launches with CDP port; pass --relaunch outside host if already running without CDP on v2.33.0+)
+node cli.js watch             # Patch-free background watcher (recommended on macOS to preserve Apple code signatures)
+node cli.js stop-watch
+node cli.js update --check-only
+node cli.js update            # Stage a verified plugin release for watch or live to load
 node cli.js status
 node cli.js restore
 node cli.js enhance-status
 node cli.js enhance --tier 3 --chinese-title on --brand-title english
 node cli.js enhance-restore
 ```
+
+If your plugin copy does not recognize `update`, download a plugin package with the command from [GitHub Releases](https://github.com/elviscjn-cjn/antigravity-context-viewer/releases), extract it to a new folder, and run `node cli.js watch` there. If the macOS application signature is already damaged, reinstall the official client and check scheduled tasks before using `watch`.
+
+> [!IMPORTANT]
+> **Antigravity v2.34.0 & macOS `ElectronAsarIntegrity` Support Scope**:
+> - **Window-loader anchor (`loadHubWindowUrl`)**: Verified across clean install, upgrade (`v2.33.0 -> v2.34.0`), and lossless restore tests.
+> - **macOS `ElectronAsarIntegrity` and code signing**: `node cli.js check` reports signing and ASAR integrity status. `install` and `recover` block patching when `ElectronAsarIntegrity` is enabled or the application bundle has a publisher signature. Use patch-free **`node cli.js watch`** on these bundles. Modifying `app.asar` can invalidate the signature and prevent the app or its scheduled-task `language_server` from launching.
+> - **Unverified on real Mac hardware**: No physical macOS host was available during this release cycle; real macOS cold-boot signature behavior and desktop UI interactions await community hardware feedback.
 
 ---
 
@@ -79,13 +86,15 @@ Tests cover context estimates, token aggregation, storage, proxy configuration, 
 ## 🛡️ Security & Windows CLI Helper Transparency
 
 - **Purpose**: On Windows, the optional `scripts/cli-window-helper.exe` (source in [scripts/cli-window-helper.cs](scripts/cli-window-helper.cs)) is used solely when launching an `agy` CLI session from the UI popup to locate, center, and foreground the newly spawned console window. It makes no network calls and performs no persistence.
-- **Toolchain & Local Build Command**: Compiled from source using built-in Windows `.NET Framework 4.0`:
+- **Verifiable Build Provenance (No Prebuilt Binary in Git)**: Prebuilt `scripts/cli-window-helper.exe` is no longer tracked in Git. Release binaries are compiled directly from `scripts/cli-window-helper.cs` with SHA-256 verification via:
+  1. GitHub Actions (`.github/workflows/release.yml`), compiling on `windows-latest` with `.NET Framework 4.0` and verifying `.sha256` before packaging Windows ZIP bundles;
+  2. Local packaging (`node scripts/package-release.js`) or local source installation (`node cli.js install`), compiling `scripts/cli-window-helper.cs` into an OS temp directory via local `csc.exe` without touching the working tree or reusing stale `.exe` files.
+- **Toolchain & Manual Build Command**: Compiled from source using built-in Windows `.NET Framework 4.0`:
   ```powershell
   C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:exe /platform:anycpu /optimize+ /out:scripts\cli-window-helper.exe scripts\cli-window-helper.cs
   ```
-- **Current Prebuilt Binary SHA-256**: `e6a62cbb03163107db889e6accf7c05049ecf949c89f29afaf072c66fe09eac9` (Note: `csc.exe` embeds PE timestamps/MVIDs unless deterministic flags are set, so rebuilding locally or in `.github/workflows/release.yml` on `windows-latest` yields a functionally identical binary with a different hash; CI source compilation improves build provenance, though it does **not** guarantee zero heuristic detections by all AV engines.)
-- **AV Heuristic Phenomenon**: Because it is an unsigned ~15 KB .NET executable invoking `keybd_event`, `AttachThreadInput`, `AllowSetForegroundWindow`, `CreateToolhelp32Snapshot`, and `Process.Start("cmd.exe")`, some antivirus scanners may flag it heuristically.
-- **Safe Fallback Without Disabling AV**: You do **not** need to disable antivirus software or buy a code-signing certificate. Simply delete `scripts/cli-window-helper.exe` (or allow AV quarantine). `meter-cli-launcher.js` automatically falls back to spawning a standard console (`cmd.exe /d /k`) directly—CLI launching continues working normally, only without automatic centering or forced foreground activation.
+- **AV Heuristic Phenomenon**: Because it is an unsigned ~15 KB .NET executable invoking `keybd_event`, `AttachThreadInput`, `AllowSetForegroundWindow`, `CreateToolhelp32Snapshot`, and `Process.Start("cmd.exe")`, some antivirus scanners may flag it heuristically. (CI source compilation makes provenance transparent, though it does **not** guarantee zero heuristic detections by all AV engines.)
+- **Safe Fallback Without Disabling AV**: You do **not** need to disable antivirus software or buy a code-signing certificate. Simply delete `cli-window-helper.exe` (in `scripts/cli-window-helper.exe` or `%LOCALAPPDATA%\AntigravityContextMeter\cli-window-helper.exe`). `meter-cli-launcher.js` automatically falls back to spawning a standard console (`cmd.exe /d /k`) directly—CLI launching continues working normally, only without automatic centering or forced foreground activation.
 
 ---
 
@@ -103,48 +112,6 @@ Tests cover context estimates, token aggregation, storage, proxy configuration, 
 - **Issue #17 (`cli-window-helper` Security Transparency, Hashes & CI Build Workflow)**: Reported & investigated by **[@riandycandra](https://github.com/riandycandra)**.
 - **PR #21 (Traditional Chinese UI Refinement)**: Contributed by **[@U1tr0n-Lee](https://github.com/U1tr0n-Lee)**.
 - **Issue #22 (Official Web/Atom Fallback Under GitHub API Rate Limits)**: Proposed by **[@zhao33079-zhao](https://github.com/zhao33079-zhao)**.
-
----
-
-## 🙌 Contributors
-
-All 35 community contributors credited in the GitHub Release notes are listed per release in [CONTRIBUTORS.md](CONTRIBUTORS.md).
-
-<p align="left">
-  <a href="https://github.com/elviscjn-cjn" title="elviscjn-cjn · 作者 / author"><img src="https://github.com/elviscjn-cjn.png?size=96" width="48" height="48" alt="@elviscjn-cjn"></a>
-  <a href="https://github.com/Tswatery" title="Tswatery · v0.8.8-rc.1"><img src="https://github.com/Tswatery.png?size=96" width="48" height="48" alt="@Tswatery"></a>
-  <a href="https://github.com/Kisaragi-Mio-0127" title="Kisaragi-Mio-0127 · v0.8.9"><img src="https://github.com/Kisaragi-Mio-0127.png?size=96" width="48" height="48" alt="@Kisaragi-Mio-0127"></a>
-  <a href="https://github.com/feizaodemon" title="feizaodemon · v0.8.9"><img src="https://github.com/feizaodemon.png?size=96" width="48" height="48" alt="@feizaodemon"></a>
-  <a href="https://github.com/yuanyang749" title="yuanyang749 · v0.8.9"><img src="https://github.com/yuanyang749.png?size=96" width="48" height="48" alt="@yuanyang749"></a>
-  <a href="https://github.com/JYPYYy" title="JYPYYy · v0.8.6"><img src="https://github.com/JYPYYy.png?size=96" width="48" height="48" alt="@JYPYYy"></a>
-  <a href="https://github.com/Nymph-Beta" title="Nymph-Beta · v0.8.9"><img src="https://github.com/Nymph-Beta.png?size=96" width="48" height="48" alt="@Nymph-Beta"></a>
-  <a href="https://github.com/Fengsuid" title="Fengsuid · v0.9.0"><img src="https://github.com/Fengsuid.png?size=96" width="48" height="48" alt="@Fengsuid"></a>
-  <a href="https://github.com/lllhhhh" title="lllhhhh · v0.9.0"><img src="https://github.com/lllhhhh.png?size=96" width="48" height="48" alt="@lllhhhh"></a>
-  <a href="https://github.com/Staaaying" title="Staaaying · v0.9.0"><img src="https://github.com/Staaaying.png?size=96" width="48" height="48" alt="@Staaaying"></a>
-  <a href="https://github.com/XiangZheng2283" title="XiangZheng2283 · v0.9.0"><img src="https://github.com/XiangZheng2283.png?size=96" width="48" height="48" alt="@XiangZheng2283"></a>
-  <a href="https://github.com/x1051445024" title="x1051445024 · v0.8.1"><img src="https://github.com/x1051445024.png?size=96" width="48" height="48" alt="@x1051445024"></a>
-  <a href="https://github.com/Hirasawa8" title="Hirasawa8 · v0.9.0"><img src="https://github.com/Hirasawa8.png?size=96" width="48" height="48" alt="@Hirasawa8"></a>
-  <a href="https://github.com/shixin08052" title="shixin08052 · v0.9.0"><img src="https://github.com/shixin08052.png?size=96" width="48" height="48" alt="@shixin08052"></a>
-  <a href="https://github.com/Xuhang0607" title="Xuhang0607 · v0.9.0"><img src="https://github.com/Xuhang0607.png?size=96" width="48" height="48" alt="@Xuhang0607"></a>
-  <a href="https://github.com/Jemiking" title="Jemiking · v0.8.10"><img src="https://github.com/Jemiking.png?size=96" width="48" height="48" alt="@Jemiking"></a>
-  <a href="https://github.com/awu5425" title="awu5425 · v0.9.0"><img src="https://github.com/awu5425.png?size=96" width="48" height="48" alt="@awu5425"></a>
-  <a href="https://github.com/LC9999216" title="LC9999216 · v0.9.0"><img src="https://github.com/LC9999216.png?size=96" width="48" height="48" alt="@LC9999216"></a>
-  <a href="https://github.com/locking-main-163" title="locking-main-163 · v0.8.10"><img src="https://github.com/locking-main-163.png?size=96" width="48" height="48" alt="@locking-main-163"></a>
-  <a href="https://github.com/Lopution" title="Lopution · v0.8.8"><img src="https://github.com/Lopution.png?size=96" width="48" height="48" alt="@Lopution"></a>
-  <a href="https://github.com/huron09280" title="huron09280 · v0.8.8-rc.1"><img src="https://github.com/huron09280.png?size=96" width="48" height="48" alt="@huron09280"></a>
-  <a href="https://github.com/kyrie21z" title="kyrie21z · v0.8.8"><img src="https://github.com/kyrie21z.png?size=96" width="48" height="48" alt="@kyrie21z"></a>
-  <a href="https://github.com/startips" title="startips · v0.8.8-rc.1"><img src="https://github.com/startips.png?size=96" width="48" height="48" alt="@startips"></a>
-  <a href="https://github.com/nokiy" title="nokiy · v0.8.4"><img src="https://github.com/nokiy.png?size=96" width="48" height="48" alt="@nokiy"></a>
-  <a href="https://github.com/Azreal2021" title="Azreal2021 · v0.8.4"><img src="https://github.com/Azreal2021.png?size=96" width="48" height="48" alt="@Azreal2021"></a>
-  <a href="https://github.com/MoiraToki" title="MoiraToki · v0.8.4"><img src="https://github.com/MoiraToki.png?size=96" width="48" height="48" alt="@MoiraToki"></a>
-  <a href="https://github.com/yinshengphy" title="yinshengphy · v0.8.4"><img src="https://github.com/yinshengphy.png?size=96" width="48" height="48" alt="@yinshengphy"></a>
-  <a href="https://github.com/Andrew-liu" title="Andrew-liu · v0.8.4"><img src="https://github.com/Andrew-liu.png?size=96" width="48" height="48" alt="@Andrew-liu"></a>
-  <a href="https://github.com/nocoo" title="nocoo · v0.8.4"><img src="https://github.com/nocoo.png?size=96" width="48" height="48" alt="@nocoo"></a>
-  <a href="https://github.com/U1tr0n-Lee" title="U1tr0n-Lee · v0.8.4"><img src="https://github.com/U1tr0n-Lee.png?size=96" width="48" height="48" alt="@U1tr0n-Lee"></a>
-  <a href="https://github.com/zhao33079-zhao" title="zhao33079-zhao · v0.8.4"><img src="https://github.com/zhao33079-zhao.png?size=96" width="48" height="48" alt="@zhao33079-zhao"></a>
-  <a href="https://github.com/git-aa12138" title="git-aa12138 · v0.8.4"><img src="https://github.com/git-aa12138.png?size=96" width="48" height="48" alt="@git-aa12138"></a>
-  <a href="https://github.com/anyu0804" title="anyu0804 · v0.8.3"><img src="https://github.com/anyu0804.png?size=96" width="48" height="48" alt="@anyu0804"></a>
-  <a href="https://github.com/Jia131313" title="Jia131313 · v0.8.3"><img src="https://github.com/Jia131313.png?size=96" width="48" height="48" alt="@Jia131313"></a>
-  <a href="https://github.com/joyshan1986" title="joyshan1986 · v0.8.3"><img src="https://github.com/joyshan1986.png?size=96" width="48" height="48" alt="@joyshan1986"></a>
-  <a href="https://github.com/riandycandra" title="riandycandra · v0.8.4"><img src="https://github.com/riandycandra.png?size=96" width="48" height="48" alt="@riandycandra"></a>
-</p>
+- **v0.9.0 Merged Code Contributors**: **[@Tswatery](https://github.com/Tswatery)** ([PR #38](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/38) · [PR #53](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/53) · [PR #32](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/32)), **[@Kisaragi-Mio-0127](https://github.com/Kisaragi-Mio-0127)** ([PR #47](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/47) · [Issue #46](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/46)), **[@feizaodemon](https://github.com/feizaodemon)** ([PR #52](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/52) · [PR #72](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/72)), and **[@yuanyang749](https://github.com/yuanyang749)** ([PR #57](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/57)).
+- **v0.9.0 Adopted Proposals & Compatibility Contributors**: **[@JYPYYy](https://github.com/JYPYYy)** ([PR #35](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/35) · [PR #36](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/36) · [PR #37](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/37)), **[@Nymph-Beta](https://github.com/Nymph-Beta)** ([Issue #42](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/42) · [PR #43](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/43) · [PR #48](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/48) · [PR #71](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/71)), **[@Staaaying](https://github.com/Staaaying)** ([PR #70](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/70) · [PR #74](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/74) · [PR #79](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/79)), **[@MoiraToki](https://github.com/MoiraToki)** ([PR #34](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/34)), **[@paojiaoleshenghuo](https://github.com/paojiaoleshenghuo)** ([PR #27](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/27)), **[@Fengsuid](https://github.com/Fengsuid)** ([PR #55](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/55)), **[@1-pluto1](https://github.com/1-pluto1)** ([PR #60](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/60)), **[@lllhhhh](https://github.com/lllhhhh)** ([PR #63](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/63)), **[@unie774](https://github.com/unie774)** ([PR #64](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/64)), **[@XiangZheng2283](https://github.com/XiangZheng2283)** ([Issue #75](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/75) · [PR #76](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/76)), **[@BetterThanAny](https://github.com/BetterThanAny)** ([Issue #77](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/77)), **[@jinyue806](https://github.com/jinyue806)** ([Issue #78](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/78)), **[@Jeffgithub0029](https://github.com/Jeffgithub0029)** ([Issue #80](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/80)), **[@x1051445024](https://github.com/x1051445024)** ([PR #61](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/61) · [Issue #50](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/50)), **[@Hirasawa8](https://github.com/Hirasawa8)** ([PR #66](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/66)), **[@shixin08052](https://github.com/shixin08052)** ([PR #67](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/67)), **[@Xuhang0607](https://github.com/Xuhang0607)** ([PR #68](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/68)), **[@Jemiking](https://github.com/Jemiking)** ([PR #69](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/69)), and **[@awu5425](https://github.com/awu5425)** ([PR #73](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/73)).
+- **Client UI Localization Upstream**: Antigravity UI localization is based on [Antigravity-Chinese-Localization](https://github.com/antigravity-cn-community/Antigravity-Chinese-Localization) (Release `v2.34.0`), thanks to **aabbWei** and **antigravity-cn-community contributors** (MIT License; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)).

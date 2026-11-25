@@ -1,7 +1,7 @@
 {
   "name": "antigravity-context-viewer",
-  "version": "0.8.8",
-  "displayVersion": "0.8.8 α",
+  "version": "0.9.3",
+  "displayVersion": "0.9.3",
   "description": "Antigravity 桌面客户端的对话上下文、生成速度与 Token 用量看板",
   "main": "cli.js",
   "bin": {
@@ -21,7 +21,7 @@
     "uninstall-patch": "node cli.js restore",
     "build:renderer": "node scripts/build-renderer.js",
     "pretest": "node scripts/build-renderer.js",
-    "test": "node --test meter-core.test.js meter-renderer.test.js meter-quota.test.js meter-storage-proxy.test.js meter-subscription.test.js meter-integration.test.js meter-security-update.test.js meter-context-unlock.test.js meter-enhance.test.js meter-update-delivery.test.js meter-cli-launcher.test.js meter-v083-fixes.test.js meter-model-context-isolation.test.js meter-v085-fixes.test.js meter-hotload.test.js meter-macos-watch.test.js meter-v089-usage.test.js meter-elv91-speed.test.js meter-accounts.test.js",
+    "test": "node --test --test-concurrency=1 meter-core.test.js meter-renderer.test.js meter-quota.test.js meter-storage-proxy.test.js meter-subscription.test.js meter-integration.test.js meter-security-update.test.js meter-context-unlock.test.js meter-enhance.test.js meter-update-delivery.test.js meter-cli-launcher.test.js meter-cli-monitor.test.js meter-cli-adapter.test.js meter-cli-ui.test.js meter-rehydrate.test.js meter-v083-fixes.test.js meter-model-context-isolation.test.js meter-v085-fixes.test.js meter-hotload.test.js meter-macos-watch.test.js meter-v089-usage.test.js meter-elv91-speed.test.js meter-accounts.test.js meter-v234-compat.test.js meter-i18n-upstream.test.js meter-elv98-99.test.js meter-first-install-recovery.test.js meter-v090-cockpit-subscription.test.js meter-v090-decoupled-dock.test.js autostart.test.js meter-v091-appearance-prefs.test.js meter-v091-dashboard-gesture.test.js meter-v091-skyline-layout.test.js meter-v091-gap-closure.test.js meter-turn-footer-recovery.test.js meter-elv103-mixed-session.test.js meter-model-picker.test.js meter-next-prompt.test.js meter-host-settings-update.test.js meter-phase8-pr-convergence.test.js meter-v092-batch01-followup.test.js meter-host-settings-browser.test.js",
     "format": "npx prettier --write \"*.js\" \"*.json\" \"*.md\"",
     "format:check": "npx prettier --check \"*.js\" \"*.json\" \"*.md\"",
     "pack": "node scripts/package-release.js",
@@ -65,6 +65,148 @@
       "name": "x1051445024",
       "email": "186909410+x1051445024@users.noreply.github.com",
       "url": "https://github.com/x1051445024"
+    },
+    {
+      "name": "feizaodemon",
+      "email": "64273122+feizaodemon@users.noreply.github.com",
+      "url": "https://github.com/feizaodemon"
+    },
+    {
+      "name": "Tswatery",
+      "email": "83320725+Tswatery@users.noreply.github.com",
+      "url": "https://github.com/Tswatery"
+    },
+    {
+      "name": "Kisaragi-Mio-0127",
+      "email": "176260657+Kisaragi-Mio-0127@users.noreply.github.com",
+      "url": "https://github.com/Kisaragi-Mio-0127"
+    },
+    {
+      "name": "JYPYYy",
+      "email": "104886265+JYPYYy@users.noreply.github.com",
+      "url": "https://github.com/JYPYYy"
+    },
+    {
+      "name": "Nymph-Beta",
+      "email": "175997695+Nymph-Beta@users.noreply.github.com",
+      "url": "https://github.com/Nymph-Beta"
+    },
+    {
+      "name": "yuanyang749",
+      "email": "yuanyang613@163.com",
+      "url": "https://github.com/yuanyang749"
+    },
+    {
+      "name": "Jemiking",
+      "url": "https://github.com/Jemiking"
+    },
+    {
+      "name": "Staaaying",
+      "url": "https://github.com/Staaaying"
+    },
+    {
+      "name": "shixin08052",
+      "url": "https://github.com/shixin08052"
+    },
+    {
+      "name": "Hirasawa8",
+      "url": "https://github.com/Hirasawa8"
+    },
+    {
+      "name": "unie774",
+      "url": "https://github.com/unie774"
+    },
+    {
+      "name": "lllhhhh",
+      "url": "https://github.com/lllhhhh"
+    },
+    {
+      "name": "ltppp",
+      "url": "https://github.com/ltppp"
+    },
+    {
+      "name": "tihonovaaybeniz-code",
+      "url": "https://github.com/tihonovaaybeniz-code"
+    },
+    {
+      "name": "1-pluto1",
+      "url": "https://github.com/1-pluto1"
+    },
+    {
+      "name": "Fengsuid",
+      "url": "https://github.com/Fengsuid"
+    },
+    {
+      "name": "MoiraToki",
+      "url": "https://github.com/MoiraToki"
+    },
+    {
+      "name": "XiangZheng2283",
+      "url": "https://github.com/XiangZheng2283"
+    },
+    {
+      "name": "paojiaoleshenghuo",
+      "url": "https://github.com/paojiaoleshenghuo"
+    },
+    {
+      "name": "Xuhang0607",
+      "url": "https://github.com/Xuhang0607"
+    },
+    {
+      "name": "awu5425",
+      "url": "https://github.com/awu5425"
+    },
+    {
+      "name": "BetterThanAny",
+      "url": "https://github.com/BetterThanAny"
+    },
+    {
+      "name": "jinyue806",
+      "url": "https://github.com/jinyue806"
+    },
+    {
+      "name": "Jeffgithub0029",
+      "url": "https://github.com/Jeffgithub0029"
+    },
+    {
+      "name": "riandycandra",
+      "url": "https://github.com/riandycandra"
+    },
+    {
+      "name": "zhao33079-zhao",
+      "url": "https://github.com/zhao33079-zhao"
+    },
+    {
+      "name": "anyu0804",
+      "url": "https://github.com/anyu0804"
+    },
+    {
+      "name": "Jia131313",
+      "url": "https://github.com/Jia131313"
+    },
+    {
+      "name": "Azreal2021",
+      "url": "https://github.com/Azreal2021"
+    },
+    {
+      "name": "Andrew-liu",
+      "url": "https://github.com/Andrew-liu"
+    },
+    {
+      "name": "yinshengphy",
+      "url": "https://github.com/yinshengphy"
+    },
+    {
+      "name": "nocoo",
+      "url": "https://github.com/nocoo"
+    },
+    {
+      "name": "nokiy",
+      "url": "https://github.com/nokiy"
+    },
+    {
+      "name": "U1tr0n-Lee",
+      "url": "https://github.com/U1tr0n-Lee"
     }
   ],
   "license": "MIT"

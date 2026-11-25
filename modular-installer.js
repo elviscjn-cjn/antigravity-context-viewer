@@ -83,7 +83,14 @@ try {
     _path.join(_localApp, 'AntigravityProxyNoTun', 'config.json')
   );
 
-  for (const _p of _cfgCandidates) {
+  const _launcherOverride = process.env.AG_METER_NO_TUN_LAUNCH === '1'
+    ? _normalizeUrl(process.env.HTTPS_PROXY || process.env.HTTP_PROXY)
+    : '';
+  if (_launcherOverride) {
+    _proxyUrl = _launcherOverride;
+    _noProxy = process.env.NO_PROXY || '';
+  }
+  for (const _p of _launcherOverride ? [] : _cfgCandidates) {
     if (_fs.existsSync(_p)) {
       const _isUnified = _path.basename(_p) === 'modules.json';
       try {
@@ -282,7 +289,7 @@ try {
     if (_agDecPromise && typeof _agDecPromise.catch === "function") { _agDecPromise.catch(function(){}); }
   }
 } catch (_agDecErr) {}
-electron_1.contextBridge.exposeInMainWorld("contextMeterAPI", { getRuntimeInfo: () => electron_1.ipcRenderer.invoke("context-meter:runtime-info"), scan: (id, force) => electron_1.ipcRenderer.invoke("context-meter:scan", id, force === true), getTokenHistory: (force) => electron_1.ipcRenderer.invoke("context-meter:token-history", force === true), getSessionTimeline: (id, opts) => electron_1.ipcRenderer.invoke("context-meter:session-timeline", id, opts), getQuota: (opts) => electron_1.ipcRenderer.invoke("context-meter:get-quota", opts), syncOverlay: (opts) => electron_1.ipcRenderer.invoke("context-meter:sync-overlay", opts), recordCalls: (calls) => electron_1.ipcRenderer.invoke("context-meter:record-calls", calls), getSettings: (opts) => electron_1.ipcRenderer.invoke("context-meter:get-settings", opts), saveSettings: (payload) => electron_1.ipcRenderer.invoke("context-meter:save-settings", payload), launchCli: (opts) => electron_1.ipcRenderer.invoke("context-meter:launch-cli", opts), checkUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:check-update", opts), applyUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:apply-update", opts), openExternal: (url) => electron_1.ipcRenderer.invoke("context-meter:open-external", url), getContextUnlockStatus: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-status", opts), applyContextUnlock: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-apply", opts), restoreContextUnlock: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-restore", opts), restartHost: () => electron_1.ipcRenderer.invoke("context-meter:restart-host"), getEnhanceStatus: (opts) => electron_1.ipcRenderer.invoke("context-meter:enhance-status", opts), applyEnhancePatch: (payload) => electron_1.ipcRenderer.invoke("context-meter:enhance-apply", payload), restoreAllEnhance: (opts) => electron_1.ipcRenderer.invoke("context-meter:enhance-restore", opts), restartLanguageServers: () => electron_1.ipcRenderer.invoke("context-meter:restart-language-servers"), getModulesStatus: () => electron_1.ipcRenderer.invoke("context-meter:modules-status"), toggleModule: (name, enable, opts) => electron_1.ipcRenderer.invoke("context-meter:toggle-module", name, enable, opts), testProxy: (url) => electron_1.ipcRenderer.invoke("context-meter:test-proxy", url), getAccountsOverview: () => electron_1.ipcRenderer.invoke("context-meter:accounts-overview"), accountsAction: (payload) => electron_1.ipcRenderer.invoke("context-meter:accounts-action", payload) });
+electron_1.contextBridge.exposeInMainWorld("contextMeterAPI", { getRuntimeInfo: () => electron_1.ipcRenderer.invoke("context-meter:runtime-info"), scan: (id, force) => electron_1.ipcRenderer.invoke("context-meter:scan", id, force === true), getTurnState: (id) => electron_1.ipcRenderer.invoke("context-meter:turn-state", id), getTokenHistory: (force, knownRevision, knownAccountKey) => electron_1.ipcRenderer.invoke("context-meter:token-history", force === true, typeof knownRevision === "string" ? knownRevision : null, typeof knownAccountKey === "string" ? knownAccountKey : null), getSessionTimeline: (id, opts) => electron_1.ipcRenderer.invoke("context-meter:session-timeline", id, opts), getQuota: (opts) => electron_1.ipcRenderer.invoke("context-meter:get-quota", opts), syncOverlay: (opts) => electron_1.ipcRenderer.invoke("context-meter:sync-overlay", opts), recordCalls: (calls) => electron_1.ipcRenderer.invoke("context-meter:record-calls", calls), getSettings: (opts) => electron_1.ipcRenderer.invoke("context-meter:get-settings", opts), saveSettings: (payload) => electron_1.ipcRenderer.invoke("context-meter:save-settings", payload), launchCli: (opts) => electron_1.ipcRenderer.invoke("context-meter:launch-cli", opts), checkUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:check-update", opts), applyUpdate: (opts) => electron_1.ipcRenderer.invoke("context-meter:apply-update", opts), openExternal: (url) => electron_1.ipcRenderer.invoke("context-meter:open-external", url), getContextUnlockStatus: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-status", opts), applyContextUnlock: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-apply", opts), restoreContextUnlock: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-restore", opts), restartHost: () => electron_1.ipcRenderer.invoke("context-meter:restart-host"), getEnhanceStatus: (opts) => electron_1.ipcRenderer.invoke("context-meter:enhance-status", opts), applyEnhancePatch: (payload) => electron_1.ipcRenderer.invoke("context-meter:enhance-apply", payload), restoreAllEnhance: (opts) => electron_1.ipcRenderer.invoke("context-meter:enhance-restore", opts), restartLanguageServers: () => electron_1.ipcRenderer.invoke("context-meter:restart-language-servers"), getRehydrateStatus: () => electron_1.ipcRenderer.invoke("context-meter:rehydrate-status"), applyRehydrate: () => electron_1.ipcRenderer.invoke("context-meter:rehydrate-apply"), disableRehydrate: () => electron_1.ipcRenderer.invoke("context-meter:rehydrate-disable"), restoreRehydrate: (opts) => electron_1.ipcRenderer.invoke("context-meter:rehydrate-restore", opts && opts.force === true ? { force: true } : {}), installRehydratePython: (opts) => electron_1.ipcRenderer.invoke("context-meter:rehydrate-install-python", opts), getModulesStatus: () => electron_1.ipcRenderer.invoke("context-meter:modules-status"), toggleModule: (name, enable, opts) => electron_1.ipcRenderer.invoke("context-meter:toggle-module", name, enable, opts), testProxy: (url) => electron_1.ipcRenderer.invoke("context-meter:test-proxy", url), getAccountsOverview: () => electron_1.ipcRenderer.invoke("context-meter:accounts-overview"), accountsAction: (payload) => electron_1.ipcRenderer.invoke("context-meter:accounts-action", payload), syncPricing: (opts) => electron_1.ipcRenderer.invoke("context-meter:sync-pricing", opts), openDashboardBrowser: (opts) => electron_1.ipcRenderer.invoke("context-meter:open-dashboard-browser", opts), predictNextPrompt: (payload) => electron_1.ipcRenderer.invoke("context-meter:predict-next-prompt", payload) });
 ${TAGS.METER_PRELOAD_END}\n`;
 }
 
@@ -300,7 +307,7 @@ function generateChinesePreloadCode(dictContent, runtimeContent) {
       if (typeof electron_1 !== 'undefined' && electron_1.ipcRenderer && typeof electron_1.ipcRenderer.sendSync === 'function') {
         var _syncCfg = electron_1.ipcRenderer.sendSync('context-meter:get-chinese-config-sync');
         if (_syncCfg && typeof _syncCfg === 'object' && _syncCfg.resolved !== false) {
-          _i18nConfig.enabled = _syncCfg.enabled !== false && _syncCfg.language !== 'en';
+          _i18nConfig.enabled = _syncCfg.enabled === true && _syncCfg.language !== 'en';
           _i18nConfig.language = _syncCfg.language || (_i18nConfig.enabled ? 'zh-CN' : 'en');
           _i18nConfig.brandTitle = _syncCfg.brandTitle || 'english';
           _resolved = true;
@@ -339,11 +346,11 @@ function generateChinesePreloadCode(dictContent, runtimeContent) {
           var _c = JSON.parse(_fs.readFileSync(_cfgP, 'utf8'));
           var _ch = _c && _c.modules && _c.modules.chinese ? _c.modules.chinese : null;
           if (_ch) {
-            _i18nConfig.enabled = _ch.enabled !== false && _ch.language !== 'en';
+            _i18nConfig.enabled = _ch.enabled === true && _ch.language !== 'en';
             _i18nConfig.language = _ch.language || (_i18nConfig.enabled ? 'zh-CN' : 'en');
             _i18nConfig.brandTitle = _ch.brandTitle || 'english';
             _resolved = true;
-            if (_c && _c.modules && _c.modules.chinese && _c.modules.chinese.enabled === false && _i18nConfig.brandTitle === 'english') {
+            if (((_c && _c.modules && _c.modules.chinese && _c.modules.chinese.enabled === false) || !_i18nConfig.enabled) && _i18nConfig.brandTitle === 'english') {
               return;
             }
           }
@@ -388,10 +395,10 @@ function cleanUtilsSource(source) {
   let code = source;
 
   // 1. 精准移除成对标记内容
-  const proxyRegex = new RegExp(`\\n?\\s*${TAGS.PROXY_START}[\\s\\S]*?${TAGS.PROXY_END}\\n?`, 'g');
+  const proxyRegex = new RegExp(`\\r?\\n?[ \\t]*${TAGS.PROXY_START}[\\s\\S]*?${TAGS.PROXY_END}\\r?\\n?`, 'g');
   code = code.replace(proxyRegex, '\n');
 
-  const meterRegex = new RegExp(`\\n?\\s*${TAGS.METER_UTILS_START}[\\s\\S]*?${TAGS.METER_UTILS_END}\\n?`, 'g');
+  const meterRegex = new RegExp(`\\r?\\n?[ \\t]*${TAGS.METER_UTILS_START}[\\s\\S]*?${TAGS.METER_UTILS_END}\\r?\\n?`, 'g');
   code = code.replace(meterRegex, '\n');
 
   // 2. 清洗历史未打标记的 ContextMeter 注入（严格特征匹配，防止破坏第三方）
@@ -400,7 +407,7 @@ function cleanUtilsSource(source) {
     .replace(/\s*try\s*\{\s*require\("\.\/meter-main"\)\.ensureProxyEnvironment\(process\.env\);\s*\}\s*catch\s*\{\}\r?\n?/g, '')
     .replace(/\s*try\s*\{\s*require\("\.\/meter-main"\)\.ensureProxyEnvironment\(env\);\s*\}\s*catch\s*\{\}\r?\n?/g, '')
     .replace('\n' + storageFallbackLine, '')
-    .replace(/\s*require\("\.\/meter-main"\)\.installContextMeter\(win\);?\r?\n?/g, '')
+    .replace(/[ \t]*require\("\.\/meter-main"\)\.installContextMeter\(win\);?[ \t]*\r?\n?/g, '')
     .replace(/\n\s*try\s*\{\s*require\("\.\/meter-main"\)\.installContextMeter\(wins\[0\]\);[\s\S]*?\}\s*catch\s*\{\}/g, '')
     .replace(/const _mWin = createWindow\(`\$\{constants_1\.WINDOW_ORIGIN\}:\$\{port\}\/`\);\s*\n\s*try\s*\{\s*require\("\.\/meter-main"\)\.installContextMeter\(_mWin\);[\s\S]*?\}\s*catch\s*\{\}/g, 'createWindow(`${constants_1.WINDOW_ORIGIN}:${port}/`);');
 
@@ -430,17 +437,176 @@ function cleanPreloadSource(source) {
   return code;
 }
 
+const LEGACY_WINDOW_LOAD_MARKER = '    void win.loadURL(url);';
+const HUB_WINDOW_LOAD_RE = /^[ \t]+(?:(?:void|await)[ \t]+)?(?:loadHubWindowUrl|[\w$]+\.loadHubWindowUrl|\(0,\s*[\w$.]+\.loadHubWindowUrl\))\(\s*win\s*,\s*url(?:\s*,(?:[^)\r\n]*|\s*\{[^{}();]*\}))?\s*\);[ \t]*\r?$/gm;
+const CREATE_WINDOW_LOAD_URL_RE = /^[ \t]+(?:void|await)[ \t]+win\.loadURL\(\s*url\s*\);[ \t]*\r?$/gm;
+
+/**
+ * 提取 dist/utils.js 中 function createWindow(...) { ... } 的函数体范围，用于受控回退匹配。
+ */
+function extractCreateWindowSpan(source) {
+  if (!source || typeof source !== 'string') return null;
+  const sigMatch = /\bfunction\s+createWindow\s*\([^)]*\)\s*\{/.exec(source);
+  if (!sigMatch) return null;
+  const bodyStart = sigMatch.index + sigMatch[0].length;
+  let depth = 1;
+  let inSingle = false;
+  let inDouble = false;
+  let inTemplate = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+  let escaped = false;
+  for (let i = bodyStart; i < source.length; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (inBlockComment) {
+      if (ch === '*' && next === '/') { inBlockComment = false; i++; }
+      continue;
+    }
+    if (escaped) { escaped = false; continue; }
+    if (inSingle || inDouble || inTemplate) {
+      if (ch === '\\') { escaped = true; continue; }
+      if (inSingle && ch === '\'') inSingle = false;
+      else if (inDouble && ch === '"') inDouble = false;
+      else if (inTemplate && ch === '`') inTemplate = false;
+      continue;
+    }
+    if (ch === '/' && next === '/') { inLineComment = true; i++; continue; }
+    if (ch === '/' && next === '*') { inBlockComment = true; i++; continue; }
+    if (ch === '\'') { inSingle = true; continue; }
+    if (ch === '"') { inDouble = true; continue; }
+    if (ch === '`') { inTemplate = true; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return { start: bodyStart, end: i };
+    }
+  }
+  return null;
+}
+
+/**
+ * 检查窗口加载锚点匹配详情（返回 unique / missing / ambiguous 状态）。
+ */
+function inspectWindowLoadAnchors(cleanUtils) {
+  if (!cleanUtils || typeof cleanUtils !== 'string') {
+    return { target: null, status: 'missing', count: 0 };
+  }
+  const matches = [];
+
+  let legacyPos = cleanUtils.indexOf(LEGACY_WINDOW_LOAD_MARKER);
+  while (legacyPos !== -1) {
+    matches.push({ kind: 'legacy', index: legacyPos, match: LEGACY_WINDOW_LOAD_MARKER });
+    legacyPos = cleanUtils.indexOf(LEGACY_WINDOW_LOAD_MARKER, legacyPos + LEGACY_WINDOW_LOAD_MARKER.length);
+  }
+
+  HUB_WINDOW_LOAD_RE.lastIndex = 0;
+  let m;
+  while ((m = HUB_WINDOW_LOAD_RE.exec(cleanUtils)) !== null) {
+    matches.push({ kind: 'hub_loader_v234', index: m.index, match: m[0] });
+  }
+
+  if (matches.length === 1) {
+    return { target: matches[0], status: 'unique', count: 1 };
+  }
+  if (matches.length > 1) {
+    return { target: null, status: 'ambiguous', count: matches.length };
+  }
+
+  // Pass 2: 仅当无 legacy/loadHubWindowUrl 命中时，限定在 createWindow 函数体内查找 void/await win.loadURL(url);
+  // 绝不全局匹配，防止误命中 loadHubWindowUrl / invokeWindowLoadUrl 等辅助函数内的 await win.loadURL(...)。
+  const span = extractCreateWindowSpan(cleanUtils);
+  if (span) {
+    const body = cleanUtils.slice(span.start, span.end);
+    const scopedMatches = [];
+    CREATE_WINDOW_LOAD_URL_RE.lastIndex = 0;
+    let sm;
+    while ((sm = CREATE_WINDOW_LOAD_URL_RE.exec(body)) !== null) {
+      scopedMatches.push({
+        kind: 'create_window_load_url',
+        index: span.start + sm.index,
+        match: sm[0]
+      });
+    }
+    if (scopedMatches.length === 1) {
+      return { target: scopedMatches[0], status: 'unique', count: 1 };
+    }
+    if (scopedMatches.length > 1) {
+      return { target: null, status: 'ambiguous', count: scopedMatches.length };
+    }
+  }
+
+  return { target: null, status: 'missing', count: 0 };
+}
+
+/**
+ * 定位 dist/utils.js 中 createWindow 末尾的唯一窗口加载语句。
+ * 同时兼容历史版本（void win.loadURL(url);）与 Antigravity 2.34.0+（void loadHubWindowUrl(win, url, ...); / createWindow 内 await win.loadURL(url);）。
+ * 若缺失或出现多个候选（存在歧义），严格返回 null（fail-closed）。
+ */
+function findWindowLoadHookTarget(cleanUtils) {
+  return inspectWindowLoadAnchors(cleanUtils).target;
+}
+
+/**
+ * 在唯一窗口加载语句之前插入 windowLoadHook，完整保留宿主原有加载调用（含 skipBootstrapMint 等参数）。
+ */
+function injectWindowLoadHook(utilsCode, windowLoadHook) {
+  const target = findWindowLoadHookTarget(utilsCode);
+  if (!target) {
+    throw new Error('未找到唯一的宿主窗口加载锚点 (createWindow loadURL/loadHubWindowUrl)，中止写入以保护宿主环境。');
+  }
+  return utilsCode.slice(0, target.index) + windowLoadHook + utilsCode.slice(target.index);
+}
+
+/**
+ * 分阶段诊断清洗后 utils.js 的结构合法性与 JS 语法，供 CLI 与安装器明确回报失败阶段。
+ */
+function diagnoseCleanStructure(cleanUtils) {
+  if (!cleanUtils || typeof cleanUtils !== 'string') {
+    return { ok: false, stage: 'empty_source', reason: 'dist/utils.js 内容为空或不可读' };
+  }
+  if (
+    cleanUtils.includes('installContextMeter') ||
+    cleanUtils.includes(TAGS.PROXY_START) ||
+    cleanUtils.includes(TAGS.METER_UTILS_START)
+  ) {
+    return { ok: false, stage: 'residual_plugin_trace', reason: '清洗后仍残留旧版插件注入标记' };
+  }
+  const setupNodeMarker = 'function setupNodeWrapper(env) {';
+  if (!cleanUtils.includes(setupNodeMarker)) {
+    return { ok: false, stage: 'missing_setup_node_wrapper', reason: '未找到 setupNodeWrapper(env) 宿主入口函数' };
+  }
+  const anchorInfo = inspectWindowLoadAnchors(cleanUtils);
+  if (!anchorInfo.target) {
+    if (anchorInfo.status === 'ambiguous') {
+      return {
+        ok: false,
+        stage: 'ambiguous_window_load_anchor',
+        reason: `发现多个窗口加载锚点候选（共 ${anchorInfo.count} 处），存在注入歧义`
+      };
+    }
+    return {
+      ok: false,
+      stage: 'missing_window_load_anchor',
+      reason: '未找到唯一的 createWindow 窗口加载调用（loadURL / loadHubWindowUrl）'
+    };
+  }
+  if (!validateSyntax(cleanUtils, 'dist/utils.js')) {
+    return { ok: false, stage: 'syntax_error', reason: '清洗后的 dist/utils.js JavaScript 语法校验失败' };
+  }
+  return { ok: true, stage: 'ok', anchorKind: anchorInfo.target.kind, reason: 'ok' };
+}
+
 /**
  * 校验清洗后的 utils 结构合法性与 JavaScript 语法
  */
 function verifyCleanStructure(cleanUtils) {
-  if (!cleanUtils) return false;
-  if (cleanUtils.includes('installContextMeter')) return false;
-  if (cleanUtils.includes(TAGS.PROXY_START) || cleanUtils.includes(TAGS.METER_UTILS_START)) return false;
-  const marker = '    void win.loadURL(url);';
-  const setupNodeMarker = 'function setupNodeWrapper(env) {';
-  const structuralOk = cleanUtils.split(marker).length === 2 && cleanUtils.includes(setupNodeMarker);
-  return structuralOk && validateSyntax(cleanUtils, 'dist/utils.js');
+  return diagnoseCleanStructure(cleanUtils).ok;
 }
 
 module.exports = {
@@ -453,5 +619,8 @@ module.exports = {
   generateChinesePreloadCode,
   cleanUtilsSource,
   cleanPreloadSource,
+  findWindowLoadHookTarget,
+  injectWindowLoadHook,
+  diagnoseCleanStructure,
   verifyCleanStructure
 };

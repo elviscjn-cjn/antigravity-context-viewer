@@ -2,6 +2,20 @@
 
 [简体中文](#简体中文) · [English](#english)
 
+## v0.9.3
+
+- [@Evander-8](https://github.com/Evander-8) · 定位额度面板异步刷新和更新重载后的滚动跳顶，以及 Antigravity 2.34.0 切号时需要重启客户端才能重新下发凭据. 本版采用滚动位置恢复和切号重启确认. [PR #83](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/83) · [PR #96](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/96)
+- [@zhao33079-zhao](https://github.com/zhao33079-zhao) · 定位输入框状态条的隐藏规则和挂载时序问题. [Issue #101](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/101)
+- [@IpiggyI](https://github.com/IpiggyI) · 定位径向菜单顶层容器覆盖 Windows 原生拖动区域，并给出最小修复方案. [Issue #106](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/106)
+- [@jzPPP3333](https://github.com/jzPPP3333) · 定位额度圆环右键与宿主菜单冲突，提出左右键分工及对应回归. [Issue #107](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/107)
+
+## v0.9.2
+
+- [@ltppp](https://github.com/ltppp) · 提供 Token 历史、汉化监听和面板重绘的排查及优化方案. 本版补齐按账号识别历史更新，以及隐藏视图的重绘门禁. [PR #90](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/90)
+- [@tihonovaaybeniz-code](https://github.com/tihonovaaybeniz-code) · 提供主进程注入、异步日志与隐藏会话面板的定位和修复. 本版沿用这些修复，验证更新链路与现有注入逻辑的组合. [PR #92](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/92)
+- [@Nymph-Beta](https://github.com/Nymph-Beta) · 提供更新链路与陈旧安装清单的复现和修复. 本版采纳磁盘状态核验，并调整桌面应用内更新的交接. [PR #93](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/93)
+- [@lllhhhh](https://github.com/lllhhhh) 和 [@Staaaying](https://github.com/Staaaying) · 提供 Windows 和 macOS 卡顿、CPU 占用及滚动回顶的复现. [Issue #85](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/85) · [Issue #89](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/89)
+
 <details open>
 <summary><b>简体中文</b></summary>
 
@@ -207,5 +221,32 @@ Releases v0.8.7, v0.8.5, v0.8.2, v0.8.0, v0.4.0, v0.3.0, v0.2.0 and v0.1.0 credi
 | [@Jia131313](https://github.com/Jia131313) | v0.8.3 | [#4](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/4) | System enhancement hub, prompt tiers 0-4 and anti-hallucination constraints |
 | [@joyshan1986](https://github.com/joyshan1986) | v0.8.3 | [Issue #19](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/19) | Diagnosed the missing system enhancement files in the release bundle |
 | [@riandycandra](https://github.com/riandycandra) | v0.9.0 · v0.8.4 | [Issue #17](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/17) | cli-window-helper AV detection traceability, build provenance transparency and Windows CI source build proposal |
+| [@tihonovaaybeniz-code](https://github.com/tihonovaaybeniz-code) | v0.9.1 candidate | [#92](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/92) | Coalesced injections, bounded asynchronous diagnostics and hidden session view performance |
+| [@Nymph-Beta](https://github.com/Nymph-Beta) | v0.9.1 candidate | [#93](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/93) | Update preview cleanup and prerelease selection handling |
+| [@ltppp](https://github.com/ltppp) | v0.9.1 candidate | [#90](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/90) | Token history change detection and renderer performance analysis |
+| [@paojiaoleshenghuo](https://github.com/paojiaoleshenghuo) | v0.9.1 candidate | [#86](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/86) | Virtualized conversation isolation and localization performance analysis |
+| [@Radiummm](https://github.com/Radiummm) | v0.9.1 candidate | [#88](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/88) | Opt-in login startup integration |
+| [@Evander-8](https://github.com/Evander-8) | v0.9.1 candidate | [Issue #95](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/95) | macOS account switch reproduction and client restart findings |
+| [@lilicocon](https://github.com/lilicocon) | v0.9.1 candidate | [#87](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/87) | Avoids insertBefore(host, host) loop and preserves panel scrollTop on dock |
+| [@Minggle](https://github.com/Minggle) | v0.9.1 candidate | [#81](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/81) | Eliminates panel switching stalls and preserves scroll positions |
+| [@tihonovaaybeniz-code](https://github.com/tihonovaaybeniz-code) | v0.9.1 candidate | [#92](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/92) | Merges main-process concurrent injection and async logging |
+| [@specific-person](https://github.com/specific-person) | v0.9.1 candidate | [#94](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/94) | Antigravity v2.34.0 install anchor and quota auth fallback |
+| [@Nymph-Beta](https://github.com/Nymph-Beta) | v0.9.1 candidate | [#93](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/93) · [#71](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/71) · [#43](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/43) | Zero-patch hot update, Split and Side Chat switching, no-CDP relaunch |
+| [@Staaaying](https://github.com/Staaaying) | v0.9.1 candidate | [#79](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/79) · [#70](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/70) | Split-pane focus protection and split-window context metrics |
+| [@feizaodemon](https://github.com/feizaodemon) | v0.9.1 candidate | [#72](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/72) | Zero-patch standalone no-TUN launcher |
+| [@unie774](https://github.com/unie774) | v0.9.1 candidate | [#64](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/64) | Fixes 5h and weekly double counting plus pool attribution |
+| [@1-pluto1](https://github.com/1-pluto1) | v0.9.1 candidate | [#60](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/60) | Prevents repeated ledger backups and prunes excess copies |
+| [@JYPYYy](https://github.com/JYPYYy) | v0.9.1 candidate | [#37](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/37) | Prompt cache hit rate, stabilized streaming speed, wall-clock turn timing |
+| [@MoiraToki](https://github.com/MoiraToki) | v0.9.1 candidate | [#34](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/34) | Opt-in context recovery after compaction |
+| [@paojiaoleshenghuo](https://github.com/paojiaoleshenghuo) | v0.9.1 candidate | [#27](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/27) | Model quota tier permission checks |
+
+### 复现与验证 / Reproduction and verification
+
+| 报告者 | 版本 | 关联 | 说明 |
+| --- | --- | --- | --- |
+| [@exynos967](https://github.com/exynos967) | v0.9.1 | [Issue #33](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/33) | Asks whether prompt and tool rules can trigger account bans |
+| [@git-aa12138](https://github.com/git-aa12138) | v0.9.1 | [Issue #23](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/23) | macOS cannot apply recommended preset |
+| [@q120379739](https://github.com/q120379739) | v0.9.1 | [Issue #39](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/39) | macOS language server SIGKILL with invalid code signature |
+| [@JohnsonGond](https://github.com/JohnsonGond) | v0.9.1 | [Issue #56](https://github.com/elviscjn-cjn/antigravity-context-viewer/issues/56) | Remote conversation latency and speed metrics unavailable locally |
 
 </details>

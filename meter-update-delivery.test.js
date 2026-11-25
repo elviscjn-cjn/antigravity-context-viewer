@@ -16,6 +16,8 @@ const {
 const {
   checkUpdateAsync,
   applyUpdateAsync,
+  extractUpdateZip,
+  sanitizeUpdateErrorText,
   parseReleasesAtom,
   parseLatestReleaseHtml,
   parseExpandedAssetsHtml,
@@ -168,7 +170,7 @@ test('交付验证 2: 隔离环境模拟更新检查 (checkUpdateAsync)', async 
     {
       tag_name: 'v0.9.0',
       name: 'v0.9.0 实验性上下文加长正式集成',
-      body: '1. 引入上下文加长功能\n2. 零外部依赖\n3. 支持恢复官方原版',
+      body: '# v0.9.0\n<details open>\n<summary><b>简体中文</b></summary>\n\n1. 引入上下文加长功能\n2. 零外部依赖\n3. 支持恢复官方原版\n</details>\n<details><summary>English</summary>English notes</details>',
       published_at: '2026-11-12T00:00:00Z',
       html_url: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.0',
       assets: [
@@ -185,6 +187,8 @@ test('交付验证 2: 隔离环境模拟更新检查 (checkUpdateAsync)', async 
   ];
 
   const res = await checkUpdateAsync({
+    currentVersion: '0.8.10',
+    installedVersion: '0.8.10',
     force: true,
     _requestGithubUrl: async () => JSON.stringify(mockReleases)
   });
@@ -193,6 +197,7 @@ test('交付验证 2: 隔离环境模拟更新检查 (checkUpdateAsync)', async 
   assert.equal(res.hasUpdate, true);
   assert.equal(res.latestVersion, '0.9.0');
   assert.match(res.releaseNotes, /上下文加长/);
+  assert.doesNotMatch(res.releaseNotes, /<\/?(?:details|summary)|English notes|简体中文/);
 });
 
 test('交付验证 3: 隔离环境更新下载、校验与解压安装完整演练', async () => {
@@ -274,6 +279,7 @@ test('交付验证 3: 隔离环境更新下载、校验与解压安装完整演�
   // 执行 applyUpdateAsync
   const updateRes = await applyUpdateAsync({
     version: '0.9.0',
+    currentVersion: '0.8.10',
     _requestGithubUrl: mockFetcher,
     _spawn: mockSpawn
   });
@@ -675,5 +681,356 @@ test('Issue #22: requestGithubUrl 相对重定向跟随、Authorization 不泄�
     https.request = origRequest;
     if (origGhToken === undefined) delete process.env.GITHUB_TOKEN;
     else process.env.GITHUB_TOKEN = origGhToken;
+  }
+});
+
+test('交付验证 8: 预发布与正式版通道隔离、beta 升级正式版、release.yml 配置检查', async () => {
+  const { getPluginSettings, savePluginSettings } = require('./meter-collector');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-beta-channel-'));
+  try {
+    const preAndStableReleases = [
+      {
+        tag_name: 'v0.8.9-beta.2',
+        draft: false,
+        prerelease: true,
+        published_at: '2026-11-20T01:00:00Z',
+        html_url: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.8.9-beta.2',
+        body: 'Beta 2',
+        assets: []
+      },
+      {
+        tag_name: 'v0.8.9-beta.1',
+        draft: false,
+        prerelease: true,
+        published_at: '2026-11-19T01:00:00Z',
+        html_url: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.8.9-beta.1',
+        body: 'Beta 1',
+        assets: []
+      }
+    ];
+
+    // 1. 默认设置：allowBetaUpdates 必须为 false，正式版 0.8.8 不应收到 beta.1 / beta.2
+    assert.equal(getPluginSettings({ agDir: tmpDir }).allowBetaUpdates, false);
+    const stableDefaultCheck = await checkUpdateAsync({
+      agDir: tmpDir,
+      currentVersion: '0.8.8',
+      installedVersion: '0.8.8',
+      force: true,
+      _requestGithubUrl: async () => JSON.stringify(preAndStableReleases)
+    });
+    assert.equal(stableDefaultCheck.ok, true);
+    assert.equal(stableDefaultCheck.hasUpdate, false);
+
+    // 2. 开启 allowBetaUpdates 后，正式版 0.8.8 可以检测到 beta.2（且缓存随开关自动失效）
+    const saved = savePluginSettings({ allowBetaUpdates: true }, { agDir: tmpDir });
+    assert.equal(saved.ok, true);
+    assert.equal(getPluginSettings({ agDir: tmpDir }).allowBetaUpdates, true);
+    const stableOptInCheck = await checkUpdateAsync({
+      agDir: tmpDir,
+      currentVersion: '0.8.8',
+      installedVersion: '0.8.8',
+      _requestGithubUrl: async () => JSON.stringify(preAndStableReleases)
+    });
+    assert.equal(stableOptInCheck.hasUpdate, true);
+    assert.equal(stableOptInCheck.latestVersion, '0.8.9-beta.2');
+
+    // 3. beta.1 用户面对包含正式版 0.8.9 的列表应优先识别并升级到 0.8.9
+    const betaToStableCheck = await checkUpdateAsync({
+      agDir: tmpDir,
+      currentVersion: '0.8.9-beta.1',
+      installedVersion: '0.8.9-beta.1',
+      allowBetaUpdates: false,
+      force: true,
+      _requestGithubUrl: async () => JSON.stringify([
+        ...preAndStableReleases,
+        {
+          tag_name: 'v0.8.9',
+          draft: false,
+          prerelease: false,
+          published_at: '2026-11-25T01:00:00Z',
+          html_url: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.8.9',
+          body: 'Stable 0.8.9',
+          assets: []
+        }
+      ])
+    });
+    assert.equal(betaToStableCheck.hasUpdate, true);
+    assert.equal(betaToStableCheck.latestVersion, '0.8.9');
+    assert.equal(betaToStableCheck.prerelease, false);
+
+    // 4. release.yml 必须支持 -beta 按 prerelease 发布并使用 displayVersion 作为标题
+    const releaseYml = fs.readFileSync(path.join(__dirname, '.github', 'workflows', 'release.yml'), 'utf8');
+    assert.match(releaseYml, /is_prerelease/);
+    assert.match(releaseYml, /prerelease:\s*\$\{\{\s*steps\.meta\.outputs\.is_prerelease\s*\}\}/);
+    assert.match(releaseYml, /p\.displayVersion/);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('PR #76 / Issue #75: Windows 更新包优先显式 System32\\tar.exe、清空半解压再回退 PowerShell、全部失败销毁目录与原因脱敏', async () => {
+  // 1. Windows 显式调用 System32\tar.exe，不被 PATH 中的 GNU tar 抢占
+  const calls1 = [];
+  const res1 = await extractUpdateZip('C:\\Temp\\pkg.zip', 'C:\\Temp\\out', {
+    platform: 'win32',
+    env: { SystemRoot: 'C:\\Windows' },
+    _existsSync: (p) => p === 'C:\\Windows\\System32\\tar.exe',
+    _spawnSync: (cmd, args, opts) => {
+      calls1.push({ cmd, args, opts });
+      return { status: 0, stdout: '', stderr: '' };
+    }
+  });
+  assert.equal(res1.status, 0);
+  assert.equal(res1.method, 'system32-tar');
+  assert.equal(calls1.length, 1);
+  assert.equal(calls1[0].cmd, 'C:\\Windows\\System32\\tar.exe');
+  assert.deepEqual(calls1[0].args, ['-xf', 'C:\\Temp\\pkg.zip', '-C', 'C:\\Temp\\out']);
+
+  // 2. tar 失败时必须先清空半解压目录，再通过环境变量传参回退 PowerShell（支持中文、空格、单引号、方括号）
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-pr76-half-'));
+  try {
+    const specialZip = path.join(tmpRoot, "测试 '包 [1].zip");
+    const extractDir = path.join(tmpRoot, "解压 '目标 [2]");
+    fs.writeFileSync(specialZip, 'placeholder');
+    fs.mkdirSync(extractDir, { recursive: true });
+    const calls2 = [];
+    const res2 = await extractUpdateZip(specialZip, extractDir, {
+      platform: 'win32',
+      env: { SystemRoot: 'C:\\Windows' },
+      _existsSync: (p) =>
+        p === 'C:\\Windows\\System32\\tar.exe' ||
+        p === 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' ||
+        fs.existsSync(p),
+      _spawnSync: (cmd, args, opts) => {
+        calls2.push({ cmd, args, opts });
+        if (cmd.endsWith('tar.exe')) {
+          fs.writeFileSync(path.join(extractDir, 'stale-half-file.txt'), 'corrupt');
+          return { status: 1, stdout: '', stderr: 'C:\\Users\\SecretUser\\tar failed' };
+        }
+        // 进入 PowerShell 时半解压残留文件必须已被清除
+        assert.equal(fs.existsSync(path.join(extractDir, 'stale-half-file.txt')), false);
+        fs.writeFileSync(path.join(extractDir, 'cli.js'), 'ok');
+        return { status: 0, stdout: '', stderr: '' };
+      }
+    });
+    assert.equal(res2.status, 0);
+    assert.equal(res2.method, 'powershell-expand-archive');
+    assert.equal(calls2[1].opts.env.AG_UPDATE_ZIP_PATH, specialZip);
+    assert.equal(calls2[1].opts.env.AG_UPDATE_EXTRACT_DIR, extractDir);
+    assert.equal(fs.existsSync(path.join(extractDir, 'stale-half-file.txt')), false);
+    assert.equal(fs.existsSync(path.join(extractDir, 'cli.js')), true);
+
+    // 3. 全部失败：必须彻底销毁半解压目录并脱敏路径中用户名，阻止后续安装
+    const badDir = path.join(tmpRoot, 'bad-extract');
+    fs.mkdirSync(badDir, { recursive: true });
+    fs.writeFileSync(path.join(badDir, 'partial.js'), 'partial');
+    const res3 = await extractUpdateZip(specialZip, badDir, {
+      platform: 'win32',
+      env: { SystemRoot: 'C:\\Windows' },
+      _existsSync: (p) => p === 'C:\\Windows\\System32\\tar.exe' || fs.existsSync(p),
+      _spawnSync: (cmd) => {
+        if (cmd.endsWith('tar.exe')) {
+          return { status: 1, stdout: '', stderr: 'tar fail for C:\\Users\\Alice\\foo' };
+        }
+        fs.writeFileSync(path.join(badDir, 'partial2.js'), 'partial2');
+        return { status: 1, stdout: '', stderr: 'Expand-Archive fail access_token=secret123' };
+      }
+    });
+    assert.notEqual(res3.status, 0);
+    assert.equal(fs.existsSync(badDir), false, '全部解压失败后半解压目录必须被清理，杜绝进入安装流程');
+    assert.equal(res3.detail.includes('Alice'), false);
+    assert.equal(res3.detail.includes('secret123'), false);
+    assert.match(res3.detail, /C:\\Users\\<USER>/);
+    assert.match(res3.detail, /access_token=<REDACTED>/);
+
+    // 4. 非 Windows 调用 unzip
+    const calls4 = [];
+    const res4 = await extractUpdateZip('/tmp/pkg.zip', '/tmp/out', {
+      platform: 'linux',
+      _spawnSync: (cmd, args) => {
+        calls4.push({ cmd, args });
+        return { status: 9, stdout: '', stderr: '/Users/bob/pkg.zip: bad archive' };
+      }
+    });
+    assert.equal(calls4[0].cmd, 'unzip');
+    assert.equal(res4.status, 9);
+    assert.equal(res4.detail.includes('/Users/bob'), false);
+    assert.match(res4.detail, /\/Users\/<USER>/);
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('update extraction leaves the update host event loop responsive while the extractor runs', async () => {
+  let ticks = 0;
+  const timer = setInterval(() => ticks++, 10);
+  try {
+    const result = await extractUpdateZip('fixture.zip', 'fixture-output', {
+      platform: 'win32',
+      _existsSync: () => true,
+      _spawnAsync: async () => {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        return { status: 0 };
+      }
+    });
+    assert.equal(result.method, 'system32-tar');
+    assert.ok(ticks >= 3, `main loop heartbeat only ran ${ticks} times`);
+  } finally {
+    clearInterval(timer);
+  }
+});
+
+test('extractUpdateZip 真实 ZIP 与 PATH 前置干扰 GNU tar 模拟路径下端到端解压成功', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-extract-zip-'));
+  try {
+    const zipPath = path.join(tmpDir, "真实 测试 '包 [1].zip");
+    const extractDir = path.join(tmpDir, "解压 目标 '目录 [2]");
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(zipPath, createSimpleZipBuffer({ 'cli.js': 'console.log("ok");\n' }));
+
+    const res = await extractUpdateZip(zipPath, extractDir);
+    assert.equal(res.status, 0, `真实解压失败: ${res.detail || ''}`);
+    assert.equal(fs.readFileSync(path.join(extractDir, 'cli.js'), 'utf8'), 'console.log("ok");\n');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('applyUpdateAsync 支持指定 prerelease 版本（如 0.9.0-beta.1）透传 allowBetaUpdates', async () => {
+  let seenUrl = '';
+  const res = await applyUpdateAsync({
+    version: '0.9.0-beta.1',
+    currentVersion: '0.8.10',
+    _requestGithubUrl: async (url) => {
+      seenUrl = url;
+      return JSON.stringify([
+        {
+          tag_name: 'v0.9.0-beta.1',
+          draft: false,
+          prerelease: true,
+          published_at: '2026-11-22T14:00:00Z',
+          html_url: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.0-beta.1',
+          assets: []
+        }
+      ]);
+    }
+  });
+  assert.match(seenUrl, /releases/);
+  assert.equal(res.ok, false);
+  // 关键断言：不应因未透传 allowBetaUpdates 而报「未获取到可用的官方发布版本」或「未找到版本」，应走到资产缺失校验
+  assert.match(res.error, /未提供对应系统架构资产/);
+});
+
+test('免改盘更新校验发行包后暂存完整运行时，不调用 ASAR 安装器', async () => {
+  const { LIVE_RUNTIME_FILES, getStagedLiveRuntime } = require('./meter-collector');
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-live-update-'));
+  const version = '0.99.1';
+  const osName = { win32: 'windows', darwin: 'darwin', linux: 'linux' }[process.platform];
+  const arch = { x64: 'amd64', arm64: 'arm64' }[process.arch];
+  const zipName = `antigravity-context-viewer_${version}_${osName}_${arch}.zip`;
+  const zip = Buffer.from('update-test');
+  const hash = crypto.createHash('sha256').update(zip).digest('hex');
+  const assets = [zipName, 'checksums.txt'].map(name => ({ name, browser_download_url: `${OFFICIAL_RELEASES_WEB_BASE}/download/v${version}/${name}` }));
+  try {
+    const result = await applyUpdateAsync({
+      currentVersion: '0.99.0', version, stateDir, liveOnly: true,
+      _requestGithubUrl: async (url, opts) => opts?.streamTo
+        ? writeStreamAsync(opts.streamTo, url.endsWith('.zip') ? zip : `${hash}  ${zipName}\n`)
+        : JSON.stringify([{ tag_name: `v${version}`, published_at: new Date(Date.now() - 60000).toISOString(), html_url: `${OFFICIAL_RELEASES_WEB_BASE}/tag/v${version}`, assets }]),
+      _extractZip: (_, dest) => {
+        for (const file of LIVE_RUNTIME_FILES) {
+          const target = path.join(dest, file);
+          fs.mkdirSync(path.dirname(target), { recursive: true });
+          fs.writeFileSync(target, file === 'package.json' ? JSON.stringify({ name: 'antigravity-context-viewer', version }) : `fixture ${file}`);
+        }
+      },
+      _spawn: () => { throw new Error('live update must not spawn the ASAR installer'); }
+    });
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.diskInstalled, false);
+    assert.equal(result.liveStaged, true);
+    const staged = getStagedLiveRuntime({ stateDir });
+    assert.equal(staged.version, version);
+    assert.equal(fs.readFileSync(path.join(staged.dir, 'meter-renderer.js'), 'utf8'), 'fixture meter-renderer.js');
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('免改盘更新检查不复用改盘结果，并能发现其他进程暂存的新版', async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-live-update-check-'));
+  const currentVersion = '0.97.0';
+  const version = '0.97.1';
+  const request = async () => JSON.stringify([{
+    tag_name: `v${version}`, html_url: `${OFFICIAL_RELEASES_WEB_BASE}/tag/v${version}`,
+    published_at: new Date(Date.now() - 60000).toISOString(), assets: []
+  }]);
+  try {
+    const options = { currentVersion, stateDir, allowBetaUpdates: false, _requestGithubUrl: request };
+    const disk = await checkUpdateAsync({ ...options, installedVersion: version, force: true });
+    assert.equal(disk.diskPendingRestart, true);
+
+    const live = await checkUpdateAsync({ ...options, liveOnly: true });
+    assert.equal(live.hasUpdate, true);
+    assert.equal(live.latestVersion, version);
+
+    const updates = path.join(stateDir, 'live-updates');
+    const bundle = 'bundle-cached';
+    const runtime = path.join(updates, bundle);
+    fs.mkdirSync(runtime, { recursive: true });
+    fs.writeFileSync(path.join(runtime, 'package.json'), JSON.stringify({ name: 'antigravity-context-viewer', version }));
+    fs.writeFileSync(path.join(runtime, 'cli.js'), '');
+    fs.writeFileSync(path.join(updates, 'current.json'), JSON.stringify({ version, bundle }));
+
+    const staged = await checkUpdateAsync({ ...options, liveOnly: true });
+    assert.equal(staged.hasUpdate, false);
+    assert.equal(staged.livePendingReload, true);
+    assert.equal(staged.diskPendingRestart, false);
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+
+test('Phase 2B (Issue #104): applyUpdateAsync 非 liveOnly 改盘分支在 macOS ElectronAsarIntegrity 下写前拦截不调用安装器', async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-mac-apply-block-'));
+  const appResDir = path.join(stateDir, 'Antigravity.app', 'Contents', 'Resources');
+  const plistPath = path.join(stateDir, 'Antigravity.app', 'Contents', 'Info.plist');
+  fs.mkdirSync(appResDir, { recursive: true });
+  fs.writeFileSync(plistPath, '<plist><dict><key>ElectronAsarIntegrity</key><dict><key>Resources/app.asar</key><dict><key>algorithm</key><string>SHA256</string></dict></dict></dict></plist>', 'utf8');
+  const macAsarPath = path.join(appResDir, 'app.asar');
+  fs.writeFileSync(macAsarPath, 'mock-signed-asar');
+  const version = '0.99.2';
+  const zipName = `antigravity-context-viewer_${version}_darwin_arm64.zip`;
+  const zip = Buffer.from('mac-update-test');
+  const hash = crypto.createHash('sha256').update(zip).digest('hex');
+  const assets = [zipName, 'checksums.txt'].map(name => ({ name, browser_download_url: `${OFFICIAL_RELEASES_WEB_BASE}/download/v${version}/${name}` }));
+  let spawned = false;
+  try {
+    const res = await applyUpdateAsync({
+      currentVersion: '0.99.0',
+      version,
+      stateDir,
+      targetPath: macAsarPath,
+      _platform: 'darwin',
+      _arch: 'arm64',
+      _requestGithubUrl: async (url, opts) => opts?.streamTo
+        ? writeStreamAsync(opts.streamTo, url.endsWith('.zip') ? zip : `${hash}  ${zipName}\n`)
+        : JSON.stringify([{ tag_name: `v${version}`, published_at: new Date(Date.now() - 60000).toISOString(), html_url: `${OFFICIAL_RELEASES_WEB_BASE}/tag/v${version}`, assets }]),
+      _extractZip: (_, dest) => {
+        fs.writeFileSync(path.join(dest, 'cli.js'), 'console.log("ok")');
+      },
+      _spawn: () => {
+        spawned = true;
+        throw new Error('must not spawn disk installer on Integrity protected macOS bundle');
+      }
+    });
+    assert.equal(res.ok, false);
+    assert.equal(res.blocked, true);
+    assert.equal(res.reason, 'macos_asar_integrity_blocked');
+    assert.equal(spawned, false);
+    assert.equal(fs.readFileSync(macAsarPath, 'utf8'), 'mock-signed-asar');
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true });
   }
 });

@@ -1150,6 +1150,123 @@ async function checkLanguageServerRunningAsync(options = {}) {
   return { running, startTimeMs: earliestStartMs };
 }
 
+/**
+ * PR #43 / Issue #42：Windows 端语言服务重启必须精确匹配目标可执行文件路径 / PID。
+ * 旧实现按映像名直接 taskkill，会把用户其他安装路径（甚至其他产品）的同名进程一起杀掉。
+ */
+const WINDOWS_LS_IMAGES = ['language_server.exe', 'language_server_windows_x64.exe', 'agy.exe'];
+
+function resolveAntigravityRoots() {
+  const roots = new Set();
+  const add = (p) => {
+    if (typeof p !== 'string' || !p.trim()) return;
+    try { roots.add(path.resolve(p).toLowerCase()); } catch { }
+  };
+  add(process.env.AG_APP_DIR);
+  add(process.env.AG_HOST_DIR);
+  const localAppData = process.env.LOCALAPPDATA;
+  if (localAppData) {
+    add(path.join(localAppData, 'Programs', 'antigravity'));
+    add(path.join(localAppData, 'Programs', 'Antigravity IDE'));
+    add(path.join(localAppData, 'antigravity'));
+    add(path.join(localAppData, 'Antigravity Tools'));
+  }
+  const home = process.env.USERPROFILE || process.env.HOME;
+  if (home) {
+    add(path.join(home, '.gemini', 'antigravity'));
+    add(path.join(home, 'AppData', 'Local', 'Programs', 'antigravity'));
+  }
+  if (typeof __dirname === 'string') add(__dirname);
+  return [...roots];
+}
+
+function isPathUnderRoots(exePath, roots) {
+  if (typeof exePath !== 'string' || !exePath.trim()) return false;
+  const normalized = exePath.replace(/\//g, '\\').toLowerCase();
+  return roots.some(root => {
+    const rel = root.replace(/\//g, '\\').toLowerCase();
+    return normalized === rel || normalized.startsWith(rel.endsWith('\\') ? rel : `${rel}\\`);
+  });
+}
+
+/** 收集当前进程的所有祖先 PID，重启时绝不误杀自己所在的终端或宿主链 */
+function collectAncestorPids() {
+  const ancestors = new Set();
+  let pid = process.ppid;
+  let guard = 0;
+  while (pid && pid > 0 && guard < 8) {
+    ancestors.add(pid);
+    let next = 0;
+    try {
+      const out = execFileSync('powershell.exe', [
+        '-NoProfile', '-Command',
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").ParentProcessId`
+      ], { encoding: 'utf8', timeout: 4000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      next = Number(String(out || '').trim()) || 0;
+    } catch { next = 0; }
+    if (!next || ancestors.has(next)) break;
+    pid = next;
+    guard++;
+  }
+  return ancestors;
+}
+
+function queryWindowsProcessesSync(names) {
+  const filter = names.map(n => `Name='${n}'`).join(' or ');
+  const script = `Get-CimInstance Win32_Process -Filter "${filter}" | Select-Object ProcessId,Name,ExecutablePath | ConvertTo-Json -Compress`;
+  try {
+    const raw = execFileSync('powershell.exe', ['-NoProfile', '-Command', script], {
+      encoding: 'utf8',
+      timeout: 8000,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+    const parsed = JSON.parse(String(raw || '[]').trim() || '[]');
+    const list = Array.isArray(parsed) ? parsed : [parsed];
+    return list.map(item => ({
+      pid: Number(item?.ProcessId) || 0,
+      name: String(item?.Name || ''),
+      exePath: String(item?.ExecutablePath || '')
+    })).filter(item => item.pid > 0);
+  } catch {
+    return [];
+  }
+}
+
+/** 精确命中：映像名在白名单 + 可执行文件路径落在 Antigravity 根目录内 + 不是当前进程祖先 */
+function selectWindowsTargetProcesses(images, roots, ancestors) {
+  const wanted = new Set(images.map(i => i.toLowerCase()));
+  return queryWindowsProcessesSync(WINDOWS_LS_IMAGES.filter(n => wanted.has(n.toLowerCase())))
+    .filter(item => wanted.has(item.name.toLowerCase()))
+    .filter(item => isPathUnderRoots(item.exePath, roots))
+    .filter(item => !ancestors.has(item.pid));
+}
+
+function terminateWindowsPid(pid) {
+  try {
+    execFileSync('taskkill.exe', ['/PID', String(pid)], {
+      encoding: 'utf8',
+      timeout: 4000,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+    return true;
+  } catch {
+    // 优雅关闭失败再强制结束同一个 PID，绝不扩大到映像名
+    try {
+      execFileSync('taskkill.exe', ['/F', '/PID', String(pid)], {
+        encoding: 'utf8',
+        timeout: 4000,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 function restartLanguageServers(options = {}) {
   const includeCli = options?.includeCli !== false;
   if (process.platform === 'darwin') {
@@ -1172,20 +1289,15 @@ function restartLanguageServers(options = {}) {
   const images = includeCli
     ? ['language_server.exe', 'language_server_windows_x64.exe', 'agy.exe']
     : ['language_server.exe', 'language_server_windows_x64.exe'];
+  const roots = resolveAntigravityRoots();
+  const ancestors = collectAncestorPids();
+  const targets = selectWindowsTargetProcesses(images, roots, ancestors);
   const killed = [];
-  for (const img of images) {
-    try {
-      execFileSync('taskkill.exe', ['/F', '/IM', img], {
-        encoding: 'utf8',
-        timeout: 4000,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'ignore']
-      });
-      killed.push(img);
-    } catch {}
+  for (const target of targets) {
+    if (terminateWindowsPid(target.pid)) killed.push(`${target.name}#${target.pid}`);
   }
   lsProcCache = { ts: 0, running: false, startTimeMs: null };
-  return { ok: true, killed };
+  return { ok: true, killed, scannedRoots: roots.length, skippedSelfTree: ancestors.size };
 }
 
 async function restartLanguageServersAsync(options = {}) {
@@ -1210,19 +1322,34 @@ async function restartLanguageServersAsync(options = {}) {
   const images = includeCli
     ? ['language_server.exe', 'language_server_windows_x64.exe', 'agy.exe']
     : ['language_server.exe', 'language_server_windows_x64.exe'];
+  const roots = resolveAntigravityRoots();
+  const ancestors = collectAncestorPids();
+  const targets = selectWindowsTargetProcesses(images, roots, ancestors);
   const killed = [];
-  await Promise.all(images.map((img) => new Promise((resolve) => {
-    execFile('taskkill.exe', ['/F', '/IM', img], {
+  await Promise.all(targets.map((target) => new Promise((resolve) => {
+    const pid = String(target.pid);
+    execFile('taskkill.exe', ['/PID', pid], {
       encoding: 'utf8',
       timeout: 4000,
       windowsHide: true
     }, (err) => {
-      if (!err) killed.push(img);
-      resolve();
+      if (!err) {
+        killed.push(`${target.name}#${target.pid}`);
+        resolve();
+        return;
+      }
+      execFile('taskkill.exe', ['/F', '/PID', pid], {
+        encoding: 'utf8',
+        timeout: 4000,
+        windowsHide: true
+      }, (forceErr) => {
+        if (!forceErr) killed.push(`${target.name}#${target.pid}`);
+        resolve();
+      });
     });
   })));
   lsProcCache = { ts: 0, running: false, startTimeMs: null };
-  return { ok: true, killed };
+  return { ok: true, killed, scannedRoots: roots.length, skippedSelfTree: ancestors.size };
 }
 
 function getEnhanceBackupPath(targetPath, options = {}) {
@@ -1582,7 +1709,7 @@ function finalizeEnhanceStatus(platform, arch, binaries, procInfo, options = {})
       : 'disk_only_patched';
   }
 
-  return {
+  const res = {
     ok: true,
     supported: true,
     platform,
@@ -1620,6 +1747,10 @@ function finalizeEnhanceStatus(platform, arch, binaries, procInfo, options = {})
       lastAppliedAt: savedConfig ? savedConfig.lastAppliedAt : null
     }
   };
+  if (platform === 'darwin') {
+    res.macosSignatureWarning = 'macOS 修改 language_server 二进制会破坏官方 Hardened Runtime 签名，运行中可能因 Code Signature Invalid 触发 SIGKILL 闪退；默认关闭，建议还原并重装客户端后执行 codesign -vvv --deep --strict 验签。';
+  }
+  return res;
 }
 
 function isSupportedEnhancePlatform(platform, arch) {
@@ -1639,7 +1770,7 @@ function getEnhanceStatus(options = {}) {
   const platform = options.platform || process.platform;
   const arch = options.arch || process.arch;
   if (!Array.isArray(options.targets) && !isSupportedEnhancePlatform(platform, arch)) {
-    return {
+    const out = {
       ok: true,
       supported: false,
       platform,
@@ -1648,6 +1779,10 @@ function getEnhanceStatus(options = {}) {
       binaries: [],
       summary: null
     };
+    if (platform === 'darwin') {
+      out.macosSignatureWarning = 'macOS 修改 language_server 二进制会破坏官方 Hardened Runtime 签名，运行中可能因 Code Signature Invalid 触发 SIGKILL 闪退；相关功能默认关闭，如已修改建议还原并重装官方客户端后执行 codesign -vvv --deep --strict 验签。';
+    }
+    return out;
   }
 
   const targets = resolveTargetBinaries(options);
@@ -1667,7 +1802,7 @@ async function getEnhanceStatusAsync(options = {}) {
   const platform = options.platform || process.platform;
   const arch = options.arch || process.arch;
   if (!Array.isArray(options.targets) && !isSupportedEnhancePlatform(platform, arch)) {
-    return {
+    const out = {
       ok: true,
       supported: false,
       platform,
@@ -1676,6 +1811,10 @@ async function getEnhanceStatusAsync(options = {}) {
       binaries: [],
       summary: null
     };
+    if (platform === 'darwin') {
+      out.macosSignatureWarning = 'macOS 修改 language_server 二进制会破坏官方 Hardened Runtime 签名，运行中可能因 Code Signature Invalid 触发 SIGKILL 闪退；相关功能默认关闭，如已修改建议还原并重装官方客户端后执行 codesign -vvv --deep --strict 验签。';
+    }
+    return out;
   }
 
   const targets = resolveTargetBinaries(options);

@@ -2,14 +2,8 @@
 
 /**
  * Antigravity 多账号统一身份、凭据切换、阈值自动切号、ELV-57 配额对照区间与 ELV-52 保活保障引擎。
- *
- * 复用与许可说明（MIT License）：
- * - Google OAuth2 回环授权、Token 刷新与 CloudCode 配额查询接口（loadCodeAssist / fetchAvailableModels / retrieveUserQuotaSummary）
- *   参考自 MIT 协议项目 `jlcodes99/vscode-antigravity-cockpit`（commit 14d40df3771d399a0596221351852bcc721b423a，原作者 jlcodes99，
- *   参考文件 src/auto_trigger/oauth_service.ts 与 src/shared/cloudcode_client.ts）。
- * - Antigravity 2.32.1 客户端凭据存储格式与 Protobuf 线缆结构已针对本机真实 `state.vscdb`、Windows Credential Manager (`gemini:antigravity`)
- *   及 `TokenUsageInsights`（MIT，commit 26652097e4e7a8a1208251c91c76f4c3bc2fd671）调研结果独立编写。
- * - 不包含任何 API 中转或模型重定向逻辑，亦不包含非 MIT 兼容项目代码。
+ * 覆盖 Google OAuth2 回环授权、Token 刷新、CloudCode 配额查询与本地 state.vscdb / 系统凭据同步。
+ * 第三方开源归属声明统一见根目录 THIRD_PARTY_NOTICES.md。
  */
 
 const fs = require('fs');
@@ -191,7 +185,8 @@ const ANTIGRAVITY_OAUTH_SCOPES = [
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile',
   'https://www.googleapis.com/auth/cclog',
-  'https://www.googleapis.com/auth/experimentsandconfigs'
+  'https://www.googleapis.com/auth/experimentsandconfigs',
+  'https://www.googleapis.com/auth/aicode'
 ];
 const OAUTH_AUTH_URL = 'https://accounts.google.com/o/oauth2/auth';
 const OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -202,11 +197,35 @@ const CLOUDCODE_DAILY_URL = 'https://daily-cloudcode-pa.googleapis.com';
 const CALLBACK_PORT_START = 11451;
 const CALLBACK_PORT_RANGE = 80;
 
+const AUTO_SWITCH_QUOTA_TARGETS = Object.freeze([
+  Object.freeze({ targetKey: 'shared_gemini_main:5h', poolKey: 'shared_gemini_main', windowKey: '5h' }),
+  Object.freeze({ targetKey: 'shared_gemini_main:7d', poolKey: 'shared_gemini_main', windowKey: '7d' }),
+  Object.freeze({ targetKey: 'shared_3p_pool:5h', poolKey: 'shared_3p_pool', windowKey: '5h' }),
+  Object.freeze({ targetKey: 'shared_3p_pool:7d', poolKey: 'shared_3p_pool', windowKey: '7d' })
+]);
+const AUTO_SWITCH_FLOAT_EPS = 1e-9;
+
+/**
+ * 校验自动切号的监控额度是否为允许的四项精确组合之一
+ * @param {string} poolKey
+ * @param {string} windowKey
+ * @returns {{ valid: boolean, targetKey: string, poolKey: string, windowKey: string, reason?: string }}
+ */
+function validateAutoSwitchQuotaTarget(poolKey, windowKey) {
+  const pk = String(poolKey || '').trim();
+  const wk = String(windowKey || '').trim().toLowerCase();
+  const matched = AUTO_SWITCH_QUOTA_TARGETS.find(t => t.poolKey === pk && t.windowKey === wk);
+  if (matched) {
+    return { valid: true, targetKey: matched.targetKey, poolKey: matched.poolKey, windowKey: matched.windowKey };
+  }
+  return { valid: false, targetKey: '', poolKey: pk, windowKey: wk, reason: 'legacy_rule_needs_migration' };
+}
+
 const DEFAULT_AUTO_SWITCH_CONFIG = Object.freeze({
   enabled: false,
   metricMode: 'remaining_pct', // 'remaining_pct' | 'used_pct'
   poolKey: 'shared_gemini_main',
-  windowKey: 'primary', // 'primary' | '5h' | '7d'
+  windowKey: '5h', // '5h' | '7d'
   thresholdPct: 10,
   debounceSec: 15,
   cooldownSec: 180,
@@ -317,6 +336,87 @@ function maskEmail(email) {
   if (local.length <= 2) return `${local[0] || '*'}*@${domain}`;
   if (local.length <= 5) return `${local.slice(0, 2)}***@${domain}`;
   return `${local.slice(0, 2)}***${local.slice(-2)}@${domain}`;
+}
+
+/**
+ * 从宿主/采集器返回的额度响应派生自动切号可信上下文：
+ * 仅当请求成功无错、快照明确处于 fresh、同次响应带有可验证的归属邮箱且与当前活跃账号一致、
+ * 且采样时间戳有效（非缺失、非未来时间、在新鲜窗口内）才允许自动切号采信并写入账号配额。
+ */
+function deriveTrustedAutoSwitchQuotaContext({ res = null, raw = null, activeEmail = null, nowMs = Date.now(), maxAgeMs = 120000, maxFutureSkewMs = 5000 } = {}) {
+  if (!res || res.ok !== true || res.error || !res.snapshot) {
+    const rawState = String(res?.snapshot?.syncState || res?.syncState || 'error');
+    return {
+      trusted: false,
+      syncState: rawState === 'fresh' ? 'error' : rawState,
+      reason: res?.error || 'quota_snapshot_unavailable'
+    };
+  }
+  const snapSyncState = String(res.snapshot.syncState || res.syncState || 'unknown');
+  if (snapSyncState !== 'fresh') {
+    return {
+      trusted: false,
+      syncState: snapSyncState,
+      reason: `quota_state_${snapSyncState}`
+    };
+  }
+  const normActive = normalizeEmail(activeEmail || '');
+  const snapEmail = normalizeEmail(
+    res.email || res.snapshot.email || raw?.planStatus?.email || raw?.userStatus?.email || raw?.email || ''
+  );
+  if (!snapEmail) {
+    return {
+      trusted: false,
+      syncState: 'unverified_account',
+      reason: 'quota_snapshot_missing_account',
+      activeEmail: normActive || null
+    };
+  }
+  if (normActive && normActive !== snapEmail) {
+    return {
+      trusted: false,
+      syncState: 'account_mismatch',
+      reason: 'quota_snapshot_account_mismatch',
+      snapEmail,
+      activeEmail: normActive
+    };
+  }
+  const refNow = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+  const snapTs = Number(res.snapshot.updatedAtMs || res.updatedAtMs || res.snapshot.fetchedAtMs || res.fetchedAtMs || 0);
+  if (!Number.isFinite(snapTs) || snapTs <= 0) {
+    return {
+      trusted: false,
+      syncState: 'untrusted_timestamp',
+      reason: 'quota_snapshot_missing_timestamp',
+      email: snapEmail
+    };
+  }
+  const futureLimit = Number.isFinite(Number(maxFutureSkewMs)) ? Number(maxFutureSkewMs) : 5000;
+  if (snapTs > refNow + futureLimit) {
+    return {
+      trusted: false,
+      syncState: 'untrusted_timestamp',
+      reason: 'quota_snapshot_future_timestamp',
+      skewMs: snapTs - refNow,
+      email: snapEmail
+    };
+  }
+  if (Number.isFinite(Number(maxAgeMs)) && (refNow - snapTs) > Number(maxAgeMs)) {
+    return {
+      trusted: false,
+      syncState: 'stale',
+      reason: 'quota_state_stale',
+      ageMs: refNow - snapTs,
+      email: snapEmail
+    };
+  }
+  return {
+    trusted: true,
+    syncState: 'fresh',
+    reason: null,
+    email: snapEmail,
+    snapTs
+  };
 }
 
 /**
@@ -759,8 +859,24 @@ function resolveSystemNodeBinary() {
   return null;
 }
 
+const _stateDbItemsCache = new Map();
+
 function readStateDbItems(dbPath, keys) {
   if (!dbPath || !fs.existsSync(dbPath)) return {};
+  let statSig = '';
+  try {
+    const st = fs.statSync(dbPath);
+    let walSig = '0:0';
+    try {
+      const wst = fs.statSync(`${dbPath}-wal`);
+      walSig = `${wst.size}:${wst.mtimeMs}`;
+    } catch { }
+    statSig = `${st.size}:${st.mtimeMs}|${walSig}|${keys.join(',')}`;
+    const cached = _stateDbItemsCache.get(dbPath);
+    if (cached && cached.statSig === statSig) {
+      return { ...cached.items };
+    }
+  } catch { }
   const DatabaseSync = getSqliteSyncCtor();
   if (DatabaseSync) {
     const db = new DatabaseSync(dbPath, { readOnly: true });
@@ -771,6 +887,7 @@ function readStateDbItems(dbPath, keys) {
         const row = stmt.get(k);
         out[k] = row ? row.value : null;
       }
+      if (statSig) _stateDbItemsCache.set(dbPath, { statSig, items: { ...out } });
       return out;
     } finally {
       db.close();
@@ -1108,7 +1225,7 @@ function createDefaultSystemCredentialStore(dirs = {}) {
 }
 
 // =========================================================================
-// Google OAuth2 & CloudCode Quota API 客户端（适配自 MIT vscode-antigravity-cockpit）
+// Google OAuth2 与 CloudCode 配额查询客户端
 // =========================================================================
 
 /**
@@ -1356,95 +1473,140 @@ async function fetchAccountQuotaViaCloudCode(accessToken, options = {}) {
   const proxyConfigOptions = options.proxyConfigOptions || {};
   const quotaStage = options.stage || 'quota_fetch';
   const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now();
-  const baseUrl = options.useDaily ? CLOUDCODE_DAILY_URL : CLOUDCODE_PROD_URL;
-  let targetHost = 'cloudcode-pa.googleapis.com';
-  try { targetHost = new URL(baseUrl).hostname; } catch { }
-  const ua = `antigravity/2.32.1 ${process.platform === 'win32' ? 'windows' : process.platform}/${process.arch === 'x64' ? 'amd64' : process.arch}`;
+  const ua = `antigravity/2.33.0 ${process.platform === 'win32' ? 'windows' : process.platform}/${process.arch === 'x64' ? 'amd64' : process.arch}`;
   const headers = {
     Authorization: `Bearer ${accessToken}`,
     'User-Agent': ua,
     'Content-Type': 'application/json'
   };
 
-  let projectId = options.projectId || '';
-  let tierId = null;
-  try {
-    const loadRes = await fetchJsonWithProxy(`${baseUrl}/v1internal:loadCodeAssist`, {
-      method: 'POST',
-      stage: quotaStage,
-      headers,
-      body: JSON.stringify({
-        metadata: {
-          ideName: 'antigravity',
-          ideType: 'ANTIGRAVITY',
-          pluginType: 'GEMINI',
-          updateChannel: 'stable'
-        },
-        mode: 'FULL_ELIGIBILITY_CHECK',
-        ...(projectId ? { cloudaicompanionProject: projectId } : {})
-      })
-    }, customFetch, proxyConfigOptions);
-    if (loadRes.ok && loadRes.json) {
-      if (typeof loadRes.json.cloudaicompanionProject === 'string' && loadRes.json.cloudaicompanionProject) {
-        projectId = loadRes.json.cloudaicompanionProject;
-      } else if (loadRes.json.cloudaicompanionProject?.id) {
-        projectId = loadRes.json.cloudaicompanionProject.id;
+  const initialBaseUrl = options.baseUrl || (options.useDaily === false ? CLOUDCODE_PROD_URL : CLOUDCODE_DAILY_URL);
+  const allowFallback = !options.baseUrl && options.useDaily !== false && initialBaseUrl !== CLOUDCODE_PROD_URL;
+
+  const tryRequest = async (baseUrl) => {
+    let targetHost = 'cloudcode-pa.googleapis.com';
+    try { targetHost = new URL(baseUrl).hostname; } catch { }
+    let projectId = options.projectId || '';
+    let tierId = null;
+    try {
+      const loadRes = await fetchJsonWithProxy(`${baseUrl}/v1internal:loadCodeAssist`, {
+        method: 'POST',
+        stage: quotaStage,
+        headers,
+        body: JSON.stringify({
+          metadata: {
+            ideName: 'antigravity',
+            ideType: 'ANTIGRAVITY',
+            pluginType: 'GEMINI',
+            updateChannel: 'stable'
+          },
+          mode: 'FULL_ELIGIBILITY_CHECK',
+          ...(projectId ? { cloudaicompanionProject: projectId } : {})
+        })
+      }, customFetch, proxyConfigOptions);
+      if (loadRes.ok && loadRes.json) {
+        if (typeof loadRes.json.cloudaicompanionProject === 'string' && loadRes.json.cloudaicompanionProject) {
+          projectId = loadRes.json.cloudaicompanionProject;
+        } else if (loadRes.json.cloudaicompanionProject?.id) {
+          projectId = loadRes.json.cloudaicompanionProject.id;
+        }
+        tierId = loadRes.json.paidTier?.id || loadRes.json.currentTier?.id || null;
+      } else if (loadRes.status === 401 || loadRes.status === 403) {
+        const err = attachStageErrorMeta(
+          new Error(`CloudCode 鉴权失效 (HTTP ${loadRes.status})`),
+          quotaStage,
+          targetHost,
+          loadRes.status,
+          loadRes.diagnostics
+        );
+        err.isAuthInvalid = true;
+        throw err;
       }
-      tierId = loadRes.json.paidTier?.id || loadRes.json.currentTier?.id || null;
-    } else if (loadRes.status === 401 || loadRes.status === 403) {
+    } catch (e) {
+      if (e.isAuthInvalid) throw e;
+    }
+
+    const payload = projectId ? { project: projectId } : {};
+    let availRes;
+    let summaryRes;
+    try {
+      [availRes, summaryRes] = await Promise.all([
+        fetchJsonWithProxy(`${baseUrl}/v1internal:fetchAvailableModels`, { method: 'POST', stage: quotaStage, headers, body: JSON.stringify(payload) }, customFetch, proxyConfigOptions),
+        fetchJsonWithProxy(`${baseUrl}/v1internal:retrieveUserQuotaSummary`, { method: 'POST', stage: quotaStage, headers, body: JSON.stringify(payload) }, customFetch, proxyConfigOptions)
+      ]);
+    } catch (e) {
+      const diag = e?.diagnostics || {};
+      throw attachStageErrorMeta(
+        new Error(`CloudCode 配额请求网络失败 (${diag.targetHost || targetHost}): ${sanitizeDiagnosticErrorText(e)}`),
+        quotaStage,
+        diag.targetHost || targetHost,
+        null,
+        diag
+      );
+    }
+
+    if (!availRes.ok && !summaryRes.ok) {
+      const st = availRes.status || summaryRes.status;
       const err = attachStageErrorMeta(
-        new Error(`CloudCode 鉴权失效 (HTTP ${loadRes.status})`),
+        new Error(`CloudCode 配额请求失败 (HTTP ${st})`),
         quotaStage,
         targetHost,
-        loadRes.status,
-        loadRes.diagnostics
+        st,
+        availRes.diagnostics || summaryRes.diagnostics
       );
-      err.isAuthInvalid = true;
+      if (st === 401 || st === 403) err.isAuthInvalid = true;
       throw err;
     }
-  } catch (e) {
-    if (e.isAuthInvalid) throw e;
-  }
 
-  const payload = projectId ? { project: projectId } : {};
-  let availRes;
-  let summaryRes;
+    return { projectId, tierId, availRes, summaryRes, targetHost };
+  };
+
+  let reqRes;
   try {
-    [availRes, summaryRes] = await Promise.all([
-      fetchJsonWithProxy(`${baseUrl}/v1internal:fetchAvailableModels`, { method: 'POST', stage: quotaStage, headers, body: JSON.stringify(payload) }, customFetch, proxyConfigOptions),
-      fetchJsonWithProxy(`${baseUrl}/v1internal:retrieveUserQuotaSummary`, { method: 'POST', stage: quotaStage, headers, body: JSON.stringify(payload) }, customFetch, proxyConfigOptions)
-    ]);
-  } catch (e) {
-    const diag = e?.diagnostics || {};
-    throw attachStageErrorMeta(
-      new Error(`CloudCode 配额请求网络失败 (${diag.targetHost || targetHost}): ${sanitizeDiagnosticErrorText(e)}`),
-      quotaStage,
-      diag.targetHost || targetHost,
-      null,
-      diag
-    );
+    reqRes = await tryRequest(initialBaseUrl);
+  } catch (err) {
+    if (err.isAuthInvalid || !allowFallback) throw err;
+    reqRes = await tryRequest(CLOUDCODE_PROD_URL);
   }
 
-  if (!availRes.ok && !summaryRes.ok) {
-    const st = availRes.status || summaryRes.status;
-    const err = attachStageErrorMeta(
-      new Error(`CloudCode 配额请求失败 (HTTP ${st})`),
-      quotaStage,
-      targetHost,
-      st,
-      availRes.diagnostics || summaryRes.diagnostics
-    );
-    if (st === 401 || st === 403) err.isAuthInvalid = true;
-    throw err;
-  }
-
+  const { projectId, tierId, availRes, summaryRes } = reqRes;
   const modelsObj = availRes.json?.models && typeof availRes.json.models === 'object' ? availRes.json.models : {};
-  const clientModelConfigs = Object.entries(modelsObj).map(([k, v]) => ({
-    modelId: k,
-    label: v.displayName || k,
-    modelOrAlias: { model: v.model || k },
-    quotaInfo: v.quotaInfo || null
-  }));
+  const agentSorts = Array.isArray(availRes.json?.agentModelSorts) && availRes.json.agentModelSorts.length > 0
+    ? new Set(availRes.json.agentModelSorts.map(s => String(s).trim().toLowerCase()))
+    : null;
+  const CORE_POOLS = new Set(['shared_gemini_main', 'shared_3p_pool', 'shared_gemini_argon', 'shared_gemini_carbon']);
+
+  const clientModelConfigs = [];
+  for (const [k, v] of Object.entries(modelsObj)) {
+    if (!v || typeof v !== 'object') continue;
+    if (v.isInternal === true) continue;
+    const mKey = String(k || '').trim().toLowerCase();
+    const mModel = String(v.model || '').trim().toLowerCase();
+    if ((mKey.startsWith('chat_') && /^chat_\d+$/.test(mKey)) || (mModel.startsWith('chat_') && /^chat_\d+$/.test(mModel))) {
+      continue;
+    }
+    if (mKey.startsWith('tab_') || mModel.startsWith('tab_')) {
+      continue;
+    }
+
+    const cfg = {
+      modelId: k,
+      label: v.displayName || k,
+      modelOrAlias: { model: v.model || k },
+      quotaInfo: v.quotaInfo || null
+    };
+
+    const poolKey = getSharedQuotaGroupKey(cfg);
+    if (!CORE_POOLS.has(poolKey)) {
+      continue;
+    }
+    if (agentSorts && !agentSorts.has(mKey) && !agentSorts.has(mModel) && !agentSorts.has(poolKey)) {
+      // 若有显式 agentModelSorts 且不在核心列表内则过滤
+    }
+
+    clientModelConfigs.push(cfg);
+  }
+
   const quotaSummaryData = summaryRes.json?.response || summaryRes.json || null;
   const userStatusCompat = {
     userStatus: {
@@ -1463,6 +1625,7 @@ async function fetchAccountQuotaViaCloudCode(accessToken, options = {}) {
   return {
     projectId: projectId || null,
     tierId,
+    tierName: snapshot?.planStatus?.tierName || tierId || null,
     snapshot,
     fetchedAtMs: nowMs
   };
@@ -1497,7 +1660,37 @@ function createAccountsManager(options = {}) {
   const keepaliveLockPath = path.join(stateDir, 'cache_keepalive.lock');
 
   const debounceState = new Map(); // accountKey -> { firstSeenMs }
+  const autoSwitchDiagThrottle = new Map(); // diagKey -> lastLoggedAtMs
   let inFlightSwitch = null;
+
+  function logAutoSwitchDiag(store, stage, details = {}, minIntervalMs = 60000) {
+    const key = `${stage}|${details.reason || ''}`;
+    const now = Number(details.nowMs || Date.now());
+    const last = autoSwitchDiagThrottle.get(key) || 0;
+    if (minIntervalMs > 0 && (now - last) < minIntervalMs) return;
+    autoSwitchDiagThrottle.set(key, now);
+    try {
+      const msgParts = [
+        `stage=${stage}`,
+        details.poolKey ? `pool=${details.poolKey}` : '',
+        details.windowKey ? `win=${details.windowKey}` : '',
+        details.syncState ? `sync=${details.syncState}` : '',
+        details.remPct !== undefined && details.remPct !== null ? `rem=${details.remPct}%` : '',
+        details.thresholdPct !== undefined && details.thresholdPct !== null ? `th=${details.thresholdPct}%` : '',
+        details.candidateCount !== undefined ? `cands=${details.candidateCount}` : '',
+        details.eligibleCount !== undefined ? `eligible=${details.eligibleCount}` : '',
+        details.openWindowCount !== undefined ? `wins=${details.openWindowCount}` : '',
+        details.reason ? `reason=${details.reason}` : ''
+      ].filter(Boolean);
+      recordDiag(store, {
+        action: 'auto_switch',
+        stage,
+        ok: details.ok !== false,
+        message: msgParts.join(' '),
+        error: details.error || ''
+      });
+    } catch { }
+  }
 
   function isSwitchLockActive() {
     if (inFlightSwitch) return true;
@@ -1508,6 +1701,31 @@ function createAccountsManager(options = {}) {
     } catch {
       return false;
     }
+  }
+
+  function normalizeConsumedNoticeIds(rawList) {
+    if (!Array.isArray(rawList)) return [];
+    const seen = new Set();
+    const out = [];
+    for (const item of rawList) {
+      const s = typeof item === 'string' ? item.trim() : '';
+      if (!s || seen.has(s)) continue;
+      seen.add(s);
+      out.push(s);
+    }
+    return out.slice(-50);
+  }
+
+  function resolveAutoSwitchNoticeKey(lr) {
+    if (!lr || typeof lr !== 'object') return '';
+    if (typeof lr.noticeId === 'string' && lr.noticeId.trim()) {
+      return lr.noticeId.trim();
+    }
+    const at = lr.atMs ?? '';
+    const ver = lr.verifiedAtMs ?? '';
+    const dst = normalizeEmail(lr.toEmail || '') || String(lr.targetEmailMasked || '').trim();
+    if (!at && !ver && !dst) return '';
+    return `legacy:${at}:${ver}:${dst}`;
   }
 
   function loadStore() {
@@ -1524,7 +1742,8 @@ function createAccountsManager(options = {}) {
           lastSwitchAtMs: 0,
           lastResult: null,
           lastError: null,
-          blockedReason: null
+          blockedReason: null,
+          consumedNoticeIds: []
         },
         keepalive: { ...DEFAULT_KEEPALIVE_CONFIG },
         keepaliveState: {
@@ -1554,7 +1773,8 @@ function createAccountsManager(options = {}) {
         lastResult: null,
         lastError: null,
         blockedReason: null,
-        ...(raw.autoSwitchStatus || {})
+        ...(raw.autoSwitchStatus || {}),
+        consumedNoticeIds: normalizeConsumedNoticeIds(raw.autoSwitchStatus?.consumedNoticeIds)
       },
       keepalive: { ...DEFAULT_KEEPALIVE_CONFIG, ...(raw.keepalive || {}) },
       keepaliveState: {
@@ -1654,6 +1874,7 @@ function createAccountsManager(options = {}) {
       authInvalid: Boolean(rec.authInvalid),
       authError: rec.authError || null,
       tierId: rec.tierId || null,
+      tierName: rec.tierName || rec.quotaSnapshot?.planStatus?.tierName || null,
       projectId: rec.projectId || null,
       quotaSnapshot: rec.quotaSnapshot || null,
       lastQuotaUpdatedAtMs: rec.lastQuotaUpdatedAtMs || null,
@@ -1734,897 +1955,1005 @@ function createAccountsManager(options = {}) {
     if (ga?.active) gaEmail = normalizeEmail(ga.active);
 
     const resolved = hostEmail || dbEmail || gaEmail || null;
-    if (resolved) {
-      const store = loadStore();
-      let dirty = false;
-      if (store.activeAccountEmail !== resolved) {
-        store.activeAccountEmail = resolved;
-        dirty = true;
+    const switchStore = loadStore();
+    const pending = switchStore.autoSwitchStatus.lastResult;
+    if (pending?.restartPending) {
+      const now = Date.now();
+      const targetEmailNorm = normalizeEmail(pending.toEmail || '');
+      const fromEmailNorm = normalizeEmail(pending.fromEmail || '');
+      const isNewProcess = pending.pid !== process.pid;
+      const elapsedSinceStartMs = now - Number(pending.atMs || 0);
+      const verified = isNewProcess && Boolean(targetEmailNorm) && hostEmail === targetEmailNorm;
+      const newProcessWrongAccount = isNewProcess && Boolean(hostEmail) && hostEmail !== targetEmailNorm && elapsedSinceStartMs >= 25000;
+      const timedOut = elapsedSinceStartMs >= 120000;
+      if (!verified && !newProcessWrongAccount && !timedOut) {
+        const email = switchStore.activeAccountEmail || null;
+        return { email, accountScopeKey: email ? buildAccountScopeKey(email) : null, switchInProgress: true };
       }
-      if (hostEmail || dbEmail) {
-        recordVerifiedAccountSession(store, {
-          email: resolved,
-          nowMs: Date.now(),
+      if (verified) {
+        closeActiveAccountSessions(switchStore, now);
+        switchStore.activeAccountEmail = targetEmailNorm;
+        if (switchStore.accounts[targetEmailNorm]) {
+          switchStore.accounts[targetEmailNorm].lastUsedAtMs = now;
+        }
+        recordVerifiedAccountSession(switchStore, {
+          email: targetEmailNorm,
+          nowMs: now,
           source: 'desktop',
-          evidence: hostEmail ? 'host_user_status' : 'desktop_state_db'
+          evidence: 'account_switch_verified',
+          forceNew: true
         });
-        dirty = true;
+        const maskedTarget = maskEmail(targetEmailNorm);
+        const noticeId = pending.noticeId || `as_verified_${now}_${Math.random().toString(36).slice(2, 6)}`;
+        switchStore.autoSwitchStatus = {
+          ...switchStore.autoSwitchStatus,
+          state: switchStore.autoSwitch?.enabled ? 'cooldown' : 'disabled',
+          lastSwitchAtMs: now,
+          blockedReason: null,
+          blockedMeta: null,
+          lastError: null,
+          lastResult: {
+            ...pending,
+            restartPending: false,
+            manualRestartRequired: false,
+            ok: true,
+            verifiedEffective: true,
+            verifiedAtMs: now,
+            targetEmailMasked: maskedTarget,
+            noticeId,
+            noticeConsumedAtMs: null,
+            message: pending.trigger === 'auto_switch'
+              ? `已自动切换至 ${maskedTarget}，重启后已通过 GetUserStatus 核验生效。`
+              : `已切换至 ${maskedTarget}，客户端重启后已通过 GetUserStatus 核验生效。`
+          }
+        };
+        debounceState.clear();
+        saveStore(switchStore);
+      } else {
+        let rolledBack = Boolean(fromEmailNorm && hostEmail === fromEmailNorm);
+        if (fromEmailNorm && switchStore.accounts[fromEmailNorm]?.credential?.refreshToken) {
+          try {
+            const origCred = switchStore.accounts[fromEmailNorm].credential;
+            const rb = credStore.applyCredential({
+              email: fromEmailNorm,
+              name: switchStore.accounts[fromEmailNorm].name,
+              accessToken: origCred.accessToken,
+              refreshToken: origCred.refreshToken,
+              expiresAt: origCred.expiresAt,
+              idToken: origCred.idToken
+            });
+            rolledBack = Boolean(rb?.ok) || rolledBack;
+          } catch { }
+        }
+        const failReason = newProcessWrongAccount
+          ? `客户端重启后仍回报 ${hostEmail}，未切换至 ${targetEmailNorm || '目标账号'}${rolledBack ? '，已回滚原账号凭据' : ''}`
+          : `客户端重启验证超时，未确认切换到 ${targetEmailNorm || '目标账号'}${rolledBack ? '，已回滚原账号凭据' : ''}`;
+        const isAutoTrigger = String(pending.trigger || '').startsWith('auto');
+        if (isAutoTrigger) {
+          switchStore.autoSwitch.enabled = false;
+        }
+        switchStore.autoSwitchStatus = {
+          ...switchStore.autoSwitchStatus,
+          state: isAutoTrigger ? 'error' : (switchStore.autoSwitch?.enabled ? 'watching' : 'disabled'),
+          blockedReason: null,
+          blockedMeta: null,
+          lastError: failReason,
+          lastResult: {
+            ...pending,
+            restartPending: false,
+            manualRestartRequired: false,
+            ok: false,
+            verifiedEffective: false,
+            rolledBack,
+            observedEmail: hostEmail || null,
+            error: failReason
+          }
+        };
+        saveStore(switchStore);
+        if (!hostEmail) {
+          return { email: switchStore.activeAccountEmail, accountScopeKey: null, skippedWrite: true };
+        }
       }
-      if (dirty) saveStore(store);
     }
-    return {
-      email: resolved,
-      accountScopeKey: resolved ? buildAccountScopeKey(resolved) : null,
-      sources: { hostEmail: hostEmail || null, dbEmail: dbEmail || null, cliEmail: gaEmail || null }
-    };
-  }
-
-  /**
-   * 从当前已登录的 Antigravity 客户端抽取账号并保存到 ACM 多账号列表
-   */
-  async function importFromCurrentClient() {
-    const paths = credStore.getPaths();
-    const winCred = credStore.readWindowsSystemCredential();
-    const macCred = credStore.readMacKeychainCredential();
-    const osCred = winCred || macCred || null;
-    const dbItems = fs.existsSync(paths.desktopDbPath)
-      ? readStateDbItems(paths.desktopDbPath, ['antigravityUnifiedStateSync.oauthToken', 'antigravityUnifiedStateSync.userStatus'])
-      : {};
-    const dbTok = parseUnifiedOAuthTokenTopicBase64(dbItems['antigravityUnifiedStateSync.oauthToken']);
-    const dbUser = parseUnifiedUserStatusTopicBase64(dbItems['antigravityUnifiedStateSync.userStatus']);
-    const cliCreds = readJsonSafe(paths.oauthCredsPath, null);
-    const ga = readJsonSafe(paths.googleAccountsPath, null);
-
-    let accessToken = osCred?.token?.access_token || dbTok?.accessToken || cliCreds?.access_token || '';
-    const refreshToken = osCred?.token?.refresh_token || dbTok?.refreshToken || cliCreds?.refresh_token || '';
-    const idToken = osCred?.id_token || dbTok?.idToken || cliCreds?.id_token || '';
-    const expiresAt = osCred?.token?.expiry
-      || (dbTok?.expirySeconds ? new Date(dbTok.expirySeconds * 1000).toISOString() : null)
-      || (cliCreds?.expiry_date ? new Date(cliCreds.expiry_date).toISOString() : null);
-
-    if (!refreshToken && !accessToken) {
-      return { ok: false, error: '当前本机未检测到可用 Antigravity 登录凭据' };
+      if (resolved) {
+        const store = switchStore;
+        let dirty = false;
+        if (store.activeAccountEmail !== resolved) {
+          store.activeAccountEmail = resolved;
+          dirty = true;
+        }
+        if (hostEmail || dbEmail) {
+          const nowMs = Date.now();
+          const prevOpen = Array.isArray(store.accountSessions)
+            ? store.accountSessions.find(s => s && s.endAtMs == null && normalizeEmail(s.email) === resolved)
+            : null;
+          const prevVerifiedAt = Number(prevOpen?.lastVerifiedAtMs || 0);
+          recordVerifiedAccountSession(store, {
+            email: resolved,
+            nowMs,
+            source: 'desktop',
+            evidence: hostEmail ? 'host_user_status' : 'desktop_state_db'
+          });
+          if (!prevOpen || (nowMs - prevVerifiedAt) >= 60000) {
+            dirty = true;
+          }
+        }
+        if (dirty) saveStore(store);
+      }
+      return {
+        email: resolved,
+        accountScopeKey: resolved ? buildAccountScopeKey(resolved) : null,
+        sources: { hostEmail: hostEmail || null, dbEmail: dbEmail || null, cliEmail: gaEmail || null }
+      };
     }
 
-    let email = dbUser?.email || decodeJwtEmail(idToken) || normalizeEmail(ga?.active || '');
-    let name = dbUser?.name || '';
-    if (!email && typeof getHostUserStatusFn === 'function') {
-      try {
-        const hs = await getHostUserStatusFn();
-        email = normalizeEmail(hs?.email || hs?.userStatus?.email || '');
-      } catch { }
-    }
-    if (!email && accessToken) {
-      try {
-        const info = await fetchGoogleUserInfo(accessToken, customFetch);
-        email = info.email;
-        name = name || info.name;
-      } catch { }
-    }
-    if (!email) {
-      return { ok: false, error: '已找到本地 Token 但未能识别所属邮箱，请使用 Google OAuth 登录导入' };
-    }
+    /**
+     * 从当前已登录的 Antigravity 客户端抽取账号并保存到 ACM 多账号列表
+     */
+    async function importFromCurrentClient() {
+      const paths = credStore.getPaths();
+      const winCred = credStore.readWindowsSystemCredential();
+      const macCred = credStore.readMacKeychainCredential();
+      const osCred = winCred || macCred || null;
+      const dbItems = fs.existsSync(paths.desktopDbPath)
+        ? readStateDbItems(paths.desktopDbPath, ['antigravityUnifiedStateSync.oauthToken', 'antigravityUnifiedStateSync.userStatus'])
+        : {};
+      const dbTok = parseUnifiedOAuthTokenTopicBase64(dbItems['antigravityUnifiedStateSync.oauthToken']);
+      const dbUser = parseUnifiedUserStatusTopicBase64(dbItems['antigravityUnifiedStateSync.userStatus']);
+      const cliCreds = readJsonSafe(paths.oauthCredsPath, null);
+      const ga = readJsonSafe(paths.googleAccountsPath, null);
 
-    const nowMs = Date.now();
-    const store = loadStore();
-    upsertAccountRecord(store, {
-      email,
-      name,
-      source: 'client_import',
-      oauthClientKey: 'antigravity_default',
-      credential: { accessToken, refreshToken, expiresAt, idToken },
-      authInvalid: false,
-      authError: null,
-      lastUsedAtMs: nowMs
-    });
-    store.activeAccountEmail = email;
-    recordVerifiedAccountSession(store, {
-      email,
-      nowMs,
-      source: 'desktop',
-      evidence: 'client_import'
-    });
-    saveStore(store);
-    return { ok: true, account: sanitizeAccountForView(store.accounts[email], store.activeAccountEmail) };
-  }
+      let accessToken = osCred?.token?.access_token || dbTok?.accessToken || cliCreds?.access_token || '';
+      const refreshToken = osCred?.token?.refresh_token || dbTok?.refreshToken || cliCreds?.refresh_token || '';
+      const idToken = osCred?.id_token || dbTok?.idToken || cliCreds?.id_token || '';
+      const expiresAt = osCred?.token?.expiry
+        || (dbTok?.expirySeconds ? new Date(dbTok.expirySeconds * 1000).toISOString() : null)
+        || (cliCreds?.expiry_date ? new Date(cliCreds.expiry_date).toISOString() : null);
 
-  /**
-   * 只读预览 ~/.antigravity_tools/accounts.json 中可用账号（绝不修改第三方文件）
-   */
-  function listAntigravityToolsAccounts() {
-    const toolsIdxPath = path.join(homeDir, '.antigravity_tools', 'accounts.json');
-    const data = readJsonSafe(toolsIdxPath, null);
-    if (!data) return { ok: true, available: false, accounts: [] };
-    const rawList = Array.isArray(data.accounts) ? data.accounts : [];
-    const items = rawList
-      .map(a => ({
-        id: a.id || '',
-        email: normalizeEmail(a.email || ''),
-        name: a.name || '',
-        disabled: Boolean(a.disabled),
-        createdAt: a.created_at || null
-      }))
-      .filter(a => a.email);
-    return { ok: true, available: true, count: items.length, accounts: items };
-  }
+      if (!refreshToken && !accessToken) {
+        return { ok: false, error: '当前本机未检测到可用 Antigravity 登录凭据' };
+      }
 
-  function importFromAntigravityTools(selectedEmails = null) {
-    const toolsDir = path.join(homeDir, '.antigravity_tools');
-    const idx = readJsonSafe(path.join(toolsDir, 'accounts.json'), null);
-    if (!idx || !Array.isArray(idx.accounts)) {
-      return { ok: false, error: '未发现 ~/.antigravity_tools/accounts.json' };
-    }
-    const filterSet = Array.isArray(selectedEmails) && selectedEmails.length
-      ? new Set(selectedEmails.map(normalizeEmail).filter(Boolean))
-      : null;
+      let email = dbUser?.email || decodeJwtEmail(idToken) || normalizeEmail(ga?.active || '');
+      let name = dbUser?.name || '';
+      if (!email && typeof getHostUserStatusFn === 'function') {
+        try {
+          const hs = await getHostUserStatusFn();
+          email = normalizeEmail(hs?.email || hs?.userStatus?.email || '');
+        } catch { }
+      }
+      if (!email && accessToken) {
+        try {
+          const info = await fetchGoogleUserInfo(accessToken, customFetch);
+          email = info.email;
+          name = name || info.name;
+        } catch { }
+      }
+      if (!email) {
+        return { ok: false, error: '已找到本地 Token 但未能识别所属邮箱，请使用 Google OAuth 登录导入' };
+      }
 
-    const store = loadStore();
-    const imported = [];
-    for (const meta of idx.accounts) {
-      const email = normalizeEmail(meta?.email || '');
-      if (!email) continue;
-      if (filterSet && !filterSet.has(email)) continue;
-      const detail = readJsonSafe(path.join(toolsDir, 'accounts', `${meta.id}.json`), null);
-      const tok = detail?.token || meta?.token || {};
-      const refreshToken = tok.refresh_token || detail?.refresh_token || '';
-      const accessToken = tok.access_token || detail?.access_token || '';
-      const idToken = detail?.id_token || '';
-      const expiresAt = tok.expiry || (tok.expiry_timestamp ? new Date(tok.expiry_timestamp * 1000).toISOString() : null);
-      if (!refreshToken) continue;
+      const nowMs = Date.now();
+      const store = loadStore();
       upsertAccountRecord(store, {
         email,
-        name: meta.name || email.split('@')[0],
-        source: 'antigravity_tools_import',
-        oauthClientKey: tok.oauth_client_key || 'antigravity_enterprise',
-        oauthClientId: tok.client_id || null,
+        name,
+        source: 'client_import',
+        oauthClientKey: 'antigravity_default',
+        credential: { accessToken, refreshToken, expiresAt, idToken },
+        authInvalid: false,
+        authError: null,
+        lastUsedAtMs: nowMs
+      });
+      store.activeAccountEmail = email;
+      recordVerifiedAccountSession(store, {
+        email,
+        nowMs,
+        source: 'desktop',
+        evidence: 'client_import'
+      });
+      saveStore(store);
+      return { ok: true, account: sanitizeAccountForView(store.accounts[email], store.activeAccountEmail) };
+    }
+
+    /**
+     * 只读预览 ~/.antigravity_tools/accounts.json 中可用账号（绝不修改第三方文件）
+     */
+    function listAntigravityToolsAccounts() {
+      const toolsIdxPath = path.join(homeDir, '.antigravity_tools', 'accounts.json');
+      const data = readJsonSafe(toolsIdxPath, null);
+      if (!data) return { ok: true, available: false, accounts: [] };
+      const rawList = Array.isArray(data.accounts) ? data.accounts : [];
+      const items = rawList
+        .map(a => ({
+          id: a.id || '',
+          email: normalizeEmail(a.email || ''),
+          name: a.name || '',
+          disabled: Boolean(a.disabled),
+          createdAt: a.created_at || null
+        }))
+        .filter(a => a.email);
+      return { ok: true, available: true, count: items.length, accounts: items };
+    }
+
+    function importFromAntigravityTools(selectedEmails = null) {
+      const toolsDir = path.join(homeDir, '.antigravity_tools');
+      const idx = readJsonSafe(path.join(toolsDir, 'accounts.json'), null);
+      if (!idx || !Array.isArray(idx.accounts)) {
+        return { ok: false, error: '未发现 ~/.antigravity_tools/accounts.json' };
+      }
+      const filterSet = Array.isArray(selectedEmails) && selectedEmails.length
+        ? new Set(selectedEmails.map(normalizeEmail).filter(Boolean))
+        : null;
+
+      const store = loadStore();
+      const imported = [];
+      for (const meta of idx.accounts) {
+        const email = normalizeEmail(meta?.email || '');
+        if (!email) continue;
+        if (filterSet && !filterSet.has(email)) continue;
+        const detail = readJsonSafe(path.join(toolsDir, 'accounts', `${meta.id}.json`), null);
+        const tok = detail?.token || meta?.token || {};
+        const refreshToken = tok.refresh_token || detail?.refresh_token || '';
+        const accessToken = tok.access_token || detail?.access_token || '';
+        const idToken = detail?.id_token || '';
+        const expiresAt = tok.expiry || (tok.expiry_timestamp ? new Date(tok.expiry_timestamp * 1000).toISOString() : null);
+        if (!refreshToken) continue;
+        upsertAccountRecord(store, {
+          email,
+          name: meta.name || email.split('@')[0],
+          source: 'antigravity_tools_import',
+          oauthClientKey: tok.oauth_client_key || 'antigravity_enterprise',
+          oauthClientId: tok.client_id || null,
+          credential: { accessToken, refreshToken, expiresAt, idToken },
+          authInvalid: false,
+          authError: null
+        });
+        imported.push(email);
+      }
+      saveStore(store);
+      return {
+        ok: true,
+        importedCount: imported.length,
+        accounts: imported.map(e => sanitizeAccountForView(store.accounts[e], store.activeAccountEmail))
+      };
+    }
+
+    /**
+     * 启动 OAuth2 本地回环授权流程并添加账号（分阶段报错与脱敏记录；凭据持久化成功后不随初始配额失败回滚）
+     */
+    async function startOAuthLogin({ openExternal = options.openExternal || null, timeoutMs = 120000 } = {}) {
+      const stateStr = crypto.randomBytes(16).toString('hex');
+      let server = null;
+      let boundPort = 0;
+      let curStage = 'oauth_callback_bind';
+
+      const logFailAndReturn = (stage, err, extraDiag = {}) => {
+        const diag = err?.diagnostics || {};
+        const entry = {
+          action: 'oauth_login',
+          stage: err?.stage || stage,
+          targetHost: err?.targetHost || diag.targetHost || extraDiag.targetHost || null,
+          proxySource: diag.proxySource || extraDiag.proxySource || 'direct',
+          proxyProtocol: diag.proxyProtocol || extraDiag.proxyProtocol || 'direct',
+          proxyEndpoint: diag.proxyEndpoint || extraDiag.proxyEndpoint || null,
+          httpStatus: err?.httpStatus ?? diag.httpStatus ?? null,
+          errorCode: diag.errorCode || err?.code || null,
+          ok: false,
+          message: sanitizeDiagnosticErrorText(err)
+        };
+        const st = loadStore();
+        const recorded = recordDiag(st, entry);
+        saveStore(st);
+        return {
+          ok: false,
+          stage: recorded.stage,
+          targetHost: recorded.targetHost,
+          httpStatus: recorded.httpStatus,
+          proxySource: recorded.proxySource,
+          proxyEndpoint: recorded.proxyEndpoint,
+          errorCode: recorded.errorCode,
+          error: recorded.message,
+          diagnostics: recorded
+        };
+      };
+
+      let code = '';
+      try {
+        code = await new Promise((resolve, reject) => {
+          let port = CALLBACK_PORT_START;
+          let tries = 0;
+          let settled = false;
+          const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            try { server?.close(); } catch { }
+            reject(attachStageErrorMeta(new Error('OAuth 授权超时（请重新点击登录添加后在浏览器完成授权）'), curStage, '127.0.0.1', null, null));
+          }, timeoutMs);
+
+          const handleReq = (req, res) => {
+            try {
+              const reqUrl = new URL(req.url || '/', `http://127.0.0.1:${boundPort}`);
+              if (reqUrl.pathname === '/favicon.ico') {
+                res.writeHead(204);
+                res.end();
+                return;
+              }
+              const errParam = reqUrl.searchParams.get('error');
+              const codeParam = reqUrl.searchParams.get('code');
+              const stParam = reqUrl.searchParams.get('state');
+              if (errParam) {
+                res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+                res.end('<html><body><h3>OAuth 授权失败</h3><p>您可以关闭此标签页。</p></body></html>');
+                if (!settled) {
+                  settled = true;
+                  clearTimeout(timer);
+                  try { server?.close(); } catch { }
+                  reject(attachStageErrorMeta(new Error(`OAuth 拒绝或失败: ${errParam}`), 'loopback_callback', '127.0.0.1', 400, null));
+                }
+                return;
+              }
+              if (codeParam && stParam === stateStr) {
+                res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+                res.end('<html><body><h3>✅ 授权回调已接收，正在返回 Antigravity Context Meter…</h3><script>setTimeout(()=>window.close(),1500)</script></body></html>');
+                if (!settled) {
+                  settled = true;
+                  clearTimeout(timer);
+                  try { server?.close(); } catch { }
+                  resolve(codeParam);
+                }
+                return;
+              }
+              res.writeHead(400);
+              res.end('Invalid callback');
+            } catch (e) {
+              res.writeHead(500);
+              res.end('Error');
+            }
+          };
+
+          const tryNextPort = () => {
+            if (tries >= CALLBACK_PORT_RANGE) {
+              if (!settled) {
+                settled = true;
+                clearTimeout(timer);
+                reject(attachStageErrorMeta(new Error('无法绑定本地 OAuth 回调端口'), 'oauth_callback_bind', '127.0.0.1', null, null));
+              }
+              return;
+            }
+            const s = http.createServer(handleReq);
+            s.on('error', err => {
+              try { s.close(); } catch { }
+              if (err.code === 'EADDRINUSE') {
+                port++;
+                tries++;
+                tryNextPort();
+              } else if (!settled) {
+                settled = true;
+                clearTimeout(timer);
+                reject(attachStageErrorMeta(err, 'oauth_callback_bind', '127.0.0.1', null, null));
+              }
+            });
+            s.listen(port, '127.0.0.1', () => {
+              const oauthCfg = resolveAntigravityOAuthConfig(oauthResolveOpts);
+              if (!oauthCfg?.clientId || !oauthCfg?.clientSecret) {
+                if (!settled) {
+                  settled = true;
+                  clearTimeout(timer);
+                  try { s.close(); } catch { }
+                  reject(attachStageErrorMeta(
+                    new Error('未检测到可用 OAuth 客户端配置；可通过“导入当前”或“导入 Tools”添加账号，或设置 AG_OAUTH_CLIENT_ID / AG_OAUTH_CLIENT_SECRET。'),
+                    'oauth_config',
+                    null,
+                    null,
+                    null
+                  ));
+                }
+                return;
+              }
+              server = s;
+              boundPort = port;
+              curStage = 'loopback_callback';
+              const redirectUri = `http://127.0.0.1:${boundPort}`;
+              const params = new URLSearchParams({
+                client_id: oauthCfg.clientId,
+                redirect_uri: redirectUri,
+                response_type: 'code',
+                scope: ANTIGRAVITY_OAUTH_SCOPES.join(' '),
+                access_type: 'offline',
+                prompt: 'select_account consent',
+                state: stateStr
+              });
+              const authUrl = `${OAUTH_AUTH_URL}?${params.toString()}`;
+              if (typeof openExternal === 'function') {
+                Promise.resolve(openExternal(authUrl)).catch(() => { });
+              } else {
+                try {
+                  const { shell } = require('electron');
+                  shell?.openExternal?.(authUrl);
+                } catch { }
+              }
+            });
+          };
+          tryNextPort();
+        });
+      } catch (e) {
+        return logFailAndReturn(e?.stage || curStage, e, { targetHost: '127.0.0.1', proxySource: 'loopback_direct' });
+      }
+
+      const redirectUri = `http://127.0.0.1:${boundPort}`;
+      const loginOAuthCfg = resolveAntigravityOAuthConfig(oauthResolveOpts);
+      let tokData;
+      try {
+        curStage = 'token_exchange';
+        tokData = await exchangeOAuthCode(code, redirectUri, customFetch, loginOAuthCfg);
+      } catch (e) {
+        return logFailAndReturn('token_exchange', e, { targetHost: 'oauth2.googleapis.com' });
+      }
+
+      let userInfo;
+      try {
+        curStage = 'userinfo_fetch';
+        userInfo = await fetchGoogleUserInfo(tokData.access_token, customFetch);
+      } catch (e) {
+        return logFailAndReturn('userinfo_fetch', e, { targetHost: 'www.googleapis.com' });
+      }
+
+      // 阶段 5：凭据已成功换取并验证身份，原子落盘（不更改当前活跃账号，不触发切号）
+      let rec;
+      try {
+        curStage = 'credential_persist';
+        const store = loadStore();
+        rec = upsertAccountRecord(store, {
+          email: userInfo.email,
+          name: userInfo.name,
+          source: 'oauth_login',
+          oauthClientKey: loginOAuthCfg?.key || 'antigravity_default',
+          oauthClientId: loginOAuthCfg?.clientId || null,
+          credential: {
+            accessToken: tokData.access_token,
+            refreshToken: tokData.refresh_token || '',
+            expiresAt: new Date(Date.now() + (Number(tokData.expires_in) || 3600) * 1000).toISOString(),
+            idToken: tokData.id_token || ''
+          },
+          authInvalid: false,
+          authError: null
+        });
+        recordDiag(store, {
+          action: 'oauth_login',
+          stage: 'credential_persist',
+          targetHost: 'local_store',
+          proxySource: tokData?._diagnostics?.proxySource || 'plugin_config',
+          proxyProtocol: tokData?._diagnostics?.proxyProtocol || 'direct',
+          proxyEndpoint: tokData?._diagnostics?.proxyEndpoint || null,
+          httpStatus: 200,
+          ok: true,
+          message: `凭据已保存 (${maskEmail(userInfo.email)})`
+        });
+        saveStore(store);
+      } catch (e) {
+        return logFailAndReturn('credential_persist', e, { targetHost: 'local_store' });
+      }
+
+      // 阶段 6：拉取新账号初始配额（即使额度查询失败也保留账号并返回部分成功与重试状态）
+      const quotaRes = await refreshAccountQuota(userInfo.email, { stage: 'initial_quota_fetch' });
+      const freshStore = loadStore();
+      const viewAccount = sanitizeAccountForView(freshStore.accounts[userInfo.email] || rec, freshStore.activeAccountEmail);
+      if (!quotaRes.ok) {
+        return {
+          ok: true,
+          quotaOk: false,
+          stage: quotaRes.stage || 'initial_quota_fetch',
+          targetHost: quotaRes.targetHost || 'cloudcode-pa.googleapis.com',
+          httpStatus: quotaRes.httpStatus ?? null,
+          quotaError: quotaRes.error || '初始额度查询暂不可用',
+          account: viewAccount
+        };
+      }
+      return {
+        ok: true,
+        quotaOk: true,
+        stage: 'completed',
+        account: viewAccount
+      };
+    }
+
+    /**
+     * 直接用已获 Token（或测试桩）添加账号，用于测试与凭据直导
+     */
+    function addAccountWithCredential({ email, name, accessToken, refreshToken, expiresAt, idToken, source = 'manual' }) {
+      const cleanEmail = normalizeEmail(email);
+      if (!cleanEmail) return { ok: false, error: '邮箱格式无效' };
+      const store = loadStore();
+      const rec = upsertAccountRecord(store, {
+        email: cleanEmail,
+        name,
+        source,
         credential: { accessToken, refreshToken, expiresAt, idToken },
         authInvalid: false,
         authError: null
       });
-      imported.push(email);
-    }
-    saveStore(store);
-    return {
-      ok: true,
-      importedCount: imported.length,
-      accounts: imported.map(e => sanitizeAccountForView(store.accounts[e], store.activeAccountEmail))
-    };
-  }
-
-  /**
-   * 启动 OAuth2 本地回环授权流程并添加账号（分阶段报错与脱敏记录；凭据持久化成功后不随初始配额失败回滚）
-   */
-  async function startOAuthLogin({ openExternal = options.openExternal || null, timeoutMs = 120000 } = {}) {
-    const stateStr = crypto.randomBytes(16).toString('hex');
-    let server = null;
-    let boundPort = 0;
-    let curStage = 'oauth_callback_bind';
-
-    const logFailAndReturn = (stage, err, extraDiag = {}) => {
-      const diag = err?.diagnostics || {};
-      const entry = {
-        action: 'oauth_login',
-        stage: err?.stage || stage,
-        targetHost: err?.targetHost || diag.targetHost || extraDiag.targetHost || null,
-        proxySource: diag.proxySource || extraDiag.proxySource || 'direct',
-        proxyProtocol: diag.proxyProtocol || extraDiag.proxyProtocol || 'direct',
-        proxyEndpoint: diag.proxyEndpoint || extraDiag.proxyEndpoint || null,
-        httpStatus: err?.httpStatus ?? diag.httpStatus ?? null,
-        errorCode: diag.errorCode || err?.code || null,
-        ok: false,
-        message: sanitizeDiagnosticErrorText(err)
-      };
-      const st = loadStore();
-      const recorded = recordDiag(st, entry);
-      saveStore(st);
-      return {
-        ok: false,
-        stage: recorded.stage,
-        targetHost: recorded.targetHost,
-        httpStatus: recorded.httpStatus,
-        proxySource: recorded.proxySource,
-        proxyEndpoint: recorded.proxyEndpoint,
-        errorCode: recorded.errorCode,
-        error: recorded.message,
-        diagnostics: recorded
-      };
-    };
-
-    let code = '';
-    try {
-      code = await new Promise((resolve, reject) => {
-        let port = CALLBACK_PORT_START;
-        let tries = 0;
-        let settled = false;
-        const timer = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          try { server?.close(); } catch { }
-          reject(attachStageErrorMeta(new Error('OAuth 授权超时（请重新点击登录添加后在浏览器完成授权）'), curStage, '127.0.0.1', null, null));
-        }, timeoutMs);
-
-        const handleReq = (req, res) => {
-          try {
-            const reqUrl = new URL(req.url || '/', `http://127.0.0.1:${boundPort}`);
-            if (reqUrl.pathname === '/favicon.ico') {
-              res.writeHead(204);
-              res.end();
-              return;
-            }
-            const errParam = reqUrl.searchParams.get('error');
-            const codeParam = reqUrl.searchParams.get('code');
-            const stParam = reqUrl.searchParams.get('state');
-            if (errParam) {
-              res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
-              res.end('<html><body><h3>OAuth 授权失败</h3><p>您可以关闭此标签页。</p></body></html>');
-              if (!settled) {
-                settled = true;
-                clearTimeout(timer);
-                try { server?.close(); } catch { }
-                reject(attachStageErrorMeta(new Error(`OAuth 拒绝或失败: ${errParam}`), 'loopback_callback', '127.0.0.1', 400, null));
-              }
-              return;
-            }
-            if (codeParam && stParam === stateStr) {
-              res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-              res.end('<html><body><h3>✅ 授权回调已接收，正在返回 Antigravity Context Meter…</h3><script>setTimeout(()=>window.close(),1500)</script></body></html>');
-              if (!settled) {
-                settled = true;
-                clearTimeout(timer);
-                try { server?.close(); } catch { }
-                resolve(codeParam);
-              }
-              return;
-            }
-            res.writeHead(400);
-            res.end('Invalid callback');
-          } catch (e) {
-            res.writeHead(500);
-            res.end('Error');
-          }
-        };
-
-        const tryNextPort = () => {
-          if (tries >= CALLBACK_PORT_RANGE) {
-            if (!settled) {
-              settled = true;
-              clearTimeout(timer);
-              reject(attachStageErrorMeta(new Error('无法绑定本地 OAuth 回调端口'), 'oauth_callback_bind', '127.0.0.1', null, null));
-            }
-            return;
-          }
-          const s = http.createServer(handleReq);
-          s.on('error', err => {
-            try { s.close(); } catch { }
-            if (err.code === 'EADDRINUSE') {
-              port++;
-              tries++;
-              tryNextPort();
-            } else if (!settled) {
-              settled = true;
-              clearTimeout(timer);
-              reject(attachStageErrorMeta(err, 'oauth_callback_bind', '127.0.0.1', null, null));
-            }
-          });
-          s.listen(port, '127.0.0.1', () => {
-            const oauthCfg = resolveAntigravityOAuthConfig(oauthResolveOpts);
-            if (!oauthCfg?.clientId || !oauthCfg?.clientSecret) {
-              if (!settled) {
-                settled = true;
-                clearTimeout(timer);
-                try { s.close(); } catch { }
-                reject(attachStageErrorMeta(
-                  new Error('未检测到可用 OAuth 客户端配置；可通过“导入当前”或“导入 Tools”添加账号，或设置 AG_OAUTH_CLIENT_ID / AG_OAUTH_CLIENT_SECRET。'),
-                  'oauth_config',
-                  null,
-                  null,
-                  null
-                ));
-              }
-              return;
-            }
-            server = s;
-            boundPort = port;
-            curStage = 'loopback_callback';
-            const redirectUri = `http://127.0.0.1:${boundPort}`;
-            const params = new URLSearchParams({
-              client_id: oauthCfg.clientId,
-              redirect_uri: redirectUri,
-              response_type: 'code',
-              scope: ANTIGRAVITY_OAUTH_SCOPES.join(' '),
-              access_type: 'offline',
-              prompt: 'consent',
-              state: stateStr
-            });
-            const authUrl = `${OAUTH_AUTH_URL}?${params.toString()}`;
-            if (typeof openExternal === 'function') {
-              Promise.resolve(openExternal(authUrl)).catch(() => { });
-            } else {
-              try {
-                const { shell } = require('electron');
-                shell?.openExternal?.(authUrl);
-              } catch { }
-            }
-          });
-        };
-        tryNextPort();
-      });
-    } catch (e) {
-      return logFailAndReturn(e?.stage || curStage, e, { targetHost: '127.0.0.1', proxySource: 'loopback_direct' });
-    }
-
-    const redirectUri = `http://127.0.0.1:${boundPort}`;
-    const loginOAuthCfg = resolveAntigravityOAuthConfig(oauthResolveOpts);
-    let tokData;
-    try {
-      curStage = 'token_exchange';
-      tokData = await exchangeOAuthCode(code, redirectUri, customFetch, loginOAuthCfg);
-    } catch (e) {
-      return logFailAndReturn('token_exchange', e, { targetHost: 'oauth2.googleapis.com' });
-    }
-
-    let userInfo;
-    try {
-      curStage = 'userinfo_fetch';
-      userInfo = await fetchGoogleUserInfo(tokData.access_token, customFetch);
-    } catch (e) {
-      return logFailAndReturn('userinfo_fetch', e, { targetHost: 'www.googleapis.com' });
-    }
-
-    // 阶段 5：凭据已成功换取并验证身份，原子落盘（不更改当前活跃账号，不触发切号）
-    let rec;
-    try {
-      curStage = 'credential_persist';
-      const store = loadStore();
-      rec = upsertAccountRecord(store, {
-        email: userInfo.email,
-        name: userInfo.name,
-        source: 'oauth_login',
-        oauthClientKey: loginOAuthCfg?.key || 'antigravity_default',
-        oauthClientId: loginOAuthCfg?.clientId || null,
-        credential: {
-          accessToken: tokData.access_token,
-          refreshToken: tokData.refresh_token || '',
-          expiresAt: new Date(Date.now() + (Number(tokData.expires_in) || 3600) * 1000).toISOString(),
-          idToken: tokData.id_token || ''
-        },
-        authInvalid: false,
-        authError: null
-      });
-      recordDiag(store, {
-        action: 'oauth_login',
-        stage: 'credential_persist',
-        targetHost: 'local_store',
-        proxySource: tokData?._diagnostics?.proxySource || 'plugin_config',
-        proxyProtocol: tokData?._diagnostics?.proxyProtocol || 'direct',
-        proxyEndpoint: tokData?._diagnostics?.proxyEndpoint || null,
-        httpStatus: 200,
-        ok: true,
-        message: `凭据已保存 (${maskEmail(userInfo.email)})`
-      });
       saveStore(store);
-    } catch (e) {
-      return logFailAndReturn('credential_persist', e, { targetHost: 'local_store' });
+      return { ok: true, account: sanitizeAccountForView(rec, store.activeAccountEmail) };
     }
 
-    // 阶段 6：拉取新账号初始配额（即使额度查询失败也保留账号并返回部分成功与重试状态）
-    const quotaRes = await refreshAccountQuota(userInfo.email, { stage: 'initial_quota_fetch' });
-    const freshStore = loadStore();
-    const viewAccount = sanitizeAccountForView(freshStore.accounts[userInfo.email] || rec, freshStore.activeAccountEmail);
-    if (!quotaRes.ok) {
-      return {
-        ok: true,
-        quotaOk: false,
-        stage: quotaRes.stage || 'initial_quota_fetch',
-        targetHost: quotaRes.targetHost || 'cloudcode-pa.googleapis.com',
-        httpStatus: quotaRes.httpStatus ?? null,
-        quotaError: quotaRes.error || '初始额度查询暂不可用',
-        account: viewAccount
-      };
-    }
-    return {
-      ok: true,
-      quotaOk: true,
-      stage: 'completed',
-      account: viewAccount
-    };
-  }
+    function removeAccount(email) {
+      const clean = normalizeEmail(email);
+      if (!clean) return { ok: false, error: '无效邮箱' };
+      const store = loadStore();
+      if (!store.accounts[clean]) return { ok: false, error: '账号不存在' };
 
-  /**
-   * 直接用已获 Token（或测试桩）添加账号，用于测试与凭据直导
-   */
-  function addAccountWithCredential({ email, name, accessToken, refreshToken, expiresAt, idToken, source = 'manual' }) {
-    const cleanEmail = normalizeEmail(email);
-    if (!cleanEmail) return { ok: false, error: '邮箱格式无效' };
-    const store = loadStore();
-    const rec = upsertAccountRecord(store, {
-      email: cleanEmail,
-      name,
-      source,
-      credential: { accessToken, refreshToken, expiresAt, idToken },
-      authInvalid: false,
-      authError: null
-    });
-    saveStore(store);
-    return { ok: true, account: sanitizeAccountForView(rec, store.activeAccountEmail) };
-  }
+      const removedScopeKey = store.accounts[clean].accountScopeKey || buildAccountScopeKey(clean);
+      const wasActive = store.activeAccountEmail === clean;
 
-  function removeAccount(email) {
-    const clean = normalizeEmail(email);
-    if (!clean) return { ok: false, error: '无效邮箱' };
-    const store = loadStore();
-    if (!store.accounts[clean]) return { ok: false, error: '账号不存在' };
+      delete store.accounts[clean];
+      store.autoSwitch.candidates = (store.autoSwitch.candidates || []).filter(e => normalizeEmail(e) !== clean);
 
-    const removedScopeKey = store.accounts[clean].accountScopeKey || buildAccountScopeKey(clean);
-    const wasActive = store.activeAccountEmail === clean;
-
-    delete store.accounts[clean];
-    store.autoSwitch.candidates = (store.autoSwitch.candidates || []).filter(e => normalizeEmail(e) !== clean);
-
-    // 清理该账号相关的防抖计数；若移除了活跃账号则整组重置防抖，避免基于失效账号触发误切换
-    for (const k of Array.from(debounceState.keys())) {
-      if (k === clean || k.startsWith(`${clean}:`)) debounceState.delete(k);
-    }
-
-    if (wasActive) {
-      store.activeAccountEmail = null;
-      debounceState.clear();
-      if (store.autoSwitchStatus && store.autoSwitchStatus.state === 'pending_idle') {
-        store.autoSwitchStatus.state = store.autoSwitch.enabled ? 'watching' : 'disabled';
-        store.autoSwitchStatus.blockedReason = null;
+      // 清理该账号相关的防抖计数；若移除了活跃账号则整组重置防抖，避免基于失效账号触发误切换
+      for (const k of Array.from(debounceState.keys())) {
+        if (k === clean || k.startsWith(`${clean}|`) || k.startsWith(`${clean}:`)) debounceState.delete(k);
       }
-    }
 
-    // 同步停止并解绑指向被移除账号或活跃已移除账号的保活配置，避免残留失效状态
-    if (store.keepalive) {
-      const targetEmail = normalizeEmail(store.keepalive.targetAccountEmail);
-      if (targetEmail === clean || (wasActive && !targetEmail)) {
-        store.keepalive.enabled = false;
-        store.keepalive.targetAccountEmail = null;
-        store.keepaliveState = {
-          ...(store.keepaliveState || {}),
-          running: false,
-          stopReason: 'account_removed'
-        };
-        try { if (fs.existsSync(keepaliveLockPath)) fs.unlinkSync(keepaliveLockPath); } catch { }
-      }
-    }
-
-    // 移除最后一个账号时收拢自动切号运行状态，不擅自修改或残留等待态
-    const remainingCount = Object.keys(store.accounts).length;
-    if (remainingCount === 0) {
-      store.activeAccountEmail = null;
-      store.autoSwitch.enabled = false;
-      store.autoSwitchStatus = {
-        ...(store.autoSwitchStatus || {}),
-        state: 'disabled',
-        blockedReason: null
-      };
-      debounceState.clear();
-    }
-
-    // 注意：有意保留 store.accountSessions 与本地 pricing_ledger_v1.json 历史归属记录，不做擦除或迁移
-    saveStore(store);
-    return { ok: true, removedEmail: clean, removedScopeKey, wasActive, remainingCount };
-  }
-
-  /**
-   * 刷新指定账号的 AccessToken（过期前 5 分钟自动刷新）并获取其云端配额快照 + 记录 ELV-57 配额对照区间
-   */
-  async function ensureFreshTokenForAccount(email) {
-    const clean = normalizeEmail(email);
-    const store = loadStore();
-    const rec = store.accounts[clean];
-    if (!rec) throw new Error(`账号不存在: ${clean}`);
-    const expiresAtMs = rec.credential?.expiresAt ? Date.parse(rec.credential.expiresAt) : 0;
-    const isNearExpiry = !rec.credential?.accessToken || !Number.isFinite(expiresAtMs) || (expiresAtMs - Date.now() < 5 * 60 * 1000);
-    if (!isNearExpiry) return rec.credential;
-    if (!rec.credential?.refreshToken) {
-      throw Object.assign(new Error('缺少 refresh_token，需要重新授权'), { isAuthInvalid: true });
-    }
-    const candidates = resolveAllAntigravityOAuthConfigs({
-      ...oauthResolveOpts,
-      oauthClientKey: rec.oauthClientKey || (rec.source === 'antigravity_tools_import' ? 'antigravity_enterprise' : ''),
-      preferredClientId: rec.oauthClientId || ''
-    });
-    const configsToTry = candidates.length ? candidates : [null];
-    let lastErr = null;
-    for (let i = 0; i < configsToTry.length; i++) {
-      const cfg = configsToTry[i];
-      try {
-        const refreshed = await refreshOAuthAccessToken(rec.credential.refreshToken, customFetch, cfg);
-        const nextStore = loadStore();
-        if (nextStore.accounts[clean]) {
-          nextStore.accounts[clean].credential = { ...nextStore.accounts[clean].credential, ...refreshed };
-          if (refreshed.oauthClientId) nextStore.accounts[clean].oauthClientId = refreshed.oauthClientId;
-          if (refreshed.oauthClientKey) nextStore.accounts[clean].oauthClientKey = refreshed.oauthClientKey;
-          nextStore.accounts[clean].authInvalid = false;
-          nextStore.accounts[clean].authError = null;
-          saveStore(nextStore);
+      if (wasActive) {
+        store.activeAccountEmail = null;
+        debounceState.clear();
+        if (store.autoSwitchStatus && (store.autoSwitchStatus.state === 'waiting_idle' || store.autoSwitchStatus.state === 'pending_idle')) {
+          store.autoSwitchStatus.state = store.autoSwitch.enabled ? 'watching' : 'disabled';
+          store.autoSwitchStatus.blockedReason = null;
         }
-        return refreshed;
-      } catch (e) {
-        lastErr = e;
-        const canRetryNextOfficialPair = (i + 1 < configsToTry.length) && (e.isClientMismatch || e.isAuthInvalid);
-        if (canRetryNextOfficialPair) continue;
-        break;
-      }
-    }
-    if (lastErr?.isAuthInvalid) {
-      const nextStore = loadStore();
-      if (nextStore.accounts[clean]) {
-        nextStore.accounts[clean].authInvalid = true;
-        nextStore.accounts[clean].authError = lastErr.message;
-        saveStore(nextStore);
-      }
-    }
-    throw lastErr;
-  }
-
-  /**
-   * ELV-57 核心纯逻辑：根据新旧配额快照与归属本机账本记录，构建/切分/合并对照区间。
-   * - 同账号同池且连续无断点（无切号、无重置/恢复、采样间隔 <= gapSplitMs）时就地合并延续，避免产生海量 0pp 碎片；
-   * - 切号、重置/滚动恢复、断网/过期缺口 (>30m 或错误态) 必须结束或切分，不拼成一段；
-   * - 绝不把百分点变化直接认定为“本机消耗了该账号的 X%”。
-   */
-  function queryIntervalLocalUsage(scopeKey, poolKey, startMs, endMs, options = {}) {
-    let localStats = {
-      requestCount: 0,
-      uncachedInputTokens: 0,
-      cacheReadTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
-      keepaliveRequests: 0,
-      keepaliveTokens: 0
-    };
-    if (typeof options.queryLocalUsageInWindow === 'function') {
-      localStats = { ...localStats, ...(options.queryLocalUsageInWindow({ accountScopeKey: scopeKey, poolKey, startMs, endMs }) || {}) };
-    } else if (collector && typeof collector.summarizeAccountWindowUsage === 'function') {
-      localStats = { ...localStats, ...(collector.summarizeAccountWindowUsage({ accountScopeKey: scopeKey, poolKey, startMs, endMs }) || {}) };
-    }
-    return localStats;
-  }
-
-  function recordQuotaComparisonSample(store, email, prevSnapshot, prevAtMs, nextSnapshot, nextAtMs, options = {}) {
-    const cleanEmail = normalizeEmail(email);
-    if (!cleanEmail || !nextSnapshot || !Array.isArray(nextSnapshot.pools)) return;
-    const scopeKey = buildAccountScopeKey(cleanEmail);
-    const nowMs = Number.isFinite(Number(nextAtMs)) ? Number(nextAtMs) : Date.now();
-    const gapSplitMs = Number(options.gapSplitMs) || 30 * 60 * 1000;
-
-    if (!Array.isArray(store.quotaIntervals)) store.quotaIntervals = [];
-
-    for (const pool of nextSnapshot.pools) {
-      if (!pool || pool.noPermission || pool.remainingFraction == null) continue;
-      const pb = pool.primaryBucket || selectPrimaryQuotaBucket(pool.buckets || []).primaryBucket;
-      const winKey = pb?.windowKey || 'primary';
-      const winShort = pb?.windowShort || '';
-      const endPct = Number((pool.remainingFraction * 100).toFixed(2));
-
-      // 查找同账号同池的上一条活跃基准
-      const prevPool = prevSnapshot?.pools?.find(p => p.poolKey === pool.poolKey) || null;
-      if (!prevPool || prevPool.remainingFraction == null || prevAtMs == null || prevAtMs >= nowMs) {
-        continue;
       }
 
-      const startPct = Number((prevPool.remainingFraction * 100).toFixed(2));
-      const timeGapMs = nowMs - prevAtMs;
-      const isSwitchedDuringWindow = Boolean(options.accountSwitched);
-      const isResetOrRecovery = endPct > startPct + 1.0 || Boolean(pb?.resetTimeIso && prevPool.resetTimeIso && pb.resetTimeIso !== prevPool.resetTimeIso);
-      const hasGap = timeGapMs > gapSplitMs || Boolean(options.hadStaleOrOfflineGap);
+      // 同步停止并解绑指向被移除账号或活跃已移除账号的保活配置，避免残留失效状态
+      if (store.keepalive) {
+        const targetEmail = normalizeEmail(store.keepalive.targetAccountEmail);
+        if (targetEmail === clean || (wasActive && !targetEmail)) {
+          store.keepalive.enabled = false;
+          store.keepalive.targetAccountEmail = null;
+          store.keepaliveState = {
+            ...(store.keepaliveState || {}),
+            running: false,
+            stopReason: 'account_removed'
+          };
+          try { if (fs.existsSync(keepaliveLockPath)) fs.unlinkSync(keepaliveLockPath); } catch { }
+        }
+      }
 
-      let splitReason = null;
-      if (isSwitchedDuringWindow) splitReason = 'account_switched';
-      else if (isResetOrRecovery) splitReason = endPct >= 99 ? 'quota_reset' : 'rolling_recovery';
-      else if (hasGap) splitReason = 'sampling_gap';
+      // 移除最后一个账号时收拢自动切号运行状态，不擅自修改或残留等待态
+      const remainingCount = Object.keys(store.accounts).length;
+      if (remainingCount === 0) {
+        store.activeAccountEmail = null;
+        store.autoSwitch.enabled = false;
+        store.autoSwitchStatus = {
+          ...(store.autoSwitchStatus || {}),
+          state: 'disabled',
+          blockedReason: null
+        };
+        debounceState.clear();
+      }
 
-      // 若本次连续无断点，优先查找可合并的最近一条同账号同池活跃连续区间（防止 30s 轮询制造数百条无意义碎片）
-      if (!splitReason && !hasGap) {
-        let mergeIdx = -1;
-        for (let i = store.quotaIntervals.length - 1; i >= 0; i--) {
-          const cand = store.quotaIntervals[i];
-          if (!cand || cand.poolKey !== pool.poolKey) continue;
-          // 遇到其他账号在更晚结束的同池区间，则不再跨账号向前回溯合并
-          if (cand.accountScopeKey !== scopeKey) break;
-          if (!cand.splitReason && !cand.hasSamplingGap && cand.isReliableContinuous !== false
-            && Number.isFinite(cand.endAtMs) && cand.endAtMs <= nowMs
-            && (nowMs - cand.endAtMs) <= gapSplitMs
-            && (cand.endAtMs === prevAtMs || Math.abs(cand.endAtMs - prevAtMs) <= gapSplitMs)) {
-            mergeIdx = i;
+      // 注意：有意保留 store.accountSessions 与本地 pricing_ledger_v1.json 历史归属记录，不做擦除或迁移
+      saveStore(store);
+      return { ok: true, removedEmail: clean, removedScopeKey, wasActive, remainingCount };
+    }
+
+    /**
+     * 刷新指定账号的 AccessToken（过期前 5 分钟自动刷新）并获取其云端配额快照 + 记录 ELV-57 配额对照区间
+     */
+    async function ensureFreshTokenForAccount(email) {
+      const clean = normalizeEmail(email);
+      const store = loadStore();
+      const rec = store.accounts[clean];
+      if (!rec) throw new Error(`账号不存在: ${clean}`);
+      const expiresAtMs = rec.credential?.expiresAt ? Date.parse(rec.credential.expiresAt) : 0;
+      const isNearExpiry = !rec.credential?.accessToken || !Number.isFinite(expiresAtMs) || (expiresAtMs - Date.now() < 5 * 60 * 1000);
+      if (!isNearExpiry) return rec.credential;
+      if (!rec.credential?.refreshToken) {
+        throw Object.assign(new Error('缺少 refresh_token，需要重新授权'), { isAuthInvalid: true });
+      }
+      const candidates = resolveAllAntigravityOAuthConfigs({
+        ...oauthResolveOpts,
+        oauthClientKey: rec.oauthClientKey || (rec.source === 'antigravity_tools_import' ? 'antigravity_enterprise' : ''),
+        preferredClientId: rec.oauthClientId || ''
+      });
+      const configsToTry = candidates.length ? candidates : [null];
+      let lastErr = null;
+      for (let i = 0; i < configsToTry.length; i++) {
+        const cfg = configsToTry[i];
+        try {
+          const refreshed = await refreshOAuthAccessToken(rec.credential.refreshToken, customFetch, cfg);
+          const nextStore = loadStore();
+          if (nextStore.accounts[clean]) {
+            nextStore.accounts[clean].credential = { ...nextStore.accounts[clean].credential, ...refreshed };
+            if (refreshed.oauthClientId) nextStore.accounts[clean].oauthClientId = refreshed.oauthClientId;
+            if (refreshed.oauthClientKey) nextStore.accounts[clean].oauthClientKey = refreshed.oauthClientKey;
+            nextStore.accounts[clean].authInvalid = false;
+            nextStore.accounts[clean].authError = null;
+            saveStore(nextStore);
           }
+          return refreshed;
+        } catch (e) {
+          lastErr = e;
+          const canRetryNextOfficialPair = (i + 1 < configsToTry.length) && (e.isClientMismatch || e.isAuthInvalid);
+          if (canRetryNextOfficialPair) continue;
           break;
         }
-        if (mergeIdx >= 0) {
-          const baseIv = store.quotaIntervals[mergeIdx];
-          const mergedStartMs = baseIv.startAtMs;
-          const mergedStats = queryIntervalLocalUsage(scopeKey, pool.poolKey, mergedStartMs, nowMs, options);
-          store.quotaIntervals[mergeIdx] = {
-            ...baseIv,
-            endAtMs: nowMs,
-            endRemainingPct: endPct,
-            deltaPp: Number((endPct - baseIv.startRemainingPct).toFixed(2)),
-            requestCount: mergedStats.requestCount || 0,
-            uncachedInputTokens: mergedStats.uncachedInputTokens || 0,
-            cacheReadTokens: mergedStats.cacheReadTokens || 0,
-            outputTokens: mergedStats.outputTokens || 0,
-            totalTokens: mergedStats.totalTokens || 0,
-            keepaliveRequests: mergedStats.keepaliveRequests || 0,
-            keepaliveTokens: mergedStats.keepaliveTokens || 0,
-            updatedAtMs: nowMs
-          };
+      }
+      if (lastErr?.isAuthInvalid) {
+        const nextStore = loadStore();
+        if (nextStore.accounts[clean]) {
+          nextStore.accounts[clean].authInvalid = true;
+          nextStore.accounts[clean].authError = lastErr.message;
+          saveStore(nextStore);
+        }
+      }
+      throw lastErr;
+    }
+
+    /**
+     * ELV-57 核心纯逻辑：根据新旧配额快照与归属本机账本记录，构建/切分/合并对照区间。
+     * - 同账号同池且连续无断点（无切号、无重置/恢复、采样间隔 <= gapSplitMs）时就地合并延续，避免产生海量 0pp 碎片；
+     * - 切号、重置/滚动恢复、断网/过期缺口 (>30m 或错误态) 必须结束或切分，不拼成一段；
+     * - 绝不把百分点变化直接认定为“本机消耗了该账号的 X%”。
+     */
+    function queryIntervalLocalUsage(scopeKey, poolKey, startMs, endMs, options = {}) {
+      let localStats = {
+        requestCount: 0,
+        uncachedInputTokens: 0,
+        cacheReadTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        keepaliveRequests: 0,
+        keepaliveTokens: 0
+      };
+      if (typeof options.queryLocalUsageInWindow === 'function') {
+        localStats = { ...localStats, ...(options.queryLocalUsageInWindow({ accountScopeKey: scopeKey, poolKey, startMs, endMs }) || {}) };
+      } else if (collector && typeof collector.summarizeAccountWindowUsage === 'function') {
+        localStats = { ...localStats, ...(collector.summarizeAccountWindowUsage({ accountScopeKey: scopeKey, poolKey, startMs, endMs }) || {}) };
+      }
+      return localStats;
+    }
+
+    function recordQuotaComparisonSample(store, email, prevSnapshot, prevAtMs, nextSnapshot, nextAtMs, options = {}) {
+      const cleanEmail = normalizeEmail(email);
+      if (!cleanEmail || !nextSnapshot || !Array.isArray(nextSnapshot.pools)) return;
+      const scopeKey = buildAccountScopeKey(cleanEmail);
+      const nowMs = Number.isFinite(Number(nextAtMs)) ? Number(nextAtMs) : Date.now();
+      const gapSplitMs = Number(options.gapSplitMs) || 30 * 60 * 1000;
+
+      if (!Array.isArray(store.quotaIntervals)) store.quotaIntervals = [];
+
+      for (const pool of nextSnapshot.pools) {
+        if (!pool || pool.noPermission || pool.remainingFraction == null) continue;
+        const pb = pool.primaryBucket || selectPrimaryQuotaBucket(pool.buckets || []).primaryBucket;
+        const winKey = pb?.windowKey || 'primary';
+        const winShort = pb?.windowShort || '';
+        const endPct = Number((pool.remainingFraction * 100).toFixed(2));
+
+        // 查找同账号同池的上一条活跃基准
+        const prevPool = prevSnapshot?.pools?.find(p => p.poolKey === pool.poolKey) || null;
+        if (!prevPool || prevPool.remainingFraction == null || prevAtMs == null || prevAtMs >= nowMs) {
           continue;
         }
-      }
 
-      // 查询本机在同一账号、同一模型池、同一时间段的实测流量
-      const localStats = queryIntervalLocalUsage(scopeKey, pool.poolKey, prevAtMs, nowMs, options);
+        const startPct = Number((prevPool.remainingFraction * 100).toFixed(2));
+        const timeGapMs = nowMs - prevAtMs;
+        const isSwitchedDuringWindow = Boolean(options.accountSwitched);
+        const isResetOrRecovery = endPct > startPct + 1.0 || Boolean(pb?.resetTimeIso && prevPool.resetTimeIso && pb.resetTimeIso !== prevPool.resetTimeIso);
+        const hasGap = timeGapMs > gapSplitMs || Boolean(options.hadStaleOrOfflineGap);
 
-      const deltaPp = Number((endPct - startPct).toFixed(2));
-      const interval = {
-        id: `qi_${scopeKey}_${pool.poolKey}_${nowMs}`,
-        email: cleanEmail,
-        accountScopeKey: scopeKey,
-        poolKey: pool.poolKey,
-        poolTitle: pool.title || pool.poolKey,
-        windowKey: winKey,
-        windowShort: winShort,
-        startAtMs: prevAtMs,
-        endAtMs: nowMs,
-        startRemainingPct: startPct,
-        endRemainingPct: endPct,
-        deltaPp, // 正值表示回升/重置，负值表示下降（如 -8.0）
-        requestCount: localStats.requestCount || 0,
-        uncachedInputTokens: localStats.uncachedInputTokens || 0,
-        cacheReadTokens: localStats.cacheReadTokens || 0,
-        outputTokens: localStats.outputTokens || 0,
-        totalTokens: localStats.totalTokens || 0,
-        keepaliveRequests: localStats.keepaliveRequests || 0,
-        keepaliveTokens: localStats.keepaliveTokens || 0,
-        hasSamplingGap: hasGap,
-        splitReason,
-        isReliableContinuous: !splitReason && !hasGap,
-        updatedAtMs: nowMs,
-        disclaimer: '同一账号其余设备并发使用、平台按比例取整、滚动恢复及采样延迟均会导致账面百分比变化与本机 Token 消耗不成严格线性关系。'
-      };
-      store.quotaIntervals.push(interval);
-    }
+        let splitReason = null;
+        if (isSwitchedDuringWindow) splitReason = 'account_switched';
+        else if (isResetOrRecovery) splitReason = endPct >= 99 ? 'quota_reset' : 'rolling_recovery';
+        else if (hasGap) splitReason = 'sampling_gap';
 
-    // 保留最近 200 条对照区间，防无限膨胀
-    if (store.quotaIntervals.length > 200) {
-      store.quotaIntervals = store.quotaIntervals.slice(-200);
-    }
-  }
+        // 若本次连续无断点，优先查找可合并的最近一条同账号同池活跃连续区间（防止 30s 轮询制造数百条无意义碎片）
+        if (!splitReason && !hasGap) {
+          let mergeIdx = -1;
+          for (let i = store.quotaIntervals.length - 1; i >= 0; i--) {
+            const cand = store.quotaIntervals[i];
+            if (!cand || cand.poolKey !== pool.poolKey) continue;
+            // 遇到其他账号在更晚结束的同池区间，则不再跨账号向前回溯合并
+            if (cand.accountScopeKey !== scopeKey) break;
+            if (!cand.splitReason && !cand.hasSamplingGap && cand.isReliableContinuous !== false
+              && Number.isFinite(cand.endAtMs) && cand.endAtMs <= nowMs
+              && (nowMs - cand.endAtMs) <= gapSplitMs
+              && (cand.endAtMs === prevAtMs || Math.abs(cand.endAtMs - prevAtMs) <= gapSplitMs)) {
+              mergeIdx = i;
+            }
+            break;
+          }
+          if (mergeIdx >= 0) {
+            const baseIv = store.quotaIntervals[mergeIdx];
+            const mergedStartMs = baseIv.startAtMs;
+            const mergedStats = queryIntervalLocalUsage(scopeKey, pool.poolKey, mergedStartMs, nowMs, options);
+            store.quotaIntervals[mergeIdx] = {
+              ...baseIv,
+              endAtMs: nowMs,
+              endRemainingPct: endPct,
+              deltaPp: Number((endPct - baseIv.startRemainingPct).toFixed(2)),
+              requestCount: mergedStats.requestCount || 0,
+              uncachedInputTokens: mergedStats.uncachedInputTokens || 0,
+              cacheReadTokens: mergedStats.cacheReadTokens || 0,
+              outputTokens: mergedStats.outputTokens || 0,
+              totalTokens: mergedStats.totalTokens || 0,
+              keepaliveRequests: mergedStats.keepaliveRequests || 0,
+              keepaliveTokens: mergedStats.keepaliveTokens || 0,
+              updatedAtMs: nowMs
+            };
+            continue;
+          }
+        }
 
-  /**
-   * 从历史记录中归并连续 30s 无断点碎片，并按最新归属账本重算每个对照区间的本机调用统计
-   */
-  function rebuildQuotaIntervalsFromHistory(options = {}) {
-    const gapSplitMs = Number(options.gapSplitMs) || 30 * 60 * 1000;
-    const store = loadStore();
-    const rawList = Array.isArray(store.quotaIntervals) ? store.quotaIntervals.slice() : [];
-    const sorted = rawList
-      .filter(iv => iv && iv.accountScopeKey && iv.poolKey && Number.isFinite(iv.startAtMs) && Number.isFinite(iv.endAtMs))
-      .sort((a, b) => (a.startAtMs - b.startAtMs) || (a.endAtMs - b.endAtMs));
+        // 查询本机在同一账号、同一模型池、同一时间段的实测流量
+        const localStats = queryIntervalLocalUsage(scopeKey, pool.poolKey, prevAtMs, nowMs, options);
 
-    const merged = [];
-    for (const cur of sorted) {
-      const prev = merged.length > 0 ? merged[merged.length - 1] : null;
-      const canMerge = prev
-        && prev.accountScopeKey === cur.accountScopeKey
-        && prev.poolKey === cur.poolKey
-        && !prev.splitReason && !prev.hasSamplingGap && prev.isReliableContinuous !== false
-        && !cur.splitReason && !cur.hasSamplingGap && cur.isReliableContinuous !== false
-        && cur.startAtMs >= prev.startAtMs
-        && (cur.startAtMs - prev.endAtMs) <= gapSplitMs
-        && cur.endRemainingPct <= (cur.startRemainingPct + 1.0);
-
-      if (canMerge) {
-        prev.endAtMs = Math.max(prev.endAtMs, cur.endAtMs);
-        prev.endRemainingPct = cur.endRemainingPct;
-        prev.deltaPp = Number((prev.endRemainingPct - prev.startRemainingPct).toFixed(2));
-        prev.updatedAtMs = Math.max(prev.updatedAtMs || 0, cur.updatedAtMs || cur.endAtMs);
-      } else {
-        merged.push({ ...cur });
-      }
-    }
-
-    for (const iv of merged) {
-      const localStats = queryIntervalLocalUsage(iv.accountScopeKey, iv.poolKey, iv.startAtMs, iv.endAtMs, options);
-      iv.requestCount = localStats.requestCount || 0;
-      iv.uncachedInputTokens = localStats.uncachedInputTokens || 0;
-      iv.cacheReadTokens = localStats.cacheReadTokens || 0;
-      iv.outputTokens = localStats.outputTokens || 0;
-      iv.totalTokens = localStats.totalTokens || 0;
-      iv.keepaliveRequests = localStats.keepaliveRequests || 0;
-      iv.keepaliveTokens = localStats.keepaliveTokens || 0;
-    }
-
-    store.quotaIntervals = merged.slice(-200);
-    saveStore(store);
-    return { ok: true, beforeCount: rawList.length, afterCount: store.quotaIntervals.length, intervals: store.quotaIntervals };
-  }
-
-  async function refreshAccountQuota(email, opts = {}) {
-    const clean = normalizeEmail(email);
-    const store = loadStore();
-    const rec = store.accounts[clean];
-    if (!rec) return { ok: false, error: '账号不存在' };
-
-    const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
-    try {
-      let quotaData = null;
-      if (opts.mockQuotaSnapshot) {
-        quotaData = {
-          projectId: rec.projectId,
-          tierId: rec.tierId,
-          snapshot: opts.mockQuotaSnapshot,
-          fetchedAtMs: nowMs
+        const deltaPp = Number((endPct - startPct).toFixed(2));
+        const interval = {
+          id: `qi_${scopeKey}_${pool.poolKey}_${nowMs}`,
+          email: cleanEmail,
+          accountScopeKey: scopeKey,
+          poolKey: pool.poolKey,
+          poolTitle: pool.title || pool.poolKey,
+          windowKey: winKey,
+          windowShort: winShort,
+          startAtMs: prevAtMs,
+          endAtMs: nowMs,
+          startRemainingPct: startPct,
+          endRemainingPct: endPct,
+          deltaPp, // 正值表示回升/重置，负值表示下降（如 -8.0）
+          requestCount: localStats.requestCount || 0,
+          uncachedInputTokens: localStats.uncachedInputTokens || 0,
+          cacheReadTokens: localStats.cacheReadTokens || 0,
+          outputTokens: localStats.outputTokens || 0,
+          totalTokens: localStats.totalTokens || 0,
+          keepaliveRequests: localStats.keepaliveRequests || 0,
+          keepaliveTokens: localStats.keepaliveTokens || 0,
+          hasSamplingGap: hasGap,
+          splitReason,
+          isReliableContinuous: !splitReason && !hasGap,
+          updatedAtMs: nowMs,
+          disclaimer: '同一账号其余设备并发使用、平台按比例取整、滚动恢复及采样延迟均会导致账面百分比变化与本机 Token 消耗不成严格线性关系。'
         };
-      } else {
-        const freshCred = await ensureFreshTokenForAccount(clean);
-        quotaData = await fetchAccountQuotaViaCloudCode(freshCred.accessToken, {
+        store.quotaIntervals.push(interval);
+      }
+
+      // 保留最近 200 条对照区间，防无限膨胀
+      if (store.quotaIntervals.length > 200) {
+        store.quotaIntervals = store.quotaIntervals.slice(-200);
+      }
+    }
+
+    /**
+     * 从历史记录中归并连续 30s 无断点碎片，并按最新归属账本重算每个对照区间的本机调用统计
+     */
+    function rebuildQuotaIntervalsFromHistory(options = {}) {
+      const gapSplitMs = Number(options.gapSplitMs) || 30 * 60 * 1000;
+      const store = loadStore();
+      const rawList = Array.isArray(store.quotaIntervals) ? store.quotaIntervals.slice() : [];
+      const sorted = rawList
+        .filter(iv => iv && iv.accountScopeKey && iv.poolKey && Number.isFinite(iv.startAtMs) && Number.isFinite(iv.endAtMs))
+        .sort((a, b) => (a.startAtMs - b.startAtMs) || (a.endAtMs - b.endAtMs));
+
+      const merged = [];
+      for (const cur of sorted) {
+        const prev = merged.length > 0 ? merged[merged.length - 1] : null;
+        const canMerge = prev
+          && prev.accountScopeKey === cur.accountScopeKey
+          && prev.poolKey === cur.poolKey
+          && !prev.splitReason && !prev.hasSamplingGap && prev.isReliableContinuous !== false
+          && !cur.splitReason && !cur.hasSamplingGap && cur.isReliableContinuous !== false
+          && cur.startAtMs >= prev.startAtMs
+          && (cur.startAtMs - prev.endAtMs) <= gapSplitMs
+          && cur.endRemainingPct <= (cur.startRemainingPct + 1.0);
+
+        if (canMerge) {
+          prev.endAtMs = Math.max(prev.endAtMs, cur.endAtMs);
+          prev.endRemainingPct = cur.endRemainingPct;
+          prev.deltaPp = Number((prev.endRemainingPct - prev.startRemainingPct).toFixed(2));
+          prev.updatedAtMs = Math.max(prev.updatedAtMs || 0, cur.updatedAtMs || cur.endAtMs);
+        } else {
+          merged.push({ ...cur });
+        }
+      }
+
+      for (const iv of merged) {
+        const localStats = queryIntervalLocalUsage(iv.accountScopeKey, iv.poolKey, iv.startAtMs, iv.endAtMs, options);
+        iv.requestCount = localStats.requestCount || 0;
+        iv.uncachedInputTokens = localStats.uncachedInputTokens || 0;
+        iv.cacheReadTokens = localStats.cacheReadTokens || 0;
+        iv.outputTokens = localStats.outputTokens || 0;
+        iv.totalTokens = localStats.totalTokens || 0;
+        iv.keepaliveRequests = localStats.keepaliveRequests || 0;
+        iv.keepaliveTokens = localStats.keepaliveTokens || 0;
+      }
+
+      store.quotaIntervals = merged.slice(-200);
+      saveStore(store);
+      return { ok: true, beforeCount: rawList.length, afterCount: store.quotaIntervals.length, intervals: store.quotaIntervals };
+    }
+
+    async function refreshAccountQuota(email, opts = {}) {
+      const clean = normalizeEmail(email);
+      const store = loadStore();
+      const rec = store.accounts[clean];
+      if (!rec) return { ok: false, error: '账号不存在' };
+
+      const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
+      try {
+        let quotaData = null;
+        if (opts.mockQuotaSnapshot) {
+          quotaData = {
+            projectId: rec.projectId,
+            tierId: rec.tierId,
+            snapshot: opts.mockQuotaSnapshot,
+            fetchedAtMs: nowMs
+          };
+        } else {
+          const freshCred = await ensureFreshTokenForAccount(clean);
+          quotaData = await fetchAccountQuotaViaCloudCode(freshCred.accessToken, {
+            email: clean,
+            projectId: rec.projectId,
+            fetch: customFetch,
+            nowMs
+          });
+        }
+
+        const freshStore = loadStore();
+        const targetRec = freshStore.accounts[clean];
+        if (!targetRec) return { ok: false, error: '账号已被移除' };
+
+        const prevSnap = targetRec.quotaSnapshot || null;
+        const prevAtMs = targetRec.lastQuotaUpdatedAtMs || null;
+
+        recordQuotaComparisonSample(
+          freshStore,
+          clean,
+          prevSnap,
+          prevAtMs,
+          quotaData.snapshot,
+          quotaData.fetchedAtMs || nowMs,
+          {
+            accountSwitched: Boolean(opts.accountSwitched),
+            hadStaleOrOfflineGap: Boolean(opts.hadStaleOrOfflineGap),
+            queryLocalUsageInWindow: opts.queryLocalUsageInWindow
+          }
+        );
+
+        targetRec.projectId = quotaData.projectId ?? targetRec.projectId;
+        targetRec.tierId = quotaData.tierId ?? targetRec.tierId;
+        targetRec.tierName = quotaData.tierName || quotaData.snapshot?.planStatus?.tierName || targetRec.tierName || null;
+        targetRec.quotaSnapshot = quotaData.snapshot;
+        targetRec.lastQuotaUpdatedAtMs = quotaData.fetchedAtMs || nowMs;
+        targetRec.lastQuotaError = null;
+        targetRec.lastQuotaErrorMeta = null;
+        targetRec.authInvalid = false;
+        targetRec.authError = null;
+        saveStore(freshStore);
+        return { ok: true, account: sanitizeAccountForView(targetRec, freshStore.activeAccountEmail) };
+      } catch (e) {
+        const freshStore = loadStore();
+        const diagEntry = recordDiag(freshStore, {
+          at: new Date().toISOString(),
+          flow: 'refresh_quota',
+          stage: e.stage || 'quota_fetch',
+          targetHost: e.targetHost || 'cloudcode-pa.googleapis.com',
+          httpStatus: Number.isFinite(Number(e.httpStatus)) ? Number(e.httpStatus) : null,
+          proxySource: e.proxySource || null,
+          proxyEndpoint: e.proxyEndpoint || null,
+          errorCode: e.errorCode || e.code || null,
+          error: e.message || String(e),
+          emailMasked: maskEmail(clean)
+        });
+        if (freshStore.accounts[clean]) {
+          freshStore.accounts[clean].lastQuotaError = e.message;
+          freshStore.accounts[clean].lastQuotaErrorMeta = diagEntry;
+          if (e.isAuthInvalid) {
+            freshStore.accounts[clean].authInvalid = true;
+            freshStore.accounts[clean].authError = e.message;
+          }
+          saveStore(freshStore);
+        } else {
+          saveStore(freshStore);
+        }
+        return {
+          ok: false,
+          error: e.message,
+          stage: diagEntry.stage,
+          targetHost: diagEntry.targetHost,
+          httpStatus: diagEntry.httpStatus,
+          diagnostics: diagEntry,
+          authInvalid: Boolean(e.isAuthInvalid),
+          isClientMismatch: Boolean(e.isClientMismatch)
+        };
+      }
+    }
+
+    /**
+     * 同步主面板通过本地 Language Server 拉取到的当前登录账号额度快照（避免重复轮询！共用同一条刷新链路）
+     */
+    function syncActiveHostQuotaSnapshot(hostQuotaResult, hostEmail, opts = {}) {
+      if (isSwitchLockActive()) return null;
+      const clean = normalizeEmail(hostEmail);
+      if (!clean || !hostQuotaResult?.snapshot) return null;
+      const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : (hostQuotaResult.fetchedAtMs || Date.now());
+      const store = loadStore();
+      const prevActive = store.activeAccountEmail;
+      const accountSwitched = Boolean(prevActive && prevActive !== clean);
+      let rec = store.accounts[clean];
+      if (!rec) {
+        rec = upsertAccountRecord(store, {
           email: clean,
-          projectId: rec.projectId,
-          fetch: customFetch,
-          nowMs
+          source: 'client_auto_detected',
+          credential: {}
         });
       }
-
-      const freshStore = loadStore();
-      const targetRec = freshStore.accounts[clean];
-      if (!targetRec) return { ok: false, error: '账号已被移除' };
-
-      const prevSnap = targetRec.quotaSnapshot || null;
-      const prevAtMs = targetRec.lastQuotaUpdatedAtMs || null;
-
-      recordQuotaComparisonSample(
-        freshStore,
-        clean,
-        prevSnap,
-        prevAtMs,
-        quotaData.snapshot,
-        quotaData.fetchedAtMs || nowMs,
-        {
-          accountSwitched: Boolean(opts.accountSwitched),
-          hadStaleOrOfflineGap: Boolean(opts.hadStaleOrOfflineGap),
-          queryLocalUsageInWindow: opts.queryLocalUsageInWindow
-        }
-      );
-
-      targetRec.projectId = quotaData.projectId ?? targetRec.projectId;
-      targetRec.tierId = quotaData.tierId ?? targetRec.tierId;
-      targetRec.quotaSnapshot = quotaData.snapshot;
-      targetRec.lastQuotaUpdatedAtMs = quotaData.fetchedAtMs || nowMs;
-      targetRec.lastQuotaError = null;
-      targetRec.lastQuotaErrorMeta = null;
-      targetRec.authInvalid = false;
-      targetRec.authError = null;
-      saveStore(freshStore);
-      return { ok: true, account: sanitizeAccountForView(targetRec, freshStore.activeAccountEmail) };
-    } catch (e) {
-      const freshStore = loadStore();
-      const diagEntry = recordDiag(freshStore, {
-        at: new Date().toISOString(),
-        flow: 'refresh_quota',
-        stage: e.stage || 'quota_fetch',
-        targetHost: e.targetHost || 'cloudcode-pa.googleapis.com',
-        httpStatus: Number.isFinite(Number(e.httpStatus)) ? Number(e.httpStatus) : null,
-        proxySource: e.proxySource || null,
-        proxyEndpoint: e.proxyEndpoint || null,
-        errorCode: e.errorCode || e.code || null,
-        error: e.message || String(e),
-        emailMasked: maskEmail(clean)
+      const prevSnap = rec.quotaSnapshot || null;
+      const prevAtMs = rec.lastQuotaUpdatedAtMs || null;
+      recordQuotaComparisonSample(store, clean, prevSnap, prevAtMs, hostQuotaResult.snapshot, nowMs, {
+        accountSwitched,
+        hadStaleOrOfflineGap: Boolean(hostQuotaResult.error),
+        queryLocalUsageInWindow: opts.queryLocalUsageInWindow
       });
-      if (freshStore.accounts[clean]) {
-        freshStore.accounts[clean].lastQuotaError = e.message;
-        freshStore.accounts[clean].lastQuotaErrorMeta = diagEntry;
-        if (e.isAuthInvalid) {
-          freshStore.accounts[clean].authInvalid = true;
-          freshStore.accounts[clean].authError = e.message;
-        }
-        saveStore(freshStore);
-      } else {
-        saveStore(freshStore);
+      rec.quotaSnapshot = hostQuotaResult.snapshot;
+      rec.lastQuotaUpdatedAtMs = nowMs;
+      rec.lastQuotaError = hostQuotaResult.error || null;
+      if (!hostQuotaResult.error) rec.lastQuotaErrorMeta = null;
+      if (hostQuotaResult.planStatus?.tierName) rec.tierId = hostQuotaResult.planStatus.tierName;
+      rec.lastUsedAtMs = nowMs;
+      if (accountSwitched) {
+        closeActiveAccountSessions(store, nowMs);
       }
-      return {
-        ok: false,
-        error: e.message,
-        stage: diagEntry.stage,
-        targetHost: diagEntry.targetHost,
-        httpStatus: diagEntry.httpStatus,
-        diagnostics: diagEntry,
-        authInvalid: Boolean(e.isAuthInvalid),
-        isClientMismatch: Boolean(e.isClientMismatch)
-      };
-    }
-  }
-
-  /**
-   * 同步主面板通过本地 Language Server 拉取到的当前登录账号额度快照（避免重复轮询！共用同一条刷新链路）
-   */
-  function syncActiveHostQuotaSnapshot(hostQuotaResult, hostEmail, opts = {}) {
-    if (isSwitchLockActive()) return null;
-    const clean = normalizeEmail(hostEmail);
-    if (!clean || !hostQuotaResult?.snapshot) return null;
-    const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : (hostQuotaResult.fetchedAtMs || Date.now());
-    const store = loadStore();
-    const prevActive = store.activeAccountEmail;
-    const accountSwitched = Boolean(prevActive && prevActive !== clean);
-    let rec = store.accounts[clean];
-    if (!rec) {
-      rec = upsertAccountRecord(store, {
+      recordVerifiedAccountSession(store, {
         email: clean,
-        source: 'client_auto_detected',
-        credential: {}
+        nowMs,
+        source: 'desktop',
+        evidence: 'host_quota_sync',
+        forceNew: accountSwitched
       });
+      store.activeAccountEmail = clean;
+      saveStore(store);
+      return sanitizeAccountForView(rec, store.activeAccountEmail);
     }
-    const prevSnap = rec.quotaSnapshot || null;
-    const prevAtMs = rec.lastQuotaUpdatedAtMs || null;
-    recordQuotaComparisonSample(store, clean, prevSnap, prevAtMs, hostQuotaResult.snapshot, nowMs, {
-      accountSwitched,
-      hadStaleOrOfflineGap: Boolean(hostQuotaResult.error),
-      queryLocalUsageInWindow: opts.queryLocalUsageInWindow
-    });
-    rec.quotaSnapshot = hostQuotaResult.snapshot;
-    rec.lastQuotaUpdatedAtMs = nowMs;
-    rec.lastQuotaError = hostQuotaResult.error || null;
-    if (!hostQuotaResult.error) rec.lastQuotaErrorMeta = null;
-    if (hostQuotaResult.planStatus?.tierName) rec.tierId = hostQuotaResult.planStatus.tierName;
-    rec.lastUsedAtMs = nowMs;
-    if (accountSwitched) {
-      closeActiveAccountSessions(store, nowMs);
+
+    // =========================================================================
+    // ELV-52 Prompt Cache 保活控制器（默认禁用 + 严格边界 + 未经维护者确认严禁发模型请求）
+    // =========================================================================
+
+    function stopKeepalive(reason = 'manual_stop') {
+      const store = loadStore();
+      const wasRunning = Boolean(store.keepaliveState?.running);
+      store.keepalive.enabled = false;
+      store.keepaliveState = {
+        ...store.keepaliveState,
+        running: false,
+        stopReason: reason,
+        stoppedAtMs: Date.now()
+      };
+      saveStore(store);
+      try { if (fs.existsSync(keepaliveLockPath)) fs.unlinkSync(keepaliveLockPath); } catch { }
+      return { ok: true, wasRunning, reason, keepaliveState: store.keepaliveState };
     }
-    recordVerifiedAccountSession(store, {
-      email: clean,
-      nowMs,
-      source: 'desktop',
-      evidence: 'host_quota_sync',
-      forceNew: accountSwitched
-    });
-    store.activeAccountEmail = clean;
-    saveStore(store);
-    return sanitizeAccountForView(rec, store.activeAccountEmail);
-  }
 
-  // =========================================================================
-  // ELV-52 Prompt Cache 保活控制器（默认禁用 + 严格边界 + 未经维护者确认严禁发模型请求）
-  // =========================================================================
-
-  function stopKeepalive(reason = 'manual_stop') {
-    const store = loadStore();
-    const wasRunning = Boolean(store.keepaliveState?.running);
-    store.keepalive.enabled = false;
-    store.keepaliveState = {
-      ...store.keepaliveState,
-      running: false,
-      stopReason: reason,
-      stoppedAtMs: Date.now()
-    };
-    saveStore(store);
-    try { if (fs.existsSync(keepaliveLockPath)) fs.unlinkSync(keepaliveLockPath); } catch { }
-    return { ok: true, wasRunning, reason, keepaliveState: store.keepaliveState };
-  }
-
-  function updateKeepaliveConfig(patch = {}) {
-    const store = loadStore();
-    const next = {
-      ...store.keepalive,
-      enabled: patch.enabled !== undefined ? Boolean(patch.enabled) : store.keepalive.enabled,
-      experimentApproved: patch.experimentApproved !== undefined ? Boolean(patch.experimentApproved) : store.keepalive.experimentApproved,
-      targetAccountEmail: patch.targetAccountEmail !== undefined ? (normalizeEmail(patch.targetAccountEmail) || null) : store.keepalive.targetAccountEmail,
-      targetSessionId: patch.targetSessionId !== undefined ? (patch.targetSessionId ? String(patch.targetSessionId).trim() : null) : store.keepalive.targetSessionId,
-      targetModelId: patch.targetModelId !== undefined ? (patch.targetModelId ? String(patch.targetModelId).trim() : null) : store.keepalive.targetModelId,
-      intervalSec: patch.intervalSec !== undefined ? Math.max(60, Math.min(1800, Number(patch.intervalSec) || 240)) : store.keepalive.intervalSec,
-      maxDurationMin: patch.maxDurationMin !== undefined ? Math.max(1, Math.min(240, Number(patch.maxDurationMin) || 30)) : store.keepalive.maxDurationMin,
-      maxRequests: patch.maxRequests !== undefined ? Math.max(1, Math.min(20, Number(patch.maxRequests) || 6)) : store.keepalive.maxRequests
-    };
-    store.keepalive = next;
-    if (!next.enabled) {
-      store.keepaliveState = { ...store.keepaliveState, running: false, stopReason: 'disabled_by_user' };
+    function updateKeepaliveConfig(patch = {}) {
+      const store = loadStore();
+      const next = {
+        ...store.keepalive,
+        enabled: patch.enabled !== undefined ? Boolean(patch.enabled) : store.keepalive.enabled,
+        experimentApproved: patch.experimentApproved !== undefined ? Boolean(patch.experimentApproved) : store.keepalive.experimentApproved,
+        targetAccountEmail: patch.targetAccountEmail !== undefined ? (normalizeEmail(patch.targetAccountEmail) || null) : store.keepalive.targetAccountEmail,
+        targetSessionId: patch.targetSessionId !== undefined ? (patch.targetSessionId ? String(patch.targetSessionId).trim() : null) : store.keepalive.targetSessionId,
+        targetModelId: patch.targetModelId !== undefined ? (patch.targetModelId ? String(patch.targetModelId).trim() : null) : store.keepalive.targetModelId,
+        intervalSec: patch.intervalSec !== undefined ? Math.max(60, Math.min(1800, Number(patch.intervalSec) || 240)) : store.keepalive.intervalSec,
+        maxDurationMin: patch.maxDurationMin !== undefined ? Math.max(1, Math.min(240, Number(patch.maxDurationMin) || 30)) : store.keepalive.maxDurationMin,
+        maxRequests: patch.maxRequests !== undefined ? Math.max(1, Math.min(20, Number(patch.maxRequests) || 6)) : store.keepalive.maxRequests
+      };
+      store.keepalive = next;
+      if (!next.enabled) {
+        store.keepaliveState = { ...store.keepaliveState, running: false, stopReason: 'disabled_by_user' };
+      }
+      saveStore(store);
+      return { ok: true, keepalive: next, keepaliveState: store.keepaliveState };
     }
-    saveStore(store);
-    return { ok: true, keepalive: next, keepaliveState: store.keepaliveState };
-  }
 
   async function evaluateKeepaliveTick(ctx = {}) {
     const nowMs = Number.isFinite(Number(ctx.nowMs)) ? Number(ctx.nowMs) : Date.now();
@@ -2742,8 +3071,13 @@ function createAccountsManager(options = {}) {
     if (inFlightSwitch) return { ok: false, error: '已有切号任务正在执行，请勿并发触发', busy: true };
 
     const execSwitch = async () => {
+      const callNowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
       const store = loadStore();
       const targetRec = store.accounts[cleanTarget];
+      const pending = store.autoSwitchStatus.lastResult;
+      if (pending?.restartPending && callNowMs - pending.atMs < 120000) {
+        return { ok: false, busy: true, error: '正在等待客户端重启后验证账号切换' };
+      }
       if (!targetRec) return { ok: false, error: `未在多账号列表中找到 ${cleanTarget}` };
       if (!targetRec.credential?.refreshToken) {
         return { ok: false, error: `${cleanTarget} 缺少 refresh_token，无法切换客户端登录态` };
@@ -2767,15 +3101,15 @@ function createAccountsManager(options = {}) {
         } catch { }
       }
 
-      const lock = acquireSimpleLock(switchLockPath, 25000);
-      if (!lock.ok) {
-        return { ok: false, error: '另一 Antigravity 窗口正在执行切号，本窗口已跳过以防并发冲突', locked: true };
-      }
+    const lock = acquireSimpleLock(switchLockPath, 25000);
+    if (!lock.ok) {
+      return { ok: false, error: '另一 Antigravity 窗口正在执行切号，本窗口已跳过以防并发冲突', busy: true, locked: true };
+    }
 
       let preSnap = null;
       const preStore = loadStore();
       const preActiveEmail = preStore.activeAccountEmail || null;
-      const switchStartMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
+      const switchStartMs = callNowMs;
       const preOpenSessions = (preStore.accountSessions || [])
         .filter(s => s && s.endAtMs == null && normalizeEmail(s.email) === normalizeEmail(preActiveEmail))
         .map(s => ({ startAtMs: s.startAtMs, source: s.source || 'desktop' }));
@@ -2834,10 +3168,28 @@ function createAccountsManager(options = {}) {
           freshCred = await ensureFreshTokenForAccount(cleanTarget);
         }
 
-        // 3. 保存切换前系统凭据快照用于失败回滚（仅在确认切换生效后才切割账本活跃时段）
+        // 3. 写入凭据前执行原子提交前核对（核实账号/空闲/单窗口/无未保存草稿等条件未发生变更）
+        if (typeof opts.preCommitCheck === 'function') {
+          const preWriteCheck = await opts.preCommitCheck({
+            phase: 'before_credential_write',
+            targetEmail: cleanTarget,
+            preActiveEmail
+          });
+          if (preWriteCheck && preWriteCheck.ok === false) {
+            return {
+              ok: false,
+              abortedBeforeWrite: true,
+              deferred: Boolean(preWriteCheck.deferred),
+              reason: preWriteCheck.reason || 'pre_commit_aborted',
+              error: preWriteCheck.error || '提交切换前状态已变化，已取消写入凭据'
+            };
+          }
+        }
+
+        // 4. 保存切换前系统凭据快照用于失败回滚（仅在确认切换生效后才切割账本活跃时段）
         preSnap = credStore.captureSnapshot();
 
-        // 4. 原子同步写入 OS 共享凭据、Desktop/IDE state.vscdb 及 CLI ~/.gemini
+        // 5. 原子同步写入 OS 共享凭据、Desktop/IDE state.vscdb 及 CLI ~/.gemini
         const writeRes = credStore.applyCredential({
           email: cleanTarget,
           name: targetRec.name,
@@ -2850,7 +3202,7 @@ function createAccountsManager(options = {}) {
           const rb = credStore.restoreSnapshot(preSnap);
           const rolledBack = Boolean(rb?.ok !== false);
           const errMsg = `写入客户端凭据失败（阶段: ${writeRes.stage}）：${writeRes.error || '未知错误'}，已自动回滚至切换前状态`;
-          finalizeFailureStore({ errMsg, rolledBack, verifiedEmail: '', atMs: Date.now() });
+          finalizeFailureStore({ errMsg, rolledBack, verifiedEmail: '', atMs: callNowMs });
           return {
             ok: false,
             error: errMsg,
@@ -2858,175 +3210,387 @@ function createAccountsManager(options = {}) {
           };
         }
 
-        // 5. 重启语言服务使其加载新凭据（不暴力 kill 主 Electron UI 进程，如实告知重启 LS 行为）
-        let lsRestarted = false;
-        if (opts.restartLanguageServer !== false) {
-          const lsRes = await Promise.resolve(restartLanguageServersFn({ includeCli: false }));
-          lsRestarted = Boolean(lsRes && lsRes.ok !== false);
-        }
-
-        // 6. 切换完成后必须通过 GetUserStatus 验证真实生效邮箱，未验证前不将后续流量记入目标账号！
-        // 超时默认值 DEFAULT_SWITCH_VERIFY_TIMEOUT_MS (20000ms) 依据：
-        // 宿主 Auto-Restart 冷却 2000ms + Go 语言服务拉起与本地 TLS/状态初始化 2000~5000ms + 窗口 reload / daemon hub_*.json 落盘与轮询余量。
-        let verifiedEmail = '';
-        let verifiedEffective = false;
-        if (typeof getHostUserStatusFn === 'function') {
-          if (lsRestarted) {
-            await new Promise(r => setTimeout(r, 350));
-          }
-          const verifyTimeout = Number(opts.verifyTimeoutMs) || DEFAULT_SWITCH_VERIFY_TIMEOUT_MS;
-          const deadline = Date.now() + verifyTimeout;
-          while (Date.now() <= deadline) {
+        if (typeof opts.restartClient === 'function') {
+          const noticeMeta = {
+            ...(opts.switchContext || {}),
+            fromEmailMasked: maskEmail(preActiveEmail),
+            targetEmailMasked: maskEmail(cleanTarget),
+            trigger: opts.trigger || 'manual',
+            noticeId: opts.switchContext?.noticeId || `as_pre_${switchStartMs}`
+          };
+          if (typeof opts.onBeforeRestartNotice === 'function') {
             try {
-              const hs = await getHostUserStatusFn({ force: true });
-              verifiedEmail = normalizeEmail(hs?.email || hs?.userStatus?.email || '');
-              if (verifiedEmail === cleanTarget) {
-                verifiedEffective = true;
-                break;
-              }
+              await opts.onBeforeRestartNotice(noticeMeta);
             } catch { }
-            if (Date.now() + 500 > deadline) break;
-            await new Promise(r => setTimeout(r, 450));
+            const noticeWaitMs = Number.isFinite(Number(opts.preRestartNoticeDelayMs))
+              ? Math.max(0, Number(opts.preRestartNoticeDelayMs))
+              : 0;
+            if (noticeWaitMs > 0) {
+              await new Promise(r => setTimeout(r, noticeWaitMs));
+            }
           }
-        } else if (opts.assumeVerifiedInDryRun) {
-          verifiedEmail = cleanTarget;
-          verifiedEffective = true;
-        }
-
-        const nextStore = loadStore();
-        const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
-        if (verifiedEffective) {
-          closeActiveAccountSessions(nextStore, nowMs);
-          nextStore.activeAccountEmail = cleanTarget;
-          if (nextStore.accounts[cleanTarget]) nextStore.accounts[cleanTarget].lastUsedAtMs = nowMs;
-          recordVerifiedAccountSession(nextStore, {
-            email: cleanTarget,
-            nowMs,
-            source: 'desktop',
-            evidence: 'account_switch_verified',
-            forceNew: true
-          });
-          const okMessage = lsRestarted
-            ? `已切换至 ${cleanTarget}，语言服务已重启并通过 GetUserStatus 核验生效。`
-            : `已写入 ${cleanTarget} 凭据并通过生效校验（部分桌面扩展若仍显示旧缓存，建议重载窗口）。`;
-          nextStore.autoSwitchStatus = {
-            ...nextStore.autoSwitchStatus,
-            lastSwitchAtMs: nowMs,
-            lastResult: {
-              ok: true,
-              fromEmail: preActiveEmail,
-              toEmail: cleanTarget,
-              atMs: nowMs,
-              trigger: opts.trigger || 'manual',
-              rolledBack: false,
-              message: okMessage
-            },
-            lastError: null
+          if (typeof opts.preCommitCheck === 'function') {
+            const preRestartCheck = await opts.preCommitCheck({
+              phase: 'before_restart',
+              targetEmail: cleanTarget,
+              preActiveEmail,
+              switchContext: noticeMeta
+            });
+            if (preRestartCheck && preRestartCheck.ok === false) {
+              if (typeof opts.onAbortRestartNotice === 'function') {
+                try { await opts.onAbortRestartNotice(preRestartCheck); } catch { }
+              }
+              const rb = credStore.restoreSnapshot(preSnap);
+              const rolledBack = Boolean(rb?.ok !== false);
+              const abortMsg = preRestartCheck.error || '发起客户端重启前状态已变化，已回滚凭据并取消重启';
+              finalizeFailureStore({ errMsg: abortMsg, rolledBack, verifiedEmail: preActiveEmail || '', atMs: callNowMs });
+              const restoreSt = loadStore();
+              if (preRestartCheck.deferred && restoreSt.autoSwitch?.enabled) {
+                restoreSt.autoSwitchStatus.state = 'waiting_idle';
+                restoreSt.autoSwitchStatus.blockedReason = preRestartCheck.reason || 'pre_restart_aborted';
+                restoreSt.autoSwitchStatus.lastError = null;
+                saveStore(restoreSt);
+              }
+              return {
+                ok: false,
+                deferred: Boolean(preRestartCheck.deferred),
+                rolledBack,
+                reason: preRestartCheck.reason || 'pre_restart_aborted',
+                error: abortMsg
+              };
+            }
+          }
+          const pendingStore = loadStore();
+          if (pendingStore.autoSwitch?.enabled) {
+            pendingStore.autoSwitchStatus.state = 'restarting';
+          }
+          pendingStore.autoSwitchStatus.blockedReason = null;
+          pendingStore.autoSwitchStatus.blockedMeta = null;
+          pendingStore.autoSwitchStatus.lastResult = {
+            ok: false,
+            restartPending: true,
+            fromEmail: preActiveEmail,
+            toEmail: cleanTarget,
+            targetEmailMasked: maskEmail(cleanTarget),
+            noticeId: noticeMeta.noticeId,
+            poolKey: noticeMeta.poolKey || null,
+            windowKey: noticeMeta.windowKey || null,
+            metricMode: noticeMeta.metricMode || null,
+            thresholdPct: noticeMeta.thresholdPct ?? null,
+            currentRemPct: noticeMeta.currentRemPct ?? null,
+            currentUsedPct: noticeMeta.currentUsedPct ?? null,
+            atMs: switchStartMs,
+            pid: process.pid,
+            trigger: opts.trigger || 'manual'
           };
-          saveStore(nextStore);
-          return {
-            ok: true,
-            email: cleanTarget,
-            accountScopeKey: buildAccountScopeKey(cleanTarget),
-            lsRestarted,
-            verifiedEffective: true,
-            requiresWindowReloadHint: !lsRestarted,
-            message: okMessage
-          };
-        }
-
-        // 若 LS 未在校验时间内确认切换为目标邮箱，默认自动回滚并保持原活跃账号，不虚报成功！
-        let rolledBack = false;
-        if (opts.rollbackOnVerifyMismatch !== false && preSnap) {
-          try {
+          pendingStore.autoSwitchStatus.lastError = null;
+          saveStore(pendingStore);
+          const result = await opts.restartClient();
+          if (result?.cancelled) {
             const rb = credStore.restoreSnapshot(preSnap);
-            rolledBack = Boolean(rb?.ok !== false);
-          } catch { }
+            const rolledBack = Boolean(rb?.ok !== false);
+            const cancelMsg = '已取消重启客户端，已恢复原账号凭据';
+            finalizeFailureStore({ errMsg: cancelMsg, rolledBack, verifiedEmail: preActiveEmail || '', atMs: Date.now() });
+            const stRestore = loadStore();
+            stRestore.autoSwitchStatus.state = stRestore.autoSwitch?.enabled ? 'watching' : 'disabled';
+            stRestore.autoSwitchStatus.lastError = null;
+            saveStore(stRestore);
+            return { ok: false, cancelled: true, rolledBack, reason: 'user_cancelled_restart', message: cancelMsg };
+          }
+          if (!result?.supported || result.ok === false) throw new Error(result?.error || '当前客户端无法自动重启');
+          return { ok: true, restartPending: true, verifiedEffective: false, message: '已准备切换账号，正在重启客户端' };
         }
-        const failErrMsg = `凭据验证未生效，宿主暂未切换至 ${cleanTarget}${verifiedEmail ? `（当前仍回报 ${verifiedEmail}）` : ''}${rolledBack ? '，已自动回滚原凭据' : ''}。请重载或重启 Antigravity 客户端后重试。`;
-        const savedFailStore = finalizeFailureStore({ errMsg: failErrMsg, rolledBack, verifiedEmail, atMs: nowMs });
+        if (opts.requiresClientRestart) {
+            if (opts.allowManualRestartPending && !String(opts.trigger || '').startsWith('auto')) {
+              const pendingStore = loadStore();
+              pendingStore.autoSwitchStatus.lastResult = {
+                ok: false,
+                restartPending: true,
+                manualRestartRequired: true,
+                fromEmail: preActiveEmail,
+                toEmail: cleanTarget,
+                atMs: Date.now(),
+                pid: process.pid,
+                trigger: opts.trigger || 'manual'
+              };
+              pendingStore.autoSwitchStatus.lastError = null;
+              saveStore(pendingStore);
+              return {
+                ok: true,
+                restartPending: true,
+                manualRestartRequired: true,
+                verifiedEffective: false,
+                message: '已写入目标账号凭据，请手动完全退出并重启 Antigravity 客户端后生效'
+              };
+            }
+            const rb = credStore.restoreSnapshot(preSnap);
+            const rolledBack = Boolean(rb?.ok !== false);
+            const errMsg = opts.blockedRestartMessage || '当前运行模式无法自动重启客户端，已回滚原凭据';
+            finalizeFailureStore({ errMsg, rolledBack, verifiedEmail: preActiveEmail || '', atMs: Date.now() });
+            return { ok: false, rolledBack, reason: opts.blockedRestartReason || 'client_restart_unavailable', error: errMsg };
+          }
+
+          // 5. 重启语言服务使其加载新凭据
+          let lsRestarted = false;
+          if (opts.restartLanguageServer !== false) {
+            const lsRes = await Promise.resolve(restartLanguageServersFn({ includeCli: false }));
+            lsRestarted = Boolean(lsRes && lsRes.ok !== false);
+          }
+
+          // 6. 切换完成后必须通过 GetUserStatus 验证真实生效邮箱，未验证前不将后续流量记入目标账号！
+          // 超时默认值 DEFAULT_SWITCH_VERIFY_TIMEOUT_MS (20000ms) 依据：
+          // 宿主 Auto-Restart 冷却 2000ms + Go 语言服务拉起与本地 TLS/状态初始化 2000~5000ms + 窗口 reload / daemon hub_*.json 落盘与轮询余量。
+          let verifiedEmail = '';
+          let verifiedEffective = false;
+          if (typeof getHostUserStatusFn === 'function') {
+            if (lsRestarted) {
+              await new Promise(r => setTimeout(r, 350));
+            }
+            const verifyTimeout = Number(opts.verifyTimeoutMs) || DEFAULT_SWITCH_VERIFY_TIMEOUT_MS;
+            const deadline = Date.now() + verifyTimeout;
+            while (Date.now() <= deadline) {
+              try {
+                const hs = await getHostUserStatusFn({ force: true });
+                verifiedEmail = normalizeEmail(hs?.email || hs?.userStatus?.email || '');
+                if (verifiedEmail === cleanTarget) {
+                  verifiedEffective = true;
+                  break;
+                }
+              } catch { }
+              if (Date.now() + 500 > deadline) break;
+              await new Promise(r => setTimeout(r, 450));
+            }
+          } else if (opts.assumeVerifiedInDryRun) {
+            verifiedEmail = cleanTarget;
+            verifiedEffective = true;
+          }
+
+          const nextStore = loadStore();
+          const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
+          if (verifiedEffective) {
+            closeActiveAccountSessions(nextStore, nowMs);
+            nextStore.activeAccountEmail = cleanTarget;
+            if (nextStore.accounts[cleanTarget]) nextStore.accounts[cleanTarget].lastUsedAtMs = nowMs;
+            recordVerifiedAccountSession(nextStore, {
+              email: cleanTarget,
+              nowMs,
+              source: 'desktop',
+              evidence: 'account_switch_verified',
+              forceNew: true
+            });
+            const okMessage = lsRestarted
+              ? `已切换至 ${cleanTarget}，语言服务已重启并通过 GetUserStatus 核验生效。`
+              : `已写入 ${cleanTarget} 凭据并通过生效校验（部分桌面扩展若仍显示旧缓存，建议重载窗口）。`;
+            nextStore.autoSwitchStatus = {
+              ...nextStore.autoSwitchStatus,
+              lastSwitchAtMs: nowMs,
+              blockedReason: null,
+              blockedMeta: null,
+              lastResult: {
+                ok: true,
+                fromEmail: preActiveEmail,
+                toEmail: cleanTarget,
+                atMs: nowMs,
+                trigger: opts.trigger || 'manual',
+                rolledBack: false,
+                message: okMessage
+              },
+              lastError: null
+            };
+            saveStore(nextStore);
+            return {
+              ok: true,
+              email: cleanTarget,
+              accountScopeKey: buildAccountScopeKey(cleanTarget),
+              lsRestarted,
+              verifiedEffective: true,
+              requiresWindowReloadHint: !lsRestarted,
+              message: okMessage
+            };
+          }
+
+          // 若 LS 未在校验时间内确认切换为目标邮箱，默认自动回滚并保持原活跃账号，不虚报成功！
+          let rolledBack = false;
+          if (opts.rollbackOnVerifyMismatch !== false && preSnap) {
+            try {
+              const rb = credStore.restoreSnapshot(preSnap);
+              rolledBack = Boolean(rb?.ok !== false);
+            } catch { }
+          }
+          const failErrMsg = `凭据验证未生效，宿主暂未切换至 ${cleanTarget}${verifiedEmail ? `（当前仍回报 ${verifiedEmail}）` : ''}${rolledBack ? '，已自动回滚原凭据' : ''}。请重载或重启 Antigravity 客户端后重试。`;
+          const savedFailStore = finalizeFailureStore({ errMsg: failErrMsg, rolledBack, verifiedEmail, atMs: nowMs });
+          return {
+            ok: false,
+            verifiedEffective: false,
+            rolledBack,
+            lsRestarted,
+            observedEmail: verifiedEmail || null,
+            activeAccountEmail: savedFailStore.activeAccountEmail || null,
+            error: failErrMsg
+          };
+        } catch (e) {
+          let rolledBack = false;
+          if (preSnap) {
+            try {
+              const rb = credStore.restoreSnapshot(preSnap);
+              rolledBack = Boolean(rb?.ok !== false);
+            } catch { }
+          }
+          const errMsg = e.message || String(e);
+          finalizeFailureStore({ errMsg, rolledBack, verifiedEmail: '', atMs: Date.now() });
+          return { ok: false, error: errMsg, rolledBack, authInvalid: Boolean(e.isAuthInvalid) };
+        } finally {
+          lock.release();
+        }
+      };
+
+      inFlightSwitch = execSwitch().finally(() => { inFlightSwitch = null; });
+      return inFlightSwitch;
+    }
+
+    // =========================================================================
+    // 阈值自动切号状态机（默认关闭，仅当用户显式开启、数据新鲜可用、且存在合适候选时才执行）
+    // =========================================================================
+
+    function updateAutoSwitchConfig(patch = {}) {
+      const store = loadStore();
+      const prev = store.autoSwitch || DEFAULT_AUTO_SWITCH_CONFIG;
+      const prevEnabled = Boolean(prev.enabled);
+      const next = {
+        ...prev,
+        enabled: patch.enabled !== undefined ? Boolean(patch.enabled) : prev.enabled,
+        metricMode: patch.metricMode === 'used_pct' ? 'used_pct' : (patch.metricMode === 'remaining_pct' ? 'remaining_pct' : prev.metricMode),
+        poolKey: patch.poolKey ? String(patch.poolKey).trim() : prev.poolKey,
+        windowKey: ['primary', '5h', '7d', '24h'].includes(patch.windowKey) ? patch.windowKey : prev.windowKey,
+        thresholdPct: patch.thresholdPct !== undefined && Number.isFinite(Number(patch.thresholdPct)) ? Math.max(1, Math.min(95, Number(patch.thresholdPct))) : prev.thresholdPct,
+        debounceSec: patch.debounceSec !== undefined && Number.isFinite(Number(patch.debounceSec)) ? Math.max(0, Math.min(300, Number(patch.debounceSec))) : prev.debounceSec,
+        cooldownSec: patch.cooldownSec !== undefined && Number.isFinite(Number(patch.cooldownSec)) ? Math.max(10, Math.min(3600, Number(patch.cooldownSec))) : prev.cooldownSec,
+        waitUntilIdle: patch.waitUntilIdle !== undefined ? Boolean(patch.waitUntilIdle) : prev.waitUntilIdle,
+        strategy: patch.strategy === 'candidate_order' ? 'candidate_order' : (patch.strategy === 'highest_quota' ? 'highest_quota' : prev.strategy),
+        candidates: Array.isArray(patch.candidates)
+          ? Array.from(new Set(patch.candidates.map(normalizeEmail).filter(Boolean)))
+          : prev.candidates
+      };
+      const targetCheck = validateAutoSwitchQuotaTarget(next.poolKey, next.windowKey);
+      if (next.enabled && !targetCheck.valid) {
+        // 保留原有配置与候选账号，但阻止旧规则进入监控状态
+        store.autoSwitchStatus = {
+          ...(store.autoSwitchStatus || {}),
+          state: 'blocked_legacy_rule',
+          blockedReason: 'legacy_rule_needs_migration',
+          blockedMeta: { poolKey: next.poolKey, windowKey: next.windowKey },
+          needsRuleMigration: true
+        };
+        debounceState.clear();
+        saveStore(store);
         return {
           ok: false,
-          verifiedEffective: false,
-          rolledBack,
-          lsRestarted,
-          observedEmail: verifiedEmail || null,
-          activeAccountEmail: savedFailStore.activeAccountEmail || null,
-          error: failErrMsg
+          reason: 'legacy_rule_needs_migration',
+          error: '当前规则使用了旧版监控池或未指定周期，请先从四项具体监控额度中选择一项并保存',
+          autoSwitch: store.autoSwitch,
+          autoSwitchStatus: store.autoSwitchStatus
         };
-      } catch (e) {
-        let rolledBack = false;
-        if (preSnap) {
-          try {
-            const rb = credStore.restoreSnapshot(preSnap);
-            rolledBack = Boolean(rb?.ok !== false);
-          } catch { }
-        }
-        const errMsg = e.message || String(e);
-        finalizeFailureStore({ errMsg, rolledBack, verifiedEmail: '', atMs: Date.now() });
-        return { ok: false, error: errMsg, rolledBack, authInvalid: Boolean(e.isAuthInvalid) };
-      } finally {
-        lock.release();
       }
-    };
-
-    inFlightSwitch = execSwitch().finally(() => { inFlightSwitch = null; });
-    return inFlightSwitch;
-  }
-
-  // =========================================================================
-  // 阈值自动切号状态机（默认关闭，仅当用户显式开启、数据新鲜可用、且存在合适候选时才执行）
-  // =========================================================================
-
-  function updateAutoSwitchConfig(patch = {}) {
-    const store = loadStore();
-    const prevEnabled = Boolean(store.autoSwitch.enabled);
-    const next = {
-      ...store.autoSwitch,
-      enabled: patch.enabled !== undefined ? Boolean(patch.enabled) : store.autoSwitch.enabled,
-      metricMode: patch.metricMode === 'used_pct' ? 'used_pct' : (patch.metricMode === 'remaining_pct' ? 'remaining_pct' : store.autoSwitch.metricMode),
-      poolKey: patch.poolKey ? String(patch.poolKey).trim() : store.autoSwitch.poolKey,
-      windowKey: ['primary', '5h', '7d', '24h'].includes(patch.windowKey) ? patch.windowKey : store.autoSwitch.windowKey,
-      thresholdPct: patch.thresholdPct !== undefined && Number.isFinite(Number(patch.thresholdPct)) ? Math.max(1, Math.min(95, Number(patch.thresholdPct))) : store.autoSwitch.thresholdPct,
-      debounceSec: patch.debounceSec !== undefined && Number.isFinite(Number(patch.debounceSec)) ? Math.max(0, Math.min(300, Number(patch.debounceSec))) : store.autoSwitch.debounceSec,
-      cooldownSec: patch.cooldownSec !== undefined && Number.isFinite(Number(patch.cooldownSec)) ? Math.max(10, Math.min(3600, Number(patch.cooldownSec))) : store.autoSwitch.cooldownSec,
-      waitUntilIdle: patch.waitUntilIdle !== undefined ? Boolean(patch.waitUntilIdle) : store.autoSwitch.waitUntilIdle,
-      strategy: patch.strategy === 'candidate_order' ? 'candidate_order' : (patch.strategy === 'highest_quota' ? 'highest_quota' : store.autoSwitch.strategy),
-      candidates: Array.isArray(patch.candidates)
-        ? Array.from(new Set(patch.candidates.map(normalizeEmail).filter(Boolean)))
-        : store.autoSwitch.candidates
-    };
-    store.autoSwitch = next;
-    if (!next.enabled) {
-      store.autoSwitchStatus.state = 'disabled';
-      store.autoSwitchStatus.blockedReason = null;
-      debounceState.clear();
-    } else if (!prevEnabled) {
-      store.autoSwitchStatus.state = 'watching';
-      store.autoSwitchStatus.lastError = null;
-      store.autoSwitchStatus.blockedReason = null;
+      const ruleChanged = prev.poolKey !== next.poolKey
+        || prev.windowKey !== next.windowKey
+        || prev.metricMode !== next.metricMode
+        || prev.thresholdPct !== next.thresholdPct
+        || JSON.stringify(prev.candidates || []) !== JSON.stringify(next.candidates || []);
+      store.autoSwitch = next;
+      if (!next.enabled) {
+        store.autoSwitchStatus.state = 'disabled';
+        store.autoSwitchStatus.blockedReason = null;
+        store.autoSwitchStatus.blockedMeta = null;
+        store.autoSwitchStatus.needsRuleMigration = !targetCheck.valid;
+        debounceState.clear();
+      } else if (!prevEnabled || ruleChanged || store.autoSwitchStatus.state === 'blocked_legacy_rule') {
+        store.autoSwitchStatus.state = 'watching';
+        store.autoSwitchStatus.lastError = null;
+        store.autoSwitchStatus.blockedReason = null;
+        store.autoSwitchStatus.blockedMeta = null;
+        store.autoSwitchStatus.needsRuleMigration = false;
+        debounceState.clear();
+      }
+      saveStore(store);
+      return { ok: true, autoSwitch: next, autoSwitchStatus: store.autoSwitchStatus };
     }
-    saveStore(store);
-    return { ok: true, autoSwitch: next, autoSwitchStatus: store.autoSwitchStatus };
-  }
 
-  function extractPoolMetricPct(quotaSnapshot, poolKey, windowKey = 'primary') {
-    if (!quotaSnapshot || !Array.isArray(quotaSnapshot.pools)) return null;
-    const pool = quotaSnapshot.pools.find(p => p.poolKey === poolKey);
-    if (!pool || pool.noPermission) return null;
+  /**
+   * 精细提取目标池与窗口的剩余与已用额度百分比，保留精确浮点值用于阈值判断
+   * 绝不将无权限、缺池、缺窗口、已过重置点或空快照视为 0% 触发切换
+   */
+  function inspectPoolMetric(quotaSnapshot, poolKey, windowKey = '5h') {
+    if (!quotaSnapshot || !Array.isArray(quotaSnapshot.pools)) {
+      return { ok: false, pct: null, remPct: null, usedPct: null, reason: 'target_pool_missing_in_snapshot', poolKey, windowKey };
+    }
+    const pool = quotaSnapshot.pools.find(p => p && p.poolKey === poolKey);
+    if (!pool) {
+      return { ok: false, pct: null, remPct: null, usedPct: null, reason: 'target_pool_missing_in_snapshot', poolKey, windowKey };
+    }
+    if (pool.noPermission || pool.status === 'no_permission') {
+      return { ok: false, pct: null, remPct: null, usedPct: null, reason: 'target_pool_no_permission', poolKey, windowKey };
+    }
+    const buckets = Array.isArray(pool.buckets) ? pool.buckets.filter(Boolean) : [];
     let targetBucket = null;
     if (windowKey === 'primary') {
-      targetBucket = pool.primaryBucket || selectPrimaryQuotaBucket(pool.buckets || []).primaryBucket;
+      targetBucket = pool.primaryBucket || selectPrimaryQuotaBucket(buckets).primaryBucket;
+      if (!targetBucket && buckets.length === 0) {
+        if (pool.isResetPassed || pool.resetPassed) {
+          return { ok: false, pct: null, remPct: null, usedPct: null, reason: 'target_window_reset_passed', poolKey, windowKey };
+        }
+        if (pool.remainingFraction !== null && pool.remainingFraction !== undefined && Number.isFinite(Number(pool.remainingFraction))) {
+          const numFrac = Number(pool.remainingFraction);
+          const remPct = numFrac * 100;
+          const usedPct = (1 - numFrac) * 100;
+          return {
+            ok: true,
+            pct: remPct,
+            remPct,
+            usedPct,
+            displayRemPct: Math.round(remPct),
+            displayUsedPct: Math.round(usedPct),
+            reason: null,
+            poolKey,
+            windowKey
+          };
+        }
+      }
     } else {
-      targetBucket = (pool.buckets || []).find(b =>
+      targetBucket = buckets.find(b =>
         String(b.windowShort || '').toLowerCase() === windowKey ||
         String(b.windowKey || '').toLowerCase() === windowKey ||
         (windowKey === '7d' && b.windowKey === 'weekly')
       ) || null;
+      if (!targetBucket) {
+        return { ok: false, pct: null, remPct: null, usedPct: null, reason: 'target_window_unavailable', poolKey, windowKey };
+      }
     }
-    const frac = targetBucket ? targetBucket.remainingFraction : pool.remainingFraction;
-    if (frac === null || frac === undefined || !Number.isFinite(Number(frac))) return null;
-    return Number((Number(frac) * 100).toFixed(2));
+    if (targetBucket && (targetBucket.isResetPassed || targetBucket.resetPassed)) {
+      return { ok: false, pct: null, remPct: null, usedPct: null, reason: 'target_window_reset_passed', poolKey, windowKey };
+    }
+    const frac = targetBucket ? targetBucket.remainingFraction : null;
+    if (frac === null || frac === undefined || !Number.isFinite(Number(frac))) {
+      return { ok: false, pct: null, remPct: null, usedPct: null, reason: 'target_pool_missing_value', poolKey, windowKey };
+    }
+    const numFrac = Number(frac);
+    const remPct = numFrac * 100;
+    const usedPct = (1 - numFrac) * 100;
+    return {
+      ok: true,
+      pct: remPct,
+      remPct,
+      usedPct,
+      displayRemPct: Math.round(remPct),
+      displayUsedPct: Math.round(usedPct),
+      reason: null,
+      poolKey,
+      windowKey
+    };
+  }
+
+  function extractPoolMetricPct(quotaSnapshot, poolKey, windowKey = '5h') {
+    const res = inspectPoolMetric(quotaSnapshot, poolKey, windowKey);
+    return res.ok ? res.pct : null;
   }
 
   async function evaluateAutoSwitch(ctx = {}) {
@@ -3038,113 +3602,264 @@ function createAccountsManager(options = {}) {
     if (!cfg.enabled) {
       return { ok: true, action: 'noop', state: 'disabled' };
     }
+    if (st.lastResult?.restartPending && Date.now() - st.lastResult.atMs < 120000) {
+      return { ok: true, action: 'blocked', state: st.state, reason: 'client_restart_pending' };
+    }
+    if (isSwitchLockActive()) {
+      return { ok: true, action: 'blocked', state: 'switching', reason: 'switch_lock_active' };
+    }
     st.lastCheckAtMs = nowMs;
+
+    // 0. 校验是否为合法的四项具体监控额度；旧规则保留配置但不允许自动评估
+    const targetCheck = validateAutoSwitchQuotaTarget(cfg.poolKey, cfg.windowKey);
+    if (!targetCheck.valid) {
+      st.state = 'blocked_legacy_rule';
+      st.blockedReason = 'legacy_rule_needs_migration';
+      st.blockedMeta = { poolKey: cfg.poolKey, windowKey: cfg.windowKey };
+      st.needsRuleMigration = true;
+      debounceState.clear();
+      logAutoSwitchDiag(store, st.state, { poolKey: cfg.poolKey, windowKey: cfg.windowKey, reason: st.blockedReason, ok: false, nowMs });
+      saveStore(store);
+      return { ok: true, action: 'blocked', reason: st.blockedReason, state: st.state, blockedMeta: st.blockedMeta };
+    }
+    st.needsRuleMigration = false;
+
+        const activeEmail = normalizeEmail(ctx.activeEmail || store.activeAccountEmail || '');
+        const activeSnapshot = ctx.activeSnapshot || store.accounts[activeEmail]?.quotaSnapshot || null;
+        if (!activeEmail || !activeSnapshot) {
+          st.state = 'blocked_missing_account';
+          st.blockedReason = 'no_active_account_or_snapshot';
+          st.blockedMeta = { activeEmail: activeEmail || null };
+          logAutoSwitchDiag(store, st.state, { reason: st.blockedReason, ok: false, nowMs });
+          saveStore(store);
+          return { ok: true, action: 'blocked', reason: st.blockedReason, state: st.state };
+        }
 
     // 1. 数据过期 / 未知 / 错误 / 无权限：严格不触发
     const syncState = ctx.syncState || 'unknown';
     if (syncState !== 'fresh') {
       st.state = 'blocked_untrusted_quota';
       st.blockedReason = `quota_state_${syncState}`;
+      st.blockedMeta = { syncState };
       debounceState.clear();
+      logAutoSwitchDiag(store, st.state, { reason: st.blockedReason, syncState, ok: false, nowMs });
       saveStore(store);
       return { ok: true, action: 'blocked', reason: st.blockedReason, state: st.state };
     }
 
-    const activeEmail = normalizeEmail(ctx.activeEmail || store.activeAccountEmail || '');
-    const activeSnapshot = ctx.activeSnapshot || store.accounts[activeEmail]?.quotaSnapshot || null;
-    if (!activeEmail || !activeSnapshot) {
-      st.state = 'blocked_missing_account';
-      st.blockedReason = 'no_active_account_or_snapshot';
-      saveStore(store);
-      return { ok: true, action: 'blocked', reason: st.blockedReason, state: st.state };
-    }
+        const metric = inspectPoolMetric(activeSnapshot, cfg.poolKey, cfg.windowKey);
+        if (!metric.ok) {
+          st.state = 'blocked_missing_pool';
+          st.blockedReason = metric.reason || 'target_pool_missing_in_snapshot';
+          st.blockedMeta = { poolKey: cfg.poolKey, windowKey: cfg.windowKey, reason: st.blockedReason };
+          logAutoSwitchDiag(store, st.state, { poolKey: cfg.poolKey, windowKey: cfg.windowKey, reason: st.blockedReason, ok: false, nowMs });
+          saveStore(store);
+          return { ok: true, action: 'blocked', reason: st.blockedReason, state: st.state, blockedMeta: st.blockedMeta };
+        }
+        const remPct = metric.pct;
+        const usedPct = Number.isFinite(metric.usedPct) ? metric.usedPct : (100 - remPct);
 
-    const remPct = extractPoolMetricPct(activeSnapshot, cfg.poolKey, cfg.windowKey);
-    if (remPct === null) {
-      st.state = 'blocked_missing_pool';
-      st.blockedReason = 'target_pool_unavailable_or_no_permission';
-      saveStore(store);
-      return { ok: true, action: 'blocked', reason: st.blockedReason, state: st.state };
-    }
+        const dbKey = `${activeEmail}|${cfg.poolKey}|${cfg.windowKey}`;
+        // 用精确浮点百分比判断，等于阈值触发，显示取整绝不提前触发
+        const triggered = cfg.metricMode === 'used_pct'
+          ? (usedPct + AUTO_SWITCH_FLOAT_EPS >= cfg.thresholdPct)
+          : (remPct - AUTO_SWITCH_FLOAT_EPS <= cfg.thresholdPct);
+        if (!triggered) {
+          // 额度重置或滚动恢复回到安全线以上：精准清理当前规则键并恢复 watching
+          debounceState.delete(dbKey);
+          st.state = 'watching';
+          st.blockedReason = null;
+          st.blockedMeta = null;
+          saveStore(store);
+          return { ok: true, action: 'ok_above_threshold', remainingPct: remPct, usedPct, state: 'watching' };
+        }
 
-    // 检查是否触发阈值
-    const usedPct = Number((100 - remPct).toFixed(2));
-    const triggered = cfg.metricMode === 'used_pct' ? (usedPct >= cfg.thresholdPct) : (remPct <= cfg.thresholdPct);
-    if (!triggered) {
-      // 额度重置或滚动恢复回到安全线以上：重置状态并恢复 watching
-      debounceState.delete(activeEmail);
-      st.state = 'watching';
-      st.blockedReason = null;
-      saveStore(store);
-      return { ok: true, action: 'ok_above_threshold', remainingPct: remPct, usedPct, state: 'watching' };
-    }
+        // 2. 冷却保护（优先检查，避免刚切完号又再次进入防抖）
+        if (st.lastSwitchAtMs && (nowMs - st.lastSwitchAtMs) < cfg.cooldownSec * 1000) {
+          st.state = 'cooldown';
+          st.blockedReason = null;
+          st.blockedMeta = null;
+          logAutoSwitchDiag(store, 'cooldown', { poolKey: cfg.poolKey, windowKey: cfg.windowKey, remPct, thresholdPct: cfg.thresholdPct, nowMs });
+          saveStore(store);
+          return { ok: true, action: 'cooldown', retryInSec: Math.ceil((st.lastSwitchAtMs + cfg.cooldownSec * 1000 - nowMs) / 1000), state: 'cooldown' };
+        }
 
-    // 2. 冷却保护（优先检查，避免刚切完号又再次进入防抖）
-    if (st.lastSwitchAtMs && (nowMs - st.lastSwitchAtMs) < cfg.cooldownSec * 1000) {
-      st.state = 'cooldown';
-      saveStore(store);
-      return { ok: true, action: 'cooldown', retryInSec: Math.ceil((st.lastSwitchAtMs + cfg.cooldownSec * 1000 - nowMs) / 1000), state: 'cooldown' };
-    }
+        // 3. 防抖保护（默认 15s）
+        const dbEntry = debounceState.get(dbKey);
+        if (!dbEntry) {
+          debounceState.set(dbKey, { firstSeenMs: nowMs });
+          if (cfg.debounceSec > 0) {
+            st.state = 'pending_debounce';
+            st.blockedReason = null;
+            st.blockedMeta = null;
+            logAutoSwitchDiag(store, 'pending_debounce', { poolKey: cfg.poolKey, windowKey: cfg.windowKey, remPct, thresholdPct: cfg.thresholdPct, nowMs });
+            saveStore(store);
+            return { ok: true, action: 'pending_debounce', state: st.state, remainingPct: remPct, retryInSec: cfg.debounceSec };
+          }
+        } else if ((nowMs - dbEntry.firstSeenMs) < cfg.debounceSec * 1000) {
+          const retryInSec = Math.max(1, Math.ceil((dbEntry.firstSeenMs + cfg.debounceSec * 1000 - nowMs) / 1000));
+          st.state = 'pending_debounce';
+          st.blockedReason = null;
+          st.blockedMeta = null;
+          logAutoSwitchDiag(store, 'pending_debounce', { poolKey: cfg.poolKey, windowKey: cfg.windowKey, remPct, thresholdPct: cfg.thresholdPct, nowMs });
+          saveStore(store);
+          return { ok: true, action: 'pending_debounce', state: st.state, remainingPct: remPct, retryInSec };
+        }
 
-    // 3. 防抖保护（默认 15s）
-    const dbKey = `${activeEmail}|${cfg.poolKey}|${cfg.windowKey}`;
-    const dbEntry = debounceState.get(dbKey);
-    if (!dbEntry) {
-      debounceState.set(dbKey, { firstSeenMs: nowMs });
-      if (cfg.debounceSec > 0) {
-        st.state = 'pending_debounce';
-        saveStore(store);
-        return { ok: true, action: 'pending_debounce', state: st.state, remainingPct: remPct };
-      }
-    } else if ((nowMs - dbEntry.firstSeenMs) < cfg.debounceSec * 1000) {
-      st.state = 'pending_debounce';
-      saveStore(store);
-      return { ok: true, action: 'pending_debounce', state: st.state, remainingPct: remPct };
-    }
+        // 4. 若当前正在生成或有未保存规则草稿，不静默中断，等待安全时机
+        if (ctx.isGenerating && cfg.waitUntilIdle) {
+          st.state = 'waiting_idle';
+          st.blockedReason = 'generation_in_progress';
+          st.blockedMeta = { poolKey: cfg.poolKey, windowKey: cfg.windowKey };
+          logAutoSwitchDiag(store, 'waiting_idle', { poolKey: cfg.poolKey, windowKey: cfg.windowKey, remPct, thresholdPct: cfg.thresholdPct, reason: st.blockedReason, nowMs });
+          saveStore(store);
+          return { ok: true, action: 'waiting_idle', state: 'waiting_idle', reason: 'generation_in_progress' };
+        }
+        if (ctx.hasUnsavedDraft) {
+          st.state = 'waiting_idle';
+          st.blockedReason = 'unsaved_draft_present';
+          st.blockedMeta = { poolKey: cfg.poolKey, windowKey: cfg.windowKey };
+          logAutoSwitchDiag(store, 'waiting_idle', { poolKey: cfg.poolKey, windowKey: cfg.windowKey, remPct, thresholdPct: cfg.thresholdPct, reason: st.blockedReason, nowMs });
+          saveStore(store);
+          return { ok: true, action: 'waiting_idle', state: 'waiting_idle', reason: 'unsaved_draft_present' };
+        }
 
-    // 4. 若当前正在生成，不静默中断，等待安全时机
-    if (ctx.isGenerating && cfg.waitUntilIdle) {
-      st.state = 'waiting_idle';
-      st.blockedReason = 'generation_in_progress';
-      saveStore(store);
-      return { ok: true, action: 'waiting_idle', state: 'waiting_idle' };
-    }
+        // 5. 筛选可用且充足的候选目标账号（区分未配置任何候选 vs 有候选但额度不足/过期）
+        const candidateEmails = (cfg.candidates || [])
+          .map(normalizeEmail)
+          .filter(e => e && e !== activeEmail && store.accounts[e] && !store.accounts[e].authInvalid && store.accounts[e].credential?.refreshToken);
 
-    // 5. 筛选可用且充足的候选目标账号（绝不选中同账号/无效授权/也处于阈值以下/过期快照的账号）
-    const candidateEmails = (cfg.candidates || [])
-      .map(normalizeEmail)
-      .filter(e => e && e !== activeEmail && store.accounts[e] && !store.accounts[e].authInvalid && store.accounts[e].credential?.refreshToken);
+        if (candidateEmails.length === 0) {
+          st.state = 'no_candidates';
+          st.blockedReason = 'no_candidates_configured';
+          st.blockedMeta = { poolKey: cfg.poolKey, windowKey: cfg.windowKey, candidateCount: 0 };
+          logAutoSwitchDiag(store, 'no_candidates', { poolKey: cfg.poolKey, windowKey: cfg.windowKey, remPct, thresholdPct: cfg.thresholdPct, candidateCount: 0, reason: st.blockedReason, ok: false, nowMs });
+          saveStore(store);
+          return { ok: true, action: 'no_candidates', state: 'no_candidates', reason: 'no_candidates_configured' };
+        }
 
-    const eligible = [];
-    for (const ce of candidateEmails) {
-      const cRec = store.accounts[ce];
-      const cAgeMs = cRec.lastQuotaUpdatedAtMs ? (nowMs - cRec.lastQuotaUpdatedAtMs) : Infinity;
-      if (cRec.lastQuotaError || cAgeMs > (ctx.candidateMaxStaleMs || 5 * 60 * 1000)) continue;
-      const cRem = extractPoolMetricPct(cRec.quotaSnapshot, cfg.poolKey, cfg.windowKey);
-      if (cRem === null) continue;
-      const cUsed = Number((100 - cRem).toFixed(2));
-      const cStillLow = cfg.metricMode === 'used_pct' ? (cUsed >= cfg.thresholdPct) : (cRem <= cfg.thresholdPct);
-      if (!cStillLow) {
-        eligible.push({ email: ce, remainingPct: cRem });
-      }
-    }
+        const initialRuleSig = JSON.stringify({
+          poolKey: cfg.poolKey,
+          windowKey: cfg.windowKey,
+          metricMode: cfg.metricMode,
+          thresholdPct: cfg.thresholdPct,
+          candidates: Array.isArray(cfg.candidates) ? cfg.candidates : []
+        });
 
-    if (!eligible.length) {
-      st.state = 'all_candidates_exhausted';
-      st.blockedReason = 'all_candidates_insufficient_or_stale';
-      saveStore(store);
-      return { ok: true, action: 'all_candidates_exhausted', state: 'all_candidates_exhausted' };
-    }
+        const maxStaleMs = Number.isFinite(Number(ctx.candidateMaxStaleMs)) ? Number(ctx.candidateMaxStaleMs) : 5 * 60 * 1000;
+        if (ctx.skipCandidateRefresh !== true && (typeof customFetch === 'function' || ctx.allowLiveCandidateRefresh === true || !options.credentialStore)) {
+          for (const ce of candidateEmails) {
+            const curSnapStore = loadStore();
+            const cRec = curSnapStore.accounts[ce];
+            if (!cRec) continue;
+            const cAgeMs = cRec.lastQuotaUpdatedAtMs ? (nowMs - cRec.lastQuotaUpdatedAtMs) : Infinity;
+            if (!cRec.quotaSnapshot || cRec.lastQuotaError || cAgeMs > maxStaleMs) {
+              try {
+                await refreshAccountQuota(ce, { nowMs });
+              } catch { }
+            }
+          }
+        }
 
-    if (cfg.strategy === 'highest_quota') {
-      eligible.sort((a, b) => b.remainingPct - a.remainingPct);
-    }
+        const latestStore = loadStore();
+        const latestCfg = latestStore.autoSwitch || {};
+        const latestRuleSig = JSON.stringify({
+          poolKey: latestCfg.poolKey,
+          windowKey: latestCfg.windowKey,
+          metricMode: latestCfg.metricMode,
+          thresholdPct: latestCfg.thresholdPct,
+          candidates: Array.isArray(latestCfg.candidates) ? latestCfg.candidates : []
+        });
+        if (!latestCfg.enabled) {
+          return { ok: true, action: 'noop', state: 'disabled', reason: 'auto_switch_disabled' };
+        }
+        if (latestRuleSig !== initialRuleSig) {
+          debounceState.clear();
+          latestStore.autoSwitchStatus = {
+            ...(latestStore.autoSwitchStatus || {}),
+            state: 'watching',
+            blockedReason: null,
+            blockedMeta: null
+          };
+          logAutoSwitchDiag(latestStore, 'rule_changed_aborted', { poolKey: latestCfg.poolKey, windowKey: latestCfg.windowKey, reason: 'rule_changed_during_eval', ok: true, nowMs });
+          saveStore(latestStore);
+          return { ok: true, action: 'waiting_idle', state: 'watching', reason: 'rule_changed_during_eval' };
+        }
+        const latestStatus = latestStore.autoSwitchStatus || (latestStore.autoSwitchStatus = {});
+        const eligible = [];
+        for (const ce of candidateEmails) {
+          const cRec = latestStore.accounts[ce];
+          if (!cRec || cRec.authInvalid) continue;
+          const cAgeMs = cRec.lastQuotaUpdatedAtMs ? (nowMs - cRec.lastQuotaUpdatedAtMs) : Infinity;
+          if (cRec.lastQuotaError || cAgeMs > maxStaleMs) continue;
+          const cMetric = inspectPoolMetric(cRec.quotaSnapshot, cfg.poolKey, cfg.windowKey);
+          if (!cMetric.ok) continue;
+          const cRem = cMetric.pct;
+          const cUsed = Number.isFinite(cMetric.usedPct) ? cMetric.usedPct : (100 - cRem);
+          const cStillLow = cfg.metricMode === 'used_pct'
+            ? (cUsed + AUTO_SWITCH_FLOAT_EPS >= cfg.thresholdPct)
+            : (cRem - AUTO_SWITCH_FLOAT_EPS <= cfg.thresholdPct);
+          if (!cStillLow) {
+            eligible.push({ email: ce, remainingPct: cRem, usedPct: cUsed });
+          }
+        }
+
+        if (!eligible.length) {
+          latestStatus.state = 'all_candidates_exhausted';
+          latestStatus.blockedReason = 'all_candidates_insufficient_or_stale';
+          latestStatus.blockedMeta = { poolKey: cfg.poolKey, windowKey: cfg.windowKey, candidateCount: candidateEmails.length };
+          logAutoSwitchDiag(latestStore, 'all_candidates_exhausted', { poolKey: cfg.poolKey, windowKey: cfg.windowKey, remPct, thresholdPct: cfg.thresholdPct, candidateCount: candidateEmails.length, eligibleCount: 0, reason: latestStatus.blockedReason, ok: false, nowMs });
+          saveStore(latestStore);
+          return { ok: true, action: 'all_candidates_exhausted', state: 'all_candidates_exhausted' };
+        }
+
+        if (cfg.strategy === 'highest_quota') {
+          eligible.sort((a, b) => b.remainingPct - a.remainingPct);
+        }
     const chosen = eligible[0];
 
-    st.state = 'switching';
-    saveStore(store);
+    if (ctx.requiresClientRestart && typeof ctx.restartClient !== 'function') {
+      latestStatus.state = 'waiting_idle';
+      latestStatus.blockedReason = ctx.blockedRestartReason || 'client_restart_requires_idle_window';
+      latestStatus.blockedMeta = {
+        poolKey: cfg.poolKey,
+        windowKey: cfg.windowKey,
+        reason: latestStatus.blockedReason,
+        openWindowCount: ctx.openWindowCount ?? null
+      };
+      logAutoSwitchDiag(latestStore, 'blocked_restart_guard', { poolKey: cfg.poolKey, windowKey: cfg.windowKey, remPct, thresholdPct: cfg.thresholdPct, candidateCount: candidateEmails.length, eligibleCount: eligible.length, openWindowCount: ctx.openWindowCount ?? null, reason: latestStatus.blockedReason, ok: false, nowMs });
+      saveStore(latestStore);
+      return { ok: true, action: 'blocked', state: 'waiting_idle', reason: latestStatus.blockedReason };
+    }
+
+    latestStatus.state = 'switching';
+    latestStatus.blockedReason = null;
+    latestStatus.blockedMeta = null;
+    logAutoSwitchDiag(latestStore, 'switching', { poolKey: cfg.poolKey, windowKey: cfg.windowKey, remPct, thresholdPct: cfg.thresholdPct, candidateCount: candidateEmails.length, eligibleCount: eligible.length, nowMs }, 0);
+    saveStore(latestStore);
+    const switchContext = {
+      poolKey: cfg.poolKey,
+      windowKey: cfg.windowKey,
+      metricMode: cfg.metricMode,
+      thresholdPct: cfg.thresholdPct,
+      currentRemPct: remPct,
+      currentUsedPct: usedPct,
+      displayRemPct: Math.round(remPct),
+      displayUsedPct: Math.round(usedPct),
+      targetEmailMasked: maskEmail(chosen.email),
+      initialRuleSig,
+      noticeId: `as_${nowMs}_${Math.random().toString(36).slice(2, 8)}`
+    };
     const swRes = await (optsSwitchExecutor(ctx))(chosen.email, {
       trigger: 'auto_switch',
+      restartClient: ctx.restartClient,
+      requiresClientRestart: Boolean(ctx.requiresClientRestart),
+      blockedRestartReason: ctx.blockedRestartReason,
+      preCommitCheck: ctx.preCommitCheck,
+      onBeforeRestartNotice: ctx.onBeforeRestartNotice,
+      onAbortRestartNotice: ctx.onAbortRestartNotice,
+      preRestartNoticeDelayMs: ctx.preRestartNoticeDelayMs,
+      switchContext,
       nowMs,
       forceWhileBusy: !cfg.waitUntilIdle,
       restartLanguageServer: ctx.restartLanguageServer,
@@ -3154,24 +3869,80 @@ function createAccountsManager(options = {}) {
 
     const postStore = loadStore();
     if (!swRes.ok) {
+      if (swRes.deferred) {
+        postStore.autoSwitchStatus = {
+          ...(postStore.autoSwitchStatus || {}),
+          state: 'waiting_idle',
+          blockedReason: swRes.reason || 'pre_commit_deferred',
+          blockedMeta: { poolKey: cfg.poolKey, windowKey: cfg.windowKey, openWindowCount: ctx.openWindowCount ?? null },
+          lastError: null
+        };
+        saveStore(postStore);
+        return { ok: true, action: 'waiting_idle', state: 'waiting_idle', reason: swRes.reason || 'pre_commit_deferred' };
+      }
       // 切换失败后停止循环并保留错误反馈（绝不连环重试烧毁其他账号）
       postStore.autoSwitch.enabled = false;
       postStore.autoSwitchStatus = {
-        ...postStore.autoSwitchStatus,
+        ...(postStore.autoSwitchStatus || {}),
         state: 'error',
+        blockedReason: null,
+        blockedMeta: null,
         lastError: swRes.error || '自动切号失败，已停止自动切换保护账号状态',
         lastResult: { ok: false, toEmail: chosen.email, atMs: nowMs, error: swRes.error }
       };
+      logAutoSwitchDiag(postStore, 'switch_failed_halted', { poolKey: cfg.poolKey, windowKey: cfg.windowKey, reason: swRes.reason || 'switch_failed', error: swRes.error, ok: false, nowMs }, 0);
       saveStore(postStore);
       return { ok: false, action: 'switch_failed_halted', targetEmail: chosen.email, error: swRes.error };
     }
 
+    if (swRes.restartPending) {
+      debounceState.clear();
+      logAutoSwitchDiag(postStore, 'restart_pending', { poolKey: cfg.poolKey, windowKey: cfg.windowKey, nowMs }, 0);
+      return { ok: true, action: 'restart_pending', fromEmail: activeEmail, toEmail: chosen.email, switchResult: swRes };
+    }
+
+    // 成功切换后立刻收敛状态为 cooldown，避免状态滞留在 switching 或被同次条件重复触发
+    postStore.autoSwitchStatus = {
+      ...(postStore.autoSwitchStatus || {}),
+      state: 'cooldown',
+      lastSwitchAtMs: postStore.autoSwitchStatus?.lastSwitchAtMs || nowMs,
+      lastError: null,
+      blockedReason: null,
+      blockedMeta: null
+    };
+    logAutoSwitchDiag(postStore, 'switched', { poolKey: cfg.poolKey, windowKey: cfg.windowKey, nowMs }, 0);
+    saveStore(postStore);
     debounceState.clear();
-    return { ok: true, action: 'switched', fromEmail: activeEmail, toEmail: chosen.email, targetRemainingPct: chosen.remainingPct, switchResult: swRes };
+    return { ok: true, action: 'switched', fromEmail: activeEmail, toEmail: chosen.email, targetRemainingPct: chosen.remainingPct, state: 'cooldown', switchResult: swRes };
   }
 
   function optsSwitchExecutor(ctx) {
     return typeof ctx.switchFn === 'function' ? ctx.switchFn : switchActiveAccount;
+  }
+
+  function ackAutoSwitchNotice(noticeId = null) {
+    const store = loadStore();
+    if (!store.autoSwitchStatus || typeof store.autoSwitchStatus !== 'object') {
+      store.autoSwitchStatus = { state: store.autoSwitch?.enabled ? 'watching' : 'disabled', consumedNoticeIds: [] };
+    }
+    const existing = normalizeConsumedNoticeIds(store.autoSwitchStatus.consumedNoticeIds);
+    const lr = store.autoSwitchStatus.lastResult || null;
+    const explicit = typeof noticeId === 'string' ? noticeId.trim() : '';
+    const fallbackKey = resolveAutoSwitchNoticeKey(lr);
+    const targetId = explicit || fallbackKey;
+    if (!targetId) {
+      return { ok: true, consumed: false, noticeId: null, consumedNoticeIds: existing };
+    }
+    const nextList = normalizeConsumedNoticeIds([...existing, targetId]);
+    store.autoSwitchStatus.consumedNoticeIds = nextList;
+    if (lr && typeof lr === 'object') {
+      const lrKey = resolveAutoSwitchNoticeKey(lr);
+      if (lrKey === targetId || !lr.noticeId) {
+        lr.noticeConsumedAtMs = lr.noticeConsumedAtMs || Date.now();
+      }
+    }
+    saveStore(store);
+    return { ok: true, consumed: true, noticeId: targetId, consumedNoticeIds: nextList };
   }
 
   function getOverviewState() {
@@ -3187,6 +3958,46 @@ function createAccountsManager(options = {}) {
       endAtMs: s.endAtMs ?? null,
       evidence: s.evidence || 'unknown'
     }));
+    const targetCheck = validateAutoSwitchQuotaTarget(store.autoSwitch?.poolKey, store.autoSwitch?.windowKey);
+    const rawAutoSwitchStatus = store.autoSwitchStatus || {};
+    const consumedNoticeIds = normalizeConsumedNoticeIds(rawAutoSwitchStatus.consumedNoticeIds);
+    let normalizedLastResult = rawAutoSwitchStatus.lastResult || null;
+    if (normalizedLastResult && typeof normalizedLastResult === 'object') {
+      const hasExplicitNoticeId = Boolean(
+        typeof normalizedLastResult.noticeId === 'string' && normalizedLastResult.noticeId.trim()
+      );
+      const noticeKey = resolveAutoSwitchNoticeKey(normalizedLastResult);
+      const isLegacyHistorical = Boolean(
+        normalizedLastResult.trigger === 'auto_switch' &&
+        normalizedLastResult.ok === true &&
+        normalizedLastResult.verifiedEffective === true &&
+        !hasExplicitNoticeId
+      );
+      const noticeConsumed = Boolean(
+        normalizedLastResult.noticeConsumedAtMs ||
+        isLegacyHistorical ||
+        (noticeKey && consumedNoticeIds.includes(noticeKey))
+      );
+      normalizedLastResult = {
+        ...normalizedLastResult,
+        isLegacyNotice: isLegacyHistorical,
+        noticeConsumed
+      };
+    }
+    const isLegacyBlocked = !targetCheck.valid && Boolean(store.autoSwitch?.enabled)
+      && !['error', 'switching', 'restarting'].includes(rawAutoSwitchStatus.state);
+    const effectiveAutoSwitchStatus = {
+      ...rawAutoSwitchStatus,
+      consumedNoticeIds,
+      lastResult: normalizedLastResult,
+      needsRuleMigration: !targetCheck.valid,
+      validTargetKey: targetCheck.valid ? targetCheck.targetKey : '',
+      ...(isLegacyBlocked ? {
+        state: 'blocked_legacy_rule',
+        blockedReason: 'legacy_rule_needs_migration',
+        blockedMeta: { poolKey: store.autoSwitch?.poolKey || '', windowKey: store.autoSwitch?.windowKey || '' }
+      } : {})
+    };
     return {
       ok: true,
       activeAccountEmail: store.activeAccountEmail || null,
@@ -3197,7 +4008,7 @@ function createAccountsManager(options = {}) {
       diagnosticsPath: path.join(stateDir, 'oauth_diagnostics.jsonl'),
       lastDiagnostics: (store.lastDiagnostics || []).slice(-10),
       autoSwitch: store.autoSwitch,
-      autoSwitchStatus: store.autoSwitchStatus,
+      autoSwitchStatus: effectiveAutoSwitchStatus,
       keepalive: store.keepalive,
       keepaliveState: store.keepaliveState,
       quotaIntervals: (store.quotaIntervals || []).slice().reverse(),
@@ -3211,6 +4022,7 @@ function createAccountsManager(options = {}) {
     loadStore,
     saveStore,
     getOverviewState,
+    ackAutoSwitchNotice,
     detectCurrentActiveAccount,
     importFromCurrentClient,
     listAntigravityToolsAccounts,
@@ -3221,6 +4033,7 @@ function createAccountsManager(options = {}) {
     refreshAccountQuota,
     syncActiveHostQuotaSnapshot,
     switchActiveAccount,
+    inspectPoolMetric,
     updateAutoSwitchConfig,
     evaluateAutoSwitch,
     updateKeepaliveConfig,
@@ -3251,37 +4064,26 @@ function defaultIsPidAlive(pid) {
  * 仅在主进程无法通过活跃窗口 webContents 读取 URL 或旧端口失联时使用，不依赖 CDP / DevToolsActivePort。
  */
 function discoverDaemonHubOrigins(opts = {}) {
-  const daemonDir = opts.daemonDir || path.join(opts.homeDir || os.homedir(), '.gemini', 'antigravity', 'daemon');
-  const isPidAlive = typeof opts.isPidAlive === 'function' ? opts.isPidAlive : defaultIsPidAlive;
-  const out = [];
   try {
-    if (!fs.existsSync(daemonDir)) return out;
-    const files = fs.readdirSync(daemonDir);
-    for (const name of files) {
-      if (!/^hub_.*\.json$/i.test(name)) continue;
-      const filePath = path.join(daemonDir, name);
-      try {
-        const st = fs.statSync(filePath);
-        const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        const pid = Number(raw?.pid);
-        const httpsPort = Number(raw?.httpsPort);
-        const csrfToken = typeof raw?.csrfToken === 'string' ? raw.csrfToken.trim() : '';
-        if (!Number.isInteger(httpsPort) || httpsPort < 1 || httpsPort > 65535) continue;
-        if (!csrfToken) continue;
-        if (!isPidAlive(pid)) continue;
-        out.push({
-          origin: `https://127.0.0.1:${httpsPort}`,
-          httpsPort,
-          csrfToken,
-          pid,
-          filePath,
-          mtimeMs: Number(st.mtimeMs) || 0
-        });
-      } catch { }
-    }
-  } catch { }
-  out.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (b.httpsPort - a.httpsPort));
-  return out;
+    const { discoverLiveDaemonHubs } = require('./local-api');
+    const hubs = discoverLiveDaemonHubs({
+      ...opts,
+      allowDaemonFallback: true,
+      isPidAlive: typeof opts.isPidAlive === 'function' ? opts.isPidAlive : defaultIsPidAlive
+    });
+    return hubs
+      .filter(h => h && h.httpsOrigin && h.httpsPort)
+      .map(h => ({
+        origin: h.httpsOrigin,
+        httpsPort: h.httpsPort,
+        csrfToken: h.csrfToken,
+        pid: h.pid,
+        filePath: h.filePath || null,
+        mtimeMs: h.mtimeMs
+      }));
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -3338,6 +4140,7 @@ function requestGetUserStatusDirect(origin, csrfToken, timeoutMs = 4000) {
 }
 
 let sharedAccountsMgr = null;
+let sharedMgrStateDir = null;
 const sharedMgrRuntime = {
   currentOrigin: '',
   getLiveOrigins: null,
@@ -3373,7 +4176,9 @@ function getSharedAccountsManager(opts = {}) {
     }
   };
 
-  if (!sharedAccountsMgr || opts.forceNew) {
+  const stateDirDiffers = Boolean(opts.stateDir && opts.stateDir !== sharedMgrStateDir);
+  if (!sharedAccountsMgr || opts.forceNew || stateDirDiffers) {
+    if (!opts.forceNew && opts.stateDir) sharedMgrStateDir = opts.stateDir;
     const collector = opts.collector || require('./meter-collector');
     const localRuntime = opts.forceNew
       ? {
@@ -3463,7 +4268,7 @@ function getSharedAccountsManager(opts = {}) {
   return sharedAccountsMgr;
 }
 
-async function dispatchAccountsAction(mgr, payload = {}) {
+async function dispatchAccountsAction(mgr, payload = {}, options = {}) {
   const act = String(payload?.action || '').trim();
   if (!mgr) return { ok: false, error: '账号管理器尚未初始化' };
   switch (act) {
@@ -3529,6 +4334,9 @@ async function dispatchAccountsAction(mgr, payload = {}) {
     case 'switch':
       return {
         ...(await mgr.switchActiveAccount(payload.email, {
+          restartClient: options.restartClient,
+          requiresClientRestart: Boolean(options.requiresClientRestart),
+          allowManualRestartPending: Boolean(options.allowManualRestartPending),
           forceWhileBusy: Boolean(payload.forceWhileBusy),
           ...(payload.verifyTimeoutMs != null ? { verifyTimeoutMs: payload.verifyTimeoutMs } : {})
         })),
@@ -3538,6 +4346,8 @@ async function dispatchAccountsAction(mgr, payload = {}) {
       return { ...mgr.updateAutoSwitchConfig(payload.config || {}), overview: mgr.getOverviewState() };
     case 'evaluate_auto_switch':
       return { ...(await mgr.evaluateAutoSwitch(payload.context || {})), overview: mgr.getOverviewState() };
+    case 'ack_auto_switch_notice':
+      return { ...mgr.ackAutoSwitchNotice(payload.noticeId || null), overview: mgr.getOverviewState() };
     case 'update_keepalive':
       return { ...mgr.updateKeepaliveConfig(payload.config || {}), overview: mgr.getOverviewState() };
     case 'stop_keepalive':
@@ -3553,6 +4363,8 @@ module.exports = {
   resolveAllAntigravityOAuthConfigs,
   SOURCE_ATTRIBUTION_CAPABILITIES,
   ELV52_PROTOCOL_EVIDENCE,
+  AUTO_SWITCH_QUOTA_TARGETS,
+  validateAutoSwitchQuotaTarget,
   DEFAULT_AUTO_SWITCH_CONFIG,
   DEFAULT_KEEPALIVE_CONFIG,
   DEFAULT_SWITCH_VERIFY_TIMEOUT_MS,
@@ -3561,6 +4373,7 @@ module.exports = {
   normalizeEmail,
   buildAccountScopeKey,
   maskEmail,
+  deriveTrustedAutoSwitchQuotaContext,
   redactAccountDiagnosticEntry,
   appendAccountDiagnostic,
   deriveAccountSessionsFromStore,
@@ -3574,5 +4387,10 @@ module.exports = {
   createDefaultSystemCredentialStore,
   createAccountsManager,
   getSharedAccountsManager,
-  dispatchAccountsAction
+  dispatchAccountsAction,
+  fetchAccountQuotaViaCloudCode,
+  fetchJsonWithProxy,
+  CLOUDCODE_DAILY_URL,
+  CLOUDCODE_PROD_URL,
+  ANTIGRAVITY_OAUTH_SCOPES
 };

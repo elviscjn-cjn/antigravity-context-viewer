@@ -47,7 +47,7 @@ function readVerifiedRendererSource(dir, fileName) {
   const fullPath = path.join(dir, fileName);
   const raw = fs.readFileSync(fullPath, 'utf8');
   assertNoTruncationMarker(fullPath, raw);
-  return raw;
+  return raw.replace(/\r\n/g, '\n');
 }
 
 function buildRenderer(options = {}) {
@@ -62,7 +62,8 @@ function buildRenderer(options = {}) {
 
   const styles = readVerifiedRendererSource(effSrcDir, 'styles.css').trim();
   let template = readVerifiedRendererSource(effSrcDir, 'template.html').trim();
-  template = template.replace(/<span id="v">[^<]*<\/span>/g, `<span id="v">${displayVersion}</span>`);
+  template = template.replace(/(<span id="v"[^>]*>)[^<]*(<\/span>)/g, `$1${displayVersion}$2`);
+  template = template.replace(/(<span id="v-tokens"[^>]*>)[^<]*(<\/span>)/g, `$1${displayVersion}$2`);
   template = template.replace(/<span id="up-pop-ver"[^>]*>[^<]*<\/span>/g, `<span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">${displayVersion}</span>`);
 
   const colors = readVerifiedRendererSource(effSrcDir, 'colors.js').trim();
@@ -70,7 +71,28 @@ function buildRenderer(options = {}) {
   const budgetEngine = readVerifiedRendererSource(effSrcDir, 'context-budget-engine.js').trim();
   const dropdown = readVerifiedRendererSource(effSrcDir, 'dropdown.js').trim();
   const heatmap = readVerifiedRendererSource(effSrcDir, 'heatmap.js').trim();
+  const dashboardGrid = readVerifiedRendererSource(effSrcDir, 'dashboard-grid.js').trim();
+  const nextPrompt = readVerifiedRendererSource(effSrcDir, 'next-prompt.js').trim();
+  const contextSettingsUi = readVerifiedRendererSource(effSrcDir, 'context-settings-ui.js').trim();
+  const hostSettings = readVerifiedRendererSource(effSrcDir, 'host-settings.js').trim();
+  if (!contextSettingsUi) throw new Error('[构建中止] 必需渲染模块为空: ' + path.join(effSrcDir, 'context-settings-ui.js'));
+  if (!hostSettings) throw new Error('[构建中止] 必需渲染模块为空: ' + path.join(effSrcDir, 'host-settings.js'));
+  const trendPulse = readVerifiedRendererSource(effSrcDir, 'trend-pulse.js').trim();
+  const contextInspector = readVerifiedRendererSource(effSrcDir, 'context-inspector.js').trim();
+  const executionTrace = readVerifiedRendererSource(effSrcDir, 'execution-trace.js').trim();
+  const agentCollabHub = readVerifiedRendererSource(effSrcDir, 'agent-collab-hub.js').trim();
+  const auditWidgets = readVerifiedRendererSource(effSrcDir, 'audit-widgets.js').trim();
+  const crossSessionInsights = readVerifiedRendererSource(effSrcDir, 'cross-session-insights.js').trim();
   let mainTemplate = readVerifiedRendererSource(effSrcDir, 'main.js');
+  if (!mainTemplate.trim()) throw new Error('Renderer entry point is empty: ' + path.join(effSrcDir, 'main.js'));
+  const effAntigravitySvgPath = path.join(effSrcDir, 'assets', 'antigravity-color.svg');
+  const antigravitySvgPath = fs.existsSync(effAntigravitySvgPath) ? effAntigravitySvgPath : path.join(srcDir, 'assets', 'antigravity-color.svg');
+  const antigravitySvgRaw = fs.readFileSync(antigravitySvgPath, 'utf8').trim();
+  assertNoTruncationMarker(antigravitySvgPath, antigravitySvgRaw);
+  if (!/^<svg[\s>]/i.test(antigravitySvgRaw) || /<script\b|on[a-z]+\s*=|javascript:/i.test(antigravitySvgRaw)) {
+    throw new Error(`[构建中止] Antigravity 静态 SVG 资源校验失败（禁止脚本或非静态内容）: ${antigravitySvgPath}`);
+  }
+  const antigravitySvgDataUri = 'data:image/svg+xml;utf8,' + encodeURIComponent(antigravitySvgRaw);
 
   // 注入或同步构建期版本常量
   const versionConst = `  const METER_VERSION = '${meterVersion}';\n`;
@@ -93,8 +115,24 @@ function buildRenderer(options = {}) {
     .replace('  /* @INSERT_BUDGET_ENGINE_MODULE */', () => budgetEngine)
     .replace('  /* @INSERT_COLORS_MODULE */', () => colors)
     .replace('  /* @INSERT_DROPDOWN_MODULE */', () => dropdown)
-    .replace('  /* @INSERT_HEATMAP_MODULE */', () => heatmap);
+    .replace('  /* @INSERT_DASHBOARD_GRID_MODULE */', () => dashboardGrid)
+    .replace('  /* @INSERT_NEXT_PROMPT_MODULE */', () => nextPrompt)
+    .replace('  /* @INSERT_CONTEXT_SETTINGS_UI_MODULE */', () => contextSettingsUi)
+    .replace('  /* @INSERT_HOST_SETTINGS_MODULE */', () => hostSettings)
+    .replace('  /* @INSERT_TREND_PULSE_MODULE */', () => trendPulse)
+    .replace('  /* @INSERT_CONTEXT_INSPECTOR_MODULE */', () => contextInspector)
+    .replace('  /* @INSERT_EXECUTION_TRACE_MODULE */', () => executionTrace)
+    .replace('  /* @INSERT_AGENT_COLLAB_MODULE */', () => agentCollabHub)
+    .replace('  /* @INSERT_AUDIT_WIDGETS_MODULE */', () => auditWidgets)
+    .replace('  /* @INSERT_CROSS_SESSION_INSIGHTS_MODULE */', () => crossSessionInsights)
+    .replace('  /* @INSERT_HEATMAP_MODULE */', () => heatmap)
+    .replace('__AG_ANTIGRAVITY_COLOR_SVG_DATA_URI__', () => antigravitySvgDataUri);
 
+  if (!output.includes('buildNativeSettingsPageHtml') || !output.includes('createHostSettingsController')) {
+    throw new Error('[构建中止] 生成的渲染产物缺少原生设置页核心符号，已拒绝写出残缺构建');
+  }
+  const buildId = require('node:crypto').createHash('sha256').update(output).digest('hex').slice(0, 16);
+  output = output.replace('__AG_RENDER_BUILD_ID__', buildId);
   fs.writeFileSync(effTargetFile, output, 'utf8');
   console.log(`[构建成功] 渲染层构建完成: ${effTargetFile} (v${meterVersion}, ${Buffer.byteLength(output, 'utf8')} 字节)`);
 }

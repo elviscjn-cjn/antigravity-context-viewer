@@ -7,12 +7,14 @@ const http = require('http');
 const crypto = require('crypto');
 const { getStateDir, getAppDataDir, isIsolatedTestPath, builtinAsar, collectUnpackedPaths, loadAsarEngine } = require('./asar-engine');
 const { discoverAntigravityCdp, createCdpClient } = require('./local-api');
+const { inspectMacAsarIntegrity } = require('./macos-binary-utils');
 const { acquireFileLock } = require('./modules-config');
 const {
   TAGS,
   validateSyntax,
   cleanUtilsSource,
   cleanPreloadSource,
+  diagnoseCleanStructure,
   verifyCleanStructure
 } = require('./modular-installer');
 
@@ -136,40 +138,52 @@ async function restore(options = {}) {
       )
     );
 
-    // 3. 检测并严格验证可用备份完整性：绝不使用已损坏或哈希不匹配的备份覆盖
-    const backupCandidates = previous
-      ? [{ path: info.previousInstalledBackup, expected: info.previousInstalledSha256 }]
-      : [
-          { path: info.previousInstalledBackup, expected: info.previousInstalledSha256 },
-          { path: info.backup, expected: info.originalSha256 }
-        ];
+    // 3. 检测并严格验证可用备份完整性：优先匹配与当前宿主目标版本一致的备份
+    const backupCandidates = [];
+    if (previous) {
+      backupCandidates.push({ path: info.previousInstalledBackup, expected: info.previousInstalledSha256 });
+    } else {
+      if (info.backupsByVersion && targetHostVer && info.backupsByVersion[targetHostVer]) {
+        const verBkp = info.backupsByVersion[targetHostVer];
+        backupCandidates.push({ path: verBkp.backup, expected: verBkp.sha256 || verBkp.originalSha256 });
+      }
+      if (info.backup) {
+        backupCandidates.push({ path: info.backup, expected: info.originalSha256 });
+      }
+      if (info.previousInstalledBackup) {
+        backupCandidates.push({ path: info.previousInstalledBackup, expected: info.previousInstalledSha256 });
+      }
+    }
 
     let anyBackupFileExists = false;
     let validBackup = null;
     let validExpectedSha = null;
+    let backupHostVer = null;
+    let backupParseError = null;
     for (const c of backupCandidates) {
       if (c.path && fs.existsSync(c.path)) {
         anyBackupFileExists = true;
         if (c.expected && sha(c.path) === c.expected) {
-          validBackup = c.path;
-          validExpectedSha = c.expected;
-          break;
+          let version;
+          try {
+            version = JSON.parse(extractAsarFile(c.path, 'package.json').toString('utf8')).version;
+          } catch (error) {
+            backupParseError = error;
+            continue;
+          }
+          const matchesTarget = version && version === targetHostVer;
+          if (!validBackup || matchesTarget) {
+            validBackup = c.path;
+            validExpectedSha = c.expected;
+            backupHostVer = version;
+          }
+          if (matchesTarget) break;
         }
       }
     }
 
-    let backupHostVer = null;
-    if (validBackup) {
-      try {
-        backupHostVer = JSON.parse(extractAsarFile(validBackup, 'package.json').toString('utf8')).version;
-      } catch (e) {
-        if (previous || !hasMeterTraces) {
-          throw new Error(`解析备份 ASAR 版本失败: ${e.message}`);
-        }
-        // 备份文件本身内容已损坏时降级视作不可用备份，转交原位解构或校验拒绝分支处理
-        validBackup = null;
-        validExpectedSha = null;
-      }
+    if (!validBackup && backupParseError && (previous || !hasMeterTraces)) {
+      throw new Error(`解析备份 ASAR 版本失败: ${backupParseError.message}`);
     }
     const versionMatches = Boolean(!backupHostVer || !targetHostVer || backupHostVer === targetHostVer);
 
@@ -183,8 +197,26 @@ async function restore(options = {}) {
       }
     }
 
+    const macIntegrity = inspectMacAsarIntegrity(targetFile, {
+      _platform: options._platform,
+      _existsSync: options._existsSync,
+      _readFileSync: options._readFileSync,
+      _execFileSync: options._execFileSync
+    });
+    const effectivePlatform = options._platform || process.platform;
+    const allowMacOverride = Boolean(options.allowIntegrityOverride || process.argv.includes('--force-mac-asar'));
+    const removeStaleResHelper = () => {
+      try {
+        const resHelper = path.join(path.dirname(targetFile), 'bin', 'cli-window-helper.exe');
+        if (fs.existsSync(resHelper)) fs.unlinkSync(resHelper);
+      } catch {}
+    };
+
     // 4. 若有效备份匹配当前文件且哈希与期望一致：幂等返回
     if (validBackup && versionMatches && currentInstalledSha === validExpectedSha) {
+      if (!(macIntegrity.isMacAppBundle && effectivePlatform === 'darwin' && (macIntegrity.patchRisk === 'blocked_integrity' || macIntegrity.patchRisk === 'blocked_signature'))) {
+        removeStaleResHelper();
+      }
       await tryHotDispose();
       return { restored: targetFile, fromBackup: validBackup, alreadyRestored: true };
     }
@@ -203,6 +235,7 @@ async function restore(options = {}) {
       if (sha(targetFile) !== validExpectedSha) {
         throw new Error('Restored file checksum mismatch');
       }
+      removeStaleResHelper();
       await tryHotDispose();
       if (hasManifest) {
         try {
@@ -226,6 +259,18 @@ async function restore(options = {}) {
     );
 
     if (canTryInPlace) {
+      if (
+        macIntegrity.isMacAppBundle &&
+        (effectivePlatform === 'darwin' || options.enforceMacIntegrityCheck === true) &&
+        (macIntegrity.patchRisk === 'blocked_integrity' || macIntegrity.patchRisk === 'blocked_signature') &&
+        !allowMacOverride
+      ) {
+        throw new Error(
+          `[macOS 完整性保护] ${macIntegrity.reason}。\n` +
+          '原位重打包 app.asar 会产生未封签摘要并导致客户端启动崩溃，已中止写入。\n' +
+          '恢复建议：重新安装对应的官方 Antigravity.app 以恢复代码签名后，改用免改盘 `node cli.js watch`。'
+        );
+      }
       if (!targetValid) {
         throw new Error(`无法卸载目标文件 (${targetFile})：不支持或损坏的文件结构 (${targetParseError || '缺少 dist/utils.js'})，已完整保留原文件现场。`);
       }
@@ -235,17 +280,34 @@ async function restore(options = {}) {
             `目标文件 (${targetFile}) 校验失败：备份宿主版本 (v${backupHostVer}) 与当前目标宿主版本 (v${targetHostVer}) 不匹配，文件内容已被宿主升级、第三方补丁或其他操作改变，拒绝覆盖还原以保护宿主文件。`
           );
         }
+        if (validBackup && currentInstalledSha !== info.patchedSha256 && info.originalSha256 && currentInstalledSha !== info.originalSha256) {
+          throw new Error(
+            `目标文件 (${targetFile}) 校验失败：文件内容已被宿主升级、第三方补丁或其他操作改变，拒绝覆盖还原以保护宿主文件。若需强制还原旧备份，请显式传入 --force 参数。`
+          );
+        }
         if (!anyBackupFileExists && !validBackup) {
           throw new Error(`无法卸载目标文件 (${targetFile})：原版备份缺失且目标未检测到本插件挂载痕迹，无法安全还原，已保留原文件。`);
+        }
+        if (currentInstalledSha === info.originalSha256) {
+          await tryHotDispose();
+          if (hasManifest) {
+            try {
+              info.restoredAt = new Date().toISOString();
+              info.uninstalled = true;
+              fs.writeFileSync(manifestPath, JSON.stringify(info, null, 2));
+            } catch {}
+          }
+          return { restored: targetFile, fromBackup: null, alreadyClean: true };
         }
       } else {
         const potentialCleanUtils = cleanUtilsSource(currentUtilsRaw);
         const potentialCleanPreload = currentPreloadRaw ? cleanPreloadSource(currentPreloadRaw) : '';
+        const utilsDiag = diagnoseCleanStructure(potentialCleanUtils);
         const utilsSyntaxOk = validateSyntax(potentialCleanUtils, 'clean-restore-utils.js');
         const preloadSyntaxOk = !potentialCleanPreload || validateSyntax(potentialCleanPreload, 'clean-restore-preload.js');
 
-        if (!verifyCleanStructure(potentialCleanUtils) || !utilsSyntaxOk || !preloadSyntaxOk) {
-          throw new Error(`无法对目标文件 (${targetFile}) 执行原位卸载：剥离插件后的宿主核心结构或语法校验未通过，已完整保留原文件现场。`);
+        if (!utilsDiag.ok || !utilsSyntaxOk || !preloadSyntaxOk) {
+          throw new Error(`无法对目标文件 (${targetFile}) 执行原位卸载：剥离插件后的宿主核心结构 (${utilsDiag.stage}) 或语法校验未通过，已完整保留原文件现场。`);
         }
 
         const stamp = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
@@ -265,6 +327,7 @@ async function restore(options = {}) {
             'asar-engine.js',
             'modules-config.js',
             'modular-installer.js',
+            'host-recovery.js',
             'install.js',
             'restore.js',
             'meter-main.js',
@@ -274,9 +337,15 @@ async function restore(options = {}) {
             'meter-storage.js',
             'meter-proxy.js',
             'meter-cli-launcher.js',
+            'meter-cli-monitor.js',
+            'meter-cli-adapter.js',
+            'meter-cli-companion.js',
+            'meter-cli-ui.js',
             'meter-context-unlock.js',
             'meter-enhance.js',
+            'meter-rehydrate.js',
             'meter-accounts.js',
+            'meter-next-prompt.js',
             'macos-binary-utils.js',
             'local-api.js',
             'attachment_scan.py',
@@ -287,6 +356,8 @@ async function restore(options = {}) {
             try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch {}
           }
           try { fs.rmSync(path.join(staging, 'dist', 'i18n'), { recursive: true, force: true }); } catch {}
+          try { fs.rmSync(path.join(staging, 'dist', 'rehydrate'), { recursive: true, force: true }); } catch {}
+          try { fs.rmSync(path.join(staging, 'dist', 'assets'), { recursive: true, force: true }); } catch {}
 
           const snapshotDir = path.join(getStateDir(), 'backups', 'snapshots');
           fs.mkdirSync(snapshotDir, { recursive: true });
@@ -323,6 +394,7 @@ async function restore(options = {}) {
             }
 
             console.log('[Restore] 已通过原位解构精准移除插件挂载，并完整保留宿主现有修改与构建内容。');
+            removeStaleResHelper();
             const hotDisposed = await tryHotDispose();
             if (hasManifest) {
               info.restoredAt = new Date().toISOString();
