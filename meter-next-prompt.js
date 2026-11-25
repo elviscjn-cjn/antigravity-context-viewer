@@ -89,7 +89,7 @@ function parseTaskChecklist(markdown) {
 function readTaskChecklistForSession(cascadeId, opts = {}) {
   const fsImpl = opts.fs || fs;
   const rawId = String(cascadeId || '').trim();
-  if (!rawId) return { pending: [], inProgress: [], completed: [] };
+  if (!rawId || !/^[A-Za-z0-9_-]{4,128}$/.test(rawId)) return { pending: [], inProgress: [], completed: [] };
 
   const candidates = [];
   if (opts.taskFilePath) candidates.push(opts.taskFilePath);

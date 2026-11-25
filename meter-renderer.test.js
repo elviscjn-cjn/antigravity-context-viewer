@@ -4748,6 +4748,9 @@ test('PR #13 & PR #21: 弹窗动态锚点定位、首帧显示前预设坐标、
 });
 
 test('Issue #22: applyAppUpdate 在严格模式下不因未声明 currentVer 报错，且按 liveInjected 状态安全刷新版本 UI', async () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+  const curVer = pkg.version;
+  const escapedVer = curVer.replace(/\./g, '\\.');
   const h = harness();
   const api = h.sandbox.__AGContextMeter;
   try {
@@ -4758,15 +4761,15 @@ test('Issue #22: applyAppUpdate 在严格模式下不因未声明 currentVer 报
         ok: true,
         hasUpdate: true,
         currentVersion: '0.8.3',
-        latestVersion: '0.9.2',
-        tagName: 'v0.9.2',
+        latestVersion: curVer,
+        tagName: `v${curVer}`,
         releaseNotes: 'Fix update flow',
-        htmlUrl: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.2'
+        htmlUrl: `https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v${curVer}`
       }),
       applyUpdate: async () => ({
         ok: true,
-        version: '0.9.2',
-        installedVersion: '0.9.2',
+        version: curVer,
+        installedVersion: curVer,
         liveInjected: mockLiveInjected,
         backendHotReloaded: mockLiveInjected
       })
@@ -4774,20 +4777,20 @@ test('Issue #22: applyAppUpdate 在严格模式下不因未声明 currentVer 报
 
     h.elements.get('btn-check-update').click();
     await h.flush();
-    assert.equal(h.elements.get('up-pop-ver').textContent, 'v0.8.3 → 0.9.2');
+    assert.equal(h.elements.get('up-pop-ver').textContent, `v0.8.3 → ${curVer}`);
 
     h.elements.get('btn-apply-update').click();
     await h.flush();
 
     assert.equal(h.elements.get('v').textContent, '');
-    assert.match(h.elements.get('up-pop-ver').textContent, /0\.9\.2/);
+    assert.match(h.elements.get('up-pop-ver').textContent, new RegExp(escapedVer));
     assert.doesNotMatch(h.elements.get('up-pop-status').textContent, /currentVer|异常|失败/i);
-    assert.match(h.elements.get('up-pop-status').textContent, /0\.9\.2/);
+    assert.match(h.elements.get('up-pop-status').textContent, new RegExp(escapedVer));
 
     mockLiveInjected = true;
     h.elements.get('btn-apply-update').click();
     await h.flush();
-    assert.equal(h.elements.get('v').textContent, '0.9.2');
+    assert.equal(h.elements.get('v').textContent, curVer);
   } finally {
     api.dispose();
   }
@@ -5447,18 +5450,19 @@ test('v0.8.8 chart visual redesign E2E: single 1.82M vs heavy 100..3.64B, cross-
   }
 });
 
-test('v0.9.2 版本展示与预发布更新比较隔离', async () => {
+test('当前权威版本展示与预发布更新比较隔离', async () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-  assert.equal(pkg.version, '0.9.2');
-  assert.equal(pkg.displayVersion, '0.9.2');
+  const curVer = pkg.version;
+  const escapedVer = curVer.replace(/\./g, '\\.');
+  assert.equal(pkg.displayVersion, curVer);
 
-  // 1. 默认构建模板中 #v 与 #up-pop-ver 均为 0.9.2，且 beta 通道开关默认未勾选
+  // 1. 默认构建模板中 #v 与 #up-pop-ver 均为权威版本，且 beta 通道开关默认未勾选
   const builtCode = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
-  assert.match(builtCode, /<span id="v"[^>]*>0\.9\.2<\/span>/);
-  assert.match(builtCode, /<span id="up-pop-ver"[^>]*>0\.9\.2<\/span>/);
+  assert.match(builtCode, new RegExp(`<span id="v"[^>]*>${escapedVer}<\\/span>`));
+  assert.match(builtCode, new RegExp(`<span id="up-pop-ver"[^>]*>${escapedVer}<\\/span>`));
   assert.equal(builtCode.includes('id="check-allow-beta-updates"'), true);
 
-  // 2. 0.9.2 vs 0.9.2 判为已是最新，且文案展示 0.9.2
+  // 2. 当前版本 vs 当前版本 判为已是最新
   {
     const h = harness();
     const api = h.sandbox.__AGContextMeter;
@@ -5466,22 +5470,22 @@ test('v0.9.2 版本展示与预发布更新比较隔离', async () => {
     h.sandbox.window.contextMeterAPI = {
       ...h.sandbox.window.contextMeterAPI,
       checkUpdate: async (req) => {
-        assert.equal(req.currentVersion, '0.9.2');
+        assert.equal(req.currentVersion, curVer);
         assert.equal(req.allowBetaUpdates, false);
-        return { ok: true, hasUpdate: false, currentVersion: '0.9.2', installedVersion: '0.9.2' };
+        return { ok: true, hasUpdate: false, currentVersion: curVer, installedVersion: curVer };
       }
     };
     try {
       await api.checkUpdate(true);
       await h.flush();
-      assert.equal(h.elements.get('up-pop-ver').textContent, '0.9.2 (已是最新)');
-      assert.match(h.elements.get('up-pop-body').textContent, /0\.9\.2/);
+      assert.equal(h.elements.get('up-pop-ver').textContent, `${curVer} (已是最新)`);
+      assert.match(h.elements.get('up-pop-body').textContent, new RegExp(escapedVer));
     } finally {
       api.dispose();
     }
   }
 
-  // 3. ??? -> beta.2 与 beta.1 -> 0.9.2 展示格式，以及开启 beta 通道开关持久化
+  // 3. 预发布展示格式，以及开启 beta 通道开关持久化
   {
     const savedPayloads = [];
     const h = harness();
@@ -5493,9 +5497,9 @@ test('v0.9.2 版本展示与预发布更新比较隔离', async () => {
         return { ok: true };
       },
       checkUpdate: async (req) => {
-        assert.equal(req.currentVersion, '0.9.2');
+        assert.equal(req.currentVersion, curVer);
         assert.equal(req.allowBetaUpdates, true);
-        return { ok: true, hasUpdate: true, currentVersion: '0.9.2', latestVersion: '0.9.2-beta.2', releaseNotes: 'v0.9.2-beta.2' };
+        return { ok: true, hasUpdate: true, currentVersion: curVer, latestVersion: `${curVer}-beta.2`, releaseNotes: `v${curVer}-beta.2` };
       }
     };
     const chkBeta = h.elements.get('check-allow-beta-updates');
@@ -5507,8 +5511,8 @@ test('v0.9.2 版本展示与预发布更新比较隔离', async () => {
     try {
       await api.checkUpdate(true);
       await h.flush();
-      assert.equal(h.elements.get('up-pop-ver').textContent, '0.9.2 → 0.9.2 beta2');
-      assert.match(h.elements.get('up-pop-body').textContent, /v0\.9\.2/);
+      assert.equal(h.elements.get('up-pop-ver').textContent, `${curVer} → ${curVer} beta2`);
+      assert.match(h.elements.get('up-pop-body').textContent, new RegExp(`v${escapedVer}`));
       assert.equal(h.elements.get('btn-apply-update').style.display, 'inline-block');
     } finally {
       api.dispose();
@@ -7879,7 +7883,7 @@ test('Step 6: 2.34.0 Rich Text 对话可点与顶栏强制 no-drag，进 Customi
     const badge = elements.get('badge');
     const panel = elements.get('panel');
     // 1. 注入 WCO 样式必须强制顶栏可点击且 no-drag
-    const wcoStyle = docElements.get('ag-wco-style') || createdEls.find(n => String(n.textContent || '').includes('#ag-context-meter *'));
+    const wcoStyle = docElements.get('ag-topbar-host-fix') || createdEls.find(n => String(n.textContent || '').includes('#ag-context-meter') && String(n.textContent || '').includes('-webkit-app-region: no-drag !important'));
     assert.ok(wcoStyle && String(wcoStyle.textContent).includes('-webkit-app-region: no-drag !important; pointer-events: auto;'));
 
     // 2. 2.34.0 Rich Text 对话页不应误判 Marketplace，点击顶栏打开面板
@@ -7979,7 +7983,7 @@ test('Step 6: aux/page 停靠 data-panel-docked、返回聊天仅 page 显示、
     assert.equal(backBtn.hidden, true, 'flow 模式隐藏返回聊天按钮');
 
     // 3. 配置页切换其它三页时 pane-ctx-settings 无残留高度；快捷导航仅自动展开 .tech-drawer
-    h.elements.get('tab-ctx-settings').click();
+    h.sandbox.__AGContextMeter.openContextSettingsForTest({ forceFallbackPane: true });
     const paneSettings = h.elements.get('pane-ctx-settings');
     assert.equal(paneSettings.hidden, false);
     assert.equal(paneSettings.style.display, '');
@@ -9477,7 +9481,7 @@ test('v0.9.0-beta.1: 径向菜单 3 形态 / 锁定物理动效参数 / 靠边�
     assert.equal(api.getRadialMenuStateForTest().open, true);
     assert.equal(h.elements.get('ctx-radial-layer').hidden, false);
 
-    h.elements.get('radial-item-cli').trigger('contextmenu', { preventDefault() {}, stopPropagation() {} });
+    h.elements.get('radial-item-cli').trigger('contextmenu', { preventDefault() { }, stopPropagation() { } });
     assert.equal(api.getRadialMenuStateForTest().open, false);
     assert.equal(h.elements.get('panel').hidden, false);
     assert.equal(api.getContextPreferencesState().activeContextTab, 'settings');
@@ -9573,14 +9577,14 @@ test('v0.9.0-beta.1: 当前会话双栏驾驶舱(>=860/窄屏) + 零删除既有
     api.setAccountsOverviewForTest({
       activeAccountEmail: 'elvis@example.com',
       accounts: [{ email: 'elvis@example.com', isActive: true, hasRefreshToken: true }],
-      autoSwitch: { enabled: true, poolKey: 'shared_gemini_carbon', metricMode: 'remaining_pct', windowKey: 'primary', thresholdPct: 10, candidates: [] },
+      autoSwitch: { enabled: true, poolKey: 'shared_3p_pool', metricMode: 'remaining_pct', windowKey: '5h', thresholdPct: 10, candidates: [] },
       autoSwitchStatus: {
         state: 'blocked_missing_pool',
         blockedReason: 'target_pool_missing_in_snapshot',
-        blockedMeta: { poolKey: 'shared_gemini_carbon', windowKey: 'primary' }
+        blockedMeta: { poolKey: 'shared_3p_pool', windowKey: '5h' }
       }
     });
-    assert.equal(h.elements.get('auto-switch-status-pill').textContent, '所选池不可用');
+    assert.equal(h.elements.get('auto-switch-status-pill').textContent, '已开启 · 受阻 · 所选池不可用');
     assert.match(h.elements.get('auto-switch-last-note').textContent, /尚未返回监控池/);
     assert.doesNotMatch(h.elements.get('auto-switch-last-note').textContent, /无模型权限|无权限/);
 
@@ -10283,7 +10287,7 @@ test('上下文直达零闪烁 + 底栏消除硬裁切自适应换行 + 悬浮�
     const paneSess = h.elements.get('pane-ctx-session');
     const paneSet = h.elements.get('pane-ctx-settings');
     const tabSess = h.elements.get('tab-ctx-session');
-    const tabSet = h.elements.get('tab-ctx-settings');
+    const tabSet = h.elements.get('tab-ctx-accounts');
     const revealSnaps = [];
     let pHidden = pCtx.hidden;
     Object.defineProperty(pCtx, 'hidden', {
@@ -10297,14 +10301,14 @@ test('上下文直达零闪烁 + 底栏消除硬裁切自适应换行 + 悬浮�
             sessHidden: paneSess.hidden,
             setHidden: paneSet.hidden,
             sessActive: tabSess.classList.contains('active'),
-            setActive: tabSet.classList.contains('active')
+            setActive: Boolean(tabSet?.classList?.contains('active'))
           });
         }
       }
     });
 
     // (a) 切到配置 -> 不关闭直接点底栏 #csb-group-context / 径向上下文 / 溢出菜单上下文均立即回「当前会话」且面板不关闭
-    api.openContextSettingsForTest();
+    api.openContextSettingsForTest({ forceFallbackPane: true });
     assert.equal(pCtx.hidden, false);
     assert.equal(api.getContextPreferencesState().activeContextTab, 'settings');
     assert.equal(api.getPanelPickerStateForTest().currentTarget, 'settings');
@@ -10366,7 +10370,7 @@ test('上下文直达零闪烁 + 底栏消除硬裁切自适应换行 + 悬浮�
     assert.equal(pCtx.hidden, false);
     assert.equal(api.getContextPreferencesState().activeContextTab, 'settings');
     api.toggle(false);
-    h.elements.get('radial-item-cli').trigger('contextmenu', { preventDefault() {}, stopPropagation() {} });
+    h.elements.get('radial-item-cli').trigger('contextmenu', { preventDefault() { }, stopPropagation() { } });
     assert.equal(pCtx.hidden, false);
     assert.equal(api.getContextPreferencesState().activeContextTab, 'settings');
   } finally {
@@ -10506,7 +10510,7 @@ test('Phase 1.3: 账号与自动切号迁入设置页专卡、移除弹窗顶层
       autoSwitchStatus: { state: 'watching' }
     });
     assert.match(h.elements.get('quota-entry-active-account').textContent, /a@example\.com/);
-    assert.equal(h.elements.get('quota-entry-autoswitch-pill').textContent, '监控中');
+    assert.equal(h.elements.get('quota-entry-autoswitch-pill').textContent, '已开启 · 监控中');
     assert.match(h.elements.get('quota-entry-rule-summary').textContent, /20%/);
 
     const th = h.elements.get('inp-auto-switch-threshold');
@@ -10526,7 +10530,7 @@ test('Phase 1.3: 账号与自动切号迁入设置页专卡、移除弹窗顶层
 
     h.elements.get('btn-quota-open-accounts-settings').click();
     assert.equal(h.elements.get('panel').hidden, false);
-    assert.equal(h.elements.get('pane-ctx-settings').hidden, false);
+    assert.equal(h.elements.get('pane-ctx-accounts').hidden, false);
   } finally {
     api.dispose();
   }
@@ -10555,7 +10559,7 @@ test('Phase 2C (PR #102 & Issue #106): 无独立菜单栏/macOS隐藏标题栏�
     const fixEl = h.sandbox.document.getElementById('ag-topbar-host-fix');
     assert.ok(fixEl);
     assert.match(fixEl.textContent, /\[class\*="@container\/titlebar"\][\s\S]*-webkit-app-region:\s*drag;/);
-    assert.match(fixEl.textContent, /#ag-context-meter,\s*#ag-context-meter \* \{ -webkit-app-region: no-drag !important;/);
+    assert.match(fixEl.textContent, /#ag-context-meter:not\(\[hidden\]\):not\(\[data-collapsed-hidden="true"\]\),\s*#ag-context-meter:not\(\[hidden\]\):not\(\[data-collapsed-hidden="true"\]\) \*:not\(\[hidden\]\) \{ -webkit-app-region: no-drag !important;/);
 
     // 3. macOS 隐藏标题栏（computeWindowControlsWidth 为 0）仍补齐空白拖动区
     h.sandbox.navigator = { platform: 'MacIntel' };
@@ -10643,7 +10647,7 @@ test('Phase 4A (图 3): 右侧辅助分栏插件/浏览器共存切换(浏览器
 
     // 拖拽左缘 resizer 期间禁用 webview pointer-events，结束后必还原并钳位宽度
     const resizer = h.elements.get('dock-aux-resizer');
-    resizer.trigger('pointerdown', { pointerId: 1, button: 0, isPrimary: true, clientX: 900, preventDefault() {} });
+    resizer.trigger('pointerdown', { pointerId: 1, button: 0, isPrimary: true, clientX: 900, preventDefault() { } });
     assert.equal(webview.style.pointerEvents, 'none', '拖拽分栏宽窄期间必须禁用 webview pointer-events');
     h.sandbox.window.trigger('pointermove', { clientX: 820 });
     h.sandbox.window.trigger('pointerup', { clientX: 820 });
@@ -10657,5 +10661,586 @@ test('Phase 4A (图 3): 右侧辅助分栏插件/浏览器共存切换(浏览器
     assert.equal(hostWebviewContainer.style.display, '');
   } finally {
     h.sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('01 批回归：对调标签顺序、唯一 speed-line-empty ID 与真实模板下 v0.9.2 vs 候选版全维度对照', async () => {
+  const pathMod = require('node:path');
+  const { execFileSync } = require('node:child_process');
+  const tplHtml = fs.readFileSync(pathMod.join(__dirname, 'src/renderer/template.html'), 'utf8');
+  const stylesCss = fs.readFileSync(pathMod.join(__dirname, 'src/renderer/styles.css'), 'utf8');
+  const candidateSource = fs.readFileSync(pathMod.join(__dirname, 'meter-renderer.js'), 'utf8');
+
+  // 1. 静态模板检查：ID 零重复、speed-line-empty 唯一落于趋势面板、标签顺序为 会话 -> 速度对比 -> 模型设置 -> 配置
+  const allIds = [...tplHtml.matchAll(/\bid="([^"]+)"/g)].map(m => m[1]);
+  const seenIds = new Set();
+  const dupIds = [];
+  for (const id of allIds) {
+    if (seenIds.has(id)) dupIds.push(id);
+    seenIds.add(id);
+  }
+  assert.deepEqual(dupIds, [], `template.html 不应存在重复 DOM ID: ${dupIds.join(', ')}`);
+  assert.equal(allIds.filter(id => id === 'speed-line-empty').length, 1, 'speed-line-empty 只能保留唯一节点');
+
+  const tabsBarStart = tplHtml.indexOf('id="ctx-tabs-bar"');
+  const tabsBarEnd = tplHtml.indexOf('</div>', tabsBarStart);
+  const tabsBarSlice = tplHtml.slice(tabsBarStart, tabsBarEnd);
+  const tabOrder = [...tabsBarSlice.matchAll(/data-ctx-tab="([^"]+)"/g)].map(m => m[1]);
+  assert.deepEqual(tabOrder, ['session', 'speed', 'models', 'accounts'], '标签顺序必须为 当前会话 -> 速度对比 -> 模型设置 -> 账号与共享池');
+
+  const speedPaneStart = tplHtml.indexOf('id="pane-ctx-speed"');
+  const settingsPaneStart = tplHtml.indexOf('id="pane-ctx-settings"', speedPaneStart);
+  const speedPaneSlice = tplHtml.slice(speedPaneStart, settingsPaneStart);
+  assert.ok(speedPaneSlice.indexOf('id="speed-hero"') > 0 && speedPaneSlice.indexOf('id="speed-line-empty"') > speedPaneSlice.indexOf('id="speed-hero"'));
+  assert.ok(speedPaneSlice.indexOf('id="speed-line-empty"') < speedPaneSlice.indexOf('class="ctx-speed-legacy"'), '唯一 speed-line-empty 必须位于趋势面板内而非 legacy 隐藏区');
+
+  // 校验窄栏 CSS 容器查询与防溢出规则，以及排行方形复选框不被全局胶囊开关劫持
+  assert.match(stylesCss, /#pane-ctx-speed\s*\{[\s\S]*container-type:\s*inline-size/);
+  assert.match(stylesCss, /@container\s*\(max-width:\s*760px\)\s*\{\s*\.ctx-speed-hero-body\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  assert.match(stylesCss, /@container\s*\(max-width:\s*560px\)\s*\{\s*\.ctx-speed-pk-grid\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  assert.match(stylesCss, /:not\(\.ctx-toggle-input,\s*\.ctx-speed-rank-check\)/);
+
+  // 2. 真实模板 HTML 解析沙箱：禁止暗自伪造不存在的 DOM，getElementById 严格只返回真实模板挂载节点
+  function parseHtmlIntoRoot(html, makeNode) {
+    const body = String(html || '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<!--[\s\S]*?-->/g, '');
+    const root = makeNode('shadow-root');
+    const byId = new Map();
+    const stack = [root];
+    const voidTags = new Set(['input', 'br', 'hr', 'img', 'meta', 'link', 'circle', 'line', 'rect', 'path', 'polygon', 'polyline']);
+    const tagRe = /<\/?([a-zA-Z0-9-]+)([^>]*)>|([^<]+)/g;
+    let m;
+    while ((m = tagRe.exec(body)) !== null) {
+      if (m[3]) {
+        const text = m[3].replace(/\s+/g, ' ');
+        if (text.trim() && stack.length > 1) {
+          const cur = stack[stack.length - 1];
+          cur.textContent = (cur.textContent ? cur.textContent + ' ' : '') + text.trim();
+        }
+        continue;
+      }
+      const raw = m[0];
+      const tag = m[1].toLowerCase();
+      const attrStr = m[2] || '';
+      if (raw.startsWith('</')) {
+        for (let i = stack.length - 1; i >= 1; i--) {
+          if (stack[i].tagName === tag) {
+            stack.length = i;
+            break;
+          }
+        }
+        continue;
+      }
+      const node = makeNode(tag);
+      const attrRe = /([a-zA-Z0-9_:-]+)(?:\s*=\s*"([^"]*)"|\s*=\s*'([^']*)'|\s*=\s*([^\s>]+))?/g;
+      let am;
+      while ((am = attrRe.exec(attrStr)) !== null) {
+        const k = am[1];
+        const v = am[2] ?? am[3] ?? am[4] ?? '';
+        if (k === 'hidden') node.hidden = true;
+        else if (k === 'value') node.value = v;
+        else node.setAttribute(k, v);
+        if (k === 'id' && v && !byId.has(v)) byId.set(v, node);
+      }
+      stack[stack.length - 1].appendChild(node);
+      if (!raw.endsWith('/>') && !voidTags.has(tag)) {
+        stack.push(node);
+      }
+    }
+    return { root, byId };
+  }
+
+  function createRealTemplateHarness(bundleSource, initialSavedPrefs = null) {
+    const docListeners = new Map();
+    const listeners = new Map();
+    const blobs = [];
+    const anchors = [];
+    const savedCalls = [];
+    const lStore = new Map();
+    let shadowById = new Map();
+    let shadowRootTree = null;
+
+    function makeNode(tag = 'div') {
+      const attrs = new Map();
+      const props = new Map();
+      const node = {
+        tagName: String(tag).toLowerCase(),
+        style: {
+          display: '', opacity: '', width: '', left: '', top: '', right: '', background: '',
+          setProperty(k, v) { props.set(k, v); },
+          removeProperty(k) { props.delete(k); },
+          getPropertyValue(k) { return props.get(k) || ''; }
+        },
+        children: [],
+        parentElement: null,
+        hidden: false,
+        disabled: false,
+        checked: false,
+        focused: false,
+        scrolledIntoView: false,
+        value: '',
+        textContent: '',
+        offsetWidth: 140,
+        clientWidth: 520,
+        get id() { return attrs.get('id') || ''; },
+        set id(v) { attrs.set('id', String(v)); },
+        get className() { return attrs.get('class') || ''; },
+        set className(v) { attrs.set('class', String(v || '')); },
+        classList: {
+          add(c) {
+            const cur = (attrs.get('class') || '').split(/\s+/).filter(Boolean);
+            if (!cur.includes(c)) cur.push(c);
+            attrs.set('class', cur.join(' '));
+          },
+          remove(c) {
+            const cur = (attrs.get('class') || '').split(/\s+/).filter(x => x && x !== c);
+            attrs.set('class', cur.join(' '));
+          },
+          toggle(c, force) {
+            const on = force === undefined ? !this.contains(c) : Boolean(force);
+            if (on) this.add(c); else this.remove(c);
+            return on;
+          },
+          contains(c) { return (attrs.get('class') || '').split(/\s+/).includes(c); }
+        },
+        addEventListener(type, fn) {
+          if (!listeners.has(node)) listeners.set(node, new Map());
+          listeners.get(node).set(type, fn);
+        },
+        removeEventListener(type) { listeners.get(node)?.delete(type); },
+        setAttribute(k, v) {
+          attrs.set(k, String(v));
+          if (k === 'hidden') node.hidden = true;
+        },
+        getAttribute(k) { return attrs.get(k) ?? null; },
+        removeAttribute(k) {
+          attrs.delete(k);
+          if (k === 'hidden') node.hidden = false;
+        },
+        append(...items) { for (const it of items) node.appendChild(it); },
+        appendChild(x) {
+          if (x) {
+            x.parentElement = node;
+            node.children.push(x);
+          }
+          return x;
+        },
+        replaceChildren(...items) {
+          node.children = [];
+          for (const it of items) node.appendChild(it);
+        },
+        remove() {
+          if (node.tagName === 'a') anchors.push({ href: node.href, download: node.download, clicked: Boolean(node._clicked) });
+        },
+        focus() { node.focused = true; },
+        scrollIntoView() { node.scrolledIntoView = true; },
+        click() {
+          node._clicked = true;
+          const fn = listeners.get(node)?.get('click');
+          if (fn) fn({ target: node, currentTarget: node, preventDefault() {}, stopPropagation() {} });
+        },
+        trigger(type, ev = {}) {
+          const payload = { target: node, currentTarget: node, preventDefault() {}, stopPropagation() {}, ...ev };
+          const fn = listeners.get(node)?.get(type);
+          if (fn) fn(payload);
+          const propHandler = node[`on${type}`];
+          if (typeof propHandler === 'function') propHandler(payload);
+        },
+        matches(sel) {
+          if (!sel) return false;
+          if (sel.startsWith('#')) return node.id === sel.slice(1);
+          if (sel.startsWith('.')) return node.classList.contains(sel.slice(1));
+          const attrM = sel.match(/^\[([a-zA-Z0-9_-]+)(?:="([^"]*)")?\]$/);
+          if (attrM) {
+            const actual = node.getAttribute(attrM[1]);
+            return attrM[2] !== undefined ? actual === attrM[2] : actual !== null;
+          }
+          return node.tagName === sel.toLowerCase();
+        },
+        closest(sel) {
+          let cur = node;
+          while (cur) {
+            if (cur.matches?.(sel)) return cur;
+            cur = cur.parentElement;
+          }
+          return null;
+        },
+        querySelectorAll(sel) {
+          const found = [];
+          const walk = (n) => {
+            for (const c of n.children || []) {
+              if (c.matches?.(sel)) found.push(c);
+              walk(c);
+            }
+          };
+          walk(node);
+          return found;
+        },
+        querySelector(sel) { return node.querySelectorAll(sel)[0] || null; },
+        getBoundingClientRect() { return { left: 0, top: 0, width: node.clientWidth || 520, height: 200, right: node.clientWidth || 520, bottom: 200 }; }
+      };
+      return node;
+    }
+
+    const host = makeNode('div');
+    const shadow = {
+      _html: '',
+      set innerHTML(val) {
+        this._html = String(val || '');
+        const parsed = parseHtmlIntoRoot(this._html, makeNode);
+        shadowRootTree = parsed.root;
+        shadowById = parsed.byId;
+      },
+      get innerHTML() { return this._html; },
+      getElementById(id) { return shadowById.get(id) || null; },
+      querySelectorAll(sel) { return shadowRootTree ? shadowRootTree.querySelectorAll(sel) : []; },
+      querySelector(sel) { return shadowRootTree ? shadowRootTree.querySelector(sel) : null; }
+    };
+    host.attachShadow = () => shadow;
+
+    let firstCreate = true;
+    const sandbox = {
+      location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/speed-real-tpl-1' },
+      document: {
+        hidden: false,
+        body: makeNode('body'),
+        documentElement: makeNode('html'),
+        createElement: (tag) => {
+          if (firstCreate) { firstCreate = false; return host; }
+          return makeNode(tag);
+        },
+        createElementNS: (_ns, tag) => makeNode(tag),
+        getElementById: () => null,
+        querySelectorAll: () => [],
+        querySelector: () => null,
+        addEventListener: (t, fn) => {
+          if (!docListeners.has(t)) docListeners.set(t, new Set());
+          docListeners.get(t).add(fn);
+        },
+        removeEventListener: (t, fn) => docListeners.get(t)?.delete(fn)
+      },
+      window: {
+        innerWidth: 1280,
+        innerHeight: 800,
+        __APP_CONFIG__: { csrfToken: 'test-csrf' },
+        contextMeterAPI: {
+          scan: async () => ({ ok: true, data: { session: session(), scannedAt: Date.now(), latest: null } }),
+          getSettings: async () => ({
+            ok: true,
+            ...(initialSavedPrefs ? { defaultViewPrefs: initialSavedPrefs, uiPreferences: { defaultViewPrefs: initialSavedPrefs } } : {})
+          }),
+          saveSettings: async (payload) => { savedCalls.push(payload); return { ok: true }; }
+        }
+      },
+      localStorage: {
+        getItem: k => lStore.get(k) ?? null,
+        setItem: (k, v) => lStore.set(k, String(v)),
+        removeItem: k => lStore.delete(k)
+      },
+      Blob: class MockBlob {
+        constructor(parts, opts) { this.text = parts.join(''); this.type = opts?.type || ''; blobs.push(this); }
+      },
+      URL: {
+        createObjectURL: () => 'blob:mock-speed-csv',
+        revokeObjectURL: () => {}
+      },
+      __AGContextMeterCore: core,
+      AbortController,
+      Date,
+      setTimeout: () => 1,
+      clearTimeout() {},
+      setInterval: () => 1,
+      clearInterval() {},
+      fetch: async () => ({ ok: true, json: async () => ({ generatorMetadata: [] }) })
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(bundleSource, sandbox);
+    return {
+      sandbox,
+      api: sandbox.__AGContextMeter,
+      el: id => shadow.getElementById(id),
+      shadow,
+      blobs,
+      anchors,
+      savedCalls
+    };
+  }
+
+  // 3. 构造同一组历史样本（严格锚定今日零点，跨 1d/3d/5d/7d/30d/all、含 chat 与 speed-test 来源、含 <3 低样本）
+  const dayMs = 86400000;
+  const hourMs = 3600000;
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const today0 = todayStart.getTime();
+  const fmtYmd = (ms) => {
+    const d = new Date(ms);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const fixedRecords = [
+    // Gemini 4 Carbon (4 条 chat: 今日 1 条, 1 天前 1 条, 2 天前 1 条, 4 天前 1 条)
+    { callId: 'sp-c1', modelExactId: 'gemini-4-carbon', modelLabel: 'Gemini 4 Carbon', status: 'final', origin: 'chat', outputTokens: 300, durationSec: 3.0, ttftSec: 0.6, tps: 100, timestamp: today0 + 2 * hourMs },
+    { callId: 'sp-c2', modelExactId: 'gemini-4-carbon', modelLabel: 'Gemini 4 Carbon', status: 'final', origin: 'chat', outputTokens: 400, durationSec: 3.5, ttftSec: 0.8, tps: 120, timestamp: today0 - 1 * dayMs + 12 * hourMs },
+    { callId: 'sp-c3', modelExactId: 'gemini-4-carbon', modelLabel: 'Gemini 4 Carbon', status: 'final', origin: 'chat', outputTokens: 500, durationSec: 4.0, ttftSec: 1.0, tps: 140, timestamp: today0 - 2 * dayMs + 12 * hourMs },
+    { callId: 'sp-c4', modelExactId: 'gemini-4-carbon', modelLabel: 'Gemini 4 Carbon', status: 'final', origin: 'chat', outputTokens: 600, durationSec: 4.5, ttftSec: 1.2, tps: 160, timestamp: today0 - 4 * dayMs + 12 * hourMs },
+    // Gemini 4 Hydrogen High (3 条 chat + 1 条 speed-test 探针 -> 检验 origin='all' vs 'chat')
+    { callId: 'sp-h1', modelExactId: 'gemini-4-hydrogen-high', modelLabel: 'Gemini 4 Hydrogen (High)', effort: 'high', status: 'final', origin: 'chat', outputTokens: 240, durationSec: 3.0, ttftSec: 0.9, tps: 80, timestamp: today0 + 1 * hourMs },
+    { callId: 'sp-h2', modelExactId: 'gemini-4-hydrogen-high', modelLabel: 'Gemini 4 Hydrogen (High)', effort: 'high', status: 'final', origin: 'chat', outputTokens: 270, durationSec: 3.2, ttftSec: 1.1, tps: 90, timestamp: today0 - 1 * dayMs + 10 * hourMs },
+    { callId: 'sp-h3', modelExactId: 'gemini-4-hydrogen-high', modelLabel: 'Gemini 4 Hydrogen (High)', effort: 'high', status: 'final', origin: 'chat', outputTokens: 300, durationSec: 3.5, ttftSec: 1.3, tps: 100, timestamp: today0 - 2 * dayMs + 10 * hourMs },
+    { callId: 'sp-h4', modelExactId: 'gemini-4-hydrogen-high', modelLabel: 'Gemini 4 Hydrogen (High)', effort: 'high', status: 'final', origin: 'speed-test', outputTokens: 500, durationSec: 2.5, ttftSec: 0.4, tps: 200, timestamp: today0 + 2.5 * hourMs },
+    // Claude Sonnet 4.6 (2 条 <3 低样本, 位于 12-13 天前 -> 7d 不含, 30d 含)
+    { callId: 'sp-a1', modelExactId: 'claude-sonnet-4-6', modelLabel: 'Claude Sonnet 4.6', status: 'final', origin: 'chat', outputTokens: 200, durationSec: 4.0, ttftSec: 1.5, tps: 50, timestamp: today0 - 12 * dayMs + 12 * hourMs },
+    { callId: 'sp-a2', modelExactId: 'claude-sonnet-4-6', modelLabel: 'Claude Sonnet 4.6', status: 'final', origin: 'chat', outputTokens: 280, durationSec: 4.0, ttftSec: 1.7, tps: 70, timestamp: today0 - 13 * dayMs + 12 * hourMs },
+    // Gemini 3.8 Flash (2 条位于 45-46 天前 -> 30d 不含, all 含)
+    { callId: 'sp-f1', modelExactId: 'gemini-3-8-flash', modelLabel: 'Gemini 3.8 Flash', status: 'final', origin: 'chat', outputTokens: 450, durationSec: 2.5, ttftSec: 0.3, tps: 180, timestamp: today0 - 45 * dayMs + 12 * hourMs },
+    { callId: 'sp-f2', modelExactId: 'gemini-3-8-flash', modelLabel: 'Gemini 3.8 Flash', status: 'final', origin: 'chat', outputTokens: 550, durationSec: 2.5, ttftSec: 0.5, tps: 220, timestamp: today0 - 46 * dayMs + 12 * hourMs }
+  ];
+  const flashCustomStart = fmtYmd(today0 - 47 * dayMs);
+  const flashCustomEnd = fmtYmd(today0 - 44 * dayMs);
+
+  function runFullSpeedSuite(bundleSource, label) {
+    const h = createRealTemplateHarness(bundleSource);
+    const api = h.api;
+    try {
+      // 验证真实模板下所有正式版速度对照 DOM ID 均真实存在（绝非假节点）
+      for (const reqId of [
+        'speed-filter-bar', 'speed-range-1d', 'speed-range-3d', 'speed-range-5d', 'speed-range-7d',
+        'speed-range-30d', 'speed-range-all', 'speed-range-custom', 'speed-custom-dates',
+        'speed-date-start', 'speed-date-end', 'speed-date-error',
+        'speed-origin-all', 'speed-origin-chat', 'speed-metric-tps', 'speed-metric-ttft', 'speed-metric-duration',
+        'speed-algo-median', 'speed-algo-mean', 'speed-algo-composite', 'btn-save-default-view-speed',
+        'speed-hero', 'speed-pk-count', 'speed-pk-chips', 'speed-pk-add', 'speed-pk-clear', 'speed-pk-cards',
+        'speed-trend-title', 'speed-trend-legend', 'speed-line-chart-wrap', 'speed-line-svg', 'speed-line-empty', 'speed-trend-foot',
+        'speed-rank', 'speed-rank-count', 'speed-rank-search', 'speed-rank-sort', 'speed-rank-rows', 'speed-rank-export', 'speed-rank-reset'
+      ]) {
+        assert.ok(h.el(reqId), `${label}: 真实模板必须存在 #${reqId}`);
+      }
+
+      // 确认唯一 speed-line-empty 位于 #speed-hero 内（仅候选版去重后唯一）
+      assert.ok(h.el('speed-line-empty').closest('#speed-hero'), `${label}: #speed-line-empty 必须在 #speed-hero 内`);
+      const speedLineEmptyNodes = h.shadow.querySelectorAll('[id="speed-line-empty"]');
+      if (label === 'candidate') {
+        assert.equal(speedLineEmptyNodes.length, 1, '候选版只能有 1 个 #speed-line-empty');
+      } else {
+        assert.equal(speedLineEmptyNodes.length, 2, 'v0.9.2 原模板存在重复 #speed-line-empty');
+      }
+
+      h.el('badge').click();
+      h.el('tab-ctx-speed').click();
+      api.setContextLatestForTest({
+        model: 'Gemini 4 Carbon',
+        modelId: 'gemini-4-carbon',
+        status: 'reported',
+        used: 12000,
+        budget: 256000
+      });
+      api.setSpeedRecordsForTest(fixedRecords);
+
+      // A. 默认 7d 视图：Carbon + Hydrogen High（2 款模型）
+      const defaultRankIds = h.el('speed-rank-rows').children.map(r => r.getAttribute('data-rank-id'));
+      assert.deepEqual(defaultRankIds, ['gemini-4-carbon', 'gemini-4-hydrogen-high'], `${label}: 默认 7d 仅包含近 7 天模型`);
+      assert.equal(h.el('speed-pk-count').textContent, '2');
+
+      // B. 时间范围切换：1d / 3d / 5d / 30d / all / custom
+      h.el('speed-range-30d').click();
+      assert.deepEqual(
+        h.el('speed-rank-rows').children.map(r => r.getAttribute('data-rank-id')),
+        ['gemini-4-carbon', 'gemini-4-hydrogen-high', 'claude-sonnet-4-6']
+      );
+      h.el('speed-range-all').click();
+      const allRankIds = h.el('speed-rank-rows').children.map(r => r.getAttribute('data-rank-id'));
+      assert.deepEqual(allRankIds, ['gemini-3-8-flash', 'gemini-4-carbon', 'gemini-4-hydrogen-high', 'claude-sonnet-4-6']);
+
+      // 1d / 3d / 5d 检查
+      h.el('speed-range-1d').click();
+      assert.equal(h.el('speed-rank-rows').children.length, 2);
+      h.el('speed-range-3d').click();
+      assert.equal(h.el('speed-rank-rows').children.length, 2);
+      h.el('speed-range-5d').click();
+      assert.equal(h.el('speed-rank-rows').children.length, 2);
+
+      // custom 自定义起止日期 + 非法日期校验
+      h.el('speed-range-custom').click();
+      assert.equal(h.el('speed-custom-dates').hidden, false);
+      h.el('speed-date-start').value = '2026-11-20';
+      h.el('speed-date-end').value = '2026-11-10';
+      h.el('speed-custom-dates').trigger('submit');
+      assert.equal(h.el('speed-date-error').hidden, false, `${label}: 起止日期倒挂必须报错`);
+
+      h.el('speed-date-start').value = flashCustomStart;
+      h.el('speed-date-end').value = flashCustomEnd;
+      h.el('speed-custom-dates').trigger('submit');
+      assert.equal(h.el('speed-date-error').hidden, true);
+      assert.deepEqual(
+        h.el('speed-rank-rows').children.map(r => r.getAttribute('data-rank-id')),
+        ['gemini-3-8-flash'],
+        `${label}: 自定义 10-01~10-15 仅命中 45 天前的 Flash`
+      );
+
+      // 回到 all（先点重置筛选验证 resetSpeedFilters 恢复默认选中，再切 all）检查算法（median / mean / composite）与来源（all vs chat）
+      h.el('speed-rank-reset').click();
+      h.el('speed-range-all').click();
+      const readPkCardVal = (id) => {
+        const card = h.el('speed-pk-cards').children.find(c => c.getAttribute('data-pk-id') === id);
+        return card ? card.querySelector('.ctx-speed-pk-value').textContent : null;
+      };
+      // Hydrogen High 在 all+median 下含 speed-test=200 -> 样本 [80,90,100,200] 中位数 95.0；切 chat 后 [80,90,100] 中位数 90.0
+      h.el('speed-origin-all').click();
+      const hydrogenAllMedian = readPkCardVal('gemini-4-hydrogen-high');
+      h.el('speed-origin-chat').click();
+      const hydrogenChatMedian = readPkCardVal('gemini-4-hydrogen-high');
+      h.el('speed-origin-all').click();
+
+      h.el('speed-algo-mean').click();
+      const hydrogenAllMean = readPkCardVal('gemini-4-hydrogen-high');
+      h.el('speed-algo-composite').click();
+      const hydrogenAllComposite = readPkCardVal('gemini-4-hydrogen-high');
+      h.el('speed-algo-median').click();
+
+      // C. 指标切换 (ttft / duration / tps) 与走势图标题联动
+      h.el('speed-metric-ttft').click();
+      assert.match(h.el('speed-trend-title').textContent, /首字延迟/);
+      const carbonTtftVal = readPkCardVal('gemini-4-carbon');
+      h.el('speed-metric-duration').click();
+      assert.match(h.el('speed-trend-title').textContent, /总耗时/);
+      h.el('speed-metric-tps').click();
+      assert.match(h.el('speed-trend-title').textContent, /速度走势/);
+
+      // D. 全量排行搜索过滤、空匹配与三档排序
+      h.el('speed-rank-search').value = 'claude';
+      h.el('speed-rank-search').trigger('input', { target: h.el('speed-rank-search') });
+      assert.deepEqual(h.el('speed-rank-rows').children.map(r => r.getAttribute('data-rank-id')), ['claude-sonnet-4-6']);
+
+      h.el('speed-rank-search').value = 'non-existent-model-xyz';
+      h.el('speed-rank-search').trigger('input', { target: h.el('speed-rank-search') });
+      assert.equal(h.el('speed-rank-rows').children[0].textContent, '没有匹配的模型');
+
+      h.el('speed-rank-search').value = '';
+      h.el('speed-rank-search').trigger('input', { target: h.el('speed-rank-search') });
+
+      const clickSort = (sortKey) => {
+        const btn = h.el('speed-rank-sort').querySelector(`[data-rank-sort="${sortKey}"]`);
+        assert.ok(btn);
+        h.el('speed-rank-sort').trigger('click', { target: btn });
+        return h.el('speed-rank-rows').children.map(r => r.getAttribute('data-rank-id'));
+      };
+      const sortTps = clickSort('tps');
+      const sortTtft = clickSort('ttft');
+      const sortSamples = clickSort('samples');
+      assert.deepEqual(sortTps, ['gemini-3-8-flash', 'gemini-4-carbon', 'gemini-4-hydrogen-high', 'claude-sonnet-4-6']);
+      assert.deepEqual(sortTtft, ['gemini-3-8-flash', 'gemini-4-carbon', 'gemini-4-hydrogen-high', 'claude-sonnet-4-6']);
+      assert.equal(sortSamples[3], 'claude-sonnet-4-6');
+
+      // E. 两模型 PK 对比、+ 添加模型对比聚焦、多系列走势图与 tooltip
+      h.el('speed-pk-clear').click();
+      if (label === 'candidate') {
+        assert.equal(h.el('speed-pk-count').textContent, '0', '候选版清空选择后计数必须归零');
+      }
+      assert.equal(h.el('speed-line-empty').hidden, false);
+      assert.equal(h.el('speed-line-chart-wrap').hidden, true);
+
+      h.el('speed-pk-add').click();
+      assert.equal(h.el('speed-rank-search').focused, true);
+
+      for (const pickId of ['gemini-4-carbon', 'gemini-4-hydrogen-high']) {
+        const row = h.el('speed-rank-rows').children.find(r => r.getAttribute('data-rank-id') === pickId);
+        const cb = row.querySelector('.ctx-speed-rank-check');
+        cb.checked = true;
+        cb.trigger('change');
+      }
+      assert.equal(h.el('speed-pk-count').textContent, '2');
+      assert.equal(h.el('speed-pk-chips').children.length, 2);
+      assert.equal(h.el('speed-pk-cards').children.length, 2);
+      const pkTwoSnapshots = h.el('speed-pk-cards').children.map(c => ({
+        id: c.getAttribute('data-pk-id'),
+        top: c.querySelector('.ctx-speed-pk-top').textContent,
+        val: c.querySelector('.ctx-speed-pk-value').textContent
+      }));
+
+      // 多系列走势图校验（2 条 polyline、图例零括号、粒度注脚、pointermove tooltip）
+      assert.equal(h.el('speed-line-empty').hidden, true);
+      assert.equal(h.el('speed-line-chart-wrap').hidden, false);
+      const polylines = h.el('speed-line-svg').querySelectorAll('polyline');
+      assert.equal(polylines.length, 2);
+      const legendTexts = h.el('speed-trend-legend').children.map(n => n.children[1].textContent);
+      assert.ok(legendTexts.every(s => !/[()（）]/.test(s)), `${label}: 走势图例严禁含括号`);
+      const trendFootTexts = h.el('speed-trend-foot').children.map(n => n.textContent);
+      h.el('speed-line-svg').trigger('pointermove', { clientX: 240 });
+      assert.equal(h.el('speed-line-tooltip').hidden, false);
+      h.el('speed-line-svg').trigger('pointerleave');
+      assert.equal(h.el('speed-line-tooltip').hidden, true);
+
+      // F. 导出 CSV
+      h.el('speed-rank-export').click();
+      assert.equal(h.blobs.length, 1);
+      const csvText = h.blobs[0].text.replace(/^\uFEFF/, '');
+      assert.equal(h.anchors[0].download, 'speed-alld.csv');
+
+      // G. 窄栏容器宽度下走势图自适应 viewBox
+      h.el('speed-line-chart-wrap').clientWidth = 260;
+      api.setSpeedRecordsForTest(fixedRecords);
+      const narrowViewBox = h.el('speed-line-svg').getAttribute('viewBox');
+      assert.equal(narrowViewBox, '0 0 260 200');
+      h.el('speed-line-chart-wrap').clientWidth = 520;
+
+      // H. 设为默认视图并校验持久化参数
+      h.el('speed-range-30d').click();
+      h.el('btn-save-default-view-speed').click();
+      const savedSpeedPrefs = h.savedCalls[h.savedCalls.length - 1]?.defaultViewPrefs;
+
+      // I. 空数据空态
+      api.setSpeedRecordsForTest([]);
+      if (label === 'candidate') {
+        assert.equal(h.el('speed-pk-count').textContent, '0', '候选版空数据时计数必须归零');
+      }
+      assert.equal(h.el('speed-line-empty').hidden, false);
+      assert.equal(h.el('speed-line-empty').textContent, '暂无对比曲线');
+      assert.equal(h.el('speed-line-chart-wrap').hidden, true);
+      assert.equal(h.el('speed-rank-rows').children[0].textContent, '没有匹配的模型');
+      assert.match(h.el('speed-pk-cards').children[0].textContent, /还没有可用的速度记录/);
+
+      return {
+        hydrogenAllMedian,
+        hydrogenChatMedian,
+        hydrogenAllMean,
+        hydrogenAllComposite,
+        carbonTtftVal,
+        pkTwoSnapshots,
+        legendTexts,
+        trendFootTexts,
+        csvText,
+        savedSpeedRange: savedSpeedPrefs?.speedRangeDays
+      };
+    } finally {
+      api.dispose();
+    }
+  }
+
+  // 4. 运行当前候选版，并在有 git history 时同数据跑正式版 v0.9.2 (2303c0bdd268067f) 对照
+  const candResult = runFullSpeedSuite(candidateSource, 'candidate');
+  assert.equal(candResult.hydrogenAllMedian, '95.0');
+  assert.equal(candResult.hydrogenChatMedian, '90.0');
+  assert.equal(candResult.hydrogenAllMean, '117.5');
+  assert.equal(candResult.hydrogenAllComposite, '79.8');
+  assert.equal(candResult.carbonTtftVal, '0.90s');
+  assert.equal(candResult.savedSpeedRange, '30');
+
+  let v092Source = null;
+  try {
+    v092Source = execFileSync('git', ['show', 'v0.9.2:meter-renderer.js'], { cwd: __dirname, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 });
+  } catch { }
+  if (v092Source) {
+    assert.match(v092Source, /2303c0bdd268067f/, 'v0.9.2 正式版构建 ID 必须为 2303c0bdd268067f');
+    const v092Result = runFullSpeedSuite(v092Source, 'v0.9.2');
+    assert.deepEqual(candResult, v092Result, '同一历史样本下候选版与正式版 v0.9.2 全部计算与 CSV 口径必须一致');
+  }
+
+  // 5. 默认视图冷恢复到新候选实例（基于真实模板验证 active 状态）
+  const hCold = createRealTemplateHarness(candidateSource, { speedRangeDays: '30' });
+  try {
+    await hCold.api.restoreSettingsForTest();
+    hCold.api.switchContextTabForTest('speed');
+    assert.equal(hCold.el('speed-range-30d').classList.contains('active'), true);
+    assert.equal(hCold.el('speed-range-7d').classList.contains('active'), false);
+  } finally {
+    hCold.api.dispose();
   }
 });

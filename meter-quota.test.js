@@ -728,10 +728,12 @@ test('PR #66 加固：额度 IPC 拒绝渲染进程伪造 origin/userStatus 且 
     if (forceUnauthorized) {
       return { ok: false, error: 'HTTP 401', errorKind: 'auth', snapshot: { syncState: 'stale', pools: [] } };
     }
+    const nowTs = Date.now();
     return {
       ok: true,
       error: null,
-      snapshot: core.buildModelQuotaSnapshot({ userStatusRes, quotaSummaryRes, nowMs: Date.now() }),
+      fetchedAtMs: nowTs,
+      snapshot: core.buildModelQuotaSnapshot({ userStatusRes, quotaSummaryRes, fetchMeta: { fetchedAtMs: nowTs }, nowMs: nowTs }),
       _raw: { planStatus: { email: 'real-quota@example.com' } }
     };
   });

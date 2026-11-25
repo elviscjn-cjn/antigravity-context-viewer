@@ -266,7 +266,7 @@ test('ELV-89 真实切号验证与失败保护 + 阈值自动切号边界全矩�
     enabled: true,
     poolKey: 'shared_gemini_main',
     metricMode: 'remaining_pct',
-    windowKey: 'primary',
+    windowKey: '5h',
     thresholdPct: 10,
     debounceSec: 10,
     cooldownSec: 120,
@@ -970,9 +970,8 @@ test('UI 深度回归: 8 处统一下拉规范、零用量账号归零、NoPerm 
     'select-custom-region-preset',
     'select-custom-currency',
     'select-custom-cycle',
-    'sel-auto-switch-pool',
-    'sel-auto-switch-mode',
-    'sel-auto-switch-window'
+    'sel-auto-switch-target',
+    'sel-auto-switch-mode'
   ];
   for (const sid of selectIds) makeNode(sid);
 
@@ -1829,6 +1828,7 @@ test('v0.9.0 自动切号精修 7+ 场景闭环: blocked_missing_pool 精确分�
     ]
   });
 
+  const resetIso = new Date(Date.now() + 2 * 3600000).toISOString();
   const mgr = accountsMod.createAccountsManager({
     stateDir,
     credentialStore: credStore,
@@ -1844,9 +1844,31 @@ test('v0.9.0 自动切号精修 7+ 场景闭环: blocked_missing_pool 精确分�
           status: 200,
           text: async () => JSON.stringify({
             models: {
-              'gemini-4-hydrogen': { displayName: 'Gemini 4 Hydrogen', quotaInfo: { remainingFraction: 0.82, resetTime: '2026-12-01T00:00:00Z' } },
-              'claude-3-5-sonnet': { displayName: 'Claude 3.5 Sonnet', quotaInfo: { remainingFraction: 0.82, resetTime: '2026-12-01T00:00:00Z' } }
+              'gemini-4-hydrogen': { displayName: 'Gemini 4 Hydrogen', quotaInfo: { remainingFraction: 0.82, resetTime: new Date(47000 + 2 * 3600000).toISOString() } },
+              'claude-3-5-sonnet': { displayName: 'Claude 3.5 Sonnet', quotaInfo: { remainingFraction: 0.82, resetTime: new Date(47000 + 2 * 3600000).toISOString() } }
             }
+          })
+        };
+      }
+      if (u.includes('retrieveUserQuotaSummary')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            groups: [
+              {
+                groupId: 'gemini-main',
+                displayName: 'Gemini 4 Hydrogen / Neon',
+                buckets: [
+                  {
+                    bucketId: '5h',
+                    window: '5h',
+                    remainingFraction: 0.82,
+                    resetTime: new Date(47000 + 2 * 3600000).toISOString()
+                  }
+                ]
+              }
+            ]
           })
         };
       }
@@ -1866,7 +1888,7 @@ test('v0.9.0 自动切号精修 7+ 场景闭环: blocked_missing_pool 精确分�
     });
     // 给 B 预设一个过期的旧快照（lastQuotaUpdatedAtMs = 1000）
     await mgr.refreshAccountQuota('b@example.com', {
-      mockQuotaSnapshot: { pools: [makePool('shared_gemini_main', 0.90), makePool('shared_gemini_carbon', 0.90)] },
+      mockQuotaSnapshot: { pools: [makePool('shared_gemini_main', 0.90), makePool('shared_3p_pool', 0.90)] },
       nowMs: 1000
     });
 
@@ -1874,9 +1896,9 @@ test('v0.9.0 自动切号精修 7+ 场景闭环: blocked_missing_pool 精确分�
     // 1A: 监控池在当前账号快照中完全缺失 -> target_pool_missing_in_snapshot（不得误报无权限）
     mgr.updateAutoSwitchConfig({
       enabled: true,
-      poolKey: 'shared_gemini_carbon',
+      poolKey: 'shared_3p_pool',
       metricMode: 'remaining_pct',
-      windowKey: 'primary',
+      windowKey: '5h',
       thresholdPct: 10,
       debounceSec: 0,
       cooldownSec: 120,
@@ -1891,12 +1913,12 @@ test('v0.9.0 自动切号精修 7+ 场景闭环: blocked_missing_pool 精确分�
     });
     assert.equal(missPoolRes.state, 'blocked_missing_pool');
     assert.equal(missPoolRes.reason, 'target_pool_missing_in_snapshot');
-    assert.equal(missPoolRes.blockedMeta?.poolKey, 'shared_gemini_carbon');
+    assert.equal(missPoolRes.blockedMeta?.poolKey, 'shared_3p_pool');
 
     // 1B: 监控池存在但无权限 -> target_pool_no_permission
     const noPermRes = await mgr.evaluateAutoSwitch({
       activeEmail: 'a@example.com',
-      activeSnapshot: { pools: [makePool('shared_gemini_carbon', 0, { noPermission: true })] },
+      activeSnapshot: { pools: [makePool('shared_3p_pool', 0, { noPermission: true })] },
       syncState: 'fresh',
       nowMs: 6000
     });
@@ -1919,8 +1941,8 @@ test('v0.9.0 自动切号精修 7+ 场景闭环: blocked_missing_pool 精确分�
     assert.equal(missWinRes.state, 'blocked_missing_pool');
     assert.equal(missWinRes.reason, 'target_window_unavailable');
 
-    // 场景 2: 切回 primary 窗口、设 debounce 10s：剩余 11% > 10% 保持不切且清除旧 blockedReason
-    mgr.updateAutoSwitchConfig({ poolKey: 'shared_gemini_main', windowKey: 'primary', debounceSec: 10, thresholdPct: 10 });
+    // 场景 2: 切回 5h 窗口、设 debounce 10s：剩余 11% > 10% 保持不切且清除旧 blockedReason
+    mgr.updateAutoSwitchConfig({ poolKey: 'shared_gemini_main', windowKey: '5h', debounceSec: 10, thresholdPct: 10 });
     const aboveRes = await mgr.evaluateAutoSwitch({
       activeEmail: 'a@example.com',
       activeSnapshot: { pools: [makePool('shared_gemini_main', 0.11)] },
@@ -2070,6 +2092,154 @@ test('Phase 1.3: 取消重启安全回滚原凭据 / 25s后错账及120s超时�
     assert.equal(ovErr.autoSwitch.enabled, false, '自动切号校验失败必须关闭防反复重启循环');
     assert.equal(ovErr.autoSwitchStatus.state, 'error');
     assert.equal(ovErr.autoSwitchStatus.lastResult.rolledBack, true);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('v0.9.2 自动切号四项额度全矩阵、精确浮点阈值与旧规则迁移拦截', async () => {
+  const tmpDir = makeTempDir('acm-4targets-');
+  const credStore = makeMockCredStore();
+  let activeHostEmail = 'a@example.com';
+  const mgr = accountsMod.createAccountsManager({
+    stateDir: tmpDir,
+    credentialStore: credStore,
+    getHostUserStatus: async () => ({ email: activeHostEmail }),
+    restartLanguageServers: async () => ({ ok: true })
+  });
+
+  const makeSnap = ({ g5h = 0.80, g7d = 0.85, c5h = 0.75, c7d = 0.90 } = {}) => ({
+    pools: [
+      {
+        poolKey: 'shared_gemini_main',
+        buckets: [
+          { windowKey: '5h', windowShort: '5h', remainingFraction: g5h },
+          { windowKey: 'weekly', windowShort: '7d', remainingFraction: g7d }
+        ]
+      },
+      {
+        poolKey: 'shared_3p_pool',
+        buckets: [
+          { windowKey: '5h', windowShort: '5h', remainingFraction: c5h },
+          { windowKey: 'weekly', windowShort: '7d', remainingFraction: c7d }
+        ]
+      }
+    ]
+  });
+
+  try {
+    const exp = new Date(Date.now() + 3600000).toISOString();
+    mgr.addAccountWithCredential({ email: 'a@example.com', accessToken: 'tA', refreshToken: 'rA', expiresAt: exp });
+    mgr.addAccountWithCredential({ email: 'b@example.com', accessToken: 'tB', refreshToken: 'rB', expiresAt: exp });
+    await mgr.refreshAccountQuota('b@example.com', { mockQuotaSnapshot: makeSnap({ g5h: 0.95, g7d: 0.95, c5h: 0.95, c7d: 0.95 }), nowMs: 1000 });
+
+    // 1. 精确浮点边界：显示取整为 10% 剩余 / 90% 已用（0.1004），绝不得提前触发；精确 0.10 必须触发
+    const matrix = [
+      { poolKey: 'shared_gemini_main', windowKey: '5h', field: 'g5h', otherField: 'g7d' },
+      { poolKey: 'shared_gemini_main', windowKey: '7d', field: 'g7d', otherField: 'g5h' },
+      { poolKey: 'shared_3p_pool', windowKey: '5h', field: 'c5h', otherField: 'c7d' },
+      { poolKey: 'shared_3p_pool', windowKey: '7d', field: 'c7d', otherField: 'c5h' }
+    ];
+    let clock = 10000;
+    for (const item of matrix) {
+      for (const mode of ['remaining_pct', 'used_pct']) {
+        const thresholdPct = mode === 'remaining_pct' ? 10 : 90;
+        activeHostEmail = 'a@example.com';
+        const cfgRes = mgr.updateAutoSwitchConfig({
+          enabled: true,
+          poolKey: item.poolKey,
+          windowKey: item.windowKey,
+          metricMode: mode,
+          thresholdPct,
+          debounceSec: 0,
+          cooldownSec: 10,
+          waitUntilIdle: true,
+          candidates: ['b@example.com']
+        });
+        assert.equal(cfgRes.ok, true, `${item.poolKey}:${item.windowKey} (${mode}) 应允许保存`);
+        clock += 20000;
+
+        // 1A. 其他窗口跌破 1% 但所选窗口仍充足 -> 不触发
+        const otherLow = await mgr.evaluateAutoSwitch({
+          activeEmail: 'a@example.com',
+          activeSnapshot: makeSnap({ [item.otherField]: 0.01, [item.field]: 0.50 }),
+          syncState: 'fresh',
+          skipCandidateRefresh: true,
+          nowMs: clock
+        });
+        assert.equal(otherLow.action, 'ok_above_threshold', `${item.poolKey}:${item.windowKey} 监控下其他窗口先跌破不得触发`);
+
+        // 1B. 0.1004 剩余（已用 89.96%，显示取整为 10% / 90%）-> 不得提前触发
+        clock += 20000;
+        const roundGuard = await mgr.evaluateAutoSwitch({
+          activeEmail: 'a@example.com',
+          activeSnapshot: makeSnap({ [item.field]: 0.1004 }),
+          syncState: 'fresh',
+          skipCandidateRefresh: true,
+          nowMs: clock
+        });
+        assert.equal(roundGuard.action, 'ok_above_threshold', `${item.poolKey}:${item.windowKey} (${mode}) 0.1004 显示取整不得提前触发`);
+
+        // 1C. 恰好 0.10 剩余（已用 90.0%）-> 必须触发切换至 B
+        clock += 20000;
+        await mgr.refreshAccountQuota('b@example.com', { mockQuotaSnapshot: makeSnap({ g5h: 0.95, g7d: 0.95, c5h: 0.95, c7d: 0.95 }), nowMs: clock });
+        activeHostEmail = 'b@example.com';
+        const exactHit = await mgr.evaluateAutoSwitch({
+          activeEmail: 'a@example.com',
+          activeSnapshot: makeSnap({ [item.field]: 0.10 }),
+          syncState: 'fresh',
+          skipCandidateRefresh: true,
+          skipTokenRefresh: true,
+          nowMs: clock
+        });
+        assert.equal(exactHit.ok, true);
+        assert.equal(exactHit.action, 'switched', `${item.poolKey}:${item.windowKey} (${mode}) 恰好等于阈值必须触发`);
+        assert.equal(exactHit.toEmail, 'b@example.com');
+      }
+    }
+
+    // 2. 旧规则保留与迁移拦截：磁盘写入旧规则 shared_gemini_carbon + primary + enabled: true + candidates
+    const storePath = path.join(tmpDir, 'accounts_v1.json');
+    const rawStore = JSON.parse(fs.readFileSync(storePath, 'utf8'));
+    rawStore.autoSwitch = {
+      ...rawStore.autoSwitch,
+      enabled: true,
+      poolKey: 'shared_gemini_carbon',
+      windowKey: 'primary',
+      candidates: ['b@example.com']
+    };
+    rawStore.autoSwitchStatus = { ...rawStore.autoSwitchStatus, state: 'watching', blockedReason: null };
+    fs.writeFileSync(storePath, JSON.stringify(rawStore, null, 2));
+
+    const legacyOv = mgr.getOverviewState();
+    assert.equal(legacyOv.autoSwitch.poolKey, 'shared_gemini_carbon', '旧规则配置必须原样保留在磁盘');
+    assert.deepEqual(legacyOv.autoSwitch.candidates, ['b@example.com'], '旧规则候选账号不得被清空');
+    assert.equal(legacyOv.autoSwitchStatus.needsRuleMigration, true);
+    assert.equal(legacyOv.autoSwitchStatus.state, 'blocked_legacy_rule', '旧规则绝不能显示为 watching');
+    assert.equal(legacyOv.autoSwitchStatus.blockedReason, 'legacy_rule_needs_migration');
+
+    const legacyEval = await mgr.evaluateAutoSwitch({
+      activeEmail: 'a@example.com',
+      activeSnapshot: makeSnap({ g5h: 0.01 }),
+      syncState: 'fresh',
+      nowMs: clock + 50000
+    });
+    assert.equal(legacyEval.action, 'blocked');
+    assert.equal(legacyEval.state, 'blocked_legacy_rule');
+    assert.equal(legacyEval.reason, 'legacy_rule_needs_migration');
+
+    // 尝试不改目标直接启用 -> 拒绝且保留候选账号
+    const rejectEnable = mgr.updateAutoSwitchConfig({ enabled: true });
+    assert.equal(rejectEnable.ok, false);
+    assert.equal(rejectEnable.reason, 'legacy_rule_needs_migration');
+    assert.deepEqual(rejectEnable.autoSwitch.candidates, ['b@example.com']);
+
+    // 重选合法四项之一后保存 -> 恢复 watching 且保留原候选账号
+    const migrated = mgr.updateAutoSwitchConfig({ enabled: true, poolKey: 'shared_3p_pool', windowKey: '7d' });
+    assert.equal(migrated.ok, true);
+    assert.equal(migrated.autoSwitchStatus.state, 'watching');
+    assert.equal(migrated.autoSwitchStatus.needsRuleMigration, false);
+    assert.deepEqual(migrated.autoSwitch.candidates, ['b@example.com']);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

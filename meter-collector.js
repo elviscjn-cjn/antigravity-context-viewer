@@ -931,6 +931,15 @@ async function scanFiles(media, scanOptions = {}) {
           continue;
         }
       }
+      if (!item.inlineData && (scanOptions.isRemote === true || /^(?:ssh|vscode-remote|remote):/i.test(String(item.uri || '')))) {
+        results.set(item.uri, {
+          ...empty(),
+          status: 'unknown',
+          remoteSkipped: true,
+          unknownParts: [item.reason || '远程/SSH 对话不支持扫描远端磁盘附件']
+        });
+        continue;
+      }
       if (!item.uri || /^https?:/i.test(item.uri)) throw new Error('无可用本地附件，内容未知');
       const targetPath = item.uri.startsWith('file:') ? fileURLToPath(item.uri) : item.uri;
       let target;
@@ -1082,6 +1091,7 @@ async function collect(origin, id, options = {}) {
       session.isRemote = full.isRemote === true || trajectory.isRemote === true || trajectoryMeta?.isRemote === true
         || [...workspaceUris, ...workspaceEntries.flatMap(ws => [ws?.workspaceFolderAbsoluteUri, ws?.gitRootAbsoluteUri])]
           .some(uri => typeof uri === 'string' && /^(?:ssh:\/\/|vscode-remote:\/\/ssh-remote\+)/i.test(uri));
+      session.locationKind = session.isRemote ? 'remote' : 'local';
       const firstUserStep = steps.find(s => s?.userInput);
       const firstUserTitleRaw = firstUserStep?.userInput
         ? (firstUserStep.userInput.userResponse || (firstUserStep.userInput.items || []).map(it => it?.text || '').join(' '))
@@ -1096,7 +1106,7 @@ async function collect(origin, id, options = {}) {
       ).trim();
       session.title = rawSessionTitle ? sanitizeTurnPreviewText(rawSessionTitle, 56) : '';
       const stepCapabilities = extractObservedModelInfoFromSteps(steps);
-      const attachments = await scanFiles(session.media, { signal });
+      const attachments = await scanFiles(session.media, { signal, isRemote: session.isRemote === true });
       if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
       const attachmentTotal = empty();
       for (const a of attachments) { const n = a.references || 1; add(attachmentTotal, Object.fromEntries(['chars', 'bytes', 'low', 'high'].map(k => [k, (a[k] || 0) * n]))); }
@@ -5051,6 +5061,7 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
       defaultOverrideModelConfig,
       quotaSummaryRes,
       planStatus: parsedPlan,
+      email: rawEmail || null,
       fetchedAtMs: doneAtMs,
       accountScopeKey: nextScopeKey
     };
@@ -5077,6 +5088,7 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
       backendVersion: PROJECT_VERSION,
       backendSource,
       originScope,
+      email: rawEmail || null,
       accountScopeKey: nextScopeKey,
       accountSwitched,
       fetchedAtMs: doneAtMs,

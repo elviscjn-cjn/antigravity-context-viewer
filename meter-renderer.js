@@ -1,6 +1,6 @@
 (function () {
-  const METER_VERSION = '0.9.2';
-  const METER_DISPLAY_VERSION = '0.9.2';
+  const METER_VERSION = '0.9.3';
+  const METER_DISPLAY_VERSION = '0.9.3';
 
   'use strict';
   if ((location.protocol !== 'https:' && location.protocol !== 'http:') || location.hostname !== '127.0.0.1') return;
@@ -31,7 +31,7 @@
         const openPanel = (pQuota && !pQuota.hidden) ? 'quota'
           : ((pTokens && !pTokens.hidden) ? 'tokens'
             : ((pCtx && !pCtx.hidden) ? 'context' : 'none'));
-        const activeTab = ['session', 'models', 'speed', 'settings'].find(
+        const activeTab = ['session', 'speed', 'models', 'accounts', 'settings'].find(
           k => prevRoot.getElementById(`tab-ctx-${k}`)?.classList?.contains('active')
         ) || null;
         const scrollTops = {};
@@ -50,11 +50,14 @@
         }
         const proxySaveBtn = prevRoot.getElementById('btn-save-proxy-config');
         const enhanceSaveBtn = prevRoot.getElementById('btn-enhance-preset-apply');
+        const prevUpdatePop = prevRoot.getElementById('update-popover');
         inheritedHotReloadState = {
           capturedAt: Date.now(),
           openPanel,
-          activeContextTab: activeTab,
+          activeContextTab: activeTab === 'settings' ? 'accounts' : activeTab,
           isContextSettingsView: activeTab === 'settings',
+          updatePopoverOpen: Boolean(prevUpdatePop && prevUpdatePop.style && prevUpdatePop.style.display === 'block'),
+          updatePopoverTrigger: 'ctx',
           scrollTops,
           openDrawers,
           drafts: {
@@ -80,10 +83,12 @@
   // 清理此前初始化异常或重复挂载遗留的孤儿宿主容器（含顶层径向宿主），保证页面内永远仅有唯一实例
   try {
     if (typeof document.querySelectorAll === 'function') {
-      document.querySelectorAll('#ag-context-meter, #ag-context-meter-radial-host, [data-ag-radial-top-layer]').forEach(node => {
+      document.querySelectorAll('#ag-context-meter, #ag-context-meter-radial-host, #ag-context-meter-modal-host, [data-ag-radial-top-layer], [data-ag-modal-top-layer]').forEach(node => {
         try {
           const isRadialTopNode = node.id === 'ag-context-meter-radial-host'
-            || node.getAttribute?.('data-ag-radial-top-layer') === 'true';
+            || node.id === 'ag-context-meter-modal-host'
+            || node.getAttribute?.('data-ag-radial-top-layer') === 'true'
+            || node.getAttribute?.('data-ag-modal-top-layer') === 'true';
           if (typeof node.__agForceDispose === 'function') {
             node.__agForceDispose();
           }
@@ -476,6 +481,18 @@
       flex-shrink: 0;
       vertical-align: middle;
       margin-right: 4px;
+    }
+
+    :host([hidden]),
+    :host([data-collapsed-hidden="true"]) {
+      display: none !important;
+      width: 0 !important;
+      height: 0 !important;
+      pointer-events: none !important;
+      -webkit-app-region: drag !important;
+    }
+
+    :host {
 
       /* 优先复用 Antigravity 0 级宿主主题变量，无变量时回退深色默认值 */
       --ag-toolbar-fg: var(--secondary-foreground, #b8b8c0);
@@ -2784,6 +2801,7 @@
     }
 
     .ag-dropdown-menu {
+      display: none;
       position: absolute;
       top: calc(100% + 4px);
       left: 0;
@@ -2831,6 +2849,7 @@
     }
 
     .ag-dropdown-wrapper.is-open .ag-dropdown-menu {
+      display: block;
       opacity: 1;
       transform: none;
       pointer-events: auto;
@@ -2960,15 +2979,29 @@
       display: none !important
     }
 
-    .ctx-scope-bar { flex-wrap: wrap; }
-    .ctx-scope-batch-actions { display: flex; gap: 4px; flex-wrap: wrap; }
-    .ctx-scope-batch-actions[hidden], .ctx-scope-follow-btn[hidden] { display: none; }
-    .ctx-scope-pill.is-marked, .ctx-scope-follow-btn[aria-pressed="true"] {
+    .ctx-scope-bar {
+      flex-wrap: wrap;
+    }
+
+    .ctx-scope-batch-actions {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+
+    .ctx-scope-batch-actions[hidden],
+    .ctx-scope-follow-btn[hidden] {
+      display: none;
+    }
+
+    .ctx-scope-pill.is-marked,
+    .ctx-scope-follow-btn[aria-pressed="true"] {
       outline: 1px solid #39cba0;
       outline-offset: -1px;
     }
 
-    .ctx-scope-highlights, .ctx-scope-menu {
+    .ctx-scope-highlights,
+    .ctx-scope-menu {
       position: fixed;
       inset: auto;
       margin: 0;
@@ -2978,7 +3011,11 @@
       box-sizing: border-box;
     }
 
-    .ctx-scope-highlights[hidden], .ctx-scope-menu[hidden] { display: none; }
+    .ctx-scope-highlights[hidden],
+    .ctx-scope-menu[hidden] {
+      display: none;
+    }
+
     .ctx-scope-highlights {
       inset: 0;
       width: 100%;
@@ -3030,8 +3067,13 @@
       text-align: start;
     }
 
-    .ctx-scope-menu button:enabled:is(:hover, :focus-visible) { background: rgba(113, 128, 155, .2); }
-    .ctx-scope-menu button:disabled { opacity: .48; }
+    .ctx-scope-menu button:enabled:is(:hover, :focus-visible) {
+      background: rgba(113, 128, 155, .2);
+    }
+
+    .ctx-scope-menu button:disabled {
+      opacity: .48;
+    }
 
     .ctx-scope-pills {
       display: flex;
@@ -7169,14 +7211,15 @@
     }
 
     .ag-modal-overlay {
-      position: absolute;
+      position: fixed;
+      inset: 0;
       top: 0;
       left: 0;
       right: 0;
       bottom: 0;
       background: rgba(0, 0, 0, 0.65);
       backdrop-filter: blur(3px);
-      z-index: 1000;
+      z-index: 2147483646;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -7192,15 +7235,32 @@
     #global-restart-modal {
       position: fixed;
       inset: 0;
-      width: 100%;
-      height: 100%;
+      width: 100vw;
+      height: 100vh;
       max-width: none;
       max-height: none;
       margin: 0;
+      padding: 20px;
       border: 0;
+      background: rgba(0, 0, 0, 0.65);
+      backdrop-filter: blur(3px);
+      z-index: 2147483647;
       overflow: hidden;
       overscroll-behavior: none;
       animation: none;
+      color: var(--ag-text-primary);
+    }
+
+    #global-restart-modal[open] {
+      display: flex !important;
+      align-items: center;
+      justify-content: center;
+      pointer-events: auto !important;
+    }
+
+    #global-restart-modal[hidden] {
+      display: none !important;
+      pointer-events: none !important;
     }
 
     #global-restart-modal::backdrop {
@@ -7212,6 +7272,7 @@
       max-height: 100%;
       overflow: auto;
       overscroll-behavior: contain;
+      pointer-events: auto !important;
     }
 
     .ag-modal-card {
@@ -8419,7 +8480,8 @@
        速度对比页 · 原型移植（深色零蓝炭黑 / 浅色黑白灰 + 潘通翡翠绿）
        ===================================================================== */
     #pane-ctx-speed {
-      --spd-bg: #0A0A0A;      --spd-panel: #131313;
+      --spd-bg: #0A0A0A;
+      --spd-panel: #131313;
       --spd-border: #242424;
       --spd-inset: #1B1B1B;
       --spd-text: #ECECEF;
@@ -9285,7 +9347,7 @@
       box-sizing: border-box
     }
 
-    .ctx-prefs-row + .ctx-prefs-row {
+    .ctx-prefs-row+.ctx-prefs-row {
       border-top: 1px solid var(--ag-border-subcard)
     }
 
@@ -9415,7 +9477,7 @@
     }
 
     .ctx-toggle-input:checked+.ctx-toggle-track {
-      background: var(--ag-custom-token-accent, #0a84ff);
+      background: var(--ag-host-accent, #7748CF);
       border-color: transparent
     }
 
@@ -9425,8 +9487,29 @@
     }
 
     .ctx-toggle-input:focus-visible+.ctx-toggle-track {
-      outline: 2px solid var(--ag-token-accent-default, #a78bfa);
+      outline: 2px solid var(--ag-host-accent, #7748CF);
       outline-offset: 2px
+    }
+
+    .ctx-toggle-input:disabled+.ctx-toggle-track,
+    .ctx-toggle-input[aria-busy="true"]+.ctx-toggle-track {
+      opacity: 0.62;
+      cursor: wait
+    }
+
+    .ctx-toggle-feedback {
+      font-size: 11px;
+      color: var(--ag-text-muted);
+      white-space: nowrap;
+      margin-right: 6px;
+    }
+
+    .ctx-toggle-feedback[data-tone="busy"] {
+      color: var(--ag-host-accent, #7748CF);
+    }
+
+    .ctx-toggle-feedback[data-tone="error"] {
+      color: var(--danger, #f87171);
     }
 
     .ctx-toggle:hover .ctx-toggle-track {
@@ -9446,10 +9529,10 @@
 
     :host([data-theme="light"]) .ctx-toggle-input:checked+.ctx-toggle-track,
     :host([data-panel-tone="light"]) .ctx-toggle-input:checked+.ctx-toggle-track {
-      background: var(--ag-custom-token-accent, #007aff)
+      background: var(--ag-host-accent, #7748CF)
     }
 
-    :is(input[type="checkbox"]:not(.ctx-toggle-input), button.ag-action-switch) {
+    :is(input[type="checkbox"]:not(.ctx-toggle-input, .ctx-speed-rank-check), button.ag-action-switch) {
       appearance: none;
       position: relative;
       display: inline-block;
@@ -9463,9 +9546,10 @@
       background: var(--ag-border-card);
       cursor: pointer;
       vertical-align: middle;
+      transition: background-color 180ms ease, border-color 180ms ease, opacity 150ms ease;
     }
 
-    :is(input[type="checkbox"]:not(.ctx-toggle-input), button.ag-action-switch)::after {
+    :is(input[type="checkbox"]:not(.ctx-toggle-input, .ctx-speed-rank-check), button.ag-action-switch)::after {
       content: "";
       position: absolute;
       inset: 2px auto auto 2px;
@@ -9474,16 +9558,38 @@
       border-radius: 50%;
       background: #fff;
       box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+      transition: transform 200ms cubic-bezier(0.22, 1.2, 0.36, 1);
     }
 
-    :is(input[type="checkbox"]:not(.ctx-toggle-input):checked, button.ag-action-switch[aria-checked="true"]) {
-      background: var(--ag-custom-token-accent, #0a84ff);
+    :is(input[type="checkbox"]:not(.ctx-toggle-input, .ctx-speed-rank-check):checked, button.ag-action-switch[aria-checked="true"]) {
+      background: var(--ag-host-accent, #7748CF);
       border-color: transparent;
     }
 
-    :is(input[type="checkbox"]:not(.ctx-toggle-input):checked, button.ag-action-switch[aria-checked="true"])::after { transform: translateX(15px); }
-    :is(input[type="checkbox"]:not(.ctx-toggle-input), button.ag-action-switch):focus-visible { outline: 2px solid var(--ag-custom-token-accent, #0a84ff); outline-offset: 2px; }
-    :is(input[type="checkbox"]:not(.ctx-toggle-input), button.ag-action-switch):disabled { opacity: .55; cursor: default; }
+    :is(input[type="checkbox"]:not(.ctx-toggle-input, .ctx-speed-rank-check):checked, button.ag-action-switch[aria-checked="true"])::after {
+      transform: translateX(15px);
+    }
+
+    :is(input[type="checkbox"]:not(.ctx-toggle-input, .ctx-speed-rank-check), button.ag-action-switch):focus-visible {
+      outline: 2px solid var(--ag-host-accent, #7748CF);
+      outline-offset: 2px;
+    }
+
+    :is(input[type="checkbox"]:not(.ctx-toggle-input, .ctx-speed-rank-check), button.ag-action-switch):disabled,
+    :is(input[type="checkbox"]:not(.ctx-toggle-input, .ctx-speed-rank-check), button.ag-action-switch)[aria-busy="true"] {
+      opacity: .62;
+      cursor: wait;
+    }
+
+    :is(input[type="checkbox"]:not(.ctx-toggle-input), button.ag-action-switch):focus-visible {
+      outline: 2px solid var(--ag-host-accent, #7748CF);
+      outline-offset: 2px;
+    }
+
+    :is(input[type="checkbox"]:not(.ctx-toggle-input), button.ag-action-switch):disabled {
+      opacity: .62;
+      cursor: wait;
+    }
 
     @container (max-width: 400px) {
       .ctx-prefs-row {
@@ -9511,9 +9617,14 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
+
       .ctx-toggle-track,
-      .ctx-toggle-knob {
-        transition: none
+      .ctx-toggle-knob,
+      input[type="checkbox"],
+      input[type="checkbox"]::after,
+      button.ag-action-switch,
+      button.ag-action-switch::after {
+        transition: none !important;
       }
     }
 
@@ -11119,6 +11230,44 @@
       color: #86efac;
     }
 
+    .ctx-pool-summary-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-top: 6px;
+    }
+
+    .ctx-pool-summary-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 4px 7px;
+      border-radius: 6px;
+      background: var(--ag-bg-subcard);
+      border: 1px solid var(--ag-border-subcard);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .ctx-pool-summary-win {
+      font-weight: 600;
+      color: var(--ag-text-primary);
+    }
+
+    .ctx-pool-summary-val {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--ag-text-secondary);
+      text-align: right;
+    }
+
+    .ctx-pool-summary-pct {
+      font-weight: 600;
+      color: var(--ag-text-primary);
+    }
+
     :host([data-theme="light"]) .quota-acct-feedback.is-error {
       color: #dc2626
     }
@@ -11130,10 +11279,77 @@
     .quota-switch-lbl {
       display: inline-flex;
       align-items: center;
-      gap: 5px;
+      gap: 8px;
       font-weight: 600;
       color: var(--ag-text-primary);
       cursor: pointer
+    }
+
+    /* 主面板切号总开关与候选账号胶囊滑动开关（对齐统一设计语言） */
+    .quota-switch-lbl input[type="checkbox"],
+    .auto-switch-cand-chip input[type="checkbox"] {
+      appearance: none;
+      -webkit-appearance: none;
+      position: relative;
+      width: 30px;
+      height: 17px;
+      min-width: 30px;
+      min-height: 17px;
+      margin: 0;
+      padding: 0;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.18);
+      background-image: none !important;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      box-shadow: none;
+      display: inline-block;
+      flex-shrink: 0;
+      cursor: pointer;
+      transition: background-color 160ms ease, border-color 160ms ease;
+    }
+
+    .quota-switch-lbl input[type="checkbox"]::after,
+    .auto-switch-cand-chip input[type="checkbox"]::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: #ffffff;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.32);
+      transform: translateX(0);
+      transition: transform 160ms cubic-bezier(0.22, 1.2, 0.36, 1);
+    }
+
+    .quota-switch-lbl input[type="checkbox"]:checked,
+    .auto-switch-cand-chip input[type="checkbox"]:checked {
+      background: var(--ag-host-accent, #8b5cf6);
+      background-image: none !important;
+      border-color: transparent;
+      box-shadow: none;
+    }
+
+    .quota-switch-lbl input[type="checkbox"]:checked::after,
+    .auto-switch-cand-chip input[type="checkbox"]:checked::after {
+      transform: translateX(13px);
+    }
+
+    :host([data-theme="light"]) .quota-switch-lbl input[type="checkbox"],
+    :host([data-panel-tone="light"]) .quota-switch-lbl input[type="checkbox"],
+    :host([data-theme="light"]) .auto-switch-cand-chip input[type="checkbox"],
+    :host([data-panel-tone="light"]) .auto-switch-cand-chip input[type="checkbox"] {
+      background: #d4d4d8;
+      border-color: #c4c4cc;
+    }
+
+    :host([data-theme="light"]) .quota-switch-lbl input[type="checkbox"]:checked,
+    :host([data-panel-tone="light"]) .quota-switch-lbl input[type="checkbox"]:checked,
+    :host([data-theme="light"]) .auto-switch-cand-chip input[type="checkbox"]:checked,
+    :host([data-panel-tone="light"]) .auto-switch-cand-chip input[type="checkbox"]:checked {
+      background: var(--ag-host-accent, #7c3aed);
+      border-color: transparent;
     }
 
     .auto-switch-grid {
@@ -11962,6 +12178,7 @@
 
     /* 输入栏紧凑状态条 (Composer Status Bar) 与 5 行悬停卡 - Antigravity 原生紧凑风格 */
     :host #composer-status-bar,
+    :host #composer-status-bar,
     .composer-status-bar[hidden] {
       display: none !important;
     }
@@ -12524,7 +12741,21 @@
       display: none !important;
     }
 
-    /* 窄窗响应式折叠（由 flex-wrap 自动换行，严禁硬裁切文字） */
+    /* 窄窗响应式折叠（由 flex-wrap 自动换行，严禁硬裁切文字，状态胶囊优先露出） */
+    .composer-status-bar .csb-runtime-pill {
+      order: -10;
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+
+    .composer-status-bar[data-csb-width="tight"] .csb-runtime-pill {
+      display: inline-flex !important;
+      order: -10 !important;
+      flex-shrink: 0 !important;
+      max-width: none !important;
+      overflow: visible !important;
+    }
+
     .composer-status-bar[data-csb-width="narrow"] .csb-quota-more,
     .composer-status-bar[data-csb-width="tight"] .csb-quota-more {
       display: none !important;
@@ -13097,22 +13328,51 @@
     }
 
     @keyframes agRefreshSpin {
-      from { transform: rotate(0deg); }
-      to { transform: rotate(360deg); }
+      from {
+        transform: rotate(0deg);
+      }
+
+      to {
+        transform: rotate(360deg);
+      }
     }
 
     @keyframes agRefreshTrackShimmer {
-      0% { transform: translate3d(-105%, 0, 0); opacity: 0; }
-      22% { opacity: 0.9; }
-      100% { transform: translate3d(105%, 0, 0); opacity: 0; }
+      0% {
+        transform: translate3d(-105%, 0, 0);
+        opacity: 0;
+      }
+
+      22% {
+        opacity: 0.9;
+      }
+
+      100% {
+        transform: translate3d(105%, 0, 0);
+        opacity: 0;
+      }
     }
 
     @keyframes agRefreshErrorFlash {
-      0% { opacity: 1; }
-      22% { opacity: 0.45; }
-      44% { opacity: 1; }
-      66% { opacity: 0.62; }
-      100% { opacity: 1; }
+      0% {
+        opacity: 1;
+      }
+
+      22% {
+        opacity: 0.45;
+      }
+
+      44% {
+        opacity: 1;
+      }
+
+      66% {
+        opacity: 0.62;
+      }
+
+      100% {
+        opacity: 1;
+      }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -13663,13 +13923,17 @@
       user-select: none;
       touch-action: none;
       pointer-events: auto;
-      -webkit-app-region: no-drag;
       font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
       transition: transform 200ms cubic-bezier(0.22, 1.3, 0.36, 1), border-color 200ms ease, background-color 200ms ease, box-shadow 200ms ease;
     }
 
+    .ctx-radial-orb:not([hidden]) {
+      -webkit-app-region: no-drag;
+    }
+
     .ctx-radial-orb[hidden] {
       display: none !important;
+      visibility: hidden !important;
       pointer-events: none !important;
     }
 
@@ -13947,12 +14211,21 @@
 
     .ctx-radial-layer[hidden] {
       display: none !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
+    }
+
+    .ctx-radial-layer[data-state="closed"] .ctx-radial-center-close,
+    .ctx-radial-layer[data-state="closed"] .ctx-radial-slot {
+      visibility: hidden;
+      pointer-events: none !important;
     }
 
     .ctx-radial-layer[data-mode="topbar"] .ctx-radial-center-close,
     .ctx-radial-layer[data-mode="bottombar"] .ctx-radial-center-close,
     .ctx-radial-center-close[hidden] {
       display: none !important;
+      visibility: hidden !important;
       opacity: 0 !important;
       pointer-events: none !important;
     }
@@ -14507,7 +14780,9 @@
       gap: 6px;
     }
 
-    .ctx-custom-presets, .ctx-preset-editor, .ctx-speed-dates {
+    .ctx-custom-presets,
+    .ctx-preset-editor,
+    .ctx-speed-dates {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
@@ -14515,11 +14790,13 @@
       min-width: 0;
     }
 
-    .ctx-preset-editor, .ctx-speed-dates {
+    .ctx-preset-editor,
+    .ctx-speed-dates {
       padding: 6px;
     }
 
-    .ctx-preset-editor input, .ctx-speed-dates input {
+    .ctx-preset-editor input,
+    .ctx-speed-dates input {
       color: inherit;
       background: transparent;
       border: 1px solid currentColor;
@@ -14528,10 +14805,21 @@
       max-width: 100%;
     }
 
-    .ctx-preset-editor[hidden], .ctx-speed-dates[hidden] { display: none; }
+    .ctx-preset-editor[hidden],
+    .ctx-speed-dates[hidden] {
+      display: none;
+    }
 
-    .ctx-request-cost-body { min-height: 0; }
-    .ctx-request-cost-summary { font-weight: 600; margin-block-end: 8px; overflow-wrap: anywhere; }
+    .ctx-request-cost-body {
+      min-height: 0;
+    }
+
+    .ctx-request-cost-summary {
+      font-weight: 600;
+      margin-block-end: 8px;
+      overflow-wrap: anywhere;
+    }
+
     .ctx-request-cost-rows {
       min-height: 0;
       max-height: min(48vh, var(--ctx-request-cost-list-height, 230px));
@@ -14684,16 +14972,27 @@
     }
 
     @keyframes agWidgetManagerLift {
-      from { transform: scale(.985); }
-      to { transform: scale(1.028); }
+      from {
+        transform: scale(.985);
+      }
+
+      to {
+        transform: scale(1.028);
+      }
     }
 
     @keyframes agWidgetManagerShadow {
-      from { opacity: 0; }
-      to { opacity: 1; }
+      from {
+        opacity: 0;
+      }
+
+      to {
+        opacity: 1;
+      }
     }
 
     @media (prefers-reduced-motion: reduce) {
+
       #pane-ctx-session .ctx-widget-mgr-row.is-lifted,
       #pane-ctx-session .ctx-widget-mgr-row.is-lifted::after {
         transform: none;
@@ -14712,11 +15011,11 @@
       flex: 1;
     }
 
-    #pane-ctx-session .ctx-widget-mgr-check > input {
+    #pane-ctx-session .ctx-widget-mgr-check>input {
       flex: none;
     }
 
-    #pane-ctx-session .ctx-widget-mgr-check > span {
+    #pane-ctx-session .ctx-widget-mgr-check>span {
       min-width: 0;
       overflow-wrap: anywhere;
     }
@@ -14915,8 +15214,8 @@
       overflow-wrap: anywhere;
     }
 
-    #pane-ctx-session .ctx-widget-body > *,
-    #pane-ctx-session .ctx-widget-body :is(.ctx-tree-split, .ctx-cmd-audit-split, .ctx-collab-main-split, .ctx-collab-receipt-split) > * {
+    #pane-ctx-session .ctx-widget-body>*,
+    #pane-ctx-session .ctx-widget-body :is(.ctx-tree-split, .ctx-cmd-audit-split, .ctx-collab-main-split, .ctx-collab-receipt-split)>* {
       min-inline-size: 0;
       max-inline-size: 100%;
     }
@@ -14925,7 +15224,7 @@
       max-inline-size: 100%;
     }
 
-    #pane-ctx-session [data-widget-id="tech-drawer"] > .tech-drawer {
+    #pane-ctx-session [data-widget-id="tech-drawer"]>.tech-drawer {
       display: flex;
       flex-direction: column;
       flex: 1 1 auto;
@@ -15145,17 +15444,31 @@
     }
 
     @keyframes agWidgetSquishPop {
-      0% { transform: scale(1); }
-      100% { transform: scale(1.015); }
+      0% {
+        transform: scale(1);
+      }
+
+      100% {
+        transform: scale(1.015);
+      }
     }
 
     @keyframes agWidgetJellySettle {
-      0% { transform: scale(1.016, 0.986); }
-      55% { transform: scale(0.995, 1.005); }
-      100% { transform: scale(1, 1); }
+      0% {
+        transform: scale(1.016, 0.986);
+      }
+
+      55% {
+        transform: scale(0.995, 1.005);
+      }
+
+      100% {
+        transform: scale(1, 1);
+      }
     }
 
     @media (prefers-reduced-motion: reduce) {
+
       #pane-ctx-session .ctx-widget-card.is-dragging,
       #pane-ctx-session .ctx-widget-card.is-settling,
       #pane-ctx-session .ctx-widget-card.is-squish-pop {
@@ -15294,6 +15607,7 @@
     #ctx-ov-pct-summary[data-usage-tier="unknown"] {
       color: #A1A1AA;
     }
+
     :host([data-theme="light"]) #pane-ctx-session .ctx-ov-hero-pct[data-usage-tier="unknown"],
     :host([data-theme="light"]) #ctx-ov-pct-summary[data-usage-tier="unknown"],
     :host([data-panel-tone="light"]) #pane-ctx-session .ctx-ov-hero-pct[data-usage-tier="unknown"],
@@ -15305,6 +15619,7 @@
     #ctx-ov-pct-summary[data-usage-tier="safe"] {
       color: #6EE7B7;
     }
+
     :host([data-theme="light"]) #pane-ctx-session .ctx-ov-hero-pct[data-usage-tier="safe"],
     :host([data-theme="light"]) #ctx-ov-pct-summary[data-usage-tier="safe"],
     :host([data-panel-tone="light"]) #pane-ctx-session .ctx-ov-hero-pct[data-usage-tier="safe"],
@@ -15316,6 +15631,7 @@
     #ctx-ov-pct-summary[data-usage-tier="moderate"] {
       color: #FCD34D;
     }
+
     :host([data-theme="light"]) #pane-ctx-session .ctx-ov-hero-pct[data-usage-tier="moderate"],
     :host([data-theme="light"]) #ctx-ov-pct-summary[data-usage-tier="moderate"],
     :host([data-panel-tone="light"]) #pane-ctx-session .ctx-ov-hero-pct[data-usage-tier="moderate"],
@@ -15327,6 +15643,7 @@
     #ctx-ov-pct-summary[data-usage-tier="warn"] {
       color: #FDBA74;
     }
+
     :host([data-theme="light"]) #pane-ctx-session .ctx-ov-hero-pct[data-usage-tier="warn"],
     :host([data-theme="light"]) #ctx-ov-pct-summary[data-usage-tier="warn"],
     :host([data-panel-tone="light"]) #pane-ctx-session .ctx-ov-hero-pct[data-usage-tier="warn"],
@@ -15338,6 +15655,7 @@
     #ctx-ov-pct-summary[data-usage-tier="danger"] {
       color: #F87171;
     }
+
     :host([data-theme="light"]) #pane-ctx-session .ctx-ov-hero-pct[data-usage-tier="danger"],
     :host([data-theme="light"]) #ctx-ov-pct-summary[data-usage-tier="danger"],
     :host([data-panel-tone="light"]) #pane-ctx-session .ctx-ov-hero-pct[data-usage-tier="danger"],
@@ -15354,6 +15672,7 @@
       display: inline-flex;
       width: fit-content;
     }
+
     :host([data-theme="light"]) #pane-ctx-session .ctx-ov-hero-pct[data-usage-tier="full"],
     :host([data-theme="light"]) #ctx-ov-pct-summary[data-usage-tier="full"],
     :host([data-panel-tone="light"]) #pane-ctx-session .ctx-ov-hero-pct[data-usage-tier="full"],
@@ -15798,8 +16117,8 @@
         gap: 10px;
       }
 
-      #pane-ctx-session .ctx-token-breakdown-visual > .ctx-token-donut-svg,
-      #pane-ctx-session .ctx-token-breakdown-visual > svg {
+      #pane-ctx-session .ctx-token-breakdown-visual>.ctx-token-donut-svg,
+      #pane-ctx-session .ctx-token-breakdown-visual>svg {
         align-self: center;
         max-width: 100%;
       }
@@ -15816,6 +16135,7 @@
 
     /* 卡内窄态：KPI 摘要与联动胶囊改为纵向满宽，避免挤压截断 */
     @container ctx-widget (max-width: 360px) {
+
       #pane-ctx-session .ctx-ov-kpi-row,
       #pane-ctx-session .ctx-kpi-link-pills {
         flex-direction: column;
@@ -16245,6 +16565,7 @@
     }
 
     @container ctx-widget (min-width: 560px) {
+
       #pane-ctx-session .ctx-collab-main-split,
       #pane-ctx-session .ctx-collab-receipt-split {
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -16445,6 +16766,81 @@
     .heat-cell.is-day-filtered {
       outline: 2px solid #C084FC;
       outline-offset: 1px;
+    }
+
+    /* 看板第四标签 账号与共享池 + 宿主设置独立工作区适配 */
+    .ctx-accounts-block {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .ctx-settings-fallback-banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 8px 10px;
+      margin-bottom: 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(245, 158, 11, 0.35);
+      background: rgba(245, 158, 11, 0.08);
+      font-size: 11px;
+      color: var(--ag-text-primary);
+    }
+
+    .ctx-settings-fallback-text {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+      flex: 1 1 200px;
+    }
+
+    .ctx-settings-fallback-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .ag-cm-settings-workspace {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-width: 0;
+      width: 100%;
+    }
+
+    .ag-cm-settings-workspace.is-host-mounted .ctx-settings-top-nav {
+      position: sticky;
+      top: 0;
+      z-index: 4;
+      background: var(--ag-host-bg, var(--ag-bg-panel, #18181b));
+      padding: 6px 0 8px 0;
+      margin-bottom: 2px !important;
+      border-bottom: 1px solid var(--ag-border-subtle);
+    }
+
+    .ag-cm-settings-workspace.is-host-mounted #btn-settings-back {
+      display: none !important;
+    }
+
+    @media (max-width: 560px) {
+      .ag-cm-settings-workspace .ctx-settings-top-nav {
+        flex-wrap: wrap;
+      }
+
+      .ag-cm-settings-workspace #settings-quick-nav-group {
+        justify-content: flex-start !important;
+        width: 100%;
+      }
+
+      .ctx-accounts-block .quota-subsec-header {
+        align-items: flex-start;
+      }
     }
   </style>
 
@@ -16751,7 +17147,7 @@
         data-i18n="panel.ctx.title" title="Antigravity Context Meter" data-i18n-title="panel.ctx.fullName"
         aria-label="Antigravity Context Meter" data-i18n-aria="panel.ctx.fullName">💬 当前会话上下文</span>
       <span id="v" class="version-pill-btn" role="button" tabindex="0" title="点击跳转到版本更新与关于设置"
-        data-i18n-title="header.versionBtn.title">0.9.2</span>
+        data-i18n-title="header.versionBtn.title">0.9.3</span>
     </div>
     <div class="panel-header-actions ctx-header-actions">
       <!-- 插件面板三语言快速切换分段按钮 -->
@@ -16799,12 +17195,12 @@
     <div id="ctx-tabs-bar" class="ctx-tabs-bar" role="tablist" aria-label="上下文面板分页" data-i18n-aria="tabs.aria">
       <button id="tab-ctx-session" class="ctx-tab-btn active" type="button" role="tab" aria-selected="true"
         data-ctx-tab="session" data-i18n="tab.session">当前会话</button>
-      <button id="tab-ctx-models" class="ctx-tab-btn" type="button" role="tab" aria-selected="false"
-        data-ctx-tab="models" data-i18n="tab.models">模型设置</button>
       <button id="tab-ctx-speed" class="ctx-tab-btn" type="button" role="tab" aria-selected="false" data-ctx-tab="speed"
         data-i18n="tab.speed">速度对比</button>
-      <button id="tab-ctx-settings" class="ctx-tab-btn" type="button" role="tab" aria-selected="false"
-        data-ctx-tab="settings" data-i18n="tab.settings">配置</button>
+      <button id="tab-ctx-models" class="ctx-tab-btn" type="button" role="tab" aria-selected="false"
+        data-ctx-tab="models" data-i18n="tab.models">模型设置</button>
+      <button id="tab-ctx-accounts" class="ctx-tab-btn" type="button" role="tab" aria-selected="false"
+        data-ctx-tab="accounts" data-i18n="tab.accounts">账号与共享池</button>
     </div>
 
     <!-- 分页 1: 当前会话（12 列自适应自由拖拽 Bento 全景驾驶舱） -->
@@ -18039,985 +18435,1149 @@
 
     <!-- 分页 3: 速度对比 -->
     <div id="pane-ctx-speed" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-speed" hidden>
-      <div class="ctx-speed-toolbar">
-        <div class="ctx-segmented" role="group" aria-label="时间范围" data-i18n-aria="speed.range.aria">
+      <!-- 44px 筛选工具栏：原型假顶栏已移除，页面直接从工具栏开始 -->
+      <div id="speed-filter-bar" class="ctx-speed-filterbar">
+        <div class="ctx-segmented ctx-speed-seg" role="group" aria-label="时间范围" data-i18n-aria="speed.range.aria">
+          <button id="speed-range-1d" class="ctx-seg-btn" type="button" data-i18n="speed.range.1d">今日</button>
+          <button id="speed-range-3d" class="ctx-seg-btn" type="button" data-i18n="speed.range.3d">近 3 天</button>
+          <button id="speed-range-5d" class="ctx-seg-btn" type="button" data-i18n="speed.range.5d">近 5 天</button>
           <button id="speed-range-7d" class="ctx-seg-btn active" type="button" data-speed-range="7"
-            data-i18n="speed.range.7d">近 7 天</button>
+            data-i18n="speed.range.7d">近一周</button>
           <button id="speed-range-30d" class="ctx-seg-btn" type="button" data-speed-range="30"
             data-i18n="speed.range.30d">近 30 天</button>
           <button id="speed-range-all" class="ctx-seg-btn" type="button" data-speed-range="all"
-            data-i18n="speed.range.all">全部</button>
+            data-i18n="speed.range.all">全量历史</button>
+          <button id="speed-range-custom" class="ctx-seg-btn" type="button" aria-pressed="false"
+            aria-controls="speed-custom-dates" data-i18n="speed.range.custom">自定义</button>
         </div>
-        <div id="speed-origin-filter-wrap" class="ctx-segmented" role="group" aria-label="样本来源"
-          data-i18n-aria="speed.origin.aria">
-          <button id="speed-origin-all" class="ctx-seg-btn active" type="button" data-speed-origin="all"
-            data-i18n="speed.origin.all">全部来源</button>
-          <button id="speed-origin-chat" class="ctx-seg-btn" type="button" data-speed-origin="chat"
-            data-i18n="speed.origin.chat">日常对话</button>
+        <div class="ctx-speed-filter-group">
+          <span class="ctx-speed-filter-label" data-i18n="speed.filter.source">数据源</span>
+          <div id="speed-origin-filter-wrap" class="ctx-segmented ctx-speed-seg" role="group" aria-label="样本来源"
+            data-i18n-aria="speed.origin.aria">
+            <button id="speed-origin-all" class="ctx-seg-btn active" type="button" data-speed-origin="all"
+              data-i18n="speed.origin.all">全部来源</button>
+            <button id="speed-origin-chat" class="ctx-seg-btn" type="button" data-speed-origin="chat"
+              data-i18n="speed.origin.chat">日常对话</button>
+          </div>
         </div>
-        <button id="btn-save-default-view-speed" class="save-default-btn" type="button" data-save-default="speed"
-          title="将当前时间范围、趋势模式与排序方式保存为默认视图" data-i18n-title="prefs.saveDefaultTitle"
-          data-i18n="prefs.saveDefault">设为默认</button>
-      </div>
-
-      <!-- 柱状图卡片 -->
-      <div class="ctx-chart-card">
-        <div class="ctx-chart-header">
-          <span id="speed-bar-title" class="ctx-chart-title" data-i18n="speed.barTitle.tps">输出速度对比</span>
-          <div class="ctx-segmented" role="group" aria-label="对比指标" data-i18n-aria="speed.metric.aria">
+        <div class="ctx-speed-filter-group ctx-speed-filter-group-metric">
+          <span class="ctx-speed-filter-label" data-i18n="speed.filter.metric">对比指标</span>
+          <div class="ctx-segmented ctx-speed-seg" role="group" aria-label="对比指标" data-i18n-aria="speed.metric.aria">
             <button id="speed-metric-tps" class="ctx-seg-btn active" type="button" data-speed-metric="tps"
-              data-i18n="speed.metric.tps">输出速度</button>
+              data-i18n="speed.metric.tps">输出速度 tok/s</button>
             <button id="speed-metric-ttft" class="ctx-seg-btn" type="button" data-speed-metric="ttft"
-              data-i18n="speed.metric.ttft">首字延迟</button>
+              data-i18n="speed.metric.ttft">首字延迟 TTFT</button>
             <button id="speed-metric-duration" class="ctx-seg-btn" type="button" data-speed-metric="duration"
               data-i18n="speed.metric.duration">总耗时</button>
           </div>
         </div>
+        <div class="ctx-speed-filter-group">
+          <span class="ctx-speed-filter-label" data-i18n="speed.filter.algo">统计口径</span>
+          <div id="speed-algo-segmented" class="ctx-segmented ctx-speed-seg-algo" role="group" aria-label="统计口径">
+            <button id="speed-algo-median" class="ctx-seg-btn active" type="button" data-speed-algo="median"
+              data-i18n="speed.algo.median">中位数</button>
+            <button id="speed-algo-mean" class="ctx-seg-btn" type="button" data-speed-algo="mean"
+              data-i18n="speed.algo.mean">均值</button>
+            <button id="speed-algo-composite" class="ctx-seg-btn" type="button" data-speed-algo="composite"
+              data-i18n="speed.algo.composite">综合效率</button>
+          </div>
+        </div>
+        <button id="btn-save-default-view-speed" class="save-default-btn ctx-speed-save" type="button"
+          data-save-default="speed" title="将当前时间范围、趋势模式与排序方式保存为默认视图" data-i18n-title="prefs.saveDefaultTitle"
+          data-i18n="prefs.saveDefault">设为默认</button>
+      </div>
+
+      <form id="speed-custom-dates" class="ctx-speed-dates" hidden>
+        <label><span data-i18n="speed.range.start">开始日期</span> <input id="speed-date-start" type="text"
+            placeholder="YYYY-MM-DD" maxlength="10" required></label>
+        <label><span data-i18n="speed.range.end">结束日期</span> <input id="speed-date-end" type="text"
+            placeholder="YYYY-MM-DD" maxlength="10" required></label>
+        <button type="submit" class="ctx-speed-ghost-btn" data-i18n="speed.range.apply">应用</button>
+        <span id="speed-date-error" role="alert" data-i18n="speed.range.invalid" hidden>请选择有效的起止日期</span>
+      </form>
+
+      <!-- Row 1：模型速度 PK 对比台 + 多系列走势 -->
+      <section id="speed-hero" class="ctx-speed-hero">
+        <header class="ctx-speed-hero-head">
+          <span class="ctx-speed-hero-title" data-i18n="speed.hero.title">模型速度 PK 对比台</span>
+          <span class="ctx-speed-hero-count"><span data-i18n="speed.hero.selectedPrev">已选</span>
+            <b id="speed-pk-count">0</b> <span data-i18n="speed.hero.selectedUnit">款</span></span>
+          <div id="speed-pk-chips" class="ctx-speed-chips"></div>
+          <div class="ctx-speed-hero-actions">
+            <button id="speed-pk-add" class="ctx-speed-ghost-btn" type="button" data-i18n="speed.hero.addModel">+
+              添加模型对比</button>
+            <button id="speed-pk-clear" class="ctx-speed-ghost-btn" type="button"
+              data-i18n="speed.hero.clear">清空选择</button>
+          </div>
+        </header>
+        <div class="ctx-speed-hero-body">
+          <div id="speed-pk-cards" class="ctx-speed-pk-grid"></div>
+          <div class="ctx-speed-trend-panel">
+            <div class="ctx-speed-trend-head">
+              <span id="speed-trend-title" class="ctx-speed-trend-title" data-i18n="speed.trend.title">各模型速度走势 ·
+                tok/s</span>
+              <div id="speed-trend-legend" class="ctx-speed-trend-legend"></div>
+            </div>
+            <div id="speed-line-chart-wrap" class="ctx-svg-wrap ctx-speed-trend-wrap" style="position:relative;">
+              <svg id="speed-line-svg" class="ctx-speed-svg" role="img" aria-label="所选模型与档位历史输出速度折线图"
+                data-i18n-aria="speed.lineSvg.aria"></svg>
+              <div id="speed-line-tooltip" class="ctx-chart-tooltip" hidden></div>
+            </div>
+            <p id="speed-line-empty" data-i18n="speed.hero.emptyTrend" hidden>暂无对比曲线</p>
+            <div id="speed-trend-foot" class="ctx-speed-trend-foot"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Row 2：全量模型统计排行 -->
+      <section id="speed-rank" class="ctx-speed-rank">
+        <header class="ctx-speed-rank-head">
+          <span class="ctx-speed-rank-title" data-i18n="speed.rank.title">全量模型统计排行 · 点击勾选加入对比</span>
+          <span id="speed-rank-count" class="ctx-speed-rank-count"></span>
+          <div class="ctx-speed-rank-tools">
+            <input id="speed-rank-search" class="ctx-speed-search" type="search" placeholder="过滤模型名称或架构标签"
+              data-i18n-placeholder="speed.rank.searchPlaceholder" />
+            <div id="speed-rank-sort" class="ctx-segmented ctx-speed-seg" role="group" aria-label="排序方式"
+              data-i18n-aria="speed.rank.sortAria">
+              <button class="ctx-seg-btn active" type="button" data-rank-sort="tps"
+                data-i18n="speed.rank.sortTps">中位速度降序</button>
+              <button class="ctx-seg-btn" type="button" data-rank-sort="ttft"
+                data-i18n="speed.rank.sortTtft">首字延迟升序</button>
+              <button class="ctx-seg-btn" type="button" data-rank-sort="samples"
+                data-i18n="speed.rank.sortSamples">样本数降序</button>
+            </div>
+          </div>
+        </header>
+        <div class="ctx-speed-rank-thead">
+          <span data-i18n="speed.rank.colPick">对比</span>
+          <span data-i18n="speed.rank.colModel">模型规格与配置</span>
+          <span data-i18n="speed.rank.colDist">吞吐速度分布 · tok/s</span>
+          <span data-i18n="speed.rank.colMetric">核心实测指标 · 中位数</span>
+        </div>
+        <div id="speed-rank-rows" class="ctx-speed-rank-rows"></div>
+        <div class="ctx-speed-rank-foot">
+          <span class="ctx-speed-rank-note" data-i18n="speed.rank.note">速率仅统计有效 Streaming 生成周期 · 已剔除首次网络握手耗时</span>
+          <div class="ctx-speed-rank-foot-actions">
+            <button id="speed-rank-export" class="ctx-speed-ghost-btn" type="button" data-i18n="speed.rank.export">导出
+              CSV</button>
+            <button id="speed-rank-reset" class="ctx-speed-ghost-btn" type="button"
+              data-i18n="speed.rank.reset">重置筛选</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 兼容桥：旧柱状图 / 下拉 / 标题节点保留，继续由既有渲染逻辑驱动（已去重 speed-line-empty，统一由上方唯一趋势空态节点承接） -->
+      <div class="ctx-speed-legacy" hidden>
+        <span id="speed-bar-title" class="ctx-chart-title" data-i18n="speed.barTitle.tps">输出速度对比</span>
         <div id="speed-bar-empty" class="ctx-speed-empty" hidden data-i18n="speed.empty">还没有可用的速度记录。正常对话后会自动积累。</div>
         <div id="speed-bar-chart-wrap" class="ctx-svg-wrap" style="position:relative;">
           <svg id="speed-bar-svg" class="ctx-speed-svg" role="img" aria-label="各模型与档位速度对比柱状图"
             data-i18n-aria="speed.barSvg.aria"></svg>
           <div id="speed-bar-tooltip" class="ctx-chart-tooltip" hidden></div>
         </div>
-        <div id="speed-bar-note" class="ctx-chart-note" data-i18n="speed.barNote">以各模型与档位的中位数统计；不足 3
-          条标注“样本少”。总耗时受输出长度影响，条件相近时才可比较。</div>
-      </div>
-
-      <!-- 单模型折线图卡片 -->
-      <div class="ctx-chart-card">
-        <div class="ctx-chart-header ctx-line-header">
-          <span class="ctx-chart-title" data-i18n="speed.lineTitle">单模型速度趋势</span>
-          <div id="speed-model-dropdown-wrap" class="ag-dropdown-wrapper ctx-speed-dropdown">
-            <div id="speed-model-dropdown-trigger" class="ag-dropdown-trigger ctx-compact-trigger" tabindex="0"
-              title="选择一个模型与档位查看速度变化" data-i18n-title="speed.linePickTitle">
-              <span id="speed-model-dropdown-label" class="ag-dropdown-label"
-                data-i18n="speed.lineNoModel">暂无模型记录</span>
-              <div class="ag-dropdown-arrow">
-                <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
-                  stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M1 1l4 4 4-4" />
-                </svg>
-              </div>
+        <div id="speed-model-dropdown-wrap" class="ag-dropdown-wrapper ctx-speed-dropdown">
+          <div id="speed-model-dropdown-trigger" class="ag-dropdown-trigger ctx-compact-trigger" tabindex="0"
+            title="选择一个模型与档位查看速度变化" data-i18n-title="speed.linePickTitle">
+            <span id="speed-model-dropdown-label" class="ag-dropdown-label" data-i18n="speed.lineNoModel">暂无模型记录</span>
+            <div class="ag-dropdown-arrow">
+              <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1 1l4 4 4-4" />
+              </svg>
             </div>
-            <div id="speed-model-dropdown-menu" class="ag-dropdown-menu"></div>
           </div>
+          <div id="speed-model-dropdown-menu" class="ag-dropdown-menu"></div>
         </div>
-        <div id="speed-line-empty" class="ctx-speed-empty" data-i18n="speed.empty">还没有可用的速度记录。正常对话后会自动积累。</div>
-        <div id="speed-line-chart-wrap" class="ctx-svg-wrap" style="position:relative;" hidden>
-          <svg id="speed-line-svg" class="ctx-speed-svg" role="img" aria-label="所选模型与档位历史输出速度折线图"
-            data-i18n-aria="speed.lineSvg.aria"></svg>
-          <div id="speed-line-tooltip" class="ctx-chart-tooltip" hidden></div>
-        </div>
+        <div id="speed-bar-note" class="ctx-chart-note" data-i18n="speed.barNote">以各模型与档位的中位数统计 · 不足 3
+          条标注偏少 · 总耗时受输出长度影响 · 条件相近时才可比较.</div>
       </div>
 
     </div>
 
-    <!-- 设置与系统配置 (第四分页: 配置 / setting) -->
-    <div id="pane-ctx-settings" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-settings" hidden>
-      <!-- 配置页顶部紧凑导航栏与返回按钮 -->
-      <div class="ctx-settings-top-nav"
-        style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:6px">
-        <button id="btn-settings-back" class="unlock-btn unlock-btn-secondary" type="button"
-          style="padding:3px 9px;font-size:11px" data-i18n="settings.backToSession">‹ 返回会话</button>
-        <div id="settings-quick-nav-group" class="ctx-segmented ctx-seg-wrap"
-          style="display:flex;gap:3px;flex:1;justify-content:flex-end">
-          <button class="ctx-seg-btn active" type="button" data-nav-target="ui-slim-prefs-card"
-            data-i18n="settings.nav.appearance">🎨 外观停靠</button>
-          <button class="ctx-seg-btn" type="button" data-nav-target="settings-accounts-card"
-            data-i18n="settings.nav.accounts">👤 账号切号</button>
-          <button class="ctx-seg-btn" type="button" data-nav-target="enhance-preset-card"
-            data-i18n="settings.nav.preset">✨ 推荐配置</button>
-          <button class="ctx-seg-btn" type="button" data-nav-target="rehydrate-hook-card"
-            data-i18n="settings.nav.rehydrate">🧠 压缩恢复</button>
-          <button class="ctx-seg-btn" type="button" data-nav-target="proxy-notun-drawer"
-            data-i18n="settings.nav.proxy">🌐 免TUN</button>
+    <!-- 分页 4: 账号与共享池 -->
+    <div id="pane-ctx-accounts" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-accounts" hidden>
+      <!-- 块 1: 账号切换 -->
+      <div class="ctx-settings-card ctx-accounts-block" id="ctx-accounts-switch-section">
+        <div class="quota-subsec-header">
+          <span class="quota-subsec-title" data-i18n="accountsTab.switchTitle">👤 账号切换</span>
+          <div class="quota-subsec-actions">
+            <button id="btn-tab-acct-refresh" class="switch-pill-btn" type="button"
+              data-i18n="accounts.refreshEntry">刷新账号</button>
+            <button id="btn-tab-acct-import-current" class="switch-pill-btn" type="button"
+              data-i18n="accounts.importCurrent">导入当前</button>
+            <button id="btn-tab-acct-import-tools" class="switch-pill-btn" type="button" hidden
+              data-i18n="accounts.importTools">导入 Tools</button>
+            <button id="btn-tab-acct-oauth-add" class="switch-pill-btn active" type="button"
+              data-i18n="accounts.oauthAdd">+ 登录添加</button>
+          </div>
+        </div>
+        <div id="ctx-acct-active-summary" class="quota-acct-meta"></div>
+        <div id="ctx-acct-feedback" class="quota-acct-feedback" hidden></div>
+        <div id="ctx-accounts-list" class="quota-accounts-list"></div>
+
+        <div id="ctx-autoswitch-summary-card" class="quota-subcard" style="margin-top:6px">
+          <div class="quota-subcard-row">
+            <span class="quota-subsec-title" data-i18n="accountsTab.autoSwitchTitle">自动切号状态与规则摘要</span>
+            <span id="ctx-autoswitch-status-pill" class="key-pill pill-muted"
+              data-i18n="accounts.status.disabled">已关闭</span>
+          </div>
+          <div id="ctx-autoswitch-reason" class="quota-muted-note"></div>
+          <div id="ctx-autoswitch-rule-summary" class="quota-muted-note"></div>
+          <div class="quota-subsec-actions" style="margin-top:4px">
+            <button id="btn-ctx-open-autoswitch-rules" class="switch-pill-btn active" type="button"
+              data-i18n="accounts.editRulesBtn">编辑自动切号规则</button>
+          </div>
         </div>
       </div>
 
-      <!-- 0. 插件外观、停靠位置与顶栏偏好 (ELV-94 & Issue #41) -->
-      <div class="ctx-settings-card ctx-slim-prefs" id="ui-slim-prefs-card">
-        <div class="ctx-settings-card-hdr">
-          <div class="ctx-settings-card-title" data-i18n="settings.appearance.title">🎨 外观、停靠位置与顶栏偏好</div>
+      <!-- 块 2: 共享额度池 -->
+      <div class="ctx-settings-card ctx-accounts-block" id="ctx-shared-pools-section">
+        <div class="quota-subsec-header">
+          <span class="quota-subsec-title" data-i18n="accountsTab.poolsTitle">◔ 共享额度池</span>
+          <div class="quota-subsec-actions">
+            <span id="ctx-pools-account-tag" class="key-pill pill-muted"></span>
+            <span id="ctx-pools-updated-at" class="quota-muted-note"></span>
+            <button id="btn-ctx-pools-refresh" class="switch-pill-btn" type="button"
+              data-i18n="quota.refresh.btn">刷新</button>
+            <button id="btn-ctx-open-quota-board" class="switch-pill-btn" type="button"
+              data-i18n="accountsTab.openQuotaBoardBtn">查看模型额度</button>
+          </div>
+        </div>
+        <div id="ctx-pools-banner" class="quota-banner" hidden>
+          <span id="ctx-pools-banner-text"></span>
+          <button id="btn-ctx-pools-retry" class="switch-pill-btn" type="button" data-i18n="quota.retry">重试</button>
         </div>
 
-        <!-- 分组 1 · 看板打开方式 -->
-        <section class="ctx-prefs-group" id="ctx-prefs-group-open" aria-labelledby="ctx-prefs-group-open-title">
-          <div class="ctx-prefs-group-title" id="ctx-prefs-group-open-title" data-i18n="settings.groups.openMode">
-            看板打开方式</div>
-          <div class="ctx-prefs-rows">
-            <div class="ctx-prefs-row" id="row-panel-dock-mode">
-              <div class="ctx-prefs-row-main">
-                <div class="ctx-prefs-row-title" data-i18n="settings.panelDockMode.label">面板停靠位置</div>
-                <div class="ctx-prefs-row-sub" id="panel-dock-mode-desc"
-                  data-i18n="settings.panelDockMode.popoverDesc">点击顶栏或悬浮球时以浮动弹窗展开详情面板.</div>
+        <div id="ctx-pools-current-card" class="quota-current-card">
+          <div class="key-header">
+            <div style="min-width:0;flex:1">
+              <div style="font-size:10.5px;color:var(--ag-text-muted)" data-i18n="accountsTab.mainPoolLabel">当前账号主池
               </div>
-              <div class="ctx-prefs-row-ctl">
-                <div id="panel-dock-mode-segmented" class="ctx-segmented ctx-seg-pill" role="group"
-                  aria-label="面板停靠位置">
-                  <button id="btn-panel-dock-popover" class="ctx-seg-btn active" type="button"
-                    data-panel-dock-mode="popover" data-i18n="settings.panelDockMode.popover">顶栏浮层</button>
-                  <button id="btn-panel-dock-aux" class="ctx-seg-btn" type="button" data-panel-dock-mode="aux"
-                    data-i18n="settings.panelDockMode.aux">右侧辅助栏</button>
-                  <button id="btn-panel-dock-page" class="ctx-seg-btn" type="button" data-panel-dock-mode="page"
-                    data-i18n="settings.panelDockMode.page">独立页面</button>
-                </div>
-              </div>
+              <div id="ctx-pools-cur-model" class="quota-cur-model-name">—</div>
+              <div id="ctx-pools-cur-pool" class="quota-cur-pool-sub"></div>
             </div>
-
-            <div class="ctx-prefs-row" id="row-autohide-topbar-docked">
-              <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-autohide-topbar-docked"
-                for="chk-autohide-topbar-docked">
-                <span class="ctx-prefs-row-title" data-i18n="settings.autoHideTopbarDocked.label">
-                  侧栏或独立页展开时收起顶栏</span>
-                <span class="ctx-prefs-row-sub" data-i18n="settings.autoHideTopbarDocked.desc">
-                  面板停靠在右侧栏或独立页时自动藏起顶栏入口，收起面板后恢复.</span>
-              </label>
-              <div class="ctx-prefs-row-ctl">
-                <label class="ctx-toggle" for="chk-autohide-topbar-docked">
-                  <input id="chk-autohide-topbar-docked" class="ctx-toggle-input" type="checkbox">
-                  <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
-                </label>
-              </div>
-            </div>
-
-            <div class="ctx-prefs-row ctx-prefs-row-stack" id="row-quick-actions">
-              <div class="ctx-prefs-row-main">
-                <div class="ctx-prefs-row-title" data-i18n="settings.quickActions.title">当前会话快捷操作条</div>
-                <div class="ctx-prefs-row-sub" data-i18n="settings.quickActions.desc">
-                  一行完成打开、复制与跳转，同一入口不再重复.</div>
-              </div>
-              <div id="dock-quick-open-actions" class="ctx-prefs-action-row">
-                <button id="btn-dock-open-right" class="unlock-btn unlock-btn-primary ctx-prefs-action" type="button"
-                  data-i18n="settings.dock.openRightBtn">在右侧打开</button>
-                <button id="btn-dock-fb-page" class="unlock-btn unlock-btn-secondary ctx-prefs-action" type="button"
-                  data-i18n="settings.dock.fbPage">独立页面</button>
-                <button id="btn-dock-fb-copy" class="unlock-btn unlock-btn-secondary ctx-prefs-action" type="button"
-                  data-i18n="settings.dock.fbCopyUrl">复制链接</button>
-                <button id="btn-dock-open-browser" class="unlock-btn unlock-btn-secondary ctx-prefs-action"
-                  type="button" data-i18n="settings.dock.openExternalBtn">外部浏览器</button>
-              </div>
-              <div id="dock-open-feedback" class="ctx-dock-note" hidden></div>
+            <div style="display:flex;align-items:center;gap:5px;flex-shrink:0">
+              <span id="ctx-pools-cur-status" class="key-pill pill-muted" data-i18n="quota.state.unknown">未知</span>
             </div>
           </div>
-        </section>
-
-        <!-- 分组 2 · 径向快捷菜单 · 可多选共存 -->
-        <section class="ctx-prefs-group" id="ctx-prefs-group-radial" aria-labelledby="ctx-prefs-group-radial-title">
-          <div class="ctx-prefs-group-title" id="ctx-prefs-group-radial-title" data-i18n="settings.groups.radial">
-            径向快捷菜单 · 可多选共存</div>
-          <div class="ctx-prefs-rows">
-            <div class="ctx-prefs-row" id="row-radial-orb">
-              <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-radial-orb" for="chk-radial-orb">
-                <span class="ctx-prefs-row-title" data-i18n="settings.radial.orb.title">悬浮圆环</span>
-                <span class="ctx-prefs-row-sub" data-i18n="settings.radial.orb.desc">
-                  窗口顶层可拖拽悬浮球，点击展开 360° 六瓣花环.</span>
-              </label>
-              <div class="ctx-prefs-row-ctl">
-                <label class="ctx-toggle" for="chk-radial-orb">
-                  <input id="chk-radial-orb" class="ctx-toggle-input" type="checkbox" data-radial-switch="orb">
-                  <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
-                </label>
-              </div>
-            </div>
-
-            <div class="ctx-prefs-row" id="row-radial-topbar">
-              <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-radial-topbar" for="chk-radial-topbar">
-                <span class="ctx-prefs-row-title" data-i18n="settings.radial.topbar.title">顶栏径向展开</span>
-                <span class="ctx-prefs-row-sub" data-i18n="settings.radial.topbar.desc">
-                  点击顶栏上下文圆环原地收缩为正圆并向下展开 180° 扇形.</span>
-              </label>
-              <div class="ctx-prefs-row-ctl">
-                <label class="ctx-toggle" for="chk-radial-topbar">
-                  <input id="chk-radial-topbar" class="ctx-toggle-input" type="checkbox" data-radial-switch="topbar">
-                  <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
-                </label>
-              </div>
-            </div>
-
-            <div class="ctx-prefs-row" id="row-radial-bottombar">
-              <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-radial-bottombar" for="chk-radial-bottombar">
-                <span class="ctx-prefs-row-title" data-i18n="settings.radial.bottombar.title">底栏径向展开</span>
-                <span class="ctx-prefs-row-sub" data-i18n="settings.radial.bottombar.desc">
-                  点击输入框下方上下文入口原地收缩为正圆并向上展开 180° 扇形.</span>
-              </label>
-              <div class="ctx-prefs-row-ctl">
-                <label class="ctx-toggle" for="chk-radial-bottombar">
-                  <input id="chk-radial-bottombar" class="ctx-toggle-input" type="checkbox"
-                    data-radial-switch="bottombar">
-                  <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
-                </label>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- 分组 3 · 页面常驻显示 -->
-        <section class="ctx-prefs-group" id="ctx-prefs-group-display" aria-labelledby="ctx-prefs-group-display-title">
-          <div class="ctx-prefs-group-title" id="ctx-prefs-group-display-title" data-i18n="settings.groups.display">
-            页面常驻显示</div>
-          <div class="ctx-prefs-rows">
-            <div class="ctx-prefs-row" id="row-topbar-mode">
-              <div class="ctx-prefs-row-main">
-                <div class="ctx-prefs-row-title" data-i18n="settings.topbarMode.label">顶栏状态条</div>
-                <div class="ctx-prefs-row-sub" id="topbar-mode-desc"
-                  data-i18n="settings.topbarMode.fullDesc">会话顶栏完整显示上下文、额度、速度与 Token 状态入口.</div>
-              </div>
-              <div class="ctx-prefs-row-ctl">
-                <div id="topbar-mode-segmented" class="ctx-segmented ctx-seg-pill" role="group" aria-label="顶栏状态条">
-                  <button id="btn-topbar-full" class="ctx-seg-btn active" type="button" data-topbar-mode="full"
-                    data-i18n="settings.topbarMode.full">完整显示</button>
-                  <button id="btn-topbar-compact" class="ctx-seg-btn" type="button" data-topbar-mode="compact"
-                    data-i18n="settings.topbarMode.compact">精简圆环</button>
-                  <button id="btn-topbar-hidden" class="ctx-seg-btn" type="button" data-topbar-mode="hidden"
-                    data-i18n="settings.topbarMode.hidden">隐藏</button>
-                </div>
-              </div>
-            </div>
-
-            <div class="ctx-prefs-row" id="row-quota-mode">
-              <div class="ctx-prefs-row-main">
-                <div class="ctx-prefs-row-title" data-i18n="settings.quotaBadgeMode.label">顶栏额度窗口</div>
-                <div class="ctx-prefs-row-sub" data-i18n="settings.quotaBadgeMode.desc">支持右键或 Alt 加点击切换.</div>
-              </div>
-              <div class="ctx-prefs-row-ctl">
-                <div id="quota-mode-segmented" class="ctx-segmented ctx-seg-pill" role="group" aria-label="顶栏额度窗口">
-                  <button id="btn-quota-mode-auto" class="ctx-seg-btn active" type="button" data-quota-window-mode="auto"
-                    data-i18n="settings.quotaBadgeMode.auto">自动最紧缩</button>
-                  <button id="btn-quota-mode-5h" class="ctx-seg-btn" type="button" data-quota-window-mode="5h"
-                    data-i18n="settings.quotaBadgeMode.5h">5h 窗口</button>
-                  <button id="btn-quota-mode-weekly" class="ctx-seg-btn" type="button" data-quota-window-mode="weekly"
-                    data-i18n="settings.quotaBadgeMode.weekly">周额度</button>
-                  <button id="btn-quota-mode-both" class="ctx-seg-btn" type="button" data-quota-window-mode="both"
-                    data-i18n="settings.quotaBadgeMode.both">5h 与周双显</button>
-                </div>
-              </div>
-            </div>
-
-            <div class="ctx-prefs-row" id="row-composer-quota">
-              <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-composer-quota" for="chk-show-composer-quota">
-                <span class="ctx-prefs-row-title" data-i18n="settings.composerQuota.label">输入框下方状态条</span>
-                <span class="ctx-prefs-row-sub" data-i18n="settings.composerQuota.desc">
-                  在聊天输入框下方显示速度、Token、上下文与额度摘要.</span>
-              </label>
-              <div class="ctx-prefs-row-ctl">
-                <label class="ctx-toggle" for="chk-show-composer-quota">
-                  <input id="chk-show-composer-quota" class="ctx-toggle-input" type="checkbox">
-                  <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
-                </label>
-              </div>
-            </div>
-
-            <div class="ctx-prefs-row" id="row-simplified-model-picker">
-              <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-simplified-model-picker"
-                for="chk-simplified-model-picker">
-                <span class="ctx-prefs-row-title" data-i18n="settings.modelPicker.label">简化输入框模型与思考档位菜单</span>
-                <span class="ctx-prefs-row-sub" data-i18n="settings.modelPicker.desc">
-                  基础模型仅展示一次并将思考档位独立调节，不兼容时退回原生菜单.</span>
-              </label>
-              <div class="ctx-prefs-row-ctl">
-                <label class="ctx-toggle" for="chk-simplified-model-picker">
-                  <input id="chk-simplified-model-picker" class="ctx-toggle-input" type="checkbox">
-                  <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
-                </label>
-              </div>
-            </div>
-
-            <div class="ctx-prefs-row" id="row-next-prompt">
-              <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-next-prompt"
-                for="chk-next-prompt-enabled">
-                <span class="ctx-prefs-row-title" data-i18n="settings.nextPrompt.label">下一句预测建议</span>
-                <span class="ctx-prefs-row-sub" data-i18n="settings.nextPrompt.desc">
-                  默认关闭. 开启后每轮结束会调用当前账号模型并消耗额外额度，按 Tab 填入草稿.</span>
-              </label>
-              <div class="ctx-prefs-row-ctl">
-                <label class="ctx-toggle" for="chk-next-prompt-enabled">
-                  <input id="chk-next-prompt-enabled" class="ctx-toggle-input" type="checkbox">
-                  <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
-                </label>
-              </div>
-            </div>
-
-            <div class="ctx-prefs-row" id="row-turn-footer">
-              <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-turn-footer" for="chk-show-turn-footer-stats">
-                <span class="ctx-prefs-row-title" data-i18n="settings.turnFooter.label">每轮回复尾部统计</span>
-                <span class="ctx-prefs-row-sub" data-i18n="settings.turnFooter.desc">
-                  在助手回复操作栏末尾显示本轮模型、用量与耗时微标.</span>
-              </label>
-              <div class="ctx-prefs-row-ctl">
-                <label class="ctx-toggle" for="chk-show-turn-footer-stats">
-                  <input id="chk-show-turn-footer-stats" class="ctx-toggle-input" type="checkbox">
-                  <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
-                </label>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- 分组 4 · 主题与外观定制 -->
-        <section class="ctx-prefs-group" id="ctx-prefs-group-theme" aria-labelledby="ctx-prefs-group-theme-title">
-          <div class="ctx-prefs-group-title" id="ctx-prefs-group-theme-title" data-i18n="settings.groups.theme">
-            主题与外观定制</div>
-          <div class="ctx-prefs-rows">
-            <div class="ctx-prefs-row" id="row-palette">
-              <div class="ctx-prefs-row-main">
-                <div class="ctx-prefs-row-title" data-i18n="settings.palette.label">主题配色与外观定制</div>
-                <div class="ctx-prefs-row-sub" data-i18n="settings.palette.desc">
-                  打开调色面板调整主色调、面板明暗与图表色阶.</div>
-              </div>
-              <div class="ctx-prefs-row-ctl">
-                <button id="btn-panel-palette" class="unlock-btn unlock-btn-secondary ctx-prefs-action" type="button"
-                  data-i18n="settings.palette.openBtn">🎨 调色与外观</button>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <div id="dock-fallback-note" class="ctx-dock-note" hidden></div>
-        <div id="dock-page-actions" style="margin-top:6px;display:none">
-          <span style="font-size:10.5px;color:var(--ag-text-muted)"
-            data-i18n="settings.dock.pageHint">独立页面已开启，可使用顶部“返回聊天”切回常驻工具栏.</span>
+          <div id="ctx-pools-cur-alert" class="quota-cur-alert" hidden></div>
+          <div id="ctx-pools-cur-buckets" class="quota-buckets-list"></div>
+          <div id="ctx-pools-cur-models-chips" class="quota-models-chips" hidden></div>
         </div>
 
-        <!-- 兼容桥接节点：不下发可见 UI，仅保留旧 API、旧单测与历史持久化契约 -->
-        <div id="dock-pos-segmented" style="display:none" hidden>
-          <button id="btn-dock-flow" data-dock-mode="flow"></button>
-          <button id="btn-dock-compact" data-dock-mode="compact"></button>
-          <button id="btn-dock-aux" data-dock-mode="aux"></button>
-          <button id="btn-dock-page" data-dock-mode="page"></button>
+        <div class="quota-pools-header" style="margin-top:8px">
+          <span id="ctx-pools-others-heading" style="font-size:11.5px;font-weight:600;color:var(--ag-text-secondary)"
+            data-i18n="quota.pools.othersHeading">其他共享额度池</span>
+          <span id="ctx-pools-others-browse-hint" style="font-size:10.5px;color:var(--ag-text-muted)"
+            data-i18n="accountsTab.poolsBrowseHint">分窗口余量摘要 · 完整进度条请点查看模型额度</span>
         </div>
-        <div id="dock-mode-desc" style="display:none" hidden></div>
-        <div style="display:none" hidden>
-          <input id="chk-hide-topbar" type="checkbox">
-          <input id="chk-hide-radial-orb" class="ctx-toggle-input" type="checkbox">
+        <div id="ctx-pools-others-list" class="quota-pools-list"></div>
+
+        <div class="quota-subsec-header" style="margin-top:10px">
+          <span class="quota-subsec-title" data-i18n="quota.compareTitle">📊 本机消耗与共享账号额度对照</span>
         </div>
-        <div id="radial-menu-style-desc" style="display:none" hidden></div>
-        <div id="dock-fallback-actions" class="dock-fallback-actions" hidden></div>
+        <div id="quota-compare-note" class="quota-muted-note" style="margin-bottom:5px"
+          data-i18n="quota.compareDisclaimer">
+          按同一账号与共享池统计。账面百分点下降受多设备使用、取整、重置与滚动恢复影响，不等同于本机单独消耗占比。
+        </div>
+        <div id="quota-compare-list" class="quota-compare-list"></div>
       </div>
+    </div>
 
-      <!-- 1. 多账号管理、阈值自动切号与共享额度对照 (图1入口迁入设置专卡，保留原DOM ID与状态共享) -->
-      <div class="ctx-settings-card" id="settings-accounts-card">
-        <div id="quota-accounts-section" class="quota-accounts-section settings-accounts-embedded">
-          <div class="quota-subsec-header">
-            <span class="quota-subsec-title" data-i18n="accounts.panelTitle">👤 多账号切换与阈值自动切号</span>
-            <div class="quota-subsec-actions">
-              <button id="btn-acct-import-current" class="switch-pill-btn" type="button"
-                data-i18n="accounts.importCurrent">导入当前</button>
-              <button id="btn-acct-import-tools" class="switch-pill-btn" type="button" hidden
-                data-i18n="accounts.importTools">导入 Tools</button>
-              <button id="btn-acct-oauth-add" class="switch-pill-btn active" type="button" data-i18n="accounts.oauthAdd">+
-                登录添加</button>
-            </div>
+    <!-- 设置与系统配置（默认挂载于宿主设置独立页，无法识别宿主结构时作为降级工作区展示） -->
+    <div id="pane-ctx-settings" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-accounts" hidden>
+      <div id="settings-fallback-banner" class="ctx-settings-fallback-banner" hidden>
+        <div class="ctx-settings-fallback-text">
+          <strong data-i18n="settings.fallback.title">当前使用插件内配置降级视图</strong>
+          <span id="settings-fallback-reason-text"
+            data-i18n="settings.fallback.defaultReason">未能挂载到宿主客户端设置页，以下配置仍可直接编辑与保存.</span>
+        </div>
+        <div class="ctx-settings-fallback-actions">
+          <button id="btn-settings-retry-host" class="switch-pill-btn active" type="button"
+            data-i18n="settings.fallback.retryHost">尝试打开客户端设置</button>
+        </div>
+      </div>
+      <div id="ag-cm-settings-workspace" class="ag-cm-settings-workspace">
+        <!-- 配置页顶部紧凑导航栏与返回按钮 -->
+        <div class="ctx-settings-top-nav"
+          style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:6px">
+          <button id="btn-settings-back" class="unlock-btn unlock-btn-secondary" type="button"
+            style="padding:3px 9px;font-size:11px" data-i18n="settings.backToSession">‹ 返回会话</button>
+          <div id="settings-quick-nav-group" class="ctx-segmented ctx-seg-wrap"
+            style="display:flex;gap:3px;flex:1;justify-content:flex-end">
+            <button class="ctx-seg-btn active" type="button" data-nav-target="ui-slim-prefs-card"
+              data-i18n="settings.nav.appearance">🎨 外观与停靠</button>
+            <button class="ctx-seg-btn" type="button" data-nav-target="settings-accounts-card"
+              data-i18n="settings.nav.accounts">👤 账号切号</button>
+            <button class="ctx-seg-btn" type="button" data-nav-target="enhance-preset-card"
+              data-i18n="settings.nav.preset">✨ 推荐配置</button>
+            <button class="ctx-seg-btn" type="button" data-nav-target="rehydrate-hook-card"
+              data-i18n="settings.nav.rehydrate">🧠 压缩与恢复</button>
+            <button class="ctx-seg-btn" type="button" data-nav-target="proxy-notun-drawer"
+              data-i18n="settings.nav.proxy">🌐 免 TUN 代理</button>
+            <button class="ctx-seg-btn" type="button" data-nav-target="settings-about-update-card"
+              data-i18n="settings.nav.update">📦 版本通道</button>
           </div>
-          <div id="quota-acct-feedback" class="quota-acct-feedback" hidden></div>
-          <div id="quota-accounts-list" class="quota-accounts-list"></div>
+        </div>
 
-          <!-- 阈值自动切号配置 -->
-          <div class="quota-subcard">
-            <div class="quota-subcard-row">
-              <label class="quota-switch-lbl">
-                <input id="chk-auto-switch-enabled" type="checkbox" />
-                <span data-i18n="accounts.autoSwitchEnable">启用阈值自动切号，默认关闭</span>
-              </label>
-              <span id="auto-switch-status-pill" class="key-pill pill-muted" data-i18n="accounts.status.disabled">已关闭</span>
-            </div>
-            <div id="auto-switch-config-body" class="auto-switch-grid">
-              <div class="quota-field-lbl"><span data-i18n="accounts.poolLabel">监控共享池</span>
-                <select id="sel-auto-switch-pool" class="quota-compact-select" aria-label="监控共享池"
-                  data-i18n-aria="accounts.poolLabel" style="display:none">
-                  <option value="shared_gemini_main">Gemini 4 (Neon / Hydrogen / Flash)</option>
-                  <option value="shared_3p_pool">Claude 5.5 / GPT-OSS 120B</option>
-                  <option value="shared_gemini_argon">Gemini 4 Argon / Orchestrator</option>
-                  <option value="shared_gemini_carbon">Gemini 4 Carbon</option>
-                </select>
-                <div id="sel-auto-switch-pool-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
-                  <div id="sel-auto-switch-pool-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
-                    <span id="sel-auto-switch-pool-dropdown-label" class="ag-dropdown-label">Gemini 4 (Neon / Hydrogen /
-                      Flash)</span>
-                    <div class="ag-dropdown-arrow">
-                      <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
-                        stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M1 1l4 4 4-4" />
-                      </svg>
-                    </div>
+        <!-- 0. 插件外观、停靠位置与顶栏偏好 (ELV-94 & Issue #41) -->
+        <div class="ctx-settings-card ctx-slim-prefs" id="ui-slim-prefs-card">
+          <div class="ctx-settings-card-hdr">
+            <div class="ctx-settings-card-title" data-i18n="settings.appearance.title">🎨 外观、停靠位置与顶栏偏好</div>
+          </div>
+
+          <!-- 分组 1 · 看板打开方式 -->
+          <section class="ctx-prefs-group" id="ctx-prefs-group-open" aria-labelledby="ctx-prefs-group-open-title">
+            <div class="ctx-prefs-group-title" id="ctx-prefs-group-open-title" data-i18n="settings.groups.openMode">
+              看板打开方式</div>
+            <div class="ctx-prefs-rows">
+              <div class="ctx-prefs-row" id="row-panel-dock-mode">
+                <div class="ctx-prefs-row-main">
+                  <div class="ctx-prefs-row-title" data-i18n="settings.panelDockMode.label">面板停靠位置</div>
+                  <div class="ctx-prefs-row-sub" id="panel-dock-mode-desc"
+                    data-i18n="settings.panelDockMode.popoverDesc">
+                    点击顶栏或悬浮球时以浮动弹窗展开详情面板.</div>
+                </div>
+                <div class="ctx-prefs-row-ctl">
+                  <div id="panel-dock-mode-segmented" class="ctx-segmented ctx-seg-pill" role="group"
+                    aria-label="面板停靠位置">
+                    <button id="btn-panel-dock-popover" class="ctx-seg-btn active" type="button"
+                      data-panel-dock-mode="popover" data-i18n="settings.panelDockMode.popover">顶栏浮层</button>
+                    <button id="btn-panel-dock-aux" class="ctx-seg-btn" type="button" data-panel-dock-mode="aux"
+                      data-i18n="settings.panelDockMode.aux">右侧辅助栏</button>
+                    <button id="btn-panel-dock-page" class="ctx-seg-btn" type="button" data-panel-dock-mode="page"
+                      data-i18n="settings.panelDockMode.page">独立页面</button>
                   </div>
-                  <div id="sel-auto-switch-pool-dropdown-menu" class="ag-dropdown-menu"></div>
                 </div>
               </div>
-              <div class="quota-field-lbl"><span data-i18n="accounts.metricLabel">判断口径</span>
-                <select id="sel-auto-switch-mode" class="quota-compact-select" aria-label="判断口径"
-                  data-i18n-aria="accounts.metricLabel" style="display:none">
-                  <option value="remaining_pct" data-i18n="accounts.modeRemaining">按剩余额度 &lt;=</option>
-                  <option value="used_pct" data-i18n="accounts.modeUsed">按累计已用 &gt;=</option>
-                </select>
-                <div id="sel-auto-switch-mode-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
-                  <div id="sel-auto-switch-mode-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
-                    <span id="sel-auto-switch-mode-dropdown-label" class="ag-dropdown-label"
-                      data-i18n="accounts.modeRemaining">按剩余额度 &lt;=</span>
-                    <div class="ag-dropdown-arrow">
-                      <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
-                        stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M1 1l4 4 4-4" />
-                      </svg>
-                    </div>
+
+              <div class="ctx-prefs-row" id="row-autohide-topbar-docked">
+                <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-autohide-topbar-docked"
+                  for="chk-autohide-topbar-docked">
+                  <span class="ctx-prefs-row-title" data-i18n="settings.autoHideTopbarDocked.label">
+                    侧栏或独立页展开时收起顶栏</span>
+                  <span class="ctx-prefs-row-sub" data-i18n="settings.autoHideTopbarDocked.desc">
+                    面板停靠在右侧栏或独立页时自动藏起顶栏入口，收起面板后恢复.</span>
+                </label>
+                <div class="ctx-prefs-row-ctl">
+                  <label class="ctx-toggle" for="chk-autohide-topbar-docked">
+                    <input id="chk-autohide-topbar-docked" class="ctx-toggle-input" type="checkbox">
+                    <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="ctx-prefs-row ctx-prefs-row-stack" id="row-quick-actions">
+                <div class="ctx-prefs-row-main">
+                  <div class="ctx-prefs-row-title" data-i18n="settings.quickActions.title">当前会话快捷操作条</div>
+                  <div class="ctx-prefs-row-sub" data-i18n="settings.quickActions.desc">
+                    一行完成打开、复制与跳转，同一入口不再重复.</div>
+                </div>
+                <div id="dock-quick-open-actions" class="ctx-prefs-action-row">
+                  <button id="btn-dock-open-right" class="unlock-btn unlock-btn-primary ctx-prefs-action" type="button"
+                    data-i18n="settings.dock.openRightBtn">在右侧打开</button>
+                  <button id="btn-dock-fb-page" class="unlock-btn unlock-btn-secondary ctx-prefs-action" type="button"
+                    data-i18n="settings.dock.fbPage">独立页面</button>
+                  <button id="btn-dock-fb-copy" class="unlock-btn unlock-btn-secondary ctx-prefs-action" type="button"
+                    data-i18n="settings.dock.fbCopyUrl">复制链接</button>
+                  <button id="btn-dock-open-browser" class="unlock-btn unlock-btn-secondary ctx-prefs-action"
+                    type="button" data-i18n="settings.dock.openExternalBtn">外部浏览器</button>
+                </div>
+                <div id="dock-open-feedback" class="ctx-dock-note" hidden></div>
+              </div>
+            </div>
+          </section>
+
+          <!-- 分组 2 · 径向快捷菜单 · 可多选共存 -->
+          <section class="ctx-prefs-group" id="ctx-prefs-group-radial" aria-labelledby="ctx-prefs-group-radial-title">
+            <div class="ctx-prefs-group-title" id="ctx-prefs-group-radial-title" data-i18n="settings.groups.radial">
+              径向快捷菜单 · 可多选共存</div>
+            <div class="ctx-prefs-rows">
+              <div class="ctx-prefs-row" id="row-radial-orb">
+                <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-radial-orb" for="chk-radial-orb">
+                  <span class="ctx-prefs-row-title" data-i18n="settings.radial.orb.title">悬浮圆环</span>
+                  <span class="ctx-prefs-row-sub" data-i18n="settings.radial.orb.desc">
+                    窗口顶层可拖拽悬浮球，点击展开 360° 六瓣花环.</span>
+                </label>
+                <div class="ctx-prefs-row-ctl">
+                  <label class="ctx-toggle" for="chk-radial-orb">
+                    <input id="chk-radial-orb" class="ctx-toggle-input" type="checkbox" data-radial-switch="orb">
+                    <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="ctx-prefs-row" id="row-radial-topbar">
+                <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-radial-topbar" for="chk-radial-topbar">
+                  <span class="ctx-prefs-row-title" data-i18n="settings.radial.topbar.title">顶栏径向展开</span>
+                  <span class="ctx-prefs-row-sub" data-i18n="settings.radial.topbar.desc">
+                    点击顶栏上下文圆环原地收缩为正圆并向下展开 180° 扇形.</span>
+                </label>
+                <div class="ctx-prefs-row-ctl">
+                  <label class="ctx-toggle" for="chk-radial-topbar">
+                    <input id="chk-radial-topbar" class="ctx-toggle-input" type="checkbox" data-radial-switch="topbar">
+                    <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="ctx-prefs-row" id="row-radial-bottombar">
+                <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-radial-bottombar"
+                  for="chk-radial-bottombar">
+                  <span class="ctx-prefs-row-title" data-i18n="settings.radial.bottombar.title">底栏径向展开</span>
+                  <span class="ctx-prefs-row-sub" data-i18n="settings.radial.bottombar.desc">
+                    点击输入框下方上下文入口原地收缩为正圆并向上展开 180° 扇形.</span>
+                </label>
+                <div class="ctx-prefs-row-ctl">
+                  <label class="ctx-toggle" for="chk-radial-bottombar">
+                    <input id="chk-radial-bottombar" class="ctx-toggle-input" type="checkbox"
+                      data-radial-switch="bottombar">
+                    <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- 分组 3 · 页面常驻显示 -->
+          <section class="ctx-prefs-group" id="ctx-prefs-group-display" aria-labelledby="ctx-prefs-group-display-title">
+            <div class="ctx-prefs-group-title" id="ctx-prefs-group-display-title" data-i18n="settings.groups.display">
+              页面常驻显示</div>
+            <div class="ctx-prefs-rows">
+              <div class="ctx-prefs-row" id="row-topbar-mode">
+                <div class="ctx-prefs-row-main">
+                  <div class="ctx-prefs-row-title" data-i18n="settings.topbarMode.label">顶栏状态条</div>
+                  <div class="ctx-prefs-row-sub" id="topbar-mode-desc" data-i18n="settings.topbarMode.fullDesc">
+                    会话顶栏完整显示上下文、额度、速度与 Token 状态入口.</div>
+                </div>
+                <div class="ctx-prefs-row-ctl">
+                  <div id="topbar-mode-segmented" class="ctx-segmented ctx-seg-pill" role="group" aria-label="顶栏状态条">
+                    <button id="btn-topbar-full" class="ctx-seg-btn active" type="button" data-topbar-mode="full"
+                      data-i18n="settings.topbarMode.full">完整显示</button>
+                    <button id="btn-topbar-compact" class="ctx-seg-btn" type="button" data-topbar-mode="compact"
+                      data-i18n="settings.topbarMode.compact">精简圆环</button>
+                    <button id="btn-topbar-hidden" class="ctx-seg-btn" type="button" data-topbar-mode="hidden"
+                      data-i18n="settings.topbarMode.hidden">隐藏</button>
                   </div>
-                  <div id="sel-auto-switch-mode-dropdown-menu" class="ag-dropdown-menu"></div>
                 </div>
               </div>
-              <div class="quota-field-lbl"><span data-i18n="accounts.windowLabel">限额窗口</span>
-                <select id="sel-auto-switch-window" class="quota-compact-select" aria-label="限额窗口"
-                  data-i18n-aria="accounts.windowLabel" style="display:none">
-                  <option value="primary" data-i18n="accounts.winPrimary">主窗口最紧缩</option>
-                  <option value="5h">5h</option>
-                  <option value="7d">7d</option>
-                </select>
-                <div id="sel-auto-switch-window-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
-                  <div id="sel-auto-switch-window-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
-                    <span id="sel-auto-switch-window-dropdown-label" class="ag-dropdown-label"
-                      data-i18n="accounts.winPrimary">主窗口最紧缩</span>
-                    <div class="ag-dropdown-arrow">
-                      <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5"
-                        stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M1 1l4 4 4-4" />
-                      </svg>
-                    </div>
+
+              <div class="ctx-prefs-row" id="row-quota-mode">
+                <div class="ctx-prefs-row-main">
+                  <div class="ctx-prefs-row-title" data-i18n="settings.quotaBadgeMode.label">顶栏额度窗口</div>
+                  <div class="ctx-prefs-row-sub" data-i18n="settings.quotaBadgeMode.desc">支持右键或 Alt 加点击切换.</div>
+                </div>
+                <div class="ctx-prefs-row-ctl">
+                  <div id="quota-mode-segmented" class="ctx-segmented ctx-seg-pill" role="group" aria-label="顶栏额度窗口">
+                    <button id="btn-quota-mode-auto" class="ctx-seg-btn active" type="button"
+                      data-quota-window-mode="auto" data-i18n="settings.quotaBadgeMode.auto">自动最紧缩</button>
+                    <button id="btn-quota-mode-5h" class="ctx-seg-btn" type="button" data-quota-window-mode="5h"
+                      data-i18n="settings.quotaBadgeMode.5h">5h 窗口</button>
+                    <button id="btn-quota-mode-weekly" class="ctx-seg-btn" type="button" data-quota-window-mode="weekly"
+                      data-i18n="settings.quotaBadgeMode.weekly">周额度</button>
+                    <button id="btn-quota-mode-both" class="ctx-seg-btn" type="button" data-quota-window-mode="both"
+                      data-i18n="settings.quotaBadgeMode.both">5h 与周双显</button>
                   </div>
-                  <div id="sel-auto-switch-window-dropdown-menu" class="ag-dropdown-menu"></div>
                 </div>
               </div>
-              <label class="quota-field-lbl"><span data-i18n="accounts.thresholdLabel">阈值 (%)</span>
-                <input id="inp-auto-switch-threshold" class="quota-compact-input" type="number" min="1" max="95"
-                  value="10" />
-              </label>
-              <div class="auto-switch-candidates-wrap">
-                <div class="quota-field-k" data-i18n="accounts.candidatesLabel">允许切入的候选账号：</div>
-                <div id="auto-switch-candidates-list" class="auto-switch-candidates-list"></div>
-              </div>
-              <div class="auto-switch-save-row">
-                <button id="btn-save-auto-switch" class="switch-pill-btn active" type="button"
-                  data-i18n="accounts.saveRule">保存切号规则</button>
-                <span id="auto-switch-last-note" class="quota-muted-note"></span>
-              </div>
-              <div id="auto-switch-save-status" class="quota-muted-note" role="status"></div>
-            </div>
-          </div>
 
-          <!-- 本机消耗与共享账号额度变化对照 -->
-          <div class="quota-subsec-header" style="margin-top:10px">
-            <span class="quota-subsec-title" data-i18n="quota.compareTitle">📊 本机消耗与共享账号额度对照</span>
-          </div>
-          <div id="quota-compare-note" class="quota-muted-note" style="margin-bottom:5px"
-            data-i18n="quota.compareDisclaimer">
-            按同一账号与共享池统计。账面百分点下降受多设备使用、取整、重置与滚动恢复影响，不等同于本机单独消耗占比。
-          </div>
-          <div id="quota-compare-list" class="quota-compare-list"></div>
-        </div>
-      </div>
-
-      <!-- 2. 一键推荐配置与总览（默认不自动应用，需用户预览勾选并确认） -->
-      <div class="ctx-settings-card" id="enhance-preset-card">
-        <div class="ctx-settings-card-hdr">
-          <div class="ctx-settings-card-title" data-i18n="enhance.preset.title">✨ 一键推荐配置（按需勾选预览）</div>
-          <span id="enhance-global-badge" class="key-pill pill-muted" data-i18n="settings.common.reading">读取中…</span>
-        </div>
-        <div class="ctx-settings-card-desc" data-i18n="enhance.preset.desc">
-          勾选为开，未勾选为关。安装默认全部关闭；只有磁盘上已经打开的项才会显示为开。确认前不会写入。
-        </div>
-        <div class="ctx-preset-checklist">
-          <label class="ctx-preset-check-item">
-            <input id="chk-rec-prompt" type="checkbox">
-            <div class="ctx-preset-check-meta">
-              <strong data-i18n="enhance.preset.itemPrompt">系统提示词 4 档（极简防幻觉）</strong>
-              <span data-i18n="enhance.preset.itemPromptSub">精简模板套话并保留真实工具契约；仅作用于系统提示，不能保证模型永不犯错。</span>
-            </div>
-          </label>
-          <label class="ctx-preset-check-item">
-            <input id="chk-rec-title" type="checkbox">
-            <div class="ctx-preset-check-meta">
-              <strong data-i18n="enhance.preset.itemTitle">自动中文会话标题</strong>
-              <span data-i18n="enhance.preset.itemTitleSub">新会话自动生成简体中文标题（等长替换指令文本，不破坏结构）。</span>
-            </div>
-          </label>
-          <label class="ctx-preset-check-item">
-            <input id="chk-rec-lang" type="checkbox">
-            <div class="ctx-preset-check-meta">
-              <strong data-i18n="enhance.preset.itemLang">客户端简体中文界面（Antigravity 本身）</strong>
-              <span data-i18n="enhance.preset.itemLangSub">仅改变桌面端壳层中文，不影响你选择的插件面板语言。</span>
-            </div>
-          </label>
-          <label class="ctx-preset-check-item">
-            <input id="chk-rec-ctx" type="checkbox">
-            <div class="ctx-preset-check-meta">
-              <strong data-i18n="enhance.preset.itemCtx">上下文模式：跟随模型</strong>
-              <span data-i18n="enhance.preset.itemCtxSub">按模型各自支持的最大长度运行，不硬锁固定 983,040 或 512,000。</span>
-            </div>
-          </label>
-          <label class="ctx-preset-check-item">
-            <input id="chk-rec-rehydrate" type="checkbox">
-            <div class="ctx-preset-check-meta">
-              <strong data-i18n="enhance.preset.itemRehydrate">改善 AGY 有损压缩</strong>
-              <span data-i18n="enhance.preset.itemRehydrateSub">压缩后自动把最初要求、最近几轮原话和刚改过的代码补回给 AI（不影响已有其他配置）。</span>
-            </div>
-          </label>
-        </div>
-        <div class="ctx-settings-card-actions">
-          <button id="btn-enhance-preset-apply" class="unlock-btn unlock-btn-primary" type="button"
-            data-i18n="enhance.preset.applyBtn">应用所选推荐配置</button>
-          <button id="btn-enhance-restore-all" class="unlock-btn unlock-btn-danger" type="button"
-            data-i18n="enhance.restoreAll.btn">全部恢复官方默认</button>
-        </div>
-        <div id="enhance-preset-confirm" class="ctx-enhance-confirm" hidden>
-          <div id="enhance-preset-confirm-text"></div>
-          <div class="ctx-enhance-confirm-actions">
-            <button id="btn-enhance-confirm-cancel" class="unlock-btn unlock-btn-secondary" type="button"
-              data-i18n="models.restartConfirm.cancel">取消</button>
-            <button id="btn-enhance-confirm-go" class="unlock-btn unlock-btn-primary" type="button"
-              data-i18n="enhance.confirm.go">确认应用</button>
-          </div>
-        </div>
-        <div id="enhance-global-result" class="unlock-result-box" style="display:none;">
-          <div id="enhance-global-result-text" class="unlock-result-text"></div>
-          <div id="enhance-global-result-actions" class="unlock-result-actions" hidden>
-            <button id="btn-enhance-restart-ls" class="unlock-btn unlock-btn-secondary" type="button"
-              data-i18n="enhance.btn.restartLs">重启语言服务</button>
-            <button id="btn-enhance-restart-host" class="unlock-btn unlock-btn-primary" type="button"
-              data-i18n="models.restartBtn">重启客户端使设置生效</button>
-          </div>
-          <div id="enhance-global-manual-note" class="ctx-result-manual-note" hidden data-i18n="models.manualRestart">
-            请手动重启：关闭所有 Antigravity 窗口（包括托盘图标里的“退出”），再重新打开 Antigravity。</div>
-        </div>
-      </div>
-
-      <!-- 2. 客户端界面语言与品牌标题 (Antigravity 本身) -->
-      <div class="ctx-settings-card" id="client-brand-lang-card">
-        <div class="ctx-settings-card-hdr">
-          <div class="ctx-settings-card-title" data-i18n="settings.clientLang.title">🖥️ 客户端界面语言与品牌（Antigravity 本身）
-          </div>
-          <span id="chinese-badge" class="key-pill pill-muted" data-i18n="settings.common.reading">读取中…</span>
-        </div>
-        <div id="chinese-status-desc" class="ctx-settings-card-desc" data-i18n="settings.clientLang.detecting">
-          正在检测桌面端汉化运行状态…</div>
-        <div class="ctx-segmented ctx-lang-segmented" id="client-lang-segmented" role="group" aria-label="客户端界面语言"
-          data-i18n-aria="settings.clientLang.aria">
-          <button id="btn-client-lang-zh-CN" class="ctx-seg-btn" type="button" data-client-lang="zh-CN">简体中文</button>
-          <button id="btn-client-lang-en" class="ctx-seg-btn" type="button" data-client-lang="en">English</button>
-        </div>
-        <div class="ctx-small-label" style="margin-top:8px" data-i18n="enhance.brand.label">左上角品牌文字显示（仅作用于左上角品牌位，不影响
-          Logo、菜单或代码）：</div>
-        <div class="ctx-segmented ctx-lang-segmented" id="brand-title-segmented" role="group" aria-label="品牌名称选项"
-          data-i18n-aria="enhance.brand.aria">
-          <button id="btn-brand-english" class="ctx-seg-btn active" type="button" data-brand-title="english"
-            data-i18n="enhance.brand.english">Antigravity</button>
-          <button id="btn-brand-hidden" class="ctx-seg-btn" type="button" data-brand-title="hidden"
-            data-i18n="enhance.brand.hidden">隐藏</button>
-          <button id="btn-brand-translated" class="ctx-seg-btn" type="button" data-brand-title="translated"
-            data-i18n="enhance.brand.translated">反重力</button>
-        </div>
-        <div id="brand-apply-feedback" class="ctx-brand-feedback" style="display:none;"></div>
-        <div id="client-lang-license-note" class="ctx-client-lang-note" data-i18n="settings.clientLang.licenseNote">
-          说明：此设置控制 Antigravity 客户端本身，与顶部插件面板语言相互独立。切换客户端语言需重新安装/重启客户端后生效。</div>
-        <div class="ctx-settings-card-actions">
-          <button id="btn-toggle-chinese-module" class="unlock-btn unlock-btn-primary" type="button"
-            data-i18n="settings.clientLang.toggle">切换汉化状态</button>
-          <button id="btn-apply-brand-title" class="unlock-btn unlock-btn-secondary" type="button"
-            data-i18n="enhance.brand.applyBtn">保存品牌选择并应用</button>
-        </div>
-      </div>
-
-      <!-- 3. 回答与工具使用规则 (原防幻觉档位) 与自动中文标题 -->
-      <div class="ctx-settings-card" id="enhance-prompt-card">
-        <div class="ctx-settings-card-hdr">
-          <div class="ctx-settings-card-title" data-i18n="enhance.prompt.title">🧠 回答与工具使用规则</div>
-          <span id="enhance-prompt-badge" class="key-pill pill-muted" data-i18n="settings.common.reading">读取中…</span>
-        </div>
-        <!-- 第一层：默认可见的白话说明 -->
-        <div class="ctx-plain-help"
-          style="margin:4px 0 8px 0;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:8px 10px;">
-          <div style="font-size:11.5px;line-height:1.55;color:var(--ag-text-primary);"
-            data-i18n="enhance.prompt.plainIntro">
-            调整客户端给 AI 的工作说明，让它更重视证据：没读过的文件不猜，没运行的测试不说通过。它不会升级模型底层能力，也不能保证回答永远正确。
-          </div>
-          <div id="enhance-tier-current-desc"
-            style="font-size:11px;line-height:1.5;color:var(--ag-text-secondary);margin-top:4px;">
-            当前档位说明加载中…
-          </div>
-        </div>
-        <div class="ctx-enhance-status-grid">
-          <div class="ctx-enhance-stat">
-            <div class="ctx-enhance-stat-lbl" data-i18n="enhance.stat.prompt">当前检测档位</div>
-            <div id="enhance-stat-prompt" class="ctx-enhance-stat-val">—</div>
-          </div>
-          <div class="ctx-enhance-stat">
-            <div class="ctx-enhance-stat-lbl" data-i18n="enhance.stat.title">自动中文标题</div>
-            <div id="enhance-stat-title" class="ctx-enhance-stat-val">—</div>
-          </div>
-          <div class="ctx-enhance-stat">
-            <div class="ctx-enhance-stat-lbl" data-i18n="enhance.stat.evidence">证据检测状态</div>
-            <div id="enhance-stat-slots" class="ctx-enhance-stat-val">—</div>
-          </div>
-          <div class="ctx-enhance-stat">
-            <div class="ctx-enhance-stat-lbl" data-i18n="enhance.stat.backup">原版内核备份</div>
-            <div id="enhance-stat-backup" class="ctx-enhance-stat-val">—</div>
-          </div>
-        </div>
-        <div id="enhance-tier-grid" class="ctx-tier-grid" role="group" aria-label="规则档位"
-          data-i18n-aria="enhance.prompt.aria">
-          <button id="enhance-tier-0" class="ctx-tier-btn" type="button" data-enhance-tier="0">
-            <span class="ctx-tier-num">0</span>
-            <span class="ctx-tier-name" data-i18n="enhance.tier.0.short">原版</span>
-          </button>
-          <button id="enhance-tier-1" class="ctx-tier-btn" type="button" data-enhance-tier="1">
-            <span class="ctx-tier-num">1</span>
-            <span class="ctx-tier-name" data-i18n="enhance.tier.1.short">基础</span>
-          </button>
-          <button id="enhance-tier-2" class="ctx-tier-btn" type="button" data-enhance-tier="2">
-            <span class="ctx-tier-num">2</span>
-            <span class="ctx-tier-name" data-i18n="enhance.tier.2.short">精简</span>
-          </button>
-          <button id="enhance-tier-3" class="ctx-tier-btn" type="button" data-enhance-tier="3">
-            <span class="ctx-tier-num">3</span>
-            <span class="ctx-tier-name" data-i18n="enhance.tier.3.short">深度</span>
-          </button>
-          <button id="enhance-tier-4" class="ctx-tier-btn" type="button" data-enhance-tier="4">
-            <span class="ctx-tier-num">4</span>
-            <span class="ctx-tier-name" data-i18n="enhance.tier.4.short">极简</span>
-          </button>
-        </div>
-        <div id="enhance-tier-matrix" class="ctx-tier-matrix">
-          <div id="enhance-tier-matrix-title" class="ctx-tier-matrix-title">—</div>
-          <div class="ctx-tier-matrix-row">
-            <span class="ctx-tier-matrix-k" data-i18n="enhance.matrix.keeps">保留</span>
-            <span id="enhance-tier-keeps" class="ctx-tier-matrix-v">—</span>
-          </div>
-          <div class="ctx-tier-matrix-row">
-            <span class="ctx-tier-matrix-k" data-i18n="enhance.matrix.clears">清空</span>
-            <span id="enhance-tier-clears" class="ctx-tier-matrix-v">—</span>
-          </div>
-          <div class="ctx-tier-matrix-row">
-            <span class="ctx-tier-matrix-k" data-i18n="enhance.matrix.replaces">替换</span>
-            <span id="enhance-tier-replaces" class="ctx-tier-matrix-v">—</span>
-          </div>
-          <div class="ctx-tier-matrix-row">
-            <span class="ctx-tier-matrix-k" data-i18n="enhance.matrix.meaning">对你的影响</span>
-            <span id="enhance-tier-meaning" class="ctx-tier-matrix-v">—</span>
-          </div>
-        </div>
-        <div id="enhance-hallucination-note" class="ctx-tier-note-warn" data-i18n="enhance.hallucinationNote">
-          说明：规则档位通过精简冗余指引并强化真实工具核对来规范行为。高档位删减提示模板中的工作指引，不等于删除用户文件或工件本身；是否影响具体能力需在对话中实际验证。</div>
-        <label class="ctx-toggle-row">
-          <div class="ctx-toggle-row-text">
-            <span class="ctx-toggle-row-title" data-i18n="enhance.titlePatch.label">自动生成简体中文会话标题</span>
-            <span class="ctx-toggle-row-sub" data-i18n="enhance.titlePatch.sub">等长替换会话命名提示词，不破坏原有长度对齐；支持随时改回官方英文。</span>
-          </div>
-          <input id="chk-enhance-chinese-title" type="checkbox">
-        </label>
-        <div class="ctx-settings-card-actions">
-          <button id="btn-enhance-apply-prompt" class="unlock-btn unlock-btn-primary" type="button"
-            data-i18n="enhance.btn.applyPrompt">应用提示词与标题设置</button>
-          <button id="btn-enhance-refresh" class="unlock-btn unlock-btn-secondary" type="button"
-            data-i18n="models.btn.refreshStatus">刷新状态</button>
-        </div>
-        <div id="enhance-prompt-result" class="unlock-result-box" style="display:none;">
-          <div id="enhance-prompt-result-text" class="unlock-result-text"></div>
-        </div>
-
-        <!-- 第二层：可展开的“详细说明” -->
-        <div class="tech-drawer" id="enhance-details-drawer" style="margin-top:4px">
-          <button id="btn-toggle-enhance-details" class="drawer-trigger" aria-expanded="false" type="button">
-            <span class="drawer-trigger-left" data-i18n="enhance.details.toggle">详细说明：来源范围、三层状态与检测依据</span>
-            <span id="enhance-details-arrow" class="drawer-arrow" data-i18n="drawer.expand">▼ 展开</span>
-          </button>
-          <div id="enhance-details-body" class="drawer-body" style="display:none;">
-            <div class="unlock-panel-content">
-              <div class="unlock-notice">
-                <div class="unlock-desc" data-i18n="enhance.details.body">方案来源：PR #4 (Jia131313) 与 PR #3 (anyu0804 /
-                  Linux.do @23375)，由本项目进行本地适配、工具契约安全核对与多语言整合。<br><br>
-                  <strong>修改目标程序</strong>：仅修改本地桌面端语言服务核心程序内嵌模板表；不改动任何云端模型，亦不影响 CLI 以外的外部环境。<br><br>
-                  <strong>三层状态区别</strong>：<br>
-                  1. <strong>写入状态</strong>：检测目标程序磁盘文件已覆写指定槽位（安全空格对齐填充，零结构偏移）。<br>
-                  2. <strong>服务加载状态</strong>：需完全退出并重启客户端后，由新启动的语言服务进程加载读取。<br>
-                  3. <strong>行为效果验证</strong>：提示词仅是 AI 的工作指南，不能保证永不犯错；实际表现需由用户在真实会话中体验，不宣称数学上的绝对消除。
+              <div class="ctx-prefs-row" id="row-composer-quota">
+                <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-composer-quota"
+                  for="chk-show-composer-quota">
+                  <span class="ctx-prefs-row-title" data-i18n="settings.composerQuota.label">输入框下方状态条</span>
+                  <span class="ctx-prefs-row-sub" data-i18n="settings.composerQuota.desc">
+                    在聊天输入框下方显示速度、Token、上下文与额度摘要.</span>
+                </label>
+                <div class="ctx-prefs-row-ctl">
+                  <label class="ctx-toggle" for="chk-show-composer-quota">
+                    <input id="chk-show-composer-quota" class="ctx-toggle-input" type="checkbox">
+                    <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
+                  </label>
                 </div>
               </div>
-              <div id="enhance-binary-list" class="unlock-desc" style="margin-top:6px;"></div>
-              <div class="unlock-credit-row">
-                <span class="unlock-credit-lbl"
-                  data-i18n="enhance.details.credit">恢复操作：点击上方“全部恢复官方默认”将无损还原官方备份模板。</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
 
-      <!-- 4. 改善 AGY 有损压缩 (Post-Compact Rehydration Hook) -->
-      <div class="ctx-settings-card" id="rehydrate-hook-card">
-        <div class="ctx-settings-card-hdr">
-          <div class="ctx-settings-card-title" data-i18n="rehydrate.card.title">🩹 改善 AGY 有损压缩</div>
-          <span id="rehydrate-badge" class="key-pill pill-muted" data-i18n="settings.common.reading">读取中…</span>
-        </div>
-        <div class="ctx-plain-help"
-          style="margin:4px 0 8px 0;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:8px 10px;">
-          <div style="font-size:11.5px;line-height:1.55;color:var(--ag-text-primary);"
-            data-i18n="rehydrate.card.plainIntro">
-            AGY 自动压缩（或执行 /compact）只保留概括摘要，容易丢失细节。开启后会在压缩完成时自动从本地完整记录把最初要求、最近几轮原话和刚读写过的文件补回给 AI；未检测到新的压缩检查点时，不注入额外上下文。
-          </div>
-        </div>
-        <div class="ctx-enhance-status-grid">
-          <div class="ctx-enhance-stat">
-            <div class="ctx-enhance-stat-lbl" data-i18n="rehydrate.stat.hook">当前状态</div>
-            <div id="rehydrate-stat-hook" class="ctx-enhance-stat-val">—</div>
-          </div>
-          <div class="ctx-enhance-stat">
-            <div class="ctx-enhance-stat-lbl" data-i18n="rehydrate.stat.script">恢复脚本</div>
-            <div id="rehydrate-stat-script" class="ctx-enhance-stat-val">—</div>
-          </div>
-          <div class="ctx-enhance-stat">
-            <div class="ctx-enhance-stat-lbl" data-i18n="rehydrate.stat.python">Python 运行环境</div>
-            <div id="rehydrate-stat-python" class="ctx-enhance-stat-val">—</div>
-          </div>
-          <div class="ctx-enhance-stat">
-            <div class="ctx-enhance-stat-lbl" data-i18n="rehydrate.stat.siblings">其他配置兼容</div>
-            <div id="rehydrate-stat-siblings" class="ctx-enhance-stat-val">—</div>
-          </div>
-        </div>
-        <div class="ctx-settings-card-actions">
-          <button id="btn-rehydrate-install-python" class="unlock-btn unlock-btn-primary" type="button" hidden
-            data-i18n="rehydrate.btn.installPython">一键安装 Python 3.12</button>
-          <button id="btn-rehydrate-enable" class="unlock-btn unlock-btn-primary" type="button"
-            data-i18n="rehydrate.btn.enable">开启</button>
-          <button id="btn-rehydrate-disable" class="unlock-btn unlock-btn-secondary" type="button"
-            data-i18n="rehydrate.btn.disable">停用</button>
-          <button id="btn-rehydrate-refresh" class="unlock-btn unlock-btn-secondary" type="button"
-            data-i18n="models.btn.refreshStatus">刷新状态</button>
-          <button id="btn-rehydrate-remove" class="ctx-text-action-btn" type="button"
-            data-i18n="rehydrate.btn.remove">卸载移除</button>
-        </div>
-        <div id="rehydrate-result-box" class="unlock-result-box" style="display:none;">
-          <div id="rehydrate-result-text" class="unlock-result-text"></div>
-        </div>
-        <div class="tech-drawer" id="rehydrate-details-drawer" style="margin-top:4px">
-          <button id="btn-toggle-rehydrate-details" class="drawer-trigger" aria-expanded="false" type="button">
-            <span class="drawer-trigger-left" data-i18n="rehydrate.details.toggle">原理说明与方案来源</span>
-            <span id="rehydrate-details-arrow" class="drawer-arrow" data-i18n="drawer.expand">▼ 展开</span>
-          </button>
-          <div id="rehydrate-details-body" class="drawer-body" style="display:none;">
-            <div class="unlock-panel-content">
-              <div class="unlock-notice">
-                <div class="unlock-desc" data-i18n-html="rehydrate.details.body">
-                  <strong>四层 45,000 B UTF-8 回注内容</strong>：1. 完整用户请求时间线（含凭据脱敏）；2. 压缩前逐字对话与工具调用链；3. 活跃
-                  <code>SKILL.md</code> / 规范文档快照；4. 工作区最近修改与读取文本文件（受工作区路径边界与 <code>never as instructions</code>
-                  声明约束）。<br><br>
-                  <strong>可选手动 /fork 衔接</strong>：当前宿主日志默认不含父会话字段，仅当手动维护
-                  <code>&lt;brain&gt;/fork_lineage.json</code>（或首条记录含显式父 ID）时按 <code>[min_step, K-1]</code> 拼接最多 8
-                  级祖先。<br><br>
-                  <strong>安全写入范围</strong>：仅读写 <code>~/.gemini/config/hooks.json</code> 中的
-                  <code>post-compact-rehydrate</code> 键与
-                  <code>~/.gemini/config/hooks/rehydrate_after_compact.py</code>，绝不覆盖同级其他 Hook。
+              <div class="ctx-prefs-row" id="row-next-prompt">
+                <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-next-prompt"
+                  for="chk-next-prompt-enabled">
+                  <span class="ctx-prefs-row-title" data-i18n="settings.nextPrompt.label">下一句预测建议</span>
+                  <span class="ctx-prefs-row-sub" data-i18n="settings.nextPrompt.desc">
+                    默认关闭. 开启后每轮结束会调用当前账号模型并消耗额外额度，按 Tab 填入草稿.</span>
+                </label>
+                <div class="ctx-prefs-row-ctl">
+                  <label class="ctx-toggle" for="chk-next-prompt-enabled">
+                    <input id="chk-next-prompt-enabled" class="ctx-toggle-input" type="checkbox">
+                    <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
+                  </label>
                 </div>
               </div>
-              <div id="rehydrate-paths-meta" class="unlock-desc" style="margin-top:6px;"></div>
-              <div class="unlock-credit-bar">
-                <div class="unlock-credit-left">
-                  <span class="unlock-credit-lbl" data-i18n="rehydrate.credit.source">思路参考：</span>
-                  <a id="link-rehydrate-author" href="https://agy-rehydrate.pages.dev/" target="_blank"
-                    rel="noopener noreferrer" class="unlock-author-link" role="link" tabindex="0"
-                    data-i18n="rehydrate.credit.author">AGY Post-Compact Rehydration 方案 ↗</a>
-                  <button id="btn-copy-rehydrate-link" class="unlock-copy-link-btn" type="button"
-                    data-i18n="models.credit.copy">📋 复制链接</button>
+
+              <div class="ctx-prefs-row" id="row-turn-footer">
+                <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-turn-footer"
+                  for="chk-show-turn-footer-stats">
+                  <span class="ctx-prefs-row-title" data-i18n="settings.turnFooter.label">每轮回复尾部统计</span>
+                  <span class="ctx-prefs-row-sub" data-i18n="settings.turnFooter.desc">
+                    在助手回复操作栏末尾显示本轮模型、用量与耗时微标.</span>
+                </label>
+                <div class="ctx-prefs-row-ctl">
+                  <label class="ctx-toggle" for="chk-show-turn-footer-stats">
+                    <input id="chk-show-turn-footer-stats" class="ctx-toggle-input" type="checkbox">
+                    <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
+                  </label>
                 </div>
-                <span class="unlock-adapter-note" data-i18n="rehydrate.credit.adapter">MIT 独立实现 · 零依赖 Python
-                  3.10+</span>
               </div>
-              <div id="rehydrate-link-toast" class="unlock-link-toast" style="display:none;" role="status"></div>
             </div>
-          </div>
-        </div>
-      </div>
+          </section>
 
-      <!-- 保留：兼容隐藏旧中文折叠触发节点以防测试脚本寻找该 ID -->
-      <div id="chinese-i18n-drawer" hidden>
-        <button id="btn-toggle-chinese" type="button" hidden></button>
-        <div id="chinese-drawer-body" style="display:none;"><span id="chinese-drawer-arrow"></span></div>
-      </div>
+          <!-- 分组 4 · 主题与外观定制 -->
+          <section class="ctx-prefs-group" id="ctx-prefs-group-theme" aria-labelledby="ctx-prefs-group-theme-title">
+            <div class="ctx-prefs-group-title" id="ctx-prefs-group-theme-title" data-i18n="settings.groups.theme">
+              主题与外观定制</div>
+            <div class="ctx-prefs-rows">
+              <div class="ctx-prefs-row" id="row-palette">
+                <div class="ctx-prefs-row-main">
+                  <div class="ctx-prefs-row-title" data-i18n="settings.palette.label">主题配色与外观定制</div>
+                  <div class="ctx-prefs-row-sub" data-i18n="settings.palette.desc">
+                    打开调色面板调整主色调、面板明暗与图表色阶.</div>
+                </div>
+                <div class="ctx-prefs-row-ctl">
+                  <button id="btn-panel-palette" class="unlock-btn unlock-btn-secondary ctx-prefs-action" type="button"
+                    data-i18n="settings.palette.openBtn">🎨 调色与外观</button>
+                </div>
+              </div>
+            </div>
+          </section>
 
-      <!-- 5. 免 TUN 网络直连 (AntigravityProxyNoTun) -->
-      <div class="tech-drawer" id="proxy-notun-drawer">
-        <button id="btn-toggle-proxy" class="drawer-trigger" aria-expanded="false" type="button">
-          <span class="drawer-trigger-left">
-            <span data-i18n="settings.proxy.title">🌐 免 TUN 网络直连（本地代理）</span>
-            <span id="proxy-badge" class="key-pill pill-muted" style="margin-left:6px;font-size:10.5px;"
-              data-i18n="settings.common.reading">读取中…</span>
-          </span>
-          <span id="proxy-drawer-arrow" class="drawer-arrow" data-i18n="drawer.expand">▼ 展开</span>
-        </button>
-        <div id="proxy-drawer-body" class="drawer-body" style="display:none;">
-          <div class="unlock-panel-content">
-            <div class="unlock-status-row">
-              <div class="unlock-status-meta">
-                <div class="unlock-label" data-i18n="settings.proxy.statusLabel">代理直连配置与状态</div>
-                <div id="proxy-status-desc" class="unlock-desc" data-i18n="settings.proxy.checking">正在核对代理设置…</div>
-              </div>
-            </div>
-            <div style="display:flex;flex-direction:column;gap:8px;margin:8px 0;">
-              <label style="font-size:11px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
-                <span data-i18n="settings.proxy.urlLabel">本地代理地址 (例如 http://127.0.0.1:7897 或 socks5://...)：</span>
-                <input id="input-proxy-url" type="text" class="unlock-input"
-                  style="padding:4px 8px;font-size:11px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:4px;"
-                  value="http://127.0.0.1:7897" />
-              </label>
-              <label style="font-size:11px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
-                <span data-i18n="settings.proxy.bypassLabel">绕过代理列表 (NO_PROXY)：</span>
-                <input id="input-proxy-bypass" type="text" class="unlock-input"
-                  style="padding:4px 8px;font-size:11px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:4px;"
-                  value="localhost,127.0.0.1,::1,<local>" />
-              </label>
-            </div>
-            <div class="unlock-actions" style="display:flex;gap:8px;flex-wrap:wrap;">
-              <button id="btn-test-proxy" class="unlock-btn unlock-btn-secondary" type="button"
-                data-i18n="settings.proxy.testBtn">🔍 测试代理连通性</button>
-              <button id="btn-save-proxy-config" class="unlock-btn unlock-btn-secondary" type="button" hidden
-                data-i18n="mod.proxy.btnSave">保存代理设置</button>
-              <button id="btn-toggle-proxy-module" class="unlock-btn unlock-btn-primary" type="button"
-                data-i18n="mod.proxy.btnEnable">开启免 TUN 直连</button>
-            </div>
-            <div id="proxy-test-result"
-              style="font-size:11px;margin-top:6px;display:none;color:var(--ag-text-secondary);">
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 6. 面板背景与指标颜色自定义 -->
-      <div class="tech-drawer">
-        <button id="btn-toggle-colors" class="drawer-trigger" aria-expanded="false" type="button">
-          <span class="drawer-trigger-left"><span data-i18n="settings.colors.title">🎨 指标与背景颜色自定义（默认跟随主题）</span></span>
-          <span id="color-drawer-arrow" class="drawer-arrow" data-i18n="drawer.expandSettings">▼ 展开设置</span>
-        </button>
-        <div id="color-drawer-body" class="drawer-body" style="display:none;">
-          <div class="color-grid">
-            <div class="color-item" style="grid-column:1 / -1">
-              <span class="color-item-lbl" data-i18n="settings.colors.panelBg">面板与菜单统一背景色（0级跟随 / 自定义）</span>
-              <div class="color-item-ctrls">
-                <input id="color-panelBg" class="color-picker" type="color" value="#181818"
-                  data-i18n-aria="settings.colors.panelBg" aria-label="面板背景色" />
-                <button id="swatch-panelBg" class="color-swatch-btn" type="button" data-color-slot="panelBg"
-                  data-color-label="面板与菜单背景色" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
-                <button id="reset-panelBg" class="color-reset-btn" type="button" data-mode="auto"
-                  data-i18n="colors.followTheme">跟随主题</button>
-              </div>
-            </div>
-            <div class="color-item">
-              <span class="color-item-lbl" data-i18n="settings.colors.ringUsed">圆环已用部分</span>
-              <div class="color-item-ctrls">
-                <input id="color-ringUsed" class="color-picker" type="color" value="#e6e6eb"
-                  data-i18n-aria="settings.colors.ringUsed" aria-label="上下文圆环已用部分颜色" />
-                <button id="swatch-ringUsed" class="color-swatch-btn" type="button" data-color-slot="ringUsed"
-                  data-color-label="圆环已用部分" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
-                <button id="reset-ringUsed" class="color-reset-btn" type="button" data-mode="auto"
-                  data-i18n="colors.followTheme">跟随主题</button>
-              </div>
-            </div>
-            <div class="color-item">
-              <span class="color-item-lbl" data-i18n="settings.colors.ringTrack">圆环轨道</span>
-              <div class="color-item-ctrls">
-                <input id="color-ringTrack" class="color-picker" type="color" value="#52525b"
-                  data-i18n-aria="settings.colors.ringTrack" aria-label="圆环轨道颜色" />
-                <button id="swatch-ringTrack" class="color-swatch-btn" type="button" data-color-slot="ringTrack"
-                  data-color-label="圆环轨道" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
-                <button id="reset-ringTrack" class="color-reset-btn" type="button" data-mode="auto"
-                  data-i18n="colors.followTheme">跟随主题</button>
-              </div>
-            </div>
-            <div class="color-item">
-              <span class="color-item-lbl" data-i18n="settings.colors.contextText">上下文用量文字</span>
-              <div class="color-item-ctrls">
-                <input id="color-contextText" class="color-picker" type="color" value="#ececef"
-                  data-i18n-aria="settings.colors.contextText" aria-label="上下文用量文字颜色" />
-                <button id="swatch-contextText" class="color-swatch-btn" type="button" data-color-slot="contextText"
-                  data-color-label="上下文用量文字" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
-                <button id="reset-contextText" class="color-reset-btn" type="button" data-mode="auto"
-                  data-i18n="colors.followTheme">跟随主题</button>
-              </div>
-            </div>
-            <div class="color-item">
-              <span class="color-item-lbl" data-i18n="settings.colors.speedText">输出速度</span>
-              <div class="color-item-ctrls">
-                <input id="color-speedText" class="color-picker" type="color" value="#38bdf8"
-                  data-i18n-aria="settings.colors.speedText" aria-label="输出速度颜色" />
-                <button id="swatch-speedText" class="color-swatch-btn" type="button" data-color-slot="speedText"
-                  data-color-label="输出速度" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
-                <button id="reset-speedText" class="color-reset-btn" type="button" data-mode="auto"
-                  data-i18n="colors.followTheme">跟随主题</button>
-              </div>
-            </div>
-            <div class="color-item">
-              <span class="color-item-lbl" data-i18n="settings.colors.tokenTotal">累计 token 用量</span>
-              <div class="color-item-ctrls">
-                <input id="color-tokenTotal" class="color-picker" type="color" value="#c084fc"
-                  data-i18n-aria="settings.colors.tokenTotal" aria-label="累计 token 用量颜色" />
-                <button id="swatch-tokenTotal" class="color-swatch-btn" type="button" data-color-slot="tokenTotal"
-                  data-color-label="累计 token 用量" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
-                <button id="reset-tokenTotal" class="color-reset-btn" type="button" data-mode="auto"
-                  data-i18n="colors.followTheme">跟随主题</button>
-              </div>
-            </div>
-            <div class="color-item">
-              <span class="color-item-lbl" data-i18n="settings.colors.tokenAccent">其他 token 指标</span>
-              <div class="color-item-ctrls">
-                <input id="color-tokenAccent" class="color-picker" type="color" value="#a78bfa"
-                  data-i18n-aria="settings.colors.tokenAccent" aria-label="其他 token 指标颜色" />
-                <button id="swatch-tokenAccent" class="color-swatch-btn" type="button" data-color-slot="tokenAccent"
-                  data-color-label="其他 token 指标" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
-                <button id="reset-tokenAccent" class="color-reset-btn" type="button" data-mode="auto"
-                  data-i18n="colors.followTheme">跟随主题</button>
-              </div>
-            </div>
-          </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:7px">
+          <div id="dock-fallback-note" class="ctx-dock-note" hidden></div>
+          <div id="dock-page-actions" style="margin-top:6px;display:none">
             <span style="font-size:10.5px;color:var(--ag-text-muted)"
-              data-i18n="settings.colors.note">注：高占用与超限告警色独立保留，不被常态颜色覆盖。</span>
-            <button id="reset-all-colors" class="color-reset-btn" type="button"
-              data-i18n="settings.colors.resetAll">全部恢复跟随主题</button>
+              data-i18n="settings.dock.pageHint">独立页面已开启，可使用顶部“返回聊天”切回常驻工具栏.</span>
+          </div>
+
+          <!-- 兼容桥接节点：不下发可见 UI，仅保留旧 API、旧单测与历史持久化契约 -->
+          <div id="dock-pos-segmented" style="display:none" hidden>
+            <button id="btn-dock-flow" data-dock-mode="flow"></button>
+            <button id="btn-dock-compact" data-dock-mode="compact"></button>
+            <button id="btn-dock-aux" data-dock-mode="aux"></button>
+            <button id="btn-dock-page" data-dock-mode="page"></button>
+          </div>
+          <div id="dock-mode-desc" style="display:none" hidden></div>
+          <div style="display:none" hidden>
+            <input id="chk-hide-topbar" type="checkbox">
+            <input id="chk-hide-radial-orb" class="ctx-toggle-input" type="checkbox">
+          </div>
+          <div id="radial-menu-style-desc" style="display:none" hidden></div>
+          <div id="dock-fallback-actions" class="dock-fallback-actions" hidden></div>
+        </div>
+
+        <!-- 1. 多账号管理、阈值自动切号与共享额度对照 (图1入口迁入设置专卡，保留原DOM ID与状态共享) -->
+        <div class="ctx-settings-card" id="settings-accounts-card">
+          <div id="quota-accounts-section" class="quota-accounts-section settings-accounts-embedded">
+            <div class="quota-subsec-header">
+              <span class="quota-subsec-title" data-i18n="accounts.panelTitle">👤 多账号切换与阈值自动切号</span>
+              <div class="quota-subsec-actions">
+                <button id="btn-acct-import-current" class="switch-pill-btn" type="button"
+                  data-i18n="accounts.importCurrent">导入当前</button>
+                <button id="btn-acct-import-tools" class="switch-pill-btn" type="button" hidden
+                  data-i18n="accounts.importTools">导入 Tools</button>
+                <button id="btn-acct-oauth-add" class="switch-pill-btn active" type="button"
+                  data-i18n="accounts.oauthAdd">+
+                  登录添加</button>
+              </div>
+            </div>
+            <div id="quota-acct-feedback" class="quota-acct-feedback" hidden></div>
+            <div id="quota-accounts-list" class="quota-accounts-list"></div>
+
+            <!-- 阈值自动切号配置 -->
+            <div class="quota-subcard">
+              <div class="quota-subcard-row">
+                <label class="quota-switch-lbl">
+                  <input id="chk-auto-switch-enabled" type="checkbox" />
+                  <span data-i18n="accounts.autoSwitchEnable">启用阈值自动切号，默认关闭</span>
+                </label>
+                <span id="auto-switch-status-pill" class="key-pill pill-muted"
+                  data-i18n="accounts.status.disabled">已关闭</span>
+              </div>
+              <div id="auto-switch-config-body" class="auto-switch-grid">
+                <div class="quota-field-lbl"><span data-i18n="accounts.quotaTargetLabel">监控额度</span>
+                  <select id="sel-auto-switch-target" class="quota-compact-select" aria-label="监控额度"
+                    data-i18n-aria="accounts.quotaTargetLabel" style="display:none">
+                    <option id="opt-auto-switch-legacy-target" value="" disabled hidden data-i18n="accounts.target.legacyPlaceholder">旧规则待重选 · 请选择具体监控额度</option>
+                    <option value="shared_gemini_main:5h" data-i18n="accounts.target.gemini5h">Gemini 5 小时额度</option>
+                    <option value="shared_gemini_main:7d" data-i18n="accounts.target.gemini7d">Gemini 周额度</option>
+                    <option value="shared_3p_pool:5h" data-i18n="accounts.target.claude5h">Claude / GPT 5 小时额度</option>
+                    <option value="shared_3p_pool:7d" data-i18n="accounts.target.claude7d">Claude / GPT 周额度</option>
+                  </select>
+                  <div id="sel-auto-switch-target-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+                    <div id="sel-auto-switch-target-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                      <span id="sel-auto-switch-target-dropdown-label" class="ag-dropdown-label"
+                        data-i18n="accounts.target.gemini5h">Gemini 5 小时额度</span>
+                      <div class="ag-dropdown-arrow">
+                        <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor"
+                          stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M1 1l4 4 4-4" />
+                        </svg>
+                      </div>
+                    </div>
+                    <div id="sel-auto-switch-target-dropdown-menu" class="ag-dropdown-menu"></div>
+                  </div>
+                </div>
+                <div class="quota-field-lbl"><span data-i18n="accounts.metricLabel">判断口径</span>
+                  <select id="sel-auto-switch-mode" class="quota-compact-select" aria-label="判断口径"
+                    data-i18n-aria="accounts.metricLabel" style="display:none">
+                    <option value="remaining_pct" data-i18n="accounts.modeRemaining">剩余额度低于或等于</option>
+                    <option value="used_pct" data-i18n="accounts.modeUsed">已用额度达到或超过</option>
+                  </select>
+                  <div id="sel-auto-switch-mode-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+                    <div id="sel-auto-switch-mode-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                      <span id="sel-auto-switch-mode-dropdown-label" class="ag-dropdown-label"
+                        data-i18n="accounts.modeRemaining">剩余额度低于或等于</span>
+                      <div class="ag-dropdown-arrow">
+                        <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor"
+                          stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M1 1l4 4 4-4" />
+                        </svg>
+                      </div>
+                    </div>
+                    <div id="sel-auto-switch-mode-dropdown-menu" class="ag-dropdown-menu"></div>
+                  </div>
+                </div>
+                <label class="quota-field-lbl"><span data-i18n="accounts.thresholdLabel">阈值百分比</span>
+                  <input id="inp-auto-switch-threshold" class="quota-compact-input" type="number" min="1" max="95"
+                    value="10" />
+                </label>
+                <div id="auto-switch-live-summary" class="quota-muted-note" style="grid-column:1 / -1"></div>
+                <div class="auto-switch-candidates-wrap">
+                  <div class="quota-field-k" data-i18n="accounts.candidatesLabel">允许切入的候选账号：</div>
+                  <div id="auto-switch-candidates-list" class="auto-switch-candidates-list"></div>
+                </div>
+                <div class="auto-switch-save-row">
+                  <button id="btn-save-auto-switch" class="switch-pill-btn active" type="button"
+                    data-i18n="accounts.saveRule">保存切号规则</button>
+                  <span id="auto-switch-last-note" class="quota-muted-note"></span>
+                </div>
+                <div id="auto-switch-save-status" class="quota-muted-note" role="status"></div>
+              </div>
+            </div>
+
+            <div class="quota-subcard-row" style="margin-top:8px">
+              <span id="settings-compare-link-note" class="quota-muted-note"
+                data-i18n="accountsTab.compareMovedHint">各账号共享额度池与本机消耗对照位于看板第四标签 账号与共享池.</span>
+              <button id="btn-settings-open-pools-tab" class="switch-pill-btn" type="button"
+                data-i18n="accountsTab.openPoolsBtn">打开账号与共享池</button>
+            </div>
           </div>
         </div>
-      </div>
 
-      <!-- 7. 版本更新与项目链接 -->
-      <div class="ctx-settings-card" id="settings-about-update-card">
-        <div class="ctx-settings-card-hdr">
-          <div class="ctx-settings-card-title" data-i18n="settings.aboutUpdate.channelTitle">🔄 版本更新通道与设置</div>
+        <!-- 2. 一键推荐配置与总览（默认不自动应用，需用户预览勾选并确认） -->
+        <div class="ctx-settings-card" id="enhance-preset-card">
+          <div class="ctx-settings-card-hdr">
+            <div class="ctx-settings-card-title" data-i18n="enhance.preset.title">✨ 一键推荐配置（按需勾选预览）</div>
+            <span id="enhance-global-badge" class="key-pill pill-muted" data-i18n="settings.common.reading">读取中…</span>
+          </div>
+          <div class="ctx-settings-card-desc" data-i18n="enhance.preset.desc">
+            勾选为开，未勾选为关。安装默认全部关闭；只有磁盘上已经打开的项才会显示为开。确认前不会写入。
+          </div>
+          <div class="ctx-preset-checklist">
+            <label class="ctx-preset-check-item">
+              <input id="chk-rec-prompt" type="checkbox">
+              <div class="ctx-preset-check-meta">
+                <strong data-i18n="enhance.preset.itemPrompt">系统提示词 4 档（极简防幻觉）</strong>
+                <span data-i18n="enhance.preset.itemPromptSub">精简模板套话并保留真实工具契约；仅作用于系统提示，不能保证模型永不犯错。</span>
+              </div>
+            </label>
+            <label class="ctx-preset-check-item">
+              <input id="chk-rec-title" type="checkbox">
+              <div class="ctx-preset-check-meta">
+                <strong data-i18n="enhance.preset.itemTitle">自动中文会话标题</strong>
+                <span data-i18n="enhance.preset.itemTitleSub">新会话自动生成简体中文标题（等长替换指令文本，不破坏结构）。</span>
+              </div>
+            </label>
+            <label class="ctx-preset-check-item">
+              <input id="chk-rec-lang" type="checkbox">
+              <div class="ctx-preset-check-meta">
+                <strong data-i18n="enhance.preset.itemLang">客户端简体中文界面（Antigravity 本身）</strong>
+                <span data-i18n="enhance.preset.itemLangSub">仅改变桌面端壳层中文，不影响你选择的插件面板语言。</span>
+              </div>
+            </label>
+            <label class="ctx-preset-check-item">
+              <input id="chk-rec-ctx" type="checkbox">
+              <div class="ctx-preset-check-meta">
+                <strong data-i18n="enhance.preset.itemCtx">上下文模式：跟随模型</strong>
+                <span data-i18n="enhance.preset.itemCtxSub">按模型各自支持的最大长度运行，不硬锁固定 983,040 或 512,000。</span>
+              </div>
+            </label>
+            <label class="ctx-preset-check-item">
+              <input id="chk-rec-rehydrate" type="checkbox">
+              <div class="ctx-preset-check-meta">
+                <strong data-i18n="enhance.preset.itemRehydrate">改善 AGY 有损压缩</strong>
+                <span data-i18n="enhance.preset.itemRehydrateSub">压缩后自动把最初要求、最近几轮原话和刚改过的代码补回给 AI（不影响已有其他配置）。</span>
+              </div>
+            </label>
+          </div>
+          <div class="ctx-settings-card-actions">
+            <button id="btn-enhance-preset-apply" class="unlock-btn unlock-btn-primary" type="button"
+              data-i18n="enhance.preset.applyBtn">应用所选推荐配置</button>
+            <button id="btn-enhance-restore-all" class="unlock-btn unlock-btn-danger" type="button"
+              data-i18n="enhance.restoreAll.btn">全部恢复官方默认</button>
+          </div>
+          <div id="enhance-preset-confirm" class="ctx-enhance-confirm" hidden>
+            <div id="enhance-preset-confirm-text"></div>
+            <div class="ctx-enhance-confirm-actions">
+              <button id="btn-enhance-confirm-cancel" class="unlock-btn unlock-btn-secondary" type="button"
+                data-i18n="models.restartConfirm.cancel">取消</button>
+              <button id="btn-enhance-confirm-go" class="unlock-btn unlock-btn-primary" type="button"
+                data-i18n="enhance.confirm.go">确认应用</button>
+            </div>
+          </div>
+          <div id="enhance-global-result" class="unlock-result-box" style="display:none;">
+            <div id="enhance-global-result-text" class="unlock-result-text"></div>
+            <div id="enhance-global-result-actions" class="unlock-result-actions" hidden>
+              <button id="btn-enhance-restart-ls" class="unlock-btn unlock-btn-secondary" type="button"
+                data-i18n="enhance.btn.restartLs">重启语言服务</button>
+              <button id="btn-enhance-restart-host" class="unlock-btn unlock-btn-primary" type="button"
+                data-i18n="models.restartBtn">重启客户端使设置生效</button>
+            </div>
+            <div id="enhance-global-manual-note" class="ctx-result-manual-note" hidden data-i18n="models.manualRestart">
+              请手动重启：关闭所有 Antigravity 窗口（包括托盘图标里的“退出”），再重新打开 Antigravity。</div>
+          </div>
         </div>
-        <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;font-size:11px">
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--ag-text-secondary)">
-            <input id="check-auto-update" type="checkbox">
-            <span data-i18n="tokens.update.auto">启动时自动检查更新（不自动安装）</span>
-          </label>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--ag-text-secondary)">
-            <input id="check-allow-beta-updates" type="checkbox">
-            <span data-i18n="tokens.update.allowBeta">接收预发布版本推送（Beta 通道）</span>
-          </label>
-        </div>
-      </div>
-    </div>
-  </div>
 
-  <!-- 全局统一居中重启确认模态弹窗（立即可见，支持顶部、底部与配置区所有重启入口） -->
-  <div id="global-restart-modal" class="ag-modal-overlay" hidden role="dialog" aria-modal="true"
-    aria-labelledby="modal-restart-title">
-    <div class="ag-modal-card">
-      <div id="modal-restart-title" class="ag-modal-title" data-i18n="models.restartConfirm.title">重启 Antigravity 客户端
-      </div>
-      <div id="modal-restart-text" class="ag-modal-body" data-i18n="models.restartConfirm.text">重启会中断正在运行的任务。请先保存未保存的内容。
-      </div>
-      <div id="modal-restart-feedback" class="ag-modal-feedback" hidden></div>
-      <div class="ag-modal-actions">
-        <button id="btn-modal-restart-cancel" class="unlock-btn unlock-btn-secondary" type="button"
-          data-i18n="models.restartConfirm.cancel">取消</button>
-        <button id="btn-modal-restart-confirm" class="unlock-btn unlock-btn-primary" type="button"
-          data-i18n="models.restartConfirm.go">确认重启</button>
+        <!-- 2. 客户端界面语言与品牌标题 (Antigravity 本身) -->
+        <div class="ctx-settings-card" id="client-brand-lang-card">
+          <div class="ctx-settings-card-hdr">
+            <div class="ctx-settings-card-title" data-i18n="settings.clientLang.title">🖥️ 客户端界面语言与品牌（Antigravity 本身）
+            </div>
+            <span id="chinese-badge" class="key-pill pill-muted" data-i18n="settings.common.reading">读取中…</span>
+          </div>
+          <div id="chinese-status-desc" class="ctx-settings-card-desc" data-i18n="settings.clientLang.detecting">
+            正在检测桌面端汉化运行状态…</div>
+          <div class="ctx-segmented ctx-lang-segmented" id="client-lang-segmented" role="group" aria-label="客户端界面语言"
+            data-i18n-aria="settings.clientLang.aria">
+            <button id="btn-client-lang-zh-CN" class="ctx-seg-btn" type="button" data-client-lang="zh-CN">简体中文</button>
+            <button id="btn-client-lang-en" class="ctx-seg-btn" type="button" data-client-lang="en">English</button>
+          </div>
+          <div class="ctx-small-label" style="margin-top:8px" data-i18n="enhance.brand.label">左上角品牌文字显示（仅作用于左上角品牌位，不影响
+            Logo、菜单或代码）：</div>
+          <div class="ctx-segmented ctx-lang-segmented" id="brand-title-segmented" role="group" aria-label="品牌名称选项"
+            data-i18n-aria="enhance.brand.aria">
+            <button id="btn-brand-english" class="ctx-seg-btn active" type="button" data-brand-title="english"
+              data-i18n="enhance.brand.english">Antigravity</button>
+            <button id="btn-brand-hidden" class="ctx-seg-btn" type="button" data-brand-title="hidden"
+              data-i18n="enhance.brand.hidden">隐藏</button>
+            <button id="btn-brand-translated" class="ctx-seg-btn" type="button" data-brand-title="translated"
+              data-i18n="enhance.brand.translated">反重力</button>
+          </div>
+          <div id="brand-apply-feedback" class="ctx-brand-feedback" style="display:none;"></div>
+          <div id="client-lang-license-note" class="ctx-client-lang-note" data-i18n="settings.clientLang.licenseNote">
+            说明：此设置控制 Antigravity 客户端本身，与顶部插件面板语言相互独立。切换客户端语言需重新安装/重启客户端后生效。</div>
+          <div class="ctx-settings-card-actions">
+            <button id="btn-toggle-chinese-module" class="unlock-btn unlock-btn-primary" type="button"
+              data-i18n="settings.clientLang.toggle">切换汉化状态</button>
+            <button id="btn-apply-brand-title" class="unlock-btn unlock-btn-secondary" type="button"
+              data-i18n="enhance.brand.applyBtn">保存品牌选择并应用</button>
+          </div>
+        </div>
+
+        <!-- 3. 回答与工具使用规则 (原防幻觉档位) 与自动中文标题 -->
+        <div class="ctx-settings-card" id="enhance-prompt-card">
+          <div class="ctx-settings-card-hdr">
+            <div class="ctx-settings-card-title" data-i18n="enhance.prompt.title">🧠 回答与工具使用规则</div>
+            <span id="enhance-prompt-badge" class="key-pill pill-muted" data-i18n="settings.common.reading">读取中…</span>
+          </div>
+          <!-- 第一层：默认可见的白话说明 -->
+          <div class="ctx-plain-help"
+            style="margin:4px 0 8px 0;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:8px 10px;">
+            <div style="font-size:11.5px;line-height:1.55;color:var(--ag-text-primary);"
+              data-i18n="enhance.prompt.plainIntro">
+              调整客户端给 AI 的工作说明，让它更重视证据：没读过的文件不猜，没运行的测试不说通过。它不会升级模型底层能力，也不能保证回答永远正确。
+            </div>
+            <div id="enhance-tier-current-desc"
+              style="font-size:11px;line-height:1.5;color:var(--ag-text-secondary);margin-top:4px;">
+              当前档位说明加载中…
+            </div>
+          </div>
+          <div class="ctx-enhance-status-grid">
+            <div class="ctx-enhance-stat">
+              <div class="ctx-enhance-stat-lbl" data-i18n="enhance.stat.prompt">当前检测档位</div>
+              <div id="enhance-stat-prompt" class="ctx-enhance-stat-val">—</div>
+            </div>
+            <div class="ctx-enhance-stat">
+              <div class="ctx-enhance-stat-lbl" data-i18n="enhance.stat.title">自动中文标题</div>
+              <div id="enhance-stat-title" class="ctx-enhance-stat-val">—</div>
+            </div>
+            <div class="ctx-enhance-stat">
+              <div class="ctx-enhance-stat-lbl" data-i18n="enhance.stat.evidence">证据检测状态</div>
+              <div id="enhance-stat-slots" class="ctx-enhance-stat-val">—</div>
+            </div>
+            <div class="ctx-enhance-stat">
+              <div class="ctx-enhance-stat-lbl" data-i18n="enhance.stat.backup">原版内核备份</div>
+              <div id="enhance-stat-backup" class="ctx-enhance-stat-val">—</div>
+            </div>
+          </div>
+          <div id="enhance-tier-grid" class="ctx-tier-grid" role="group" aria-label="规则档位"
+            data-i18n-aria="enhance.prompt.aria">
+            <button id="enhance-tier-0" class="ctx-tier-btn" type="button" data-enhance-tier="0">
+              <span class="ctx-tier-num">0</span>
+              <span class="ctx-tier-name" data-i18n="enhance.tier.0.short">原版</span>
+            </button>
+            <button id="enhance-tier-1" class="ctx-tier-btn" type="button" data-enhance-tier="1">
+              <span class="ctx-tier-num">1</span>
+              <span class="ctx-tier-name" data-i18n="enhance.tier.1.short">基础</span>
+            </button>
+            <button id="enhance-tier-2" class="ctx-tier-btn" type="button" data-enhance-tier="2">
+              <span class="ctx-tier-num">2</span>
+              <span class="ctx-tier-name" data-i18n="enhance.tier.2.short">精简</span>
+            </button>
+            <button id="enhance-tier-3" class="ctx-tier-btn" type="button" data-enhance-tier="3">
+              <span class="ctx-tier-num">3</span>
+              <span class="ctx-tier-name" data-i18n="enhance.tier.3.short">深度</span>
+            </button>
+            <button id="enhance-tier-4" class="ctx-tier-btn" type="button" data-enhance-tier="4">
+              <span class="ctx-tier-num">4</span>
+              <span class="ctx-tier-name" data-i18n="enhance.tier.4.short">极简</span>
+            </button>
+          </div>
+          <div id="enhance-tier-matrix" class="ctx-tier-matrix">
+            <div id="enhance-tier-matrix-title" class="ctx-tier-matrix-title">—</div>
+            <div class="ctx-tier-matrix-row">
+              <span class="ctx-tier-matrix-k" data-i18n="enhance.matrix.keeps">保留</span>
+              <span id="enhance-tier-keeps" class="ctx-tier-matrix-v">—</span>
+            </div>
+            <div class="ctx-tier-matrix-row">
+              <span class="ctx-tier-matrix-k" data-i18n="enhance.matrix.clears">清空</span>
+              <span id="enhance-tier-clears" class="ctx-tier-matrix-v">—</span>
+            </div>
+            <div class="ctx-tier-matrix-row">
+              <span class="ctx-tier-matrix-k" data-i18n="enhance.matrix.replaces">替换</span>
+              <span id="enhance-tier-replaces" class="ctx-tier-matrix-v">—</span>
+            </div>
+            <div class="ctx-tier-matrix-row">
+              <span class="ctx-tier-matrix-k" data-i18n="enhance.matrix.meaning">对你的影响</span>
+              <span id="enhance-tier-meaning" class="ctx-tier-matrix-v">—</span>
+            </div>
+          </div>
+          <div id="enhance-hallucination-note" class="ctx-tier-note-warn" data-i18n="enhance.hallucinationNote">
+            说明：规则档位通过精简冗余指引并强化真实工具核对来规范行为。高档位删减提示模板中的工作指引，不等于删除用户文件或工件本身；是否影响具体能力需在对话中实际验证。</div>
+          <label class="ctx-toggle-row">
+            <div class="ctx-toggle-row-text">
+              <span class="ctx-toggle-row-title" data-i18n="enhance.titlePatch.label">自动生成简体中文会话标题</span>
+              <span class="ctx-toggle-row-sub"
+                data-i18n="enhance.titlePatch.sub">等长替换会话命名提示词，不破坏原有长度对齐；支持随时改回官方英文。</span>
+            </div>
+            <input id="chk-enhance-chinese-title" type="checkbox">
+          </label>
+          <div class="ctx-settings-card-actions">
+            <button id="btn-enhance-apply-prompt" class="unlock-btn unlock-btn-primary" type="button"
+              data-i18n="enhance.btn.applyPrompt">应用提示词与标题设置</button>
+            <button id="btn-enhance-refresh" class="unlock-btn unlock-btn-secondary" type="button"
+              data-i18n="models.btn.refreshStatus">刷新状态</button>
+          </div>
+          <div id="enhance-prompt-result" class="unlock-result-box" style="display:none;">
+            <div id="enhance-prompt-result-text" class="unlock-result-text"></div>
+          </div>
+
+          <!-- 第二层：可展开的“详细说明” -->
+          <div class="tech-drawer" id="enhance-details-drawer" style="margin-top:4px">
+            <button id="btn-toggle-enhance-details" class="drawer-trigger" aria-expanded="false" type="button">
+              <span class="drawer-trigger-left" data-i18n="enhance.details.toggle">详细说明：来源范围、三层状态与检测依据</span>
+              <span id="enhance-details-arrow" class="drawer-arrow" data-i18n="drawer.expand">▼ 展开</span>
+            </button>
+            <div id="enhance-details-body" class="drawer-body" style="display:none;">
+              <div class="unlock-panel-content">
+                <div class="unlock-notice">
+                  <div class="unlock-desc" data-i18n="enhance.details.body">方案来源：PR #4 (Jia131313) 与 PR #3 (anyu0804 /
+                    Linux.do @23375)，由本项目进行本地适配、工具契约安全核对与多语言整合。<br><br>
+                    <strong>修改目标程序</strong>：仅修改本地桌面端语言服务核心程序内嵌模板表；不改动任何云端模型，亦不影响 CLI 以外的外部环境。<br><br>
+                    <strong>三层状态区别</strong>：<br>
+                    1. <strong>写入状态</strong>：检测目标程序磁盘文件已覆写指定槽位（安全空格对齐填充，零结构偏移）。<br>
+                    2. <strong>服务加载状态</strong>：需完全退出并重启客户端后，由新启动的语言服务进程加载读取。<br>
+                    3. <strong>行为效果验证</strong>：提示词仅是 AI 的工作指南，不能保证永不犯错；实际表现需由用户在真实会话中体验，不宣称数学上的绝对消除。
+                  </div>
+                </div>
+                <div id="enhance-binary-list" class="unlock-desc" style="margin-top:6px;"></div>
+                <div class="unlock-credit-row">
+                  <span class="unlock-credit-lbl"
+                    data-i18n="enhance.details.credit">恢复操作：点击上方“全部恢复官方默认”将无损还原官方备份模板。</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. 改善 AGY 有损压缩 (Post-Compact Rehydration Hook) -->
+        <div class="ctx-settings-card" id="rehydrate-hook-card">
+          <div class="ctx-settings-card-hdr">
+            <div class="ctx-settings-card-title" data-i18n="rehydrate.card.title">🩹 改善 AGY 有损压缩</div>
+            <span id="rehydrate-badge" class="key-pill pill-muted" data-i18n="settings.common.reading">读取中…</span>
+          </div>
+          <div class="ctx-plain-help"
+            style="margin:4px 0 8px 0;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:8px 10px;">
+            <div style="font-size:11.5px;line-height:1.55;color:var(--ag-text-primary);"
+              data-i18n="rehydrate.card.plainIntro">
+              AGY 自动压缩（或执行 /compact）只保留概括摘要，容易丢失细节。开启后会在压缩完成时自动从本地完整记录把最初要求、最近几轮原话和刚读写过的文件补回给 AI；未检测到新的压缩检查点时，不注入额外上下文。
+            </div>
+          </div>
+          <div class="ctx-enhance-status-grid">
+            <div class="ctx-enhance-stat">
+              <div class="ctx-enhance-stat-lbl" data-i18n="rehydrate.stat.hook">当前状态</div>
+              <div id="rehydrate-stat-hook" class="ctx-enhance-stat-val">—</div>
+            </div>
+            <div class="ctx-enhance-stat">
+              <div class="ctx-enhance-stat-lbl" data-i18n="rehydrate.stat.script">恢复脚本</div>
+              <div id="rehydrate-stat-script" class="ctx-enhance-stat-val">—</div>
+            </div>
+            <div class="ctx-enhance-stat">
+              <div class="ctx-enhance-stat-lbl" data-i18n="rehydrate.stat.python">Python 运行环境</div>
+              <div id="rehydrate-stat-python" class="ctx-enhance-stat-val">—</div>
+            </div>
+            <div class="ctx-enhance-stat">
+              <div class="ctx-enhance-stat-lbl" data-i18n="rehydrate.stat.siblings">其他配置兼容</div>
+              <div id="rehydrate-stat-siblings" class="ctx-enhance-stat-val">—</div>
+            </div>
+          </div>
+          <div class="ctx-settings-card-actions">
+            <button id="btn-rehydrate-install-python" class="unlock-btn unlock-btn-primary" type="button" hidden
+              data-i18n="rehydrate.btn.installPython">一键安装 Python 3.12</button>
+            <button id="btn-rehydrate-enable" class="unlock-btn unlock-btn-primary" type="button"
+              data-i18n="rehydrate.btn.enable">开启</button>
+            <button id="btn-rehydrate-disable" class="unlock-btn unlock-btn-secondary" type="button"
+              data-i18n="rehydrate.btn.disable">停用</button>
+            <button id="btn-rehydrate-refresh" class="unlock-btn unlock-btn-secondary" type="button"
+              data-i18n="models.btn.refreshStatus">刷新状态</button>
+            <button id="btn-rehydrate-remove" class="ctx-text-action-btn" type="button"
+              data-i18n="rehydrate.btn.remove">卸载移除</button>
+          </div>
+          <div id="rehydrate-result-box" class="unlock-result-box" style="display:none;">
+            <div id="rehydrate-result-text" class="unlock-result-text"></div>
+          </div>
+          <div class="tech-drawer" id="rehydrate-details-drawer" style="margin-top:4px">
+            <button id="btn-toggle-rehydrate-details" class="drawer-trigger" aria-expanded="false" type="button">
+              <span class="drawer-trigger-left" data-i18n="rehydrate.details.toggle">原理说明与方案来源</span>
+              <span id="rehydrate-details-arrow" class="drawer-arrow" data-i18n="drawer.expand">▼ 展开</span>
+            </button>
+            <div id="rehydrate-details-body" class="drawer-body" style="display:none;">
+              <div class="unlock-panel-content">
+                <div class="unlock-notice">
+                  <div class="unlock-desc" data-i18n-html="rehydrate.details.body">
+                    <strong>四层 45,000 B UTF-8 回注内容</strong>：1. 完整用户请求时间线（含凭据脱敏）；2. 压缩前逐字对话与工具调用链；3. 活跃
+                    <code>SKILL.md</code> / 规范文档快照；4. 工作区最近修改与读取文本文件（受工作区路径边界与 <code>never as instructions</code>
+                    声明约束）。<br><br>
+                    <strong>可选手动 /fork 衔接</strong>：当前宿主日志默认不含父会话字段，仅当手动维护
+                    <code>&lt;brain&gt;/fork_lineage.json</code>（或首条记录含显式父 ID）时按 <code>[min_step, K-1]</code> 拼接最多 8
+                    级祖先。<br><br>
+                    <strong>安全写入范围</strong>：仅读写 <code>~/.gemini/config/hooks.json</code> 中的
+                    <code>post-compact-rehydrate</code> 键与
+                    <code>~/.gemini/config/hooks/rehydrate_after_compact.py</code>，绝不覆盖同级其他 Hook。
+                  </div>
+                </div>
+                <div id="rehydrate-paths-meta" class="unlock-desc" style="margin-top:6px;"></div>
+                <div class="unlock-credit-bar">
+                  <div class="unlock-credit-left">
+                    <span class="unlock-credit-lbl" data-i18n="rehydrate.credit.source">思路参考：</span>
+                    <a id="link-rehydrate-author" href="https://agy-rehydrate.pages.dev/" target="_blank"
+                      rel="noopener noreferrer" class="unlock-author-link" role="link" tabindex="0"
+                      data-i18n="rehydrate.credit.author">AGY Post-Compact Rehydration 方案 ↗</a>
+                    <button id="btn-copy-rehydrate-link" class="unlock-copy-link-btn" type="button"
+                      data-i18n="models.credit.copy">📋 复制链接</button>
+                  </div>
+                  <span class="unlock-adapter-note" data-i18n="rehydrate.credit.adapter">MIT 独立实现 · 零依赖 Python
+                    3.10+</span>
+                </div>
+                <div id="rehydrate-link-toast" class="unlock-link-toast" style="display:none;" role="status"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 保留：兼容隐藏旧中文折叠触发节点以防测试脚本寻找该 ID -->
+        <div id="chinese-i18n-drawer" hidden>
+          <button id="btn-toggle-chinese" type="button" hidden></button>
+          <div id="chinese-drawer-body" style="display:none;"><span id="chinese-drawer-arrow"></span></div>
+        </div>
+
+        <!-- 5. 免 TUN 网络直连 (AntigravityProxyNoTun) -->
+        <div class="tech-drawer" id="proxy-notun-drawer">
+          <button id="btn-toggle-proxy" class="drawer-trigger" aria-expanded="false" type="button">
+            <span class="drawer-trigger-left">
+              <span data-i18n="settings.proxy.title">🌐 免 TUN 网络直连（本地代理）</span>
+              <span id="proxy-badge" class="key-pill pill-muted" style="margin-left:6px;font-size:10.5px;"
+                data-i18n="settings.common.reading">读取中…</span>
+            </span>
+            <span id="proxy-drawer-arrow" class="drawer-arrow" data-i18n="drawer.expand">▼ 展开</span>
+          </button>
+          <div id="proxy-drawer-body" class="drawer-body" style="display:none;">
+            <div class="unlock-panel-content">
+              <div class="unlock-status-row">
+                <div class="unlock-status-meta">
+                  <div class="unlock-label" data-i18n="settings.proxy.statusLabel">代理直连配置与状态</div>
+                  <div id="proxy-status-desc" class="unlock-desc" data-i18n="settings.proxy.checking">正在核对代理设置…</div>
+                </div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:8px;margin:8px 0;">
+                <label
+                  style="font-size:11px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
+                  <span data-i18n="settings.proxy.urlLabel">本地代理地址 (例如 http://127.0.0.1:7897 或 socks5://...)：</span>
+                  <input id="input-proxy-url" type="text" class="unlock-input"
+                    style="padding:4px 8px;font-size:11px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:4px;"
+                    value="http://127.0.0.1:7897" />
+                </label>
+                <label
+                  style="font-size:11px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
+                  <span data-i18n="settings.proxy.bypassLabel">绕过代理列表 (NO_PROXY)：</span>
+                  <input id="input-proxy-bypass" type="text" class="unlock-input"
+                    style="padding:4px 8px;font-size:11px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:4px;"
+                    value="localhost,127.0.0.1,::1,<local>" />
+                </label>
+              </div>
+              <div class="unlock-actions" style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button id="btn-test-proxy" class="unlock-btn unlock-btn-secondary" type="button"
+                  data-i18n="settings.proxy.testBtn">🔍 测试代理连通性</button>
+                <button id="btn-save-proxy-config" class="unlock-btn unlock-btn-secondary" type="button" hidden
+                  data-i18n="mod.proxy.btnSave">保存代理设置</button>
+                <button id="btn-toggle-proxy-module" class="unlock-btn unlock-btn-primary" type="button"
+                  data-i18n="mod.proxy.btnEnable">开启免 TUN 直连</button>
+              </div>
+              <div id="proxy-test-result"
+                style="font-size:11px;margin-top:6px;display:none;color:var(--ag-text-secondary);">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 6. 面板背景与指标颜色自定义 -->
+        <div class="tech-drawer">
+          <button id="btn-toggle-colors" class="drawer-trigger" aria-expanded="false" type="button">
+            <span class="drawer-trigger-left"><span data-i18n="settings.colors.title">🎨
+                指标与背景颜色自定义（默认跟随主题）</span></span>
+            <span id="color-drawer-arrow" class="drawer-arrow" data-i18n="drawer.expandSettings">▼ 展开设置</span>
+          </button>
+          <div id="color-drawer-body" class="drawer-body" style="display:none;">
+            <div class="color-grid">
+              <div class="color-item" style="grid-column:1 / -1">
+                <span class="color-item-lbl" data-i18n="settings.colors.panelBg">面板与菜单统一背景色（0级跟随 / 自定义）</span>
+                <div class="color-item-ctrls">
+                  <input id="color-panelBg" class="color-picker" type="color" value="#181818"
+                    data-i18n-aria="settings.colors.panelBg" aria-label="面板背景色" />
+                  <button id="swatch-panelBg" class="color-swatch-btn" type="button" data-color-slot="panelBg"
+                    data-color-label="面板与菜单背景色" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
+                  <button id="reset-panelBg" class="color-reset-btn" type="button" data-mode="auto"
+                    data-i18n="colors.followTheme">跟随主题</button>
+                </div>
+              </div>
+              <div class="color-item">
+                <span class="color-item-lbl" data-i18n="settings.colors.ringUsed">圆环已用部分</span>
+                <div class="color-item-ctrls">
+                  <input id="color-ringUsed" class="color-picker" type="color" value="#e6e6eb"
+                    data-i18n-aria="settings.colors.ringUsed" aria-label="上下文圆环已用部分颜色" />
+                  <button id="swatch-ringUsed" class="color-swatch-btn" type="button" data-color-slot="ringUsed"
+                    data-color-label="圆环已用部分" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
+                  <button id="reset-ringUsed" class="color-reset-btn" type="button" data-mode="auto"
+                    data-i18n="colors.followTheme">跟随主题</button>
+                </div>
+              </div>
+              <div class="color-item">
+                <span class="color-item-lbl" data-i18n="settings.colors.ringTrack">圆环轨道</span>
+                <div class="color-item-ctrls">
+                  <input id="color-ringTrack" class="color-picker" type="color" value="#52525b"
+                    data-i18n-aria="settings.colors.ringTrack" aria-label="圆环轨道颜色" />
+                  <button id="swatch-ringTrack" class="color-swatch-btn" type="button" data-color-slot="ringTrack"
+                    data-color-label="圆环轨道" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
+                  <button id="reset-ringTrack" class="color-reset-btn" type="button" data-mode="auto"
+                    data-i18n="colors.followTheme">跟随主题</button>
+                </div>
+              </div>
+              <div class="color-item">
+                <span class="color-item-lbl" data-i18n="settings.colors.contextText">上下文用量文字</span>
+                <div class="color-item-ctrls">
+                  <input id="color-contextText" class="color-picker" type="color" value="#ececef"
+                    data-i18n-aria="settings.colors.contextText" aria-label="上下文用量文字颜色" />
+                  <button id="swatch-contextText" class="color-swatch-btn" type="button" data-color-slot="contextText"
+                    data-color-label="上下文用量文字" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
+                  <button id="reset-contextText" class="color-reset-btn" type="button" data-mode="auto"
+                    data-i18n="colors.followTheme">跟随主题</button>
+                </div>
+              </div>
+              <div class="color-item">
+                <span class="color-item-lbl" data-i18n="settings.colors.speedText">输出速度</span>
+                <div class="color-item-ctrls">
+                  <input id="color-speedText" class="color-picker" type="color" value="#38bdf8"
+                    data-i18n-aria="settings.colors.speedText" aria-label="输出速度颜色" />
+                  <button id="swatch-speedText" class="color-swatch-btn" type="button" data-color-slot="speedText"
+                    data-color-label="输出速度" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
+                  <button id="reset-speedText" class="color-reset-btn" type="button" data-mode="auto"
+                    data-i18n="colors.followTheme">跟随主题</button>
+                </div>
+              </div>
+              <div class="color-item">
+                <span class="color-item-lbl" data-i18n="settings.colors.tokenTotal">累计 token 用量</span>
+                <div class="color-item-ctrls">
+                  <input id="color-tokenTotal" class="color-picker" type="color" value="#c084fc"
+                    data-i18n-aria="settings.colors.tokenTotal" aria-label="累计 token 用量颜色" />
+                  <button id="swatch-tokenTotal" class="color-swatch-btn" type="button" data-color-slot="tokenTotal"
+                    data-color-label="累计 token 用量" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
+                  <button id="reset-tokenTotal" class="color-reset-btn" type="button" data-mode="auto"
+                    data-i18n="colors.followTheme">跟随主题</button>
+                </div>
+              </div>
+              <div class="color-item">
+                <span class="color-item-lbl" data-i18n="settings.colors.tokenAccent">其他 token 指标</span>
+                <div class="color-item-ctrls">
+                  <input id="color-tokenAccent" class="color-picker" type="color" value="#a78bfa"
+                    data-i18n-aria="settings.colors.tokenAccent" aria-label="其他 token 指标颜色" />
+                  <button id="swatch-tokenAccent" class="color-swatch-btn" type="button" data-color-slot="tokenAccent"
+                    data-color-label="其他 token 指标" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
+                  <button id="reset-tokenAccent" class="color-reset-btn" type="button" data-mode="auto"
+                    data-i18n="colors.followTheme">跟随主题</button>
+                </div>
+              </div>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:7px">
+              <span style="font-size:10.5px;color:var(--ag-text-muted)"
+                data-i18n="settings.colors.note">注：高占用与超限告警色独立保留，不被常态颜色覆盖。</span>
+              <button id="reset-all-colors" class="color-reset-btn" type="button"
+                data-i18n="settings.colors.resetAll">全部恢复跟随主题</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 7. 版本更新与项目链接 -->
+        <div class="ctx-settings-card" id="settings-about-update-card">
+          <div class="ctx-settings-card-hdr">
+            <div class="ctx-settings-card-title" data-i18n="settings.aboutUpdate.channelTitle">🔄 版本更新通道与设置</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;font-size:11px">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--ag-text-secondary)">
+              <input id="check-auto-update" type="checkbox">
+              <span data-i18n="tokens.update.auto">启动时自动检查更新（不自动安装）</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--ag-text-secondary)">
+              <input id="check-allow-beta-updates" type="checkbox">
+              <span data-i18n="tokens.update.allowBeta">接收预发布版本推送（Beta 通道）</span>
+            </label>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 </section>
+
+<!-- 全局统一居中重启确认模态弹窗（原生 dialog 顶层承载，压过宿主原生设置弹窗） -->
+<dialog id="global-restart-modal" class="ag-modal-overlay" hidden aria-modal="true"
+  aria-labelledby="modal-restart-title">
+  <div class="ag-modal-card">
+    <div id="modal-restart-title" class="ag-modal-title" data-i18n="models.restartConfirm.title">重启 Antigravity 客户端
+    </div>
+    <div id="modal-restart-text" class="ag-modal-body" data-i18n="models.restartConfirm.text">重启会中断正在运行的任务。请先保存未保存的内容。
+    </div>
+    <div id="modal-restart-feedback" class="ag-modal-feedback" hidden></div>
+    <div class="ag-modal-actions">
+      <button id="btn-modal-restart-cancel" class="unlock-btn unlock-btn-secondary" type="button"
+        data-i18n="models.restartConfirm.cancel">取消</button>
+      <button id="btn-modal-restart-confirm" class="unlock-btn unlock-btn-primary" type="button"
+        data-i18n="models.restartConfirm.go">确认重启</button>
+    </div>
+  </div>
+</dialog>
 
 <!-- 移除账号二次确认模态弹窗（提升至 Shadow DOM 顶层，避免被隐藏或滚动面板裁切） -->
 <div id="account-remove-modal" class="ag-modal-overlay" hidden role="dialog" aria-modal="true"
@@ -19048,7 +19608,7 @@
         style="font-size:13px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))"
         data-i18n="tokens.title">本机已记录用量</span>
       <span id="v-tokens" class="version-pill-btn" role="button" tabindex="0" title="点击跳转到版本更新与关于设置"
-        data-i18n-title="header.versionBtn.title">0.9.2</span>
+        data-i18n-title="header.versionBtn.title">0.9.3</span>
     </div>
     <div class="panel-header-actions">
       <button id="theme-toggle-tokens" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题"
@@ -20288,7 +20848,7 @@
     <div style="display:flex;align-items:center;gap:6px">
       <span id="up-pop-title" style="font-weight:600;font-size:12px;color:var(--ag-text-primary)"
         data-i18n="update.title">🚀 检查更新</span>
-      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">0.9.2</span>
+      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">0.9.3</span>
     </div>
     <button id="btn-close-update-pop" class="panel-icon-btn" type="button"
       style="padding:1px 5px;font-size:13px">×</button>
@@ -20394,13 +20954,14 @@
     <div id="quota-accounts-entry-card" class="quota-subcard quota-accounts-entry-card">
       <div class="quota-subcard-row">
         <span class="quota-subsec-title" data-i18n="accounts.panelTitle">👤 多账号切换与阈值自动切号</span>
-        <span id="quota-entry-autoswitch-pill" class="key-pill pill-muted" data-i18n="accounts.status.disabled">已关闭</span>
+        <span id="quota-entry-autoswitch-pill" class="key-pill pill-muted"
+          data-i18n="accounts.status.disabled">已关闭</span>
       </div>
       <div id="quota-entry-active-account" class="quota-acct-meta"></div>
       <div id="quota-entry-rule-summary" class="quota-muted-note"></div>
       <div class="quota-subsec-actions" style="margin-top:4px">
         <button id="btn-quota-open-accounts-settings" class="switch-pill-btn active" type="button"
-          data-i18n="accounts.manageBtn">在设置中管理账号与自动切号</button>
+          data-i18n="accounts.manageBtn">管理账号</button>
         <button id="btn-quota-entry-refresh-accts" class="switch-pill-btn" type="button"
           data-i18n="accounts.refreshEntry">刷新账号</button>
       </div>
@@ -20426,7 +20987,7 @@
 </section>
 
 <!-- 输入栏紧凑状态条 (Composer Status Bar) 与 5 行悬停/固定详情卡 -->
-<div id="composer-status-bar" class="composer-status-bar" data-dock="composer">
+<div id="composer-status-bar" class="composer-status-bar" data-dock="composer" hidden>
   <!-- 组 0: 会话 4 态实时运行状态点（悬停预览，点击固定详情卡） -->
   <button id="csb-group-status" class="csb-pill csb-runtime-pill" type="button" aria-haspopup="dialog"
     aria-expanded="false" data-runtime-state="idle" data-tooltip="当前会话运行状态">
@@ -20732,8 +21293,43 @@
     }
   })();
 
+  let hostSettingsCtrl = null;
+  const MODAL_TOP_HOST_ID = 'ag-context-meter-modal-host';
+  let modalTopHost = null;
+  let modalTopShadow = null;
   const composerSummary = shadow.getElementById('composer-status-bar');
   const isRadialTopLayerId = id => RADIAL_TOP_NODE_IDS.has(id) || id.startsWith('radial-slot-') || id.startsWith('radial-item-');
+  const getPluginSearchRoots = () => {
+    const roots = [shadow];
+    if (radialShadow && !roots.includes(radialShadow)) roots.push(radialShadow);
+    if (modalTopShadow && !roots.includes(modalTopShadow)) roots.push(modalTopShadow);
+    const hsRoot = hostSettingsCtrl?.getPageRoot?.();
+    if (hsRoot && !roots.includes(hsRoot)) roots.push(hsRoot);
+    return roots;
+  };
+  const syncHostSettingsThemeAttrs = (targetNode = null) => {
+    const target = targetNode || hostSettingsCtrl?.getPageHost?.();
+    if (!target) return;
+    try {
+      const themeAttr = host.getAttribute?.('data-theme');
+      if (themeAttr) target.setAttribute?.('data-theme', themeAttr);
+      else target.removeAttribute?.('data-theme');
+      const toneAttr = host.getAttribute?.('data-panel-tone');
+      if (toneAttr) target.setAttribute?.('data-panel-tone', toneAttr);
+      else target.removeAttribute?.('data-panel-tone');
+        const copyVars = [
+        '--ag-host-bg', '--ag-host-accent', '--ag-accent', '--ag-custom-panel-bg', '--ag-custom-ring-used', '--ag-custom-ring-track',
+        '--ag-custom-context-text', '--ag-custom-speed', '--ag-custom-token-total', '--ag-custom-token-accent',
+        '--ag-custom-heat-low', '--ag-custom-heat-high',
+        '--ag-heat-lvl-0', '--ag-heat-lvl-1', '--ag-heat-lvl-2', '--ag-heat-lvl-3', '--ag-heat-lvl-4'
+      ];
+      for (const vName of copyVars) {
+        const val = host.style?.getPropertyValue?.(vName);
+        if (val) target.style?.setProperty?.(vName, val);
+        else target.style?.removeProperty?.(vName);
+      }
+    } catch { }
+  };
   const el = id => {
     if (id === 'composer-status-bar') return composerSummary;
     if (id.startsWith('csb-') || id.startsWith('tfl-') || id === 'token-five-line-card') return shadow.getElementById(id) || composerSummary?.querySelector?.('#' + id) || null;
@@ -20742,11 +21338,14 @@
       if (topNode) return topNode;
     }
     let node = shadow.getElementById(id);
+    if (!node && hostSettingsCtrl && typeof hostSettingsCtrl.findElementById === 'function') {
+      node = hostSettingsCtrl.findElementById(id);
+    }
     if (!node) {
-      if (id === 'btn-github-repo-ctx') node = shadow.getElementById('btn-github-repo');
-      else if (id === 'btn-check-update-ctx') node = shadow.getElementById('btn-check-update');
-      else if (id === 'btn-github-repo') node = shadow.getElementById('btn-github-repo-ctx');
-      else if (id === 'btn-check-update') node = shadow.getElementById('btn-check-update-ctx');
+      if (id === 'btn-github-repo-ctx') node = shadow.getElementById('btn-github-repo') || hostSettingsCtrl?.findElementById?.('btn-github-repo');
+      else if (id === 'btn-check-update-ctx') node = shadow.getElementById('btn-check-update') || hostSettingsCtrl?.findElementById?.('btn-check-update');
+      else if (id === 'btn-github-repo') node = shadow.getElementById('btn-github-repo-ctx') || hostSettingsCtrl?.findElementById?.('btn-github-repo-ctx');
+      else if (id === 'btn-check-update') node = shadow.getElementById('btn-check-update-ctx') || hostSettingsCtrl?.findElementById?.('btn-check-update-ctx');
     }
     return node;
   };
@@ -20838,11 +21437,17 @@ function getPanelLanguage() {
 }
 
 const PANEL_I18N = {
+  'prefs.saving': { 'zh-CN': '保存中...', 'zh-TW': '儲存中...', en: 'Saving...' },
   'prefs.saved': { 'zh-CN': '已保存', 'zh-TW': '已儲存', en: 'Saved' },
+  'prefs.stateOn': { 'zh-CN': '已开启', 'zh-TW': '已開啟', en: 'On' },
+  'prefs.stateOff': { 'zh-CN': '已关闭', 'zh-TW': '已關閉', en: 'Off' },
+  'prefs.toggleFailed': { 'zh-CN': '保存失败 · 已恢复原值 · {reason}', 'zh-TW': '儲存失敗 · 已還原原值 · {reason}', en: 'Failed · Reverted · {reason}' },
   'prefs.saveError': { 'zh-CN': '未保存 · {reason}', 'zh-TW': '未儲存 · {reason}', en: 'Save failed · {reason}' },
   'accounts.ruleUnsaved': { 'zh-CN': '有未保存的切号规则', 'zh-TW': '有未儲存的切號規則', en: 'Unsaved switching rule' },
   'accounts.ruleSavedOn': { 'zh-CN': '规则已保存，自动切号已启用', 'zh-TW': '規則已儲存，自動切號已啟用', en: 'Rule saved. Auto-switch is on.' },
   'accounts.ruleSavedOff': { 'zh-CN': '规则已保存，自动切号已关闭', 'zh-TW': '規則已儲存，自動切號已關閉', en: 'Rule saved. Auto-switch is off.' },
+  'accounts.toggleNeedSaveDraft': { 'zh-CN': '规则有未保存修改，请先点击保存规则', 'zh-TW': '規則有未儲存修改，請先點擊儲存規則', en: 'Save pending rule edits before toggling auto-switch.' },
+  'accounts.toggleNeedCandidates': { 'zh-CN': '启用自动切号前请先勾选至少 1 个备选账号', 'zh-TW': '啟用自動切號前請先勾選至少 1 個備選帳號', en: 'Select at least 1 candidate account before enabling auto-switch.' },
   'accounts.ruleThreshold': { 'zh-CN': '阈值需要在 1% 到 95% 之间', 'zh-TW': '閾值需在 1% 到 95% 之間', en: 'Enter a threshold from 1% to 95%.' },
   'accounts.blockedReason.restartWindow': { 'zh-CN': '当前需要重启才能切号。等待只剩一个空闲窗口。', 'zh-TW': '目前需要重新啟動才能切號。等待只剩一個閒置視窗。', en: 'Switch requires a restart. Waiting for a single idle window.' },
   'compact.settings.title': { 'zh-CN': '上下文压缩', 'zh-TW': '上下文壓縮', en: 'Context compaction' },
@@ -20914,6 +21519,7 @@ const PANEL_I18N = {
   'tab.session': { 'zh-CN': '当前会话', 'zh-TW': '目前工作階段', en: 'Session' },
   'tab.models': { 'zh-CN': '模型设置', 'zh-TW': '模型設定', en: 'Models' },
   'tab.speed': { 'zh-CN': '速度对比', 'zh-TW': '速度對比', en: 'Speed' },
+  'tab.accounts': { 'zh-CN': '账号与共享池', 'zh-TW': '帳號與共享池', en: 'Accounts & Pools' },
   'tab.settings': { 'zh-CN': '配置', 'zh-TW': '配置', en: 'setting' },
 
   // 分页 1: 当前会话
@@ -21685,22 +22291,6 @@ const PANEL_I18N = {
   'settings.turnFooter.desc': { 'zh-CN': '在助手回复操作栏末尾显示本轮模型、用量与耗时微标.', 'zh-TW': '在助手回覆操作列末尾顯示本輪模型、用量與耗時微標.', en: 'Show this turn model, usage and duration chip at the end of the assistant action bar.' },
   'settings.composerQuota.label': { 'zh-CN': '输入框下方状态条', 'zh-TW': '輸入框下方狀態列', en: 'Status bar under the composer' },
   'settings.composerQuota.desc': { 'zh-CN': '在聊天输入框下方显示速度、Token、上下文与额度摘要.', 'zh-TW': '在聊天輸入框下方顯示速度、Token、上下文與額度摘要.', en: 'Show speed, tokens, context and quota summary below the chat composer.' },
-  'settings.modelPicker.label': { 'zh-CN': '简化输入框模型与思考档位菜单', 'zh-TW': '簡化輸入框模型與思考檔位選單', en: 'Simplified composer model and effort picker' },
-  'settings.modelPicker.desc': { 'zh-CN': '基础模型仅展示一次并将思考档位独立调节，不兼容时退回原生菜单.', 'zh-TW': '基礎模型僅顯示一次並將思考檔位獨立調整，不相容時退回原生選單.', en: 'Deduplicate base models with a separate thinking effort control and fall back safely if host markup changes.' },
-  'modelPicker.title': { 'zh-CN': '选择模型', 'zh-TW': '選擇模型', en: 'Select model' },
-  'modelPicker.subtitle': { 'zh-CN': '档位右侧独立调节', 'zh-TW': '檔位右側獨立調整', en: 'Effort set separately' },
-  'modelPicker.effortTitle': { 'zh-CN': '思考深度', 'zh-TW': '思考深度', en: 'Thinking effort' },
-  'modelPicker.orchestratorEntry': { 'zh-CN': 'Orchestrator 编排', 'zh-TW': 'Orchestrator 編排', en: 'Orchestrator' },
-  'modelPicker.orchestratorTitle': { 'zh-CN': 'Orchestrator 路由', 'zh-TW': 'Orchestrator 路由', en: 'Orchestration' },
-  'modelPicker.orchestratorSubHint': { 'zh-CN': '复用宿主真实路由与预设', 'zh-TW': '複用宿主真實路由與預設', en: 'Uses live host routing' },
-  'modelPicker.plannerSection': { 'zh-CN': 'Planner 规划器', 'zh-TW': 'Planner 規劃器', en: 'Planner' },
-  'modelPicker.executorSection': { 'zh-CN': 'Executor 执行器', 'zh-TW': 'Executor 執行器', en: 'Executor' },
-  'modelPicker.backToModels': { 'zh-CN': '返回模型列表', 'zh-TW': '返回模型清單', en: 'Back to models' },
-  'modelPicker.viewUsage': { 'zh-CN': '查看用量与限额', 'zh-TW': '檢視用量與限額', en: 'View Usage' },
-  'modelPicker.unavailable': { 'zh-CN': '不可用', 'zh-TW': '不可用', en: 'Unavailable' },
-  'modelPicker.unknownModel': { 'zh-CN': '未知模型', 'zh-TW': '未知模型', en: 'Unknown model' },
-  'modelPicker.fallbackNormal': { 'zh-CN': '已按宿主规则切至 {to}', 'zh-TW': '已依宿主規則切至 {to}', en: 'Switched via host rule to {to}' },
-  'modelPicker.fallbackHighWarn': { 'zh-CN': '不支持 {from}，已按宿主规则切至高档 {to}', 'zh-TW': '不支援 {from}，已依宿主規則切至高檔 {to}', en: '{from} unsupported, fell back to {to}' },
   'settings.nextPrompt.label': { 'zh-CN': '下一句预测建议', 'zh-TW': '下一句預測建議', en: 'Next prompt prediction' },
   'settings.nextPrompt.desc': { 'zh-CN': '默认关闭. 开启后每轮结束会调用当前账号模型并产生额外用量，按 Tab 填入草稿.', 'zh-TW': '預設關閉. 開啟後每輪結束會呼叫目前帳號模型並產生額外用量，按 Tab 填入草稿.', en: 'Off by default. Uses your current account model quota after each completed turn; press Tab to insert draft.' },
   'nextPrompt.tabFill': { 'zh-CN': 'Tab 填入', 'zh-TW': 'Tab 填入', en: 'Tab fill' },
@@ -21821,8 +22411,11 @@ const PANEL_I18N = {
   'mod.zh.descPartialInject': { 'zh-CN': '磁盘 ASAR 仅包含部分汉化代码但资源或门禁不完整（{reason}）；请彻底退出 Antigravity 后，在安装包目录运行 install.bat（macOS/Linux 执行 node cli.js chinese:enable）补装。', 'zh-TW': '磁碟 ASAR 僅包含部分漢化程式碼但資源或門禁不完整（{reason}）；請徹底結束 Antigravity 後，在安裝包目錄執行 install.bat（macOS/Linux 執行 node cli.js chinese:enable）補裝。', en: 'Localization module in app.asar is incomplete ({reason}). Fully quit Antigravity and run install.bat (or node cli.js chinese:enable on macOS/Linux) from the package directory.' },
   'mod.zh.savedEnableRestart': { 'zh-CN': '✔ 已开启客户端简体中文并保存配置，完全退出并重启 Antigravity 后生效。', 'zh-TW': '✔ 已開啟用戶端簡體中文並儲存設定，完全結束並重啟 Antigravity 後生效。', en: '✔ Simplified Chinese saved; quit and restart Antigravity to apply.' },
   'mod.zh.savedDisableRestart': { 'zh-CN': '✔ 已切换为官方英文并保存配置，完全退出并重启 Antigravity 后恢复英文。', 'zh-TW': '✔ 已切換為官方英文並儲存設定，完全結束並重啟 Antigravity 後恢復英文。', en: '✔ Native English saved; quit and restart Antigravity to restore English.' },
-  'mod.zh.btnDisable': { 'zh-CN': '切换为官方英文 (需重启)', 'zh-TW': '切換為官方英文 (需重啟)', en: 'Switch to English (Restart)' },
-  'mod.zh.btnEnable': { 'zh-CN': '切换为简体中文 (需重启)', 'zh-TW': '切換為簡體中文 (需重啟)', en: 'Switch to 简体中文 (Restart)' },
+  'mod.zh.btnDisable': { 'zh-CN': '应用并重启', 'zh-TW': '套用並重啟', en: 'Apply & Restart' },
+  'mod.zh.btnEnable': { 'zh-CN': '应用并重启', 'zh-TW': '套用並重啟', en: 'Apply & Restart' },
+  'settings.clientLang.applyRestart': { 'zh-CN': '应用并重启', 'zh-TW': '套用並重啟', en: 'Apply & Restart' },
+  'mod.zh.submitting': { 'zh-CN': '正在提交客户端语言配置…', 'zh-TW': '正在提交用戶端語言設定…', en: 'Saving client language…' },
+  'mod.zh.readbackMismatch': { 'zh-CN': '写入后读回语言与所选目标不一致，请重试', 'zh-TW': '寫入後讀回語言與所選目標不一致，請重試', en: 'Saved client language mismatch on readback; please retry' },
   'mod.zh.toggleFail': { 'zh-CN': '切换客户端语言失败', 'zh-TW': '切換用戶端語言失敗', en: 'Failed to switch client language' },
   'mod.proxy.failDetect': { 'zh-CN': '检测免 TUN 代理状态失败: {err}', 'zh-TW': '偵測免 TUN 代理狀態失敗: {err}', en: 'Failed to detect proxy status: {err}' },
   'mod.proxy.errDetect': { 'zh-CN': '检测免 TUN 代理状态异常: {err}', 'zh-TW': '偵測免 TUN 代理狀態異常: {err}', en: 'Error detecting proxy status: {err}' },
@@ -22491,6 +23084,7 @@ const PANEL_I18N = {
   'update.doneHotFull': { 'zh-CN': '已成功在线更新至 {ver}。前端界面与新版后台服务已免重启热加载并完成接口核验。', 'zh-TW': '已成功線上更新至 {ver}。前端介面與新版後台服務已免重啟熱載入並完成介面核驗。', en: 'Updated to {ver}. Both UI and backend service hot-reloaded and verified without restart.' },
   'update.doneDisk': { 'zh-CN': '已成功完成 {ver} 磁盘更新，需完全重启 Antigravity 后生效。', 'zh-TW': '已成功完成 {ver} 磁碟更新，需完全重啟 Antigravity 後生效。', en: 'Disk update to {ver} complete. Restart Antigravity to apply.' },
   'update.liveStaged': { 'zh-CN': '{ver} 已下载并验证。watch 会加载新版，也可运行 node cli.js live 重新挂载。', 'zh-TW': '{ver} 已下載並驗證。watch 會載入新版，也可執行 node cli.js live 重新掛載。', en: '{ver} downloaded and verified. Watch will load it, or run node cli.js live to attach again.' },
+  'update.doneLiveSynced': { 'zh-CN': '{ver} 已下载并暂存至免改盘更新目录。下次启动 watch 或运行 node cli.js live 重新挂载后生效。', 'zh-TW': '{ver} 已下載並暫存至免改盤更新目錄。下次啟動 watch 或執行 node cli.js live 重新掛載後生效。', en: '{ver} downloaded and staged for patch-free mode. Re-attach via watch or node cli.js live to activate.' },
   'update.restartBtn': { 'zh-CN': '重启客户端', 'zh-TW': '重新啟動用戶端', en: 'Restart Client' },
   'update.btnUpdated': { 'zh-CN': '已更新', 'zh-TW': '已更新', en: 'Updated' },
   'update.btnRetry': { 'zh-CN': '重试更新', 'zh-TW': '重試更新', en: 'Retry Update' },
@@ -22831,17 +23425,30 @@ const PANEL_I18N = {
   'accounts.switchBtn': { 'zh-CN': '切号', 'zh-TW': '切號', en: 'Switch' },
   'accounts.activeTag': { 'zh-CN': '当前', 'zh-TW': '目前', en: 'Active' },
   'accounts.empty': { 'zh-CN': '暂无已登记账号，可点击“导入当前”或“登录添加”。', 'zh-TW': '暫無已登記帳號，可點擊「匯入目前帳號」或「登入新增」。', en: 'No accounts saved yet. Click Import Current or Google Sign-In.' },
-  'accounts.autoSwitchEnable': { 'zh-CN': '启用阈值自动切号，默认关闭', 'zh-TW': '啟用閾值自動切號，預設關閉', en: 'Enable threshold auto-switch (Off by default)' },
+  'accounts.autoSwitchEnable': { 'zh-CN': '启用阈值自动切号，默认关闭', 'zh-TW': '啟用閾值自動切號，預設關閉', en: 'Enable threshold auto-switch, off by default' },
   'accounts.poolLabel': { 'zh-CN': '监控共享池', 'zh-TW': '監控共享池', en: 'Target Pool' },
+  'accounts.quotaTargetLabel': { 'zh-CN': '监控额度', 'zh-TW': '監控額度', en: 'Monitored Quota' },
+  'accounts.target.groupGemini': { 'zh-CN': 'Gemini 共享池', 'zh-TW': 'Gemini 共享池', en: 'Gemini Pool' },
+  'accounts.target.group3p': { 'zh-CN': 'Claude / GPT 共享池', 'zh-TW': 'Claude / GPT 共享池', en: 'Claude / GPT Pool' },
+  'accounts.target.gemini5h': { 'zh-CN': 'Gemini 5 小时额度', 'zh-TW': 'Gemini 5 小時額度', en: 'Gemini 5h Quota' },
+  'accounts.target.gemini7d': { 'zh-CN': 'Gemini 周额度', 'zh-TW': 'Gemini 週額度', en: 'Gemini Weekly Quota' },
+  'accounts.target.claude5h': { 'zh-CN': 'Claude / GPT 5 小时额度', 'zh-TW': 'Claude / GPT 5 小時額度', en: 'Claude / GPT 5h Quota' },
+  'accounts.target.claude7d': { 'zh-CN': 'Claude / GPT 周额度', 'zh-TW': 'Claude / GPT 週額度', en: 'Claude / GPT Weekly Quota' },
+  'accounts.target.legacyPlaceholder': { 'zh-CN': '旧规则待重选 · 请选择具体监控额度', 'zh-TW': '舊規則待重選 · 請選擇具體監控額度', en: 'Legacy rule · Select a specific quota target' },
   'accounts.metricLabel': { 'zh-CN': '判断口径', 'zh-TW': '判斷口徑', en: 'Trigger Metric' },
-  'accounts.modeRemaining': { 'zh-CN': '按剩余额度 <=', 'zh-TW': '依剩餘額度 <=', en: 'Remaining <=' },
-  'accounts.modeUsed': { 'zh-CN': '按累计已用 >=', 'zh-TW': '依累計已用 >=', en: 'Used >=' },
+  'accounts.modeRemaining': { 'zh-CN': '剩余额度低于或等于', 'zh-TW': '剩餘額度低於或等於', en: 'Remaining at or below' },
+  'accounts.modeUsed': { 'zh-CN': '已用额度达到或超过', 'zh-TW': '已用額度達到或超過', en: 'Used at or above' },
   'accounts.windowLabel': { 'zh-CN': '限额窗口', 'zh-TW': '限額視窗', en: 'Window' },
   'accounts.winPrimary': { 'zh-CN': '主窗口最紧缩', 'zh-TW': '主視窗最緊縮', en: 'Primary Tightest' },
-  'accounts.thresholdLabel': { 'zh-CN': '阈值 (%)', 'zh-TW': '閾值 (%)', en: 'Threshold (%)' },
+  'accounts.thresholdLabel': { 'zh-CN': '阈值百分比', 'zh-TW': '閾值百分比', en: 'Threshold Pct' },
+  'accounts.toggleNeedValidTarget': { 'zh-CN': '当前规则为旧版配置，请先从四项具体监控额度中选择一项并保存', 'zh-TW': '目前規則為舊版設定，請先從四項具體監控額度中選擇一項並儲存', en: 'Legacy rule detected. Pick one of the 4 specific quota targets and save first.' },
+  'accounts.liveMetricSummary': { 'zh-CN': '{target} · {cond} · 当前已用 {used}% · 剩余 {rem}%', 'zh-TW': '{target} · {cond} · 目前已用 {used}% · 剩餘 {rem}%', en: '{target} · {cond} · Used {used}% · Remaining {rem}%' },
+  'accounts.liveMetricUnavailable': { 'zh-CN': '{target} · {cond} · 当前窗口暂不可用，等待有效数据', 'zh-TW': '{target} · {cond} · 目前視窗暫不可用，等待有效資料', en: '{target} · {cond} · Window unavailable, awaiting valid data' },
+  'accounts.liveMetricLegacy': { 'zh-CN': '旧规则未指定具体周期，已保留原有候选账号，请重选四项监控额度之一并保存', 'zh-TW': '舊規則未指定具體週期，已保留原有候選帳號，請重選四項監控額度之一並儲存', en: 'Legacy rule lacks a specific target. Candidates are kept; select one of the 4 targets and save.' },
   'accounts.candidatesLabel': { 'zh-CN': '允许切入的候选账号：', 'zh-TW': '允許切入的候選帳號：', en: 'Candidate accounts allowed:' },
   'accounts.saveRule': { 'zh-CN': '保存切号规则', 'zh-TW': '儲存切號規則', en: 'Save Rule' },
-  'accounts.manageBtn': { 'zh-CN': '在设置中管理账号与自动切号', 'zh-TW': '在設定中管理帳號與自動切號', en: 'Manage Accounts & Auto-Switch' },
+  'accounts.manageBtn': { 'zh-CN': '管理账号', 'zh-TW': '管理帳號', en: 'Manage Accounts' },
+  'accounts.editRulesBtn': { 'zh-CN': '编辑自动切号规则', 'zh-TW': '編輯自動切號規則', en: 'Edit Auto-Switch Rules' },
   'accounts.refreshEntry': { 'zh-CN': '刷新账号', 'zh-TW': '重新整理帳號', en: 'Refresh Accounts' },
   'accounts.entryActiveLabel': { 'zh-CN': '当前账号：{email} · 已登记 {count} 个', 'zh-TW': '目前帳號：{email} · 已登記 {count} 個', en: 'Active: {email} · {count} saved' },
   'accounts.entryNoActive': { 'zh-CN': '暂未识别活跃账号 · 已登记 {count} 个', 'zh-TW': '暫未識別目前帳號 · 已登記 {count} 個', en: 'No active account · {count} saved' },
@@ -22903,24 +23510,54 @@ const PANEL_I18N = {
   'accounts.quotaStageErr': { 'zh-CN': '本次刷新失败 · 上次快照已保留：{detail}', 'zh-TW': '本次重新整理失敗 · 上次快照已保留：{detail}', en: 'Quota fetch failed, previous snapshot kept: {detail}' },
   'accounts.lastSnapshotTime': { 'zh-CN': '上次快照 {time}', 'zh-TW': '上次快照 {time}', en: 'Last snapshot {time}' },
   'accounts.status.disabled': { 'zh-CN': '已关闭', 'zh-TW': '已關閉', en: 'Off' },
-  'accounts.status.watching': { 'zh-CN': '监控中', 'zh-TW': '監控中', en: 'Watching' },
-  'accounts.status.pending_debounce': { 'zh-CN': '防抖确认中', 'zh-TW': '防抖確認中', en: 'Debouncing' },
-  'accounts.status.waiting_idle': { 'zh-CN': '等待当前生成完成', 'zh-TW': '等待目前生成完成', en: 'Waiting idle' },
-  'accounts.status.cooldown': { 'zh-CN': '冷却保护中', 'zh-TW': '冷卻保護中', en: 'Cooldown' },
-  'accounts.status.switching': { 'zh-CN': '切号中', 'zh-TW': '切號中', en: 'Switching' },
-  'accounts.status.restarting': { 'zh-CN': '重启生效中', 'zh-TW': '重啟生效中', en: 'Restarting' },
-  'accounts.status.all_candidates_exhausted': { 'zh-CN': '备选账号均不足', 'zh-TW': '備選帳號皆不足', en: 'All candidates exhausted' },
-  'accounts.status.blocked_untrusted_quota': { 'zh-CN': '数据不可信已跳过', 'zh-TW': '資料不可信已跳過', en: 'Skipped' },
-  'accounts.status.blocked_missing_pool': { 'zh-CN': '所选池不可用', 'zh-TW': '所選池無法使用', en: 'Pool unavailable' },
-  'accounts.status.blocked_missing_account': { 'zh-CN': '未识别当前账号', 'zh-TW': '未識別目前帳號', en: 'Account unknown' },
-  'accounts.status.error': { 'zh-CN': '失败已停用', 'zh-TW': '失敗已停用', en: 'Halted' },
+  'accounts.status.unsaved': { 'zh-CN': '待保存', 'zh-TW': '待儲存', en: 'Unsaved' },
+  'accounts.status.saving': { 'zh-CN': '正在保存', 'zh-TW': '正在儲存', en: 'Saving' },
+  'accounts.status.save_failed': { 'zh-CN': '保存失败', 'zh-TW': '儲存失敗', en: 'Save Failed' },
+  'accounts.status.watching': { 'zh-CN': '已开启 · 监控中', 'zh-TW': '已開啟 · 監控中', en: 'Enabled · Watching' },
+  'accounts.status.pending_debounce': { 'zh-CN': '已开启 · 防抖确认中', 'zh-TW': '已開啟 · 防抖確認中', en: 'Enabled · Debouncing' },
+  'accounts.status.waiting_idle': { 'zh-CN': '已开启 · 等待当前生成完成', 'zh-TW': '已開啟 · 等待目前生成完成', en: 'Enabled · Waiting idle' },
+  'accounts.status.cooldown': { 'zh-CN': '已开启 · 冷却保护中', 'zh-TW': '已開啟 · 冷卻保護中', en: 'Enabled · Cooldown' },
+  'accounts.status.switching': { 'zh-CN': '已开启 · 切号中', 'zh-TW': '已開啟 · 切號中', en: 'Enabled · Switching' },
+  'accounts.status.restarting': { 'zh-CN': '已开启 · 重启生效中', 'zh-TW': '已開啟 · 重啟生效中', en: 'Enabled · Restarting' },
+  'accounts.status.no_candidates': { 'zh-CN': '已开启 · 受阻 · 缺少候选账号', 'zh-TW': '已開啟 · 受阻 · 缺少候選帳號', en: 'Enabled · Blocked · No candidates' },
+  'accounts.status.all_candidates_exhausted': { 'zh-CN': '已开启 · 受阻 · 备选账号均不足', 'zh-TW': '已開啟 · 受阻 · 備選帳號皆不足', en: 'Enabled · Blocked · Exhausted' },
+  'accounts.status.blocked_untrusted_quota': { 'zh-CN': '已开启 · 受阻 · 数据不可信已跳过', 'zh-TW': '已開啟 · 受阻 · 資料不可信已跳過', en: 'Enabled · Blocked · Untrusted' },
+  'accounts.status.blocked_missing_pool': { 'zh-CN': '已开启 · 受阻 · 所选池不可用', 'zh-TW': '已開啟 · 受阻 · 所選池無法使用', en: 'Enabled · Blocked · Missing pool' },
+  'accounts.status.blocked_missing_account': { 'zh-CN': '已开启 · 受阻 · 未识别当前账号', 'zh-TW': '已開啟 · 受阻 · 未識別目前帳號', en: 'Enabled · Blocked · Unknown account' },
+  'accounts.status.blocked_legacy_rule': { 'zh-CN': '待迁移 · 需重选具体监控额度', 'zh-TW': '待遷移 · 需重選具體監控額度', en: 'Migration Needed · Re-select Quota' },
+  'accounts.status.error': { 'zh-CN': '已停用 · 失败已停用', 'zh-TW': '已停用 · 失敗已停用', en: 'Halted · Failed' },
+  'accounts.blockedReason.legacy_rule': { 'zh-CN': '旧规则使用了已移除的共享池或未指定周期，原有候选账号已保留，请从四项具体监控额度中重选并保存', 'zh-TW': '舊規則使用了已移除的共享池或未指定週期，原有候選帳號已保留，請從四項具體監控額度中重選並儲存', en: 'Legacy rule uses a removed pool or ambiguous window. Candidates are preserved; select one of the 4 specific targets and save.' },
+  'accounts.blockedReason.no_candidates': { 'zh-CN': '尚未勾选或添加可切入的候选账号，请至少勾选一个备选账号', 'zh-TW': '尚未勾選或新增可切入的候選帳號，請至少勾選一個備選帳號', en: 'No backup candidate accounts enabled; select at least one candidate' },
+  'accounts.blockedReason.unsaved_draft': { 'zh-CN': '检测到未保存规则草稿，请先保存后再触发自动切号', 'zh-TW': '偵測到未儲存規則草稿，請先儲存後再觸發自動切號', en: 'Unsaved rule draft pending; save before triggering auto-switch' },
+  'accounts.blockedReason.reset_passed': { 'zh-CN': '{pool} 的 {window} 重置时间已过且新周期余量待刷新，已暂停自动切号', 'zh-TW': '{pool} 的 {window} 重設時間已過且新週期餘量待重新整理，已暫停自動切號', en: '{pool} {window} reset passed and awaits fresh balance; auto-switch paused' },
+  'accounts.blockedReason.account_mismatch': { 'zh-CN': '最新额度快照所属账号与当前活跃账号不一致，已跳过自动切号', 'zh-TW': '最新額度快照所屬帳號與目前使用中帳號不一致，已略過自動切號', en: 'Quota snapshot account mismatches active account; auto-switch skipped' },
+  'accountsTab.switchTitle': { 'zh-CN': '👤 账号切换', 'zh-TW': '👤 帳號切換', en: '👤 Account Switch' },
+  'accountsTab.autoSwitchTitle': { 'zh-CN': '自动切号状态与规则摘要', 'zh-TW': '自動切號狀態與規則摘要', en: 'Auto-Switch Status & Rule Summary' },
+  'accountsTab.poolsTitle': { 'zh-CN': '◔ 共享额度池', 'zh-TW': '◔ 共享額度池', en: '◔ Shared Quota Pools' },
+  'accountsTab.mainPoolLabel': { 'zh-CN': '当前账号主池', 'zh-TW': '目前帳號主池', en: 'Active Account Main Pool' },
+  'accountsTab.poolsBrowseHint': { 'zh-CN': '分窗口余量摘要 · 完整进度条请点查看模型额度', 'zh-TW': '分視窗餘量摘要 · 完整進度條請點檢視模型額度', en: 'Window quota summary · open Model Quota for full bars' },
+  'accountsTab.openQuotaBoardBtn': { 'zh-CN': '查看模型额度', 'zh-TW': '檢視模型額度', en: 'View Model Quota' },
+  'accounts.loadErrorSummary': { 'zh-CN': '账号列表读取失败 · {reason}', 'zh-TW': '帳號清單讀取失敗 · {reason}', en: 'Failed to load accounts · {reason}' },
+  'accountsTab.compareMovedHint': { 'zh-CN': '各账号共享额度池与本机消耗对照位于看板第四标签 账号与共享池.', 'zh-TW': '各帳號共享額度池與本機消耗對照位於儀表板第四分頁 帳號與共享池.', en: 'Shared quota pools and local usage comparison live in the 4th dashboard tab Accounts & Pools.' },
+  'accountsTab.openPoolsBtn': { 'zh-CN': '打开账号与共享池', 'zh-TW': '開啟帳號與共享池', en: 'Open Accounts & Pools' },
+  'accountsTab.noPermissionBanner': { 'zh-CN': '当前账号对部分共享池暂无权限，以下仅展示可读状态与重置信息.', 'zh-TW': '目前帳號對部分共享池暫無權限，以下僅顯示可讀狀態與重設資訊.', en: 'Current account lacks permission on some pools; showing available statuses only.' },
+  'settings.fallback.title': { 'zh-CN': '当前使用插件内配置降级视图', 'zh-TW': '目前使用外掛內設定降級檢視', en: 'Using in-panel fallback settings view' },
+  'settings.fallback.defaultReason': { 'zh-CN': '未能挂载到宿主客户端设置页，以下配置仍可直接编辑与保存.', 'zh-TW': '未能掛載至宿主用戶端設定頁，以下設定仍可直接編輯與儲存.', en: 'Could not attach to host client Settings page; all settings remain editable here.' },
+  'settings.fallback.retryHost': { 'zh-CN': '尝试打开客户端设置', 'zh-TW': '嘗試開啟用戶端設定', en: 'Retry Host Settings' },
+  'settings.fallback.noHostModal': { 'zh-CN': '当前页面未找到 Antigravity 客户端原生设置导航，已切换为插件内配置视图.', 'zh-TW': '目前頁面未找到 Antigravity 用戶端原生設定導覽，已切換為外掛內設定檢視.', en: 'Host client Settings navigation was not detected here; showing plugin fallback view.' },
+  'settings.fallback.standaloneBrowser': { 'zh-CN': '独立浏览器模式不包含宿主设置窗口，已展示插件完整配置视图.', 'zh-TW': '獨立瀏覽器模式不包含宿主設定視窗，已顯示外掛完整設定檢視.', en: 'Standalone browser mode has no host Settings window; showing full plugin settings.' },
   'accounts.blockedReason.no_permission': { 'zh-CN': '当前账号 {email} 对监控池 {pool} 无模型权限，请切换监测池或改用兼容账号', 'zh-TW': '目前帳號 {email} 對監控池 {pool} 無模型權限，請切換監測池或改用相容帳號', en: '{email} has no access to {pool}; switch pool or use a compatible account' },
   'accounts.blockedReason.missing_pool': { 'zh-CN': '当前账号 {email} 尚未返回监控池 {pool}，请刷新配额或改选其他共享池', 'zh-TW': '目前帳號 {email} 尚未回傳監控池 {pool}，請重新整理配額或改選其他池', en: '{email} has no {pool} data; refresh quota or pick another pool' },
-  'accounts.blockedReason.missing_window': { 'zh-CN': '当前账号 {email} 的 {pool} 暂未返回所选限额窗口 {window}，建议改为“主窗口最紧缩”或刷新配额', 'zh-TW': '目前帳號 {email} 的 {pool} 尚未回傳所選視窗 {window}，建議改為「主視窗最緊縮」或重新整理配額', en: '{email} {pool} lacks {window} window data; use Primary Tightest or refresh quota' },
+  'accounts.blockedReason.missing_window': { 'zh-CN': '当前账号 {email} 的 {pool} 暂未返回所选限额窗口 {window}，已等待有效数据，请刷新配额或改选其他具体监控额度', 'zh-TW': '目前帳號 {email} 的 {pool} 尚未回傳所選視窗 {window}，已等待有效資料，請重新整理配額或改選其他具體監控額度', en: '{email} {pool} lacks {window} window data; awaiting valid data or pick another specific target' },
   'accounts.blockedReason.missing_value': { 'zh-CN': '当前账号 {email} 在 {pool} 缺少有效剩余额度数值，等待刷新确认', 'zh-TW': '目前帳號 {email} 在 {pool} 缺少有效剩餘額度數值，等待重新整理確認', en: '{email} lacks a valid fraction on {pool}; awaiting refresh' },
   'accounts.blockedReason.missing_active_account': { 'zh-CN': '未识别当前活跃账号，请点击“导入当前”或刷新配额', 'zh-TW': '未識別目前使用中帳號，請點擊「匯入目前帳號」或重新整理配額', en: 'Active account unresolved; click Import Current or refresh quota' },
   'accounts.blockedReason.all_candidates_exhausted': { 'zh-CN': '所有候选账号的 {pool} 额度也低于阈值，请补充候选账号或调低阈值', 'zh-TW': '所有候選帳號的 {pool} 額度亦低於閾值，請補充候選帳號或調低閾值', en: 'All candidates are also below threshold on {pool}; add candidates or lower threshold' },
   'accounts.blockedReason.untrusted_quota': { 'zh-CN': '当前配额快照过期或刷新失败，已暂停自动切号，刷新恢复后自动继续', 'zh-TW': '目前配額快照過期或重新整理失敗，已暫停自動切號，重新整理恢復後自動繼續', en: 'Quota snapshot stale or failed; auto-switch paused until a clean refresh' },
+  'accounts.blockedReason.unverified_account': { 'zh-CN': '当前额度响应缺少有效账号身份校验，已暂停自动切号并等待完整同步', 'zh-TW': '目前額度回應缺少有效帳號身分校驗，已暫停自動切號並等待完整同步', en: 'Quota response lacks verified account identity; waiting for clean sync' },
+  'accounts.blockedReason.untrusted_timestamp': { 'zh-CN': '当前额度快照采样时间缺失或异常，已暂停自动切号并等待有效采样', 'zh-TW': '目前額度快照採樣時間缺失或異常，已暫停自動切號並等待有效採樣', en: 'Quota snapshot timestamp is missing or invalid; awaiting valid sample' },
+  'accounts.blockedReason.rule_changed': { 'zh-CN': '切号过程中规则已变化，已取消旧切换并按新规则继续监控', 'zh-TW': '切號過程中規則已變化，已取消舊切換並依新規則繼續監控', en: 'Auto-switch rule changed in flight; aborted stale switch and resumed watching' },
+  'accounts.preRestartNotice': { 'zh-CN': '已达切号阈值 · {target} · {metric} · 阈值 {threshold}% · 即将切至 {email} 并自动重启客户端', 'zh-TW': '已達切號閾值 · {target} · {metric} · 閾值 {threshold}% · 即將切至 {email} 並自動重啟用戶端', en: 'Threshold reached · {target} · {metric} · Limit {threshold}% · Switching to {email} and restarting client' },
+  'accounts.verifiedAutoSwitchedNotice': { 'zh-CN': '已自动切换至 {email} · 重开后已通过 GetUserStatus 核验生效', 'zh-TW': '已自動切換至 {email} · 重開後已通過 GetUserStatus 核驗生效', en: 'Auto-switched to {email} · Verified via GetUserStatus after restart' },
   'accounts.blockedReason.waiting_idle': { 'zh-CN': '已达切号阈值，正在等待当前对话生成结束后切换', 'zh-TW': '已達切號閾值，正在等待目前對話生成結束後切換', en: 'Threshold met; waiting for current generation to finish before switching' },
   'accounts.blockedReason.cooldown': { 'zh-CN': '处于切号冷却保护期内，稍后自动恢复监测', 'zh-TW': '處於切號冷卻保護期內，稍後自動恢復監測', en: 'In switch cooldown protection; monitoring will resume automatically' },
   'accounts.blockedReason.pending_debounce': { 'zh-CN': '已触发阈值 · 防抖确认中', 'zh-TW': '已觸發閾值 · 防抖確認中', en: 'Threshold met · Debouncing' },
@@ -23249,7 +23886,114 @@ const PANEL_I18N = {
   'tokens.insights.sortRecent': { 'zh-CN': '按最近活跃', 'zh-TW': '依最近活躍', en: 'Most Recent' },
   'tokens.insights.sortTokens': { 'zh-CN': '按 Token 最多', 'zh-TW': '依 Token 最多', en: 'Most Tokens' },
   'tokens.insights.sortCost': { 'zh-CN': '按估算花费', 'zh-TW': '依估算花費', en: 'Highest Est. Cost' },
-  'tokens.insights.empty': { 'zh-CN': '当前筛选条件下暂无归档洞察记录', 'zh-TW': '目前篩選條件下暫無歸檔洞察紀錄', en: 'No matching session archives found' }
+  'tokens.insights.empty': { 'zh-CN': '当前筛选条件下暂无归档洞察记录', 'zh-TW': '目前篩選條件下暫無歸檔洞察紀錄', en: 'No matching session archives found' },
+
+  'hostSettings.subtitle': { 'zh-CN': '与插件共享状态 · 在此查看前后台版本、在线更新与常用开关', 'zh-TW': '與外掛共用狀態 · 在此檢視前後台版本、線上更新與常用開關', en: 'Shared plugin state · inspect frontend/backend versions, updates and preferences' },
+  'hostSettings.btn.accounts': { 'zh-CN': '账号与自动切号', 'zh-TW': '帳號與自動切號', en: 'Accounts & Switch' },
+  'hostSettings.btn.quota': { 'zh-CN': '模型额度看板', 'zh-TW': '模型額度看板', en: 'Model Quota' },
+  'hostSettings.btn.tokens': { 'zh-CN': '已记录用量', 'zh-TW': '已記錄用量', en: 'Recorded Usage' },
+  'hostSettings.btn.settings': { 'zh-CN': '插件完整配置', 'zh-TW': '外掛完整設定', en: 'Full Settings' },
+  'hostSettings.sec.version': { 'zh-CN': '运行版本与在线更新', 'zh-TW': '執行版本與線上更新', en: 'Runtime Versions & Online Update' },
+  'hostSettings.lbl.frontend': { 'zh-CN': '当前界面版本', 'zh-TW': '目前介面版本', en: 'Frontend Version' },
+  'hostSettings.lbl.backend': { 'zh-CN': '实际运行后台', 'zh-TW': '實際執行後台', en: 'Running Backend' },
+  'hostSettings.lbl.bridge': { 'zh-CN': '通信桥接通道', 'zh-TW': '通訊橋接通道', en: 'Bridge Channel' },
+  'hostSettings.lbl.target': { 'zh-CN': '目标版本', 'zh-TW': '目標版本', en: 'Target Version' },
+  'hostSettings.notDetected': { 'zh-CN': '未核实到版本号', 'zh-TW': '未核實到版本號', en: 'Version Unverified' },
+  'hostSettings.sourceUnknown': { 'zh-CN': '未连接', 'zh-TW': '未連線', en: 'Disconnected' },
+  'hostSettings.versionMismatchShort': { 'zh-CN': '前后台版本未对齐', 'zh-TW': '前後台版本未對齊', en: 'Version Mismatch' },
+  'hostSettings.beta.label': { 'zh-CN': '接收测试版更新推送', 'zh-TW': '接收測試版更新推送', en: 'Include Beta Releases' },
+  'hostSettings.beta.desc': { 'zh-CN': '与插件配置同步生效. 开启后可检测并升级至 beta 预发布版本.', 'zh-TW': '與外掛設定同步生效. 開啟後可檢測並升級至 beta 預發布版本.', en: 'Synced with plugin settings. Checks and applies beta pre-releases when enabled.' },
+  'hostSettings.btn.check': { 'zh-CN': '检查更新', 'zh-TW': '檢查更新', en: 'Check for Updates' },
+  'hostSettings.btn.verify': { 'zh-CN': '核验前后台版本', 'zh-TW': '核驗前後台版本', en: 'Verify Runtime' },
+  'hostSettings.sec.prefs': { 'zh-CN': '常用交互设置', 'zh-TW': '常用互動設定', en: 'Common Preferences' },
+  'hostSettings.sec.diag': { 'zh-CN': '连接与诊断摘要', 'zh-TW': '連線與診斷摘要', en: 'Connection & Diagnostics' },
+  'hostSettings.btn.copyDiag': { 'zh-CN': '复制诊断信息', 'zh-TW': '複製診斷資訊', en: 'Copy Diagnostics' },
+  'hostSettings.btn.copiedDiag': { 'zh-CN': '已复制诊断', 'zh-TW': '已複製診斷', en: 'Copied' },
+  'hostSettings.stage.idle': { 'zh-CN': '待检查', 'zh-TW': '待檢查', en: 'Not Checked' },
+  'hostSettings.stage.latest': { 'zh-CN': '已是最新', 'zh-TW': '已是最新', en: 'Up to Date' },
+  'hostSettings.stage.checking': { 'zh-CN': '检查中', 'zh-TW': '檢查中', en: 'Checking' },
+  'hostSettings.stage.available': { 'zh-CN': '发现新版', 'zh-TW': '發現新版', en: 'Update Available' },
+  'hostSettings.stage.downloading': { 'zh-CN': '下载校验中', 'zh-TW': '下載校驗中', en: 'Downloading' },
+  'hostSettings.stage.downloaded': { 'zh-CN': '已下载', 'zh-TW': '已下載', en: 'Downloaded' },
+  'hostSettings.stage.pendingRestart': { 'zh-CN': '待重启', 'zh-TW': '待重啟', en: 'Pending Restart' },
+  'hostSettings.stage.active': { 'zh-CN': '新版已生效', 'zh-TW': '新版已生效', en: 'Active' },
+  'hostSettings.stage.error': { 'zh-CN': '更新失败', 'zh-TW': '更新失敗', en: 'Error' },
+  'hostSettings.stage.unavailable': { 'zh-CN': '更新不可用', 'zh-TW': '更新不可用', en: 'Unavailable' },
+  'hostSettings.stage.idleHint': { 'zh-CN': '点击检查更新以向 GitHub Releases 核对最新正式版或测试版.', 'zh-TW': '點擊檢查更新以向 GitHub Releases 核對最新正式版或測試版.', en: 'Click Check for Updates to query latest release info.' },
+  'hostSettings.diag.route': { 'zh-CN': '当前会话', 'zh-TW': '目前會話', en: 'Active Route' },
+  'hostSettings.diag.latency': { 'zh-CN': '最近额度耗时', 'zh-TW': '最近額度耗時', en: 'Last Quota Latency' },
+  'hostSettings.diag.mismatch': { 'zh-CN': '版本差异', 'zh-TW': '版本差異', en: 'Version Mismatch' },
+  'hostSettings.diag.yes': { 'zh-CN': '存在差异', 'zh-TW': '存在差異', en: 'Yes' },
+  'hostSettings.diag.no': { 'zh-CN': '已对齐', 'zh-TW': '已對齊', en: 'Aligned' },
+  'hostSettings.diag.lastErr': { 'zh-CN': '最近错误', 'zh-TW': '最近錯誤', en: 'Last Error' },
+  'composer.runtime.clickHint': { 'zh-CN': '点击查看实时请求与用量', 'zh-TW': '點擊檢視即時請求與用量', en: 'Click for live requests & usage' },
+  'ns.settings.aria': { 'zh-CN': 'Context Meter 设置', 'zh-TW': 'Context Meter 設定', en: 'Context Meter Settings' },
+  'ns.group.appearance': { 'zh-CN': '外观、停靠位置与顶栏偏好', 'zh-TW': '外觀、停靠位置與頂欄偏好', en: 'Appearance, Dock & Topbar' },
+  'ns.group.interaction': { 'zh-CN': '交互与显示偏好', 'zh-TW': '互動與顯示偏好', en: 'Interaction & Display' },
+  'ns.group.accounts': { 'zh-CN': '多账号与阈值自动切号', 'zh-TW': '多帳號與閾值自動切號', en: 'Accounts & Auto-Switch' },
+  'ns.group.i18n': { 'zh-CN': '客户端界面语言与品牌', 'zh-TW': '用戶端介面語言與品牌', en: 'Client Language & Brand' },
+  'ns.group.enhance': { 'zh-CN': '压缩恢复与回答规则', 'zh-TW': '壓縮恢復與回答規則', en: 'Compaction Recovery & Rules' },
+  'ns.group.proxy': { 'zh-CN': '免 TUN 代理与网络', 'zh-TW': '免 TUN 代理與網路', en: 'No-TUN Proxy & Network' },
+  'ns.group.billing': { 'zh-CN': '订阅与费用估算', 'zh-TW': '訂閱與費用估算', en: 'Subscription & Cost Estimate' },
+  'ns.group.update': { 'zh-CN': '版本更新', 'zh-TW': '版本更新', en: 'Updates' },
+  'ns.group.data': { 'zh-CN': '本地数据与诊断', 'zh-TW': '本機資料與診斷', en: 'Local Data & Diagnostics' },
+  'ns.topbarMode.title': { 'zh-CN': '顶栏入口形态', 'zh-TW': '頂欄入口形態', en: 'Topbar Entry Mode' },
+  'ns.themeMode.title': { 'zh-CN': '插件主题外观', 'zh-TW': '外掛主題外觀', en: 'Plugin Theme Mode' },
+  'ns.themeMode.desc': { 'zh-CN': '控制面板深浅配色模式，默认跟随宿主自动切换', 'zh-TW': '控制面板深淺配色模式，預設跟隨宿主自動切換', en: 'Controls plugin light or dark palette, auto-following host by default' },
+  'ns.themeMode.auto': { 'zh-CN': '跟随宿主', 'zh-TW': '跟隨宿主', en: 'Follow Host' },
+  'ns.themeMode.light': { 'zh-CN': '浅色', 'zh-TW': '淺色', en: 'Light' },
+  'ns.themeMode.dark': { 'zh-CN': '深色', 'zh-TW': '深色', en: 'Dark' },
+  'ns.panelLang.title': { 'zh-CN': '插件面板语言', 'zh-TW': '外掛面板語言', en: 'Plugin Panel Language' },
+  'ns.panelLang.desc': { 'zh-CN': '仅控制 Context Meter 面板与设置语言，不随宿主界面切换', 'zh-TW': '僅控制 Context Meter 面板與設定語言，不隨宿主介面切換', en: 'Controls Context Meter panel and settings language independently' },
+  'ns.topbarMode.desc': { 'zh-CN': '控制顶栏常驻状态入口的展示形式', 'zh-TW': '控制頂欄常駐狀態入口的展示形式', en: 'Controls how the persistent status entry appears in the top bar' },
+  'ns.panelDockMode.title': { 'zh-CN': '面板显示位置', 'zh-TW': '面板顯示位置', en: 'Panel Dock Position' },
+  'ns.panelDockMode.desc': { 'zh-CN': '切换详情面板打开时的承载容器', 'zh-TW': '切換詳情面板開啟時的承載容器', en: 'Choose where the detail panel opens' },
+  'ns.autoHideTopbarOnDock.title': { 'zh-CN': '辅助栏与独立页展开时自动隐藏顶栏入口', 'zh-TW': '輔助欄與獨立頁展開時自動隱藏頂欄入口', en: 'Auto-hide topbar entry when docked' },
+  'ns.autoHideTopbarOnDock.desc': { 'zh-CN': '展开停靠面板时自动收起顶栏冗余入口', 'zh-TW': '展開停靠面板時自動收起頂欄冗餘入口', en: 'Hide redundant topbar entry when the sidebar or page panel opens' },
+  'ns.colors.title': { 'zh-CN': '指标与背景颜色自定义', 'zh-TW': '指標與背景顏色自訂', en: 'Custom Metric & Surface Colors' },
+  'ns.colors.desc': { 'zh-CN': '自定义面板背景、上下文圆环、速率与 Token 色值', 'zh-TW': '自訂面板背景、上下文圓環、速率與 Token 色值', en: 'Customize panel background, context ring, speed, and token colors' },
+  'ns.colors.expand': { 'zh-CN': '展开设置', 'zh-TW': '展開設定', en: 'Customize' },
+  'ns.colors.collapse': { 'zh-CN': '收起设置', 'zh-TW': '收起設定', en: 'Collapse' },
+  'ns.colors.panelBg': { 'zh-CN': '面板背景', 'zh-TW': '面板背景', en: 'Panel Surface' },
+  'ns.radialOrb.desc': { 'zh-CN': '窗口顶层可拖拽悬浮球，点击展开 360° 六瓣花环', 'zh-TW': '視窗頂層可拖曳懸浮球，點擊展開 360° 六瓣花環', en: 'Draggable floating orb that expands into a 360° six-petal ring' },
+  'ns.radialTopbar.desc': { 'zh-CN': '点击顶栏上下文圆环原地收缩为正圆并向下展开 180° 扇形', 'zh-TW': '點擊頂欄上下文圓環原地收縮為正圓並向下展開 180° 扇形', en: 'Click the topbar ring to expand a downward 180° radial menu' },
+  'ns.radialBottombar.desc': { 'zh-CN': '点击输入框下方上下文入口原地收缩为正圆并向上展开 180° 扇形', 'zh-TW': '點擊輸入框下方上下文入口原地收縮為正圓並向上展開 180° 扇形', en: 'Click the composer ring to expand an upward 180° radial menu' },
+  'ns.showComposerBar.title': { 'zh-CN': '输入框下方显示底栏状态摘要', 'zh-TW': '輸入框下方顯示底欄狀態摘要', en: 'Show status bar below composer' },
+  'ns.showComposerBar.desc': { 'zh-CN': '在输入框底部展示当前上下文、速率、缓存命中与额度摘要', 'zh-TW': '在輸入框底部展示目前上下文、速率、快取命中與額度摘要', en: 'Shows context, speed, cache hit rate, and quota below the input box' },
+  'ns.turnFooter.desc': { 'zh-CN': '在助手回复操作栏末尾显示本轮模型、用量与耗时微标', 'zh-TW': '在助手回覆操作欄末尾顯示本輪模型、用量與耗時微標', en: 'Shows per-turn model, token usage, and latency badge in reply actions' },
+  'ns.nextPrompt.desc': { 'zh-CN': '默认关闭 · 开启后每轮结束会调用当前账号模型并消耗额外额度，按 Tab 填入草稿', 'zh-TW': '預設關閉 · 開啟後每輪結束會呼叫目前帳號模型並消耗額外額度，按 Tab 填入草稿', en: 'Off by default · queries active model after each turn using quota; press Tab to insert' },
+  'ns.autoSwitch.desc': { 'zh-CN': '达阈值后等待当前生成空闲且单窗口时切往备选账号', 'zh-TW': '達閾值後等待目前生成空閒且單視窗時切往備選帳號', en: 'Switches to a candidate account once threshold hits, idle, and single window' },
+  'ns.autoSwitch.emptyCands': { 'zh-CN': '暂无可切入的备选账号', 'zh-TW': '暫無可切入的備選帳號', en: 'No candidate accounts available' },
+  'ns.autoSwitchPool.desc': { 'zh-CN': '选择触发自动切号监测的模型共享额度池', 'zh-TW': '選擇觸發自動切號監測的模型共用額度池', en: 'Select the shared model pool monitored for auto-switching' },
+  'ns.autoSwitchTarget.desc': { 'zh-CN': '仅从 Gemini 或 Claude / GPT 的 5 小时与周额度中选择具体监控项', 'zh-TW': '僅從 Gemini 或 Claude / GPT 的 5 小時與週額度中選擇具體監控項', en: 'Choose a specific 5h or weekly quota target for Gemini or Claude / GPT' },
+  'ns.autoSwitchRule.title': { 'zh-CN': '触发口径与阈值百分比', 'zh-TW': '觸發口徑與閾值百分比', en: 'Trigger Metric & Threshold' },
+  'ns.autoSwitchRule.desc': { 'zh-CN': '修改规则后请点击保存切号规则，再拨动总开关', 'zh-TW': '修改規則後請點擊儲存切號規則，再撥動總開關', en: 'Save rule changes before toggling the master switch' },
+  'ns.clientLang.title': { 'zh-CN': 'Antigravity 客户端界面语言', 'zh-TW': 'Antigravity 用戶端介面語言', en: 'Antigravity Client Language' },
+  'ns.brand.title': { 'zh-CN': '左上角品牌文字显示', 'zh-TW': '左上角品牌文字顯示', en: 'Top-Left Brand Text' },
+  'ns.brand.desc': { 'zh-CN': '仅作用于宿主左上角品牌位，不影响插件面板语言', 'zh-TW': '僅作用於宿主左上角品牌位，不影響外掛面板語言', en: 'Applies only to host header brand slot without changing plugin panel language' },
+  'ns.rehydrate.desc': { 'zh-CN': '压缩后自动从本地记录把最初要求、最近原话与刚改文件补回给 AI', 'zh-TW': '壓縮後自動從本機紀錄把最初要求、最近原話與剛改檔案補回給 AI', en: 'Restores initial request, recent turns, and edited files from local records after compaction' },
+  'ns.enhance.desc': { 'zh-CN': '调整语言服务提示模板档位并支持恢复官方默认', 'zh-TW': '調整語言服務提示範本檔位並支援恢復官方預設', en: 'Tunes language-server prompt tiers with stock restore support' },
+  'ns.enhanceTitle.desc': { 'zh-CN': '等长替换会话命名提示词，支持随时恢复英文', 'zh-TW': '等長替換工作階段命名提示詞，支援隨時恢復英文', en: 'Fixed-length slot replacement for chat naming prompt, reversible to English' },
+  'ns.proxyEnabled.title': { 'zh-CN': '启用本地免 TUN 代理', 'zh-TW': '啟用本機免 TUN 代理', en: 'Enable No-TUN Local Proxy' },
+  'ns.proxyEnabled.desc': { 'zh-CN': '无需开启系统级虚拟网卡即可接管模型请求', 'zh-TW': '無需開啟系統級虛擬網路卡即可接管模型請求', en: 'Routes model requests through local proxy without system TUN adapter' },
+  'ns.proxyUrl.title': { 'zh-CN': '代理地址', 'zh-TW': '代理位址', en: 'Proxy Address' },
+  'ns.proxyUrl.desc': { 'zh-CN': '填写本地 HTTP 或 SOCKS5 代理端口', 'zh-TW': '填寫本機 HTTP 或 SOCKS5 代理連接埠', en: 'Local HTTP or SOCKS5 proxy endpoint' },
+  'ns.proxy.test': { 'zh-CN': '测试连通性', 'zh-TW': '測試連通性', en: 'Test Connection' },
+  'ns.proxyUrl.apply': { 'zh-CN': '应用', 'zh-TW': '套用', en: 'Apply' },
+  'ns.planTier.title': { 'zh-CN': '订阅档位', 'zh-TW': '訂閱檔位', en: 'Subscription Plan' },
+  'ns.planTier.desc': { 'zh-CN': '用于计算月度额度与单次会话成本参考', 'zh-TW': '用於計算月度額度與單次會話成本參考', en: 'Used for monthly quota and per-session cost reference' },
+  'ns.billingRegion.title': { 'zh-CN': '账单地区与显示货币', 'zh-TW': '帳單地區與顯示貨幣', en: 'Billing Region & Display Currency' },
+  'ns.billingRegion.desc': { 'zh-CN': '按所选地区参考定价与汇率折算估算金额', 'zh-TW': '依所選地區參考定價與匯率折算估算金額', en: 'Estimates cost using regional reference pricing and exchange rate' },
+  'ns.autoCheckUpdate.title': { 'zh-CN': '启动时自动检查更新但不自动安装', 'zh-TW': '啟動時自動檢查更新但不自動安裝', en: 'Auto-check updates on startup' },
+  'ns.autoCheckUpdate.desc': { 'zh-CN': '发现新版本时仅在界面内提示', 'zh-TW': '發現新版本時僅在介面內提示', en: 'Notify inside UI only without auto-installing' },
+  'ns.exportDiag.desc': { 'zh-CN': '用于排查采集异常或备份当前运行态信息', 'zh-TW': '用於排查擷取異常或備份目前執行態資訊', en: 'Export current runtime state for troubleshooting' },
+  'ns.exportDiag.btn': { 'zh-CN': '导出诊断包', 'zh-TW': '匯出診斷包', en: 'Export Diagnostics' },
+  'ns.exportDiag.done': { 'zh-CN': '已导出运行态诊断文件', 'zh-TW': '已匯出執行態診斷檔案', en: 'Diagnostics exported' },
+  'ns.exportDiag.copied': { 'zh-CN': '已复制运行态诊断信息到剪贴板', 'zh-TW': '已複製執行態診斷資訊到剪貼簿', en: 'Diagnostics copied to clipboard' },
+  'ns.clearCache.title': { 'zh-CN': '清理本地统计缓存', 'zh-TW': '清理本機統計快取', en: 'Clear Local Stats Cache' },
+  'ns.clearCache.btn': { 'zh-CN': '清理缓存', 'zh-TW': '清理快取', en: 'Clear Cache' },
+  'ns.clearCache.desc': { 'zh-CN': '当前占用 {kb} KB · 清理不影响原有配置项', 'zh-TW': '目前佔用 {kb} KB · 清理不影響原有設定項', en: 'Using {kb} KB · preserves your settings' },
+  'ns.clearCache.done': { 'zh-CN': '已清理 {count} 项本地临时缓存，原有配置已保留', 'zh-TW': '已清理 {count} 項本機暫存快取，原有設定已保留', en: 'Cleared {count} cache entries; settings preserved' }
 };
 
 function t(key, vars = null) {
@@ -23292,6 +24036,10 @@ function applyStaticPanelTranslations(rootNode = shadow) {
   for (const node of rootNode.querySelectorAll('[data-i18n-placeholder]')) {
     const key = node.getAttribute('data-i18n-placeholder');
     if (key) node.setAttribute('placeholder', t(key));
+  }
+  for (const node of rootNode.querySelectorAll('[data-i18n-label]')) {
+    const key = node.getAttribute('data-i18n-label');
+    if (key) node.setAttribute('label', t(key));
   }
 }
 
@@ -26431,6 +27179,13 @@ function formatPeriodCalendarLabel(currentPeriod) {
   let autoCheckUpdate = false;
   let allowBetaUpdates = false;
   let cachedLatestRelease = null;
+  let updateActionPhase = 'idle';
+  let lastCheckUpdateResult = null;
+  let lastApplyUpdateResult = null;
+  let updateTargetVersion = null;
+  let updateActivatedTarget = false;
+  let lastUpdateError = null;
+  let cachedStrictUpdateState = null;
 
   const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.0-beta.1';
   function formatDisplayVersion(rawVer) {
@@ -26580,6 +27335,15 @@ function formatPeriodCalendarLabel(currentPeriod) {
       backendStatus.backendVersion !== METER_RENDERER_VERSION
     );
     backendStatus.lastVerifiedAtMs = Date.now();
+    if (!backendStatus.backendVersionMismatch && backendStatus.backendVersion === METER_RENDERER_VERSION) {
+      if (lastApplyUpdateResult?.liveInjected || (updateActivatedTarget && lastApplyUpdateResult?.diskInstalled !== false)) {
+        pendingUpdateRestart = false;
+      }
+    }
+    if (typeof recomputeStrictUpdateState === 'function') {
+      recomputeStrictUpdateState();
+      syncHostSettingsUi();
+    }
   }
 
   async function callBackendWithPriority({ ipcCall = null, liveRoute = '', liveBody = {}, liveFetchOpts = {}, onFallback = null } = {}) {
@@ -26635,1160 +27399,1237 @@ function formatPeriodCalendarLabel(currentPeriod) {
   }
 
 // =========================================================================
-  // 模块 1: 0 级主题跟随、面板与菜单统一背景色、热力图 5 档色阶与自定义颜色选取器
-  // =========================================================================
-  const COLOR_SLOTS = {
-    panelBg: '--ag-custom-panel-bg',
-    ringUsed: '--ag-custom-ring-used',
-    ringTrack: '--ag-custom-ring-track',
-    contextText: '--ag-custom-context-text',
-    speedText: '--ag-custom-speed',
-    tokenTotal: '--ag-custom-token-total',
-    tokenAccent: '--ag-custom-token-accent',
-    heatLow: '--ag-custom-heat-low',
-    heatHigh: '--ag-custom-heat-high',
-    heatLvl0: '--ag-custom-heat-lvl-0',
-    heatLvl1: '--ag-custom-heat-lvl-1',
-    heatLvl2: '--ag-custom-heat-lvl-2',
-    heatLvl3: '--ag-custom-heat-lvl-3',
-    heatLvl4: '--ag-custom-heat-lvl-4'
-  };
-  const COLOR_STORAGE_KEY = 'ag_custom_colors_v1';
-  const HEAT_PRESET_STORAGE_KEY = 'ag_heat_preset_v1';
-  const customColors = {
-    panelBg: '',
-    ringUsed: '',
-    ringTrack: '',
-    contextText: '',
-    speedText: '',
-    tokenTotal: '',
-    tokenAccent: '',
-    heatLow: '',
-    heatHigh: '',
-    heatLvl0: '',
-    heatLvl1: '',
-    heatLvl2: '',
-    heatLvl3: '',
-    heatLvl4: ''
-  };
-  let heatPreset = 'purple';
+// 模块 1: 0 级主题跟随、面板与菜单统一背景色、热力图 5 档色阶与自定义颜色选取器
+// =========================================================================
+const COLOR_SLOTS = {
+  panelBg: '--ag-custom-panel-bg',
+  ringUsed: '--ag-custom-ring-used',
+  ringTrack: '--ag-custom-ring-track',
+  contextText: '--ag-custom-context-text',
+  speedText: '--ag-custom-speed',
+  tokenTotal: '--ag-custom-token-total',
+  tokenAccent: '--ag-custom-token-accent',
+  heatLow: '--ag-custom-heat-low',
+  heatHigh: '--ag-custom-heat-high',
+  heatLvl0: '--ag-custom-heat-lvl-0',
+  heatLvl1: '--ag-custom-heat-lvl-1',
+  heatLvl2: '--ag-custom-heat-lvl-2',
+  heatLvl3: '--ag-custom-heat-lvl-3',
+  heatLvl4: '--ag-custom-heat-lvl-4'
+};
+const COLOR_STORAGE_KEY = 'ag_custom_colors_v1';
+const HEAT_PRESET_STORAGE_KEY = 'ag_heat_preset_v1';
+const customColors = {
+  panelBg: '',
+  ringUsed: '',
+  ringTrack: '',
+  contextText: '',
+  speedText: '',
+  tokenTotal: '',
+  tokenAccent: '',
+  heatLow: '',
+  heatHigh: '',
+  heatLvl0: '',
+  heatLvl1: '',
+  heatLvl2: '',
+  heatLvl3: '',
+  heatLvl4: ''
+};
+let heatPreset = 'purple';
 
-  const HEAT_PRESETS = {
-    purple: {
-      dark: ['#27272a', '#3f1e6b', '#652ab7', '#9053f8', '#c084fc'],
-      light: ['#e4e4e7', '#e9d5ff', '#c084fc', '#9333ea', '#6b21a8']
-    },
-    yellow: {
-      dark: ['#27272a', '#713f12', '#a16207', '#eab308', '#fde047'],
-      light: ['#e4e4e7', '#fef08a', '#facc15', '#ca8a04', '#854d0e']
-    },
-    green: {
-      dark: ['#27272a', '#14532d', '#15803d', '#22c55e', '#86efac'],
-      light: ['#e4e4e7', '#bbf7d0', '#4ade80', '#16a34a', '#14532d']
-    },
-    blue: {
-      dark: ['#27272a', '#1e3a8a', '#1d4ed8', '#3b82f6', '#93c5fd'],
-      light: ['#e4e4e7', '#bfdbfe', '#60a5fa', '#2563eb', '#1e3a8a']
-    },
-    red: {
-      dark: ['#27272a', '#7f1d1d', '#b91c1c', '#ef4444', '#fca5a5'],
-      light: ['#e4e4e7', '#fecaca', '#f87171', '#dc2626', '#7f1d1d']
+const HEAT_PRESETS = {
+  purple: {
+    dark: ['#27272a', '#3f1e6b', '#652ab7', '#9053f8', '#c084fc'],
+    light: ['#e4e4e7', '#e9d5ff', '#c084fc', '#9333ea', '#6b21a8']
+  },
+  yellow: {
+    dark: ['#27272a', '#713f12', '#a16207', '#eab308', '#fde047'],
+    light: ['#e4e4e7', '#fef08a', '#facc15', '#ca8a04', '#854d0e']
+  },
+  green: {
+    dark: ['#27272a', '#14532d', '#15803d', '#22c55e', '#86efac'],
+    light: ['#e4e4e7', '#bbf7d0', '#4ade80', '#16a34a', '#14532d']
+  },
+  blue: {
+    dark: ['#27272a', '#1e3a8a', '#1d4ed8', '#3b82f6', '#93c5fd'],
+    light: ['#e4e4e7', '#bfdbfe', '#60a5fa', '#2563eb', '#1e3a8a']
+  },
+  red: {
+    dark: ['#27272a', '#7f1d1d', '#b91c1c', '#ef4444', '#fca5a5'],
+    light: ['#e4e4e7', '#fecaca', '#f87171', '#dc2626', '#7f1d1d']
+  }
+};
+
+try {
+  const rawColors = typeof localStorage !== 'undefined' && localStorage.getItem(COLOR_STORAGE_KEY);
+  if (rawColors) {
+    const parsed = JSON.parse(rawColors);
+    for (const k of Object.keys(COLOR_SLOTS)) {
+      if (typeof parsed?.[k] === 'string') customColors[k] = parsed[k];
     }
-  };
+    if (typeof parsed?.heatPreset === 'string' && HEAT_PRESETS[parsed.heatPreset]) {
+      heatPreset = parsed.heatPreset;
+    }
+  }
+  const savedPreset = typeof localStorage !== 'undefined' && localStorage.getItem(HEAT_PRESET_STORAGE_KEY);
+  if (savedPreset && HEAT_PRESETS[savedPreset]) heatPreset = savedPreset;
+} catch { }
 
+function saveCustomColors() {
   try {
-    const rawColors = typeof localStorage !== 'undefined' && localStorage.getItem(COLOR_STORAGE_KEY);
-    if (rawColors) {
-      const parsed = JSON.parse(rawColors);
-      for (const k of Object.keys(COLOR_SLOTS)) {
-        if (typeof parsed?.[k] === 'string') customColors[k] = parsed[k];
-      }
-      if (typeof parsed?.heatPreset === 'string' && HEAT_PRESETS[parsed.heatPreset]) {
-        heatPreset = parsed.heatPreset;
-      }
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(COLOR_STORAGE_KEY, JSON.stringify({ ...customColors, heatPreset }));
+      localStorage.setItem(HEAT_PRESET_STORAGE_KEY, heatPreset);
     }
-    const savedPreset = typeof localStorage !== 'undefined' && localStorage.getItem(HEAT_PRESET_STORAGE_KEY);
-    if (savedPreset && HEAT_PRESETS[savedPreset]) heatPreset = savedPreset;
-  } catch {}
+  } catch { }
+}
 
-  let colorSaveTimer = null;
-  function saveCustomColors() {
-    try {
-      if (typeof localStorage !== 'undefined') {
-        localStorage.setItem(COLOR_STORAGE_KEY, JSON.stringify({ ...customColors, heatPreset }));
-        localStorage.setItem(HEAT_PRESET_STORAGE_KEY, heatPreset);
-      }
-    } catch {}
-    userActionSeq++;
-    if (colorSaveTimer) clearTimeout(colorSaveTimer);
-    colorSaveTimer = setTimeout(() => {
-      colorSaveTimer = null;
-      if (!state.disposed) void saveSettingsPayloadBridge({ uiPreferences: { customColors: { ...customColors }, heatPreset } });
-    }, 250);
-  }
-
-  function restoreAppearancePreferences(prefs) {
-    if (prefs.customColors && typeof prefs.customColors === 'object') {
-      for (const key of Object.keys(COLOR_SLOTS)) customColors[key] = normalizeHex(prefs.customColors[key]) || '';
-      if (HEAT_PRESETS[prefs.heatPreset]) heatPreset = prefs.heatPreset;
-      applyCustomColors();
-    }
-    if (['auto', 'light', 'dark'].includes(prefs.themeMode) && prefs.themeMode !== currentThemeMode) {
-      currentThemeMode = prefs.themeMode;
-      applyTheme();
-    }
-  }
-
-  // 色彩空间转换与格式化工具（HEX <-> RGB <-> HSV <-> HSL）
-  function clampNum(n, min, max) {
-    return Math.min(max, Math.max(min, Number.isFinite(n) ? n : min));
-  }
-
-  function rgbToHex(r, g, b) {
-    const to2 = v => clampNum(Math.round(v), 0, 255).toString(16).padStart(2, '0');
-    return `#${to2(r)}${to2(g)}${to2(b)}`;
-  }
-
-  function hexToRgb(hexStr) {
-    if (!hexStr || typeof hexStr !== 'string') return null;
-    const clean = hexStr.trim().replace(/^#/, '');
-    if (!/^[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(clean)) return null;
-    const full = clean.length === 3 ? clean.split('').map(c => c + c).join('') : clean;
-    const num = parseInt(full, 16);
-    if (Number.isNaN(num)) return null;
-    return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
-  }
-
-  function hslToRgb(h, s, l) {
-    const hn = ((Number(h) % 360) + 360) % 360;
-    const sn = clampNum(Number(s), 0, 100) / 100;
-    const ln = clampNum(Number(l), 0, 100) / 100;
-    const c = (1 - Math.abs(2 * ln - 1)) * sn;
-    const x = c * (1 - Math.abs(((hn / 60) % 2) - 1));
-    const m = ln - c / 2;
-    let r1 = 0, g1 = 0, b1 = 0;
-    if (hn < 60) { r1 = c; g1 = x; }
-    else if (hn < 120) { r1 = x; g1 = c; }
-    else if (hn < 180) { g1 = c; b1 = x; }
-    else if (hn < 240) { g1 = x; b1 = c; }
-    else if (hn < 300) { r1 = x; b1 = c; }
-    else { r1 = c; b1 = x; }
-    return {
-      r: Math.round((r1 + m) * 255),
-      g: Math.round((g1 + m) * 255),
-      b: Math.round((b1 + m) * 255)
-    };
-  }
-
-  function splitTopLevelCssArgs(expr) {
-    const parts = [];
-    let depth = 0;
-    let cur = '';
-    for (let i = 0; i < expr.length; i++) {
-      const ch = expr[i];
-      if (ch === '(') depth++;
-      else if (ch === ')' && depth > 0) depth--;
-      if (ch === ',' && depth === 0) {
-        parts.push(cur.trim());
-        cur = '';
-      } else {
-        cur += ch;
-      }
-    }
-    if (cur.trim()) parts.push(cur.trim());
-    return parts;
-  }
-
-  function evalColorMixSrgb(input) {
-    const m = String(input || '').trim().match(/^color-mix\(\s*in\s+srgb\s*,\s*([\s\S]+)\)$/i);
-    if (!m) return null;
-    const args = splitTopLevelCssArgs(m[1]);
-    if (args.length !== 2) return null;
-    const parseStop = (part) => {
-      const pctMatch = part.match(/\s+([\d.]+)%\s*$/);
-      const pct = pctMatch ? Number(pctMatch[1]) : null;
-      const colorExpr = pctMatch ? part.slice(0, pctMatch.index).trim() : part.trim();
-      const hex = normalizeHex(colorExpr);
-      const rgb = hex ? hexToRgb(hex) : null;
-      return rgb ? { rgb, pct } : null;
-    };
-    const s1 = parseStop(args[0]);
-    const s2 = parseStop(args[1]);
-    if (!s1 || !s2) return null;
-    let w1 = s1.pct;
-    let w2 = s2.pct;
-    if (w1 == null && w2 == null) { w1 = 50; w2 = 50; }
-    else if (w1 != null && w2 == null) { w2 = 100 - w1; }
-    else if (w1 == null && w2 != null) { w1 = 100 - w2; }
-    const sum = w1 + w2;
-    if (!Number.isFinite(sum) || sum <= 0) return null;
-    const p1 = w1 / sum;
-    const p2 = w2 / sum;
-    return rgbToHex(
-      s1.rgb.r * p1 + s2.rgb.r * p2,
-      s1.rgb.g * p1 + s2.rgb.g * p2,
-      s1.rgb.b * p1 + s2.rgb.b * p2
-    );
-  }
-
-  function normalizeHex(input) {
-    if (!input || typeof input !== 'string') return null;
-    const s = input.trim();
-    if (!s || /^transparent$/i.test(s)) return null;
-    const direct = hexToRgb(s);
-    if (direct) return rgbToHex(direct.r, direct.g, direct.b);
-    if (/^color-mix\(/i.test(s)) {
-      const mixed = evalColorMixSrgb(s);
-      if (mixed) return mixed;
-    }
-    const mColorSrgb = s.match(/^color\(\s*srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+%?))?\s*\)$/i);
-    if (mColorSrgb) {
-      if (mColorSrgb[4] !== undefined) {
-        const alphaRaw = mColorSrgb[4].endsWith('%') ? Number(mColorSrgb[4].slice(0, -1)) / 100 : Number(mColorSrgb[4]);
-        if (!Number.isNaN(alphaRaw) && alphaRaw <= 0.01) return null;
-      }
-      return rgbToHex(Number(mColorSrgb[1]) * 255, Number(mColorSrgb[2]) * 255, Number(mColorSrgb[3]) * 255);
-    }
-    const mRgb = s.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*[,/]\s*([\d.]+%?))?/i);
-    if (mRgb) {
-      if (mRgb[4] !== undefined) {
-        const alphaRaw = mRgb[4].endsWith('%') ? Number(mRgb[4].slice(0, -1)) / 100 : Number(mRgb[4]);
-        if (!Number.isNaN(alphaRaw) && alphaRaw <= 0.01) return null;
-      }
-      return rgbToHex(Number(mRgb[1]), Number(mRgb[2]), Number(mRgb[3]));
-    }
-    const mHsl = s.match(/hsla?\(\s*([\d.]+)\s*,\s*([\d.]+)%?\s*,\s*([\d.]+)%?(?:\s*[,/]\s*([\d.]+%?))?/i);
-    if (mHsl) {
-      if (mHsl[4] !== undefined) {
-        const alphaRaw = mHsl[4].endsWith('%') ? Number(mHsl[4].slice(0, -1)) / 100 : Number(mHsl[4]);
-        if (!Number.isNaN(alphaRaw) && alphaRaw <= 0.01) return null;
-      }
-      const rgb = hslToRgb(Number(mHsl[1]), Number(mHsl[2]), Number(mHsl[3]));
-      return rgbToHex(rgb.r, rgb.g, rgb.b);
-    }
-    return null;
-  }
-
-  function rgbToHsv(r, g, b) {
-    const rn = r / 255, gn = g / 255, bn = b / 255;
-    const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
-    const d = max - min;
-    let h = 0;
-    if (d !== 0) {
-      if (max === rn) h = ((gn - bn) / d + (gn < bn ? 6 : 0)) * 60;
-      else if (max === gn) h = ((bn - rn) / d + 2) * 60;
-      else h = ((rn - gn) / d + 4) * 60;
-    }
-    const s = max === 0 ? 0 : (d / max) * 100;
-    const v = max * 100;
-    return { h: Math.round(h), s: Math.round(s), v: Math.round(v) };
-  }
-
-  function hsvToRgb(h, s, v) {
-    const hn = ((Number(h) % 360) + 360) % 360;
-    const sn = clampNum(Number(s), 0, 100) / 100;
-    const vn = clampNum(Number(v), 0, 100) / 100;
-    const c = vn * sn;
-    const x = c * (1 - Math.abs(((hn / 60) % 2) - 1));
-    const m = vn - c;
-    let r1 = 0, g1 = 0, b1 = 0;
-    if (hn < 60) { r1 = c; g1 = x; }
-    else if (hn < 120) { r1 = x; g1 = c; }
-    else if (hn < 180) { g1 = c; b1 = x; }
-    else if (hn < 240) { g1 = x; b1 = c; }
-    else if (hn < 300) { r1 = x; b1 = c; }
-    else { r1 = c; b1 = x; }
-    return {
-      r: Math.round((r1 + m) * 255),
-      g: Math.round((g1 + m) * 255),
-      b: Math.round((b1 + m) * 255)
-    };
-  }
-
-  function rgbToHsl(r, g, b) {
-    const rn = r / 255, gn = g / 255, bn = b / 255;
-    const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
-    const l = (max + min) / 2;
-    const d = max - min;
-    let h = 0, s = 0;
-    if (d !== 0) {
-      s = d / (1 - Math.abs(2 * l - 1));
-      if (max === rn) h = ((gn - bn) / d + (gn < bn ? 6 : 0)) * 60;
-      else if (max === gn) h = ((bn - rn) / d + 2) * 60;
-      else h = ((rn - gn) / d + 4) * 60;
-    }
-    return { h: Math.round(h), s: Math.round(s * 100), l: Math.round(l * 100) };
-  }
-
-  function interpolateHex(hexA, hexB, t) {
-    const a = hexToRgb(hexA) || { r: 39, g: 39, b: 42 };
-    const b = hexToRgb(hexB) || { r: 192, g: 132, b: 252 };
-    const ratio = clampNum(t, 0, 1);
-    return rgbToHex(
-      a.r + (b.r - a.r) * ratio,
-      a.g + (b.g - a.g) * ratio,
-      a.b + (b.b - a.b) * ratio
-    );
-  }
-
-  let currentThemeMode = 'auto';
-  try {
-    currentThemeMode = (typeof localStorage !== 'undefined' && localStorage.getItem('ag_theme_mode')) || 'auto';
-  } catch {}
-
-  function parseRgbLuminance(colorStr) {
-    if (!colorStr || typeof colorStr !== 'string') return null;
-    const rgb = hexToRgb(normalizeHex(colorStr));
-    if (rgb) return (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
-    return null;
-  }
-
-  function getHostZeroLevelBg(isLight) {
-    const fallback = isLight ? '#ffffff' : '#181818';
-    try {
-      if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
-        const rootEl = document.body || document.documentElement;
-        if (rootEl) {
-          const cs = window.getComputedStyle(rootEl);
-          const candidates = [
-            cs.getPropertyValue('--background')?.trim(),
-            cs.backgroundColor?.trim()
-          ].filter(Boolean);
-          for (const raw of candidates) {
-            const norm = normalizeHex(raw);
-            if (!norm) continue;
-            const lum = parseRgbLuminance(norm);
-            const normIsLight = lum != null ? lum > 0.55 : Boolean(isLight);
-            if (normIsLight === Boolean(isLight)) return norm;
-            return fallback;
-          }
-        }
-      }
-    } catch {}
-    return fallback;
-  }
-
-  function getSystemTheme() {
-    try {
-      const body = document.body;
-      const doc = document.documentElement;
-      if (body?.classList?.contains('theme-light') || body?.classList?.contains('light') || doc?.classList?.contains('light') || body?.classList?.contains('vscode-light')) return 'light';
-      if (body?.classList?.contains('theme-dark') || body?.classList?.contains('dark') || doc?.classList?.contains('dark') || body?.classList?.contains('vscode-dark')) return 'dark';
-      if (doc?.style?.colorScheme === 'light') return 'light';
-      if (doc?.style?.colorScheme === 'dark') return 'dark';
-      if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function' && (body || doc)) {
-        const cs = window.getComputedStyle(body || doc);
-        const bgVar = cs.getPropertyValue('--background') || cs.backgroundColor;
-        const lum = parseRgbLuminance(bgVar);
-        if (lum != null) return lum > 0.55 ? 'light' : 'dark';
-      }
-      if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
-        if (window.matchMedia('(prefers-color-scheme: light)').matches) return 'light';
-      }
-    } catch {}
-    return 'dark';
-  }
-
-  function resolveTheme() {
-    if (currentThemeMode === 'light') return 'light';
-    if (currentThemeMode === 'dark') return 'dark';
-    return getSystemTheme();
-  }
-
-  function getPresetHeatmapScale() {
-    const isLight = resolveTheme() === 'light';
-    const presetObj = HEAT_PRESETS[heatPreset] || HEAT_PRESETS.purple;
-    return (isLight ? presetObj.light : presetObj.dark).slice();
-  }
-
-  function getBaseHeatmapScale() {
-    const base = getPresetHeatmapScale();
-    const lowCustom = normalizeHex(customColors.heatLow);
-    const highCustom = normalizeHex(customColors.heatHigh);
-    if (lowCustom || highCustom) {
-      const c0 = lowCustom || base[0];
-      const c4 = highCustom || base[4];
-      return [
-        c0,
-        interpolateHex(c0, c4, 0.25),
-        interpolateHex(c0, c4, 0.5),
-        interpolateHex(c0, c4, 0.75),
-        c4
-      ];
-    }
-    return base;
-  }
-
-  function getEffectiveHeatmapScale() {
-    const scale = getBaseHeatmapScale();
-    for (let i = 0; i < 5; i++) {
-      const lvlCustom = normalizeHex(customColors[`heatLvl${i}`]);
-      if (lvlCustom) scale[i] = lvlCustom;
-    }
-    return scale;
-  }
-
-  function getDefaultSlotColor(slotKey) {
-    const isLight = resolveTheme() === 'light';
-    const presetScale = getPresetHeatmapScale();
-    const baseScale = getBaseHeatmapScale();
-    switch (slotKey) {
-      case 'panelBg': return getHostZeroLevelBg(isLight);
-      case 'ringUsed': return isLight ? '#18181b' : '#e6e6eb';
-      case 'ringTrack': return isLight ? '#b8b8c2' : '#52525b';
-      case 'contextText': return isLight ? '#18181b' : '#ececef';
-      case 'speedText': return isLight ? '#0284c7' : '#38bdf8';
-      case 'tokenTotal': return isLight ? '#7c3aed' : '#c084fc';
-      case 'tokenAccent': return isLight ? '#7c3aed' : '#a78bfa';
-      case 'heatLow': return presetScale[0];
-      case 'heatHigh': return presetScale[4];
-      case 'heatLvl0': return baseScale[0];
-      case 'heatLvl1': return baseScale[1];
-      case 'heatLvl2': return baseScale[2];
-      case 'heatLvl3': return baseScale[3];
-      case 'heatLvl4': return baseScale[4];
-      default: return '#7748cf';
-    }
-  }
-
-  function getEffectiveSlotColor(slotKey) {
-    return normalizeHex(customColors[slotKey]) || getDefaultSlotColor(slotKey);
-  }
-
-  function applyHeatmapPalette() {
-    const scale = getEffectiveHeatmapScale();
-    for (let i = 0; i < 5; i++) {
-      host.style.setProperty(`--ag-heat-lvl-${i}`, scale[i]);
-      const legEl = el(`heat-leg-${i}`);
-      if (legEl) {
-        legEl.style.background = scale[i];
-        legEl.style.setProperty('--swatch-color', scale[i]);
-        legEl.setAttribute('data-custom', String(Boolean(customColors[`heatLvl${i}`])));
-      }
-    }
-    const hasCustomHeat = Boolean(
-      customColors.heatLow || customColors.heatHigh ||
-      customColors.heatLvl0 || customColors.heatLvl1 || customColors.heatLvl2 || customColors.heatLvl3 || customColors.heatLvl4
-    );
-    try {
-      const group = el('heat-preset-group');
-      if (group?.querySelectorAll) {
-        const btns = group.querySelectorAll('[data-heat-preset]');
-        for (const btn of btns) {
-          const pName = btn.getAttribute('data-heat-preset');
-          btn.setAttribute('data-active', String(!hasCustomHeat && pName === heatPreset));
-        }
-      }
-    } catch {}
-  }
-
-  function syncSwatchAndResetButtons() {
-    for (const key of Object.keys(COLOR_SLOTS)) {
-      const val = customColors[key];
-      const eff = getEffectiveSlotColor(key);
-      const inputEl = el(`color-${key}`);
-      if (inputEl) inputEl.value = eff;
-      const swatchEl = el(`swatch-${key}`);
-      if (swatchEl) {
-        swatchEl.style.setProperty('--swatch-color', eff);
-        swatchEl.style.background = eff;
-      }
-      const resetBtn = el(`reset-${key}`);
-      if (resetBtn) {
-        resetBtn.setAttribute('data-mode', val ? 'custom' : 'auto');
-        if (key.startsWith('heatLvl')) {
-          resetBtn.textContent = val ? t('colors.btn.restore') : t('colors.btn.preset');
-        } else if (key === 'heatLow' || key === 'heatHigh') {
-          resetBtn.textContent = val ? t('colors.btn.restorePreset') : t('colors.btn.preset');
-        } else {
-          resetBtn.textContent = val ? t('colors.btn.restoreDefault') : t('cp.followTheme');
-        }
-      }
-    }
-    const resetHeatLvlsBtn = el('reset-heat-lvls');
-    if (resetHeatLvlsBtn) {
-      const anyHeatLvl = Boolean(
-        customColors.heatLvl0 || customColors.heatLvl1 || customColors.heatLvl2 || customColors.heatLvl3 || customColors.heatLvl4 ||
-        customColors.heatLow || customColors.heatHigh
-      );
-      resetHeatLvlsBtn.setAttribute('data-mode', anyHeatLvl ? 'custom' : 'auto');
-    }
-    // 面板 A 中的镜像色块按钮同步
-    const mirrorMap = {
-      'swatch-panelBg-tokens': 'panelBg',
-      'swatch-tokenTotal-tokens': 'tokenTotal',
-      'swatch-tokenAccent-tokens': 'tokenAccent'
-    };
-    for (const [id, slot] of Object.entries(mirrorMap)) {
-      const sw = el(id);
-      if (sw) {
-        const eff = getEffectiveSlotColor(slot);
-        sw.style.setProperty('--swatch-color', eff);
-        sw.style.background = eff;
-      }
-    }
-    const resetBgTokens = el('reset-panelBg-tokens');
-    if (resetBgTokens) {
-      const hasBg = Boolean(customColors.panelBg);
-      resetBgTokens.setAttribute('data-mode', hasBg ? 'custom' : 'auto');
-      resetBgTokens.textContent = hasBg ? t('colors.btn.restoreDefault') : t('cp.followTheme');
-    }
-  }
-
-  function getContinuousScaleStops() {
-    const scale = getEffectiveHeatmapScale();
-    const isLight = resolveTheme() === 'light';
-    const hasCustomHeat = Boolean(
-      customColors.heatLow ||
-      customColors.heatHigh ||
-      customColors.heatLvl1 ||
-      customColors.heatLvl2 ||
-      customColors.heatLvl3 ||
-      customColors.heatLvl4
-    );
-    if (!isLight && heatPreset === 'purple' && !hasCustomHeat) {
-      return ['#2E1A47', '#6D28D9', '#9333EA', '#D8B4FE'];
-    }
-    return [scale[1], scale[2], scale[3], scale[4]].filter(Boolean);
-  }
-
-  function getContinuousHeatColor(value, modeOrAnchor = 'heat') {
-    const v = Number(value) || 0;
-    if (v <= 0) return null;
-    const core = globalThis.__AGContextMeterCore || {};
-    let resp = 0;
-    if (typeof modeOrAnchor === 'string') {
-      resp = typeof core.computeColorScaleResponse === 'function'
-        ? core.computeColorScaleResponse(v, modeOrAnchor)
-        : (typeof core.computeMixedScaleResponse === 'function' ? core.computeMixedScaleResponse(v, 100e6) : 0.5);
-    } else {
-      const anchor = Number(modeOrAnchor) || 100e6;
-      resp = typeof core.computeMixedScaleResponse === 'function'
-        ? core.computeMixedScaleResponse(v, anchor)
-        : Math.max(0, Math.min(1, Math.pow(Math.min(v, anchor) / anchor, 0.42)));
-    }
-    const stops = getContinuousScaleStops();
-    if (typeof core.interpolateScaleColorHsl === 'function') {
-      return core.interpolateScaleColorHsl(resp, stops);
-    }
-    return stops[stops.length - 1] || '#9333ea';
-  }
-
-  let __chartsReady = false;
-
-  function refreshActiveChartViews() {
-    if (!__chartsReady) return;
-    if (activeHeatView === 'daily' && typeof renderHeatmapGrid === 'function') renderHeatmapGrid(true);
-    else if (activeHeatView === 'weekly' && typeof renderHeatmapWeekly === 'function') renderHeatmapWeekly();
-    else if (activeHeatView === 'monthly' && typeof renderHeatmapMonthly === 'function') renderHeatmapMonthly();
-    else if (activeHeatView === 'yearly' && typeof renderHeatmapYearly === 'function') renderHeatmapYearly();
-    else if (activeHeatView === 'cum' && typeof renderHeatmapCum === 'function') renderHeatmapCum();
-    const modelViewEl = el('model-usage-view');
-    if (modelViewEl && modelViewEl.style && modelViewEl.style.display === 'block' && typeof renderModelUsageView === 'function') {
-      renderModelUsageView();
-    }
-  }
-
-  function applyCustomColors() {
-    for (const [key, cssVar] of Object.entries(COLOR_SLOTS)) {
-      const val = customColors[key];
-      if (val) {
-        host.style.setProperty(cssVar, val);
-      } else if (host.style.removeProperty) {
-        host.style.removeProperty(cssVar);
-      } else {
-        host.style.setProperty(cssVar, '');
-      }
-    }
-    if (customColors.panelBg) {
-      const lum = parseRgbLuminance(customColors.panelBg);
-      if (lum != null) {
-        host.setAttribute('data-panel-tone', lum > 0.55 ? 'light' : 'dark');
-      }
-    } else {
-      host.removeAttribute('data-panel-tone');
-    }
-    applyHeatmapPalette();
-    syncSwatchAndResetButtons();
-    refreshActiveChartViews();
-  }
-
-  function setCustomColor(key, value) {
-    if (!Object.prototype.hasOwnProperty.call(COLOR_SLOTS, key)) return;
-    const raw = value ? String(value).trim() : '';
-    const norm = raw ? (normalizeHex(raw) || raw) : '';
-    customColors[key] = norm;
-    if (key === 'heatLow' && norm) customColors.heatLvl0 = '';
-    if (key === 'heatHigh' && norm) customColors.heatLvl4 = '';
-    saveCustomColors();
+function restoreAppearancePreferences(prefs) {
+  if (!prefs || typeof prefs !== 'object') return;
+  if (prefs.customColors && typeof prefs.customColors === 'object') {
+    for (const key of Object.keys(COLOR_SLOTS)) customColors[key] = normalizeHex(prefs.customColors[key]) || '';
+    if (HEAT_PRESETS[prefs.heatPreset]) heatPreset = prefs.heatPreset;
     applyCustomColors();
   }
-
-  function setHeatPreset(presetName) {
-    if (!HEAT_PRESETS[presetName]) return;
-    heatPreset = presetName;
-    customColors.heatLow = '';
-    customColors.heatHigh = '';
-    for (let i = 0; i < 5; i++) {
-      customColors[`heatLvl${i}`] = '';
-    }
-    saveCustomColors();
-    applyCustomColors();
-  }
-
-  function resetHeatmapLevels() {
-    customColors.heatLow = '';
-    customColors.heatHigh = '';
-    for (let i = 0; i < 5; i++) {
-      customColors[`heatLvl${i}`] = '';
-    }
-    saveCustomColors();
-    applyCustomColors();
-  }
-
-  function resetCustomColors() {
-    for (const key of Object.keys(COLOR_SLOTS)) customColors[key] = '';
-    heatPreset = 'purple';
-    saveCustomColors();
-    applyCustomColors();
-  }
-
-  function applyTheme() {
-    const activeTheme = resolveTheme();
-    host.setAttribute('data-theme', activeTheme);
-    const hostBg = getHostZeroLevelBg(activeTheme === 'light');
-    host.style.setProperty('--ag-host-bg', hostBg);
-    const btns = [el('theme-toggle'), el('theme-toggle-tokens')].filter(Boolean);
-    btns.forEach(btn => {
-      if (currentThemeMode === 'auto') {
-        btn.textContent = activeTheme === 'light' ? '🌗' : '🌓';
-        btn.title = t('theme.autoTitle', { mode: activeTheme === 'light' ? t('theme.light') : t('theme.dark') });
-      } else if (currentThemeMode === 'light') {
-        btn.textContent = '☀️';
-        btn.title = t('theme.lightTitle');
-      } else {
-        btn.textContent = '🌙';
-        btn.title = t('theme.darkTitle');
-      }
-    });
-    applyHeatmapPalette();
-    syncSwatchAndResetButtons();
-    refreshActiveChartViews();
-    syncNativeOverlayTheme();
-  }
-
-  let lastSyncedOverlayKey = '';
-  let overlayColorProbeEl = null;
-  function resolveCssColorToHex(cssExpr, prop = 'color') {
-    if (!cssExpr || typeof cssExpr !== 'string') return '';
-    const trimmed = cssExpr.trim();
-    if (!trimmed || trimmed === 'transparent' || trimmed === 'rgba(0, 0, 0, 0)') return '';
-    const direct = normalizeHex(trimmed);
-    if (direct) return direct;
-    try {
-      if (typeof document === 'undefined' || !document.body || typeof window?.getComputedStyle !== 'function') return '';
-      if (!overlayColorProbeEl) {
-        overlayColorProbeEl = document.createElement('div');
-        if (overlayColorProbeEl.style) {
-          overlayColorProbeEl.style.cssText = 'position:fixed;width:0;height:0;overflow:hidden;opacity:0;pointer-events:none;z-index:-1;';
-        }
-        overlayColorProbeEl.setAttribute?.('aria-hidden', 'true');
-      }
-      if (!overlayColorProbeEl.isConnected && typeof document.body.appendChild === 'function') {
-        document.body.appendChild(overlayColorProbeEl);
-      }
-      if (!overlayColorProbeEl.style) return '';
-      overlayColorProbeEl.style[prop] = '';
-      overlayColorProbeEl.style[prop] = trimmed;
-      const computed = window.getComputedStyle(overlayColorProbeEl)?.[prop] || '';
-      return normalizeHex(computed) || '';
-    } catch {
-      return '';
-    }
-  }
-
-  function resolveNativeTitlebarOverlayColors() {
-    const pickHex = (candidates, prop = 'color') => {
-      for (const raw of candidates) {
-        if (!raw || typeof raw !== 'string') continue;
-        const tVal = raw.trim();
-        if (!tVal || tVal === 'transparent' || tVal === 'rgba(0, 0, 0, 0)') continue;
-        const hex = normalizeHex(tVal) || resolveCssColorToHex(tVal, prop);
-        if (hex) return hex;
-      }
-      return '';
-    };
-    // 严格读取宿主系统主题判断深浅色兜底值，避免插件自身切换主题时污染原生窗口控制按钮
-    const hostIsLight = getSystemTheme() === 'light';
-    try {
-      const nativeStyle = typeof getComputedStyle === 'function' ? getComputedStyle(document.documentElement) : null;
-      const bodyStyle = typeof getComputedStyle === 'function' && document.body ? getComputedStyle(document.body) : null;
-      const menuBarNode = typeof document.querySelector === 'function'
-        ? document.querySelector('[data-testid="title-menu-bar"]')
-        : null;
-      const menuBarStyle = menuBarNode && typeof getComputedStyle === 'function' ? getComputedStyle(menuBarNode) : null;
-      const barNode = typeof document.querySelector === 'function'
-        ? (document.querySelector('[class*="@container/titlebar"]') || document.querySelector('header, nav, .titlebar'))
-        : null;
-      const barStyle = barNode && typeof getComputedStyle === 'function' ? getComputedStyle(barNode) : null;
-      const sidebarVarRaw = nativeStyle?.getPropertyValue?.('--sidebar') || '';
-      const secFgVarRaw = nativeStyle?.getPropertyValue?.('--secondary-foreground') || '';
-      const bg = pickHex([
-        menuBarStyle?.backgroundColor,
-        nativeStyle?.getPropertyValue?.('--vscode-titleBar-activeBackground'),
-        sidebarVarRaw,
-        sidebarVarRaw ? 'var(--sidebar)' : '',
-        barStyle?.backgroundColor,
-        nativeStyle?.getPropertyValue?.('--background'),
-        bodyStyle?.backgroundColor
-      ], 'backgroundColor') || (hostIsLight ? '#fafafa' : '#131313');
-      const fg = pickHex([
-        nativeStyle?.getPropertyValue?.('--vscode-titleBar-activeForeground'),
-        secFgVarRaw,
-        secFgVarRaw ? 'var(--secondary-foreground)' : '',
-        menuBarStyle?.color,
-        barStyle?.color,
-        nativeStyle?.getPropertyValue?.('--foreground'),
-        bodyStyle?.color
-      ], 'color') || (hostIsLight ? '#383a42' : '#fafafa');
-      return { bg, fg };
-    } catch {
-      return { bg: hostIsLight ? '#fafafa' : '#131313', fg: hostIsLight ? '#383a42' : '#fafafa' };
-    }
-  }
-
-  function syncNativeOverlayTheme() {
-    try {
-      if (typeof window === 'undefined') return;
-      const { bg, fg } = resolveNativeTitlebarOverlayColors();
-      if (!/^#[0-9a-f]{6}$/i.test(bg) || !/^#[0-9a-f]{6}$/i.test(fg)) return;
-      const overlayKey = `${bg}|${fg}|30`;
-      if (overlayKey === lastSyncedOverlayKey) return;
-      lastSyncedOverlayKey = overlayKey;
-      if (typeof window.contextMeterAPI?.syncOverlay === 'function') {
-        void window.contextMeterAPI.syncOverlay({ color: bg, symbolColor: fg, height: 30, heightCssPx: 30 });
-      } else if (typeof window.electronNative?.setTitleBarOverlay === 'function') {
-        void window.electronNative.setTitleBarOverlay({ color: bg, symbolColor: fg, height: 30 });
-      }
-    } catch {}
-  }
-
-  function cycleTheme() {
-    if (currentThemeMode === 'auto') currentThemeMode = 'light';
-    else if (currentThemeMode === 'light') currentThemeMode = 'dark';
-    else currentThemeMode = 'auto';
-    try {
-      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_theme_mode', currentThemeMode);
-    } catch {}
+  if (['auto', 'light', 'dark'].includes(prefs.themeMode) && prefs.themeMode !== currentThemeMode) {
+    currentThemeMode = prefs.themeMode;
     applyTheme();
-    userActionSeq++;
-    void saveSettingsPayloadBridge({ uiPreferences: { themeMode: currentThemeMode } });
   }
+}
 
-  let themeObserver = null;
-  let overlayMediaCleanup = null;
-  const overlaySyncTimers = [];
+// 色彩空间转换与格式化工具（HEX <-> RGB <-> HSV <-> HSL）
+function clampNum(n, min, max) {
+  return Math.min(max, Math.max(min, Number.isFinite(n) ? n : min));
+}
+
+function rgbToHex(r, g, b) {
+  const to2 = v => clampNum(Math.round(v), 0, 255).toString(16).padStart(2, '0');
+  return `#${to2(r)}${to2(g)}${to2(b)}`;
+}
+
+function hexToRgb(hexStr) {
+  if (!hexStr || typeof hexStr !== 'string') return null;
+  const clean = hexStr.trim().replace(/^#/, '');
+  if (!/^[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(clean)) return null;
+  const full = clean.length === 3 ? clean.split('').map(c => c + c).join('') : clean;
+  const num = parseInt(full, 16);
+  if (Number.isNaN(num)) return null;
+  return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+}
+
+function hslToRgb(h, s, l) {
+  const hn = ((Number(h) % 360) + 360) % 360;
+  const sn = clampNum(Number(s), 0, 100) / 100;
+  const ln = clampNum(Number(l), 0, 100) / 100;
+  const c = (1 - Math.abs(2 * ln - 1)) * sn;
+  const x = c * (1 - Math.abs(((hn / 60) % 2) - 1));
+  const m = ln - c / 2;
+  let r1 = 0, g1 = 0, b1 = 0;
+  if (hn < 60) { r1 = c; g1 = x; }
+  else if (hn < 120) { r1 = x; g1 = c; }
+  else if (hn < 180) { g1 = c; b1 = x; }
+  else if (hn < 240) { g1 = x; b1 = c; }
+  else if (hn < 300) { r1 = x; b1 = c; }
+  else { r1 = c; b1 = x; }
+  return {
+    r: Math.round((r1 + m) * 255),
+    g: Math.round((g1 + m) * 255),
+    b: Math.round((b1 + m) * 255)
+  };
+}
+
+function splitTopLevelCssArgs(expr) {
+  const parts = [];
+  let depth = 0;
+  let cur = '';
+  for (let i = 0; i < expr.length; i++) {
+    const ch = expr[i];
+    if (ch === '(') depth++;
+    else if (ch === ')' && depth > 0) depth--;
+    if (ch === ',' && depth === 0) {
+      parts.push(cur.trim());
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.trim()) parts.push(cur.trim());
+  return parts;
+}
+
+function evalColorMixSrgb(input) {
+  const m = String(input || '').trim().match(/^color-mix\(\s*in\s+srgb\s*,\s*([\s\S]+)\)$/i);
+  if (!m) return null;
+  const args = splitTopLevelCssArgs(m[1]);
+  if (args.length !== 2) return null;
+  const parseStop = (part) => {
+    const pctMatch = part.match(/\s+([\d.]+)%\s*$/);
+    const pct = pctMatch ? Number(pctMatch[1]) : null;
+    const colorExpr = pctMatch ? part.slice(0, pctMatch.index).trim() : part.trim();
+    const hex = normalizeHex(colorExpr);
+    const rgb = hex ? hexToRgb(hex) : null;
+    return rgb ? { rgb, pct } : null;
+  };
+  const s1 = parseStop(args[0]);
+  const s2 = parseStop(args[1]);
+  if (!s1 || !s2) return null;
+  let w1 = s1.pct;
+  let w2 = s2.pct;
+  if (w1 == null && w2 == null) { w1 = 50; w2 = 50; }
+  else if (w1 != null && w2 == null) { w2 = 100 - w1; }
+  else if (w1 == null && w2 != null) { w1 = 100 - w2; }
+  const sum = w1 + w2;
+  if (!Number.isFinite(sum) || sum <= 0) return null;
+  const p1 = w1 / sum;
+  const p2 = w2 / sum;
+  return rgbToHex(
+    s1.rgb.r * p1 + s2.rgb.r * p2,
+    s1.rgb.g * p1 + s2.rgb.g * p2,
+    s1.rgb.b * p1 + s2.rgb.b * p2
+  );
+}
+
+function normalizeHex(input) {
+  if (!input || typeof input !== 'string') return null;
+  const s = input.trim();
+  if (!s || /^transparent$/i.test(s)) return null;
+  const direct = hexToRgb(s);
+  if (direct) return rgbToHex(direct.r, direct.g, direct.b);
+  if (/^color-mix\(/i.test(s)) {
+    const mixed = evalColorMixSrgb(s);
+    if (mixed) return mixed;
+  }
+  const mColorSrgb = s.match(/^color\(\s*srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+%?))?\s*\)$/i);
+  if (mColorSrgb) {
+    if (mColorSrgb[4] !== undefined) {
+      const alphaRaw = mColorSrgb[4].endsWith('%') ? Number(mColorSrgb[4].slice(0, -1)) / 100 : Number(mColorSrgb[4]);
+      if (!Number.isNaN(alphaRaw) && alphaRaw <= 0.01) return null;
+    }
+    return rgbToHex(Number(mColorSrgb[1]) * 255, Number(mColorSrgb[2]) * 255, Number(mColorSrgb[3]) * 255);
+  }
+  const mRgb = s.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*[,/]\s*([\d.]+%?))?/i);
+  if (mRgb) {
+    if (mRgb[4] !== undefined) {
+      const alphaRaw = mRgb[4].endsWith('%') ? Number(mRgb[4].slice(0, -1)) / 100 : Number(mRgb[4]);
+      if (!Number.isNaN(alphaRaw) && alphaRaw <= 0.01) return null;
+    }
+    return rgbToHex(Number(mRgb[1]), Number(mRgb[2]), Number(mRgb[3]));
+  }
+  const mHsl = s.match(/hsla?\(\s*([\d.]+)\s*,\s*([\d.]+)%?\s*,\s*([\d.]+)%?(?:\s*[,/]\s*([\d.]+%?))?/i);
+  if (mHsl) {
+    if (mHsl[4] !== undefined) {
+      const alphaRaw = mHsl[4].endsWith('%') ? Number(mHsl[4].slice(0, -1)) / 100 : Number(mHsl[4]);
+      if (!Number.isNaN(alphaRaw) && alphaRaw <= 0.01) return null;
+    }
+    const rgb = hslToRgb(Number(mHsl[1]), Number(mHsl[2]), Number(mHsl[3]));
+    return rgbToHex(rgb.r, rgb.g, rgb.b);
+  }
+  return null;
+}
+
+function rgbToHsv(r, g, b) {
+  const rn = r / 255, gn = g / 255, bn = b / 255;
+  const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
+  const d = max - min;
+  let h = 0;
+  if (d !== 0) {
+    if (max === rn) h = ((gn - bn) / d + (gn < bn ? 6 : 0)) * 60;
+    else if (max === gn) h = ((bn - rn) / d + 2) * 60;
+    else h = ((rn - gn) / d + 4) * 60;
+  }
+  const s = max === 0 ? 0 : (d / max) * 100;
+  const v = max * 100;
+  return { h: Math.round(h), s: Math.round(s), v: Math.round(v) };
+}
+
+function hsvToRgb(h, s, v) {
+  const hn = ((Number(h) % 360) + 360) % 360;
+  const sn = clampNum(Number(s), 0, 100) / 100;
+  const vn = clampNum(Number(v), 0, 100) / 100;
+  const c = vn * sn;
+  const x = c * (1 - Math.abs(((hn / 60) % 2) - 1));
+  const m = vn - c;
+  let r1 = 0, g1 = 0, b1 = 0;
+  if (hn < 60) { r1 = c; g1 = x; }
+  else if (hn < 120) { r1 = x; g1 = c; }
+  else if (hn < 180) { g1 = c; b1 = x; }
+  else if (hn < 240) { g1 = x; b1 = c; }
+  else if (hn < 300) { r1 = x; b1 = c; }
+  else { r1 = c; b1 = x; }
+  return {
+    r: Math.round((r1 + m) * 255),
+    g: Math.round((g1 + m) * 255),
+    b: Math.round((b1 + m) * 255)
+  };
+}
+
+function rgbToHsl(r, g, b) {
+  const rn = r / 255, gn = g / 255, bn = b / 255;
+  const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
+  const l = (max + min) / 2;
+  const d = max - min;
+  let h = 0, s = 0;
+  if (d !== 0) {
+    s = d / (1 - Math.abs(2 * l - 1));
+    if (max === rn) h = ((gn - bn) / d + (gn < bn ? 6 : 0)) * 60;
+    else if (max === gn) h = ((bn - rn) / d + 2) * 60;
+    else h = ((rn - gn) / d + 4) * 60;
+  }
+  return { h: Math.round(h), s: Math.round(s * 100), l: Math.round(l * 100) };
+}
+
+function interpolateHex(hexA, hexB, t) {
+  const a = hexToRgb(hexA) || { r: 39, g: 39, b: 42 };
+  const b = hexToRgb(hexB) || { r: 192, g: 132, b: 252 };
+  const ratio = clampNum(t, 0, 1);
+  return rgbToHex(
+    a.r + (b.r - a.r) * ratio,
+    a.g + (b.g - a.g) * ratio,
+    a.b + (b.b - a.b) * ratio
+  );
+}
+
+let currentThemeMode = 'auto';
+try {
+  currentThemeMode = (typeof localStorage !== 'undefined' && localStorage.getItem('ag_theme_mode')) || 'auto';
+} catch { }
+
+function parseRgbLuminance(colorStr) {
+  if (!colorStr || typeof colorStr !== 'string') return null;
+  const rgb = hexToRgb(normalizeHex(colorStr));
+  if (rgb) return (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
+  return null;
+}
+
+function getHostZeroLevelBg(isLight) {
+  const fallback = isLight ? '#ffffff' : '#181818';
   try {
-    if (typeof MutationObserver !== 'undefined' && document.body) {
-      themeObserver = new MutationObserver(() => {
-        if (currentThemeMode === 'auto') applyTheme();
-        else syncNativeOverlayTheme();
-      });
-      themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
-      if (document.documentElement) {
-        themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
+    if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+      const rootEl = document.body || document.documentElement;
+      if (rootEl) {
+        const cs = window.getComputedStyle(rootEl);
+        const candidates = [
+          cs.getPropertyValue('--background')?.trim(),
+          cs.backgroundColor?.trim()
+        ].filter(Boolean);
+        for (const raw of candidates) {
+          const norm = normalizeHex(raw);
+          if (!norm) continue;
+          const lum = parseRgbLuminance(norm);
+          const normIsLight = lum != null ? lum > 0.55 : Boolean(isLight);
+          if (normIsLight === Boolean(isLight)) return norm;
+          return fallback;
+        }
       }
+    }
+  } catch { }
+  return fallback;
+}
+
+function getSystemTheme() {
+  try {
+    const body = document.body;
+    const doc = document.documentElement;
+    if (body?.classList?.contains('theme-light') || body?.classList?.contains('light') || doc?.classList?.contains('light') || body?.classList?.contains('vscode-light')) return 'light';
+    if (body?.classList?.contains('theme-dark') || body?.classList?.contains('dark') || doc?.classList?.contains('dark') || body?.classList?.contains('vscode-dark')) return 'dark';
+    if (doc?.style?.colorScheme === 'light') return 'light';
+    if (doc?.style?.colorScheme === 'dark') return 'dark';
+    if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function' && (body || doc)) {
+      const cs = window.getComputedStyle(body || doc);
+      const bgVar = cs.getPropertyValue('--background') || cs.backgroundColor;
+      const lum = parseRgbLuminance(bgVar);
+      if (lum != null) return lum > 0.55 ? 'light' : 'dark';
     }
     if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
-      const mqlDark = window.matchMedia('(prefers-color-scheme: dark)');
-      const onSchemeChange = () => {
-        if (state.disposed) return;
-        if (currentThemeMode === 'auto') applyTheme();
-        else syncNativeOverlayTheme();
-      };
-      if (typeof mqlDark?.addEventListener === 'function') {
-        mqlDark.addEventListener('change', onSchemeChange);
-        overlayMediaCleanup = () => { try { mqlDark.removeEventListener('change', onSchemeChange); } catch {} };
-      } else if (typeof mqlDark?.addListener === 'function') {
-        mqlDark.addListener(onSchemeChange);
-        overlayMediaCleanup = () => { try { mqlDark.removeListener(onSchemeChange); } catch {} };
+      if (window.matchMedia('(prefers-color-scheme: light)').matches) return 'light';
+    }
+  } catch { }
+  return 'dark';
+}
+
+function resolveTheme() {
+  if (currentThemeMode === 'light') return 'light';
+  if (currentThemeMode === 'dark') return 'dark';
+  return getSystemTheme();
+}
+
+function getPresetHeatmapScale() {
+  const isLight = resolveTheme() === 'light';
+  const presetObj = HEAT_PRESETS[heatPreset] || HEAT_PRESETS.purple;
+  return (isLight ? presetObj.light : presetObj.dark).slice();
+}
+
+function getBaseHeatmapScale() {
+  const base = getPresetHeatmapScale();
+  const lowCustom = normalizeHex(customColors.heatLow);
+  const highCustom = normalizeHex(customColors.heatHigh);
+  if (lowCustom || highCustom) {
+    const c0 = lowCustom || base[0];
+    const c4 = highCustom || base[4];
+    return [
+      c0,
+      interpolateHex(c0, c4, 0.25),
+      interpolateHex(c0, c4, 0.5),
+      interpolateHex(c0, c4, 0.75),
+      c4
+    ];
+  }
+  return base;
+}
+
+function getEffectiveHeatmapScale() {
+  const scale = getBaseHeatmapScale();
+  for (let i = 0; i < 5; i++) {
+    const lvlCustom = normalizeHex(customColors[`heatLvl${i}`]);
+    if (lvlCustom) scale[i] = lvlCustom;
+  }
+  return scale;
+}
+
+function getDefaultSlotColor(slotKey) {
+  const isLight = resolveTheme() === 'light';
+  const presetScale = getPresetHeatmapScale();
+  const baseScale = getBaseHeatmapScale();
+  switch (slotKey) {
+    case 'panelBg': return getHostZeroLevelBg(isLight);
+    case 'ringUsed': return isLight ? '#18181b' : '#e6e6eb';
+    case 'ringTrack': return isLight ? '#b8b8c2' : '#52525b';
+    case 'contextText': return isLight ? '#18181b' : '#ececef';
+    case 'speedText': return isLight ? '#0284c7' : '#38bdf8';
+    case 'tokenTotal': return isLight ? '#7c3aed' : '#c084fc';
+    case 'tokenAccent': return isLight ? '#7c3aed' : '#a78bfa';
+    case 'heatLow': return presetScale[0];
+    case 'heatHigh': return presetScale[4];
+    case 'heatLvl0': return baseScale[0];
+    case 'heatLvl1': return baseScale[1];
+    case 'heatLvl2': return baseScale[2];
+    case 'heatLvl3': return baseScale[3];
+    case 'heatLvl4': return baseScale[4];
+    default: return '#7748cf';
+  }
+}
+
+function getEffectiveSlotColor(slotKey) {
+  return normalizeHex(customColors[slotKey]) || getDefaultSlotColor(slotKey);
+}
+
+function applyHeatmapPalette() {
+  const scale = getEffectiveHeatmapScale();
+  for (let i = 0; i < 5; i++) {
+    host.style.setProperty(`--ag-heat-lvl-${i}`, scale[i]);
+    const legEl = el(`heat-leg-${i}`);
+    if (legEl) {
+      legEl.style.background = scale[i];
+      legEl.style.setProperty('--swatch-color', scale[i]);
+      legEl.setAttribute('data-custom', String(Boolean(customColors[`heatLvl${i}`])));
+    }
+  }
+  const hasCustomHeat = Boolean(
+    customColors.heatLow || customColors.heatHigh ||
+    customColors.heatLvl0 || customColors.heatLvl1 || customColors.heatLvl2 || customColors.heatLvl3 || customColors.heatLvl4
+  );
+  try {
+    const group = el('heat-preset-group');
+    if (group?.querySelectorAll) {
+      const btns = group.querySelectorAll('[data-heat-preset]');
+      for (const btn of btns) {
+        const pName = btn.getAttribute('data-heat-preset');
+        btn.setAttribute('data-active', String(!hasCustomHeat && pName === heatPreset));
       }
     }
-    for (const delayMs of [80, 600, 1800]) {
-      const tid = setTimeout(() => {
-        if (!state.disposed) syncNativeOverlayTheme();
-      }, delayMs);
-      overlaySyncTimers.push(tid);
-    }
-    if (typeof activeDisposers?.add === 'function') {
-      activeDisposers.add(() => {
-        for (const tid of overlaySyncTimers) clearTimeout(tid);
-        overlaySyncTimers.length = 0;
-        if (overlayMediaCleanup) { overlayMediaCleanup(); overlayMediaCleanup = null; }
-        try { overlayColorProbeEl?.remove?.(); } catch {}
-        overlayColorProbeEl = null;
-      });
-    }
-  } catch {}
+  } catch { }
+}
 
-  applyTheme();
-  applyCustomColors();
-
-  // =========================================================================
-  // 自定义「颜色选取器」面板交互逻辑（吸管 + 预设圆点 + SV主色区 + 色相条 + HEX/RGB/HSL）
-  // =========================================================================
-  let activePickerSlot = null;
-  let activePickerAnchor = null;
-  let cpHsv = { h: 265, s: 77, v: 72 };
-
-  function syncPickerUiFromHsv(skipInputId = '', exactRgb = null) {
-    const rgb = exactRgb || hsvToRgb(cpHsv.h, cpHsv.s, cpHsv.v);
-    const hex = rgbToHex(rgb.r, rgb.g, rgb.b);
-    const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
-
-    const svArea = el('cp-sv-area');
-    const svThumb = el('cp-sv-thumb');
-    const hueThumb = el('cp-hue-thumb');
-    const sidePreview = el('cp-side-preview');
-    if (svArea) svArea.style.backgroundColor = `hsl(${cpHsv.h}, 100%, 50%)`;
-    if (svThumb) {
-      svThumb.style.left = `${cpHsv.s}%`;
-      svThumb.style.top = `${100 - cpHsv.v}%`;
+function syncSwatchAndResetButtons() {
+  for (const key of Object.keys(COLOR_SLOTS)) {
+    const val = customColors[key];
+    const eff = getEffectiveSlotColor(key);
+    const inputEl = el(`color-${key}`);
+    if (inputEl) inputEl.value = eff;
+    const swatchEl = el(`swatch-${key}`);
+    if (swatchEl) {
+      swatchEl.style.setProperty('--swatch-color', eff);
+      swatchEl.style.background = eff;
     }
-    if (hueThumb) {
-      hueThumb.style.left = `${(cpHsv.h / 360) * 100}%`;
+    const resetBtn = el(`reset-${key}`);
+    if (resetBtn) {
+      resetBtn.setAttribute('data-mode', val ? 'custom' : 'auto');
+      if (key.startsWith('heatLvl')) {
+        resetBtn.textContent = val ? t('colors.btn.restore') : t('colors.btn.preset');
+      } else if (key === 'heatLow' || key === 'heatHigh') {
+        resetBtn.textContent = val ? t('colors.btn.restorePreset') : t('colors.btn.preset');
+      } else {
+        resetBtn.textContent = val ? t('colors.btn.restoreDefault') : t('cp.followTheme');
+      }
     }
-    if (sidePreview) {
-      sidePreview.style.background = hex;
-    }
-
-    const inHex = el('cp-input-hex');
-    const inRgb = el('cp-input-rgb');
-    const inHsl = el('cp-input-hsl');
-    if (inHex && skipInputId !== 'cp-input-hex') inHex.value = hex;
-    if (inRgb && skipInputId !== 'cp-input-rgb') inRgb.value = `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`;
-    if (inHsl && skipInputId !== 'cp-input-hsl') inHsl.value = `hsl(${hsl.h}, ${hsl.s}%, ${hsl.l}%)`;
-    return hex;
   }
-
-  function applyPickerHex(hexStr, skipInputId = '') {
-    const norm = normalizeHex(hexStr);
-    if (!norm) return false;
-    const rgb = hexToRgb(norm);
-    if (!rgb) return false;
-    cpHsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
-    const appliedHex = syncPickerUiFromHsv(skipInputId, rgb);
-    if (activePickerSlot) {
-      setCustomColor(activePickerSlot, appliedHex);
-    }
-    return true;
+  const resetHeatLvlsBtn = el('reset-heat-lvls');
+  if (resetHeatLvlsBtn) {
+    const anyHeatLvl = Boolean(
+      customColors.heatLvl0 || customColors.heatLvl1 || customColors.heatLvl2 || customColors.heatLvl3 || customColors.heatLvl4 ||
+      customColors.heatLow || customColors.heatHigh
+    );
+    resetHeatLvlsBtn.setAttribute('data-mode', anyHeatLvl ? 'custom' : 'auto');
   }
+  // 面板 A 中的镜像色块按钮同步
+  const mirrorMap = {
+    'swatch-panelBg-tokens': 'panelBg',
+    'swatch-tokenTotal-tokens': 'tokenTotal',
+    'swatch-tokenAccent-tokens': 'tokenAccent'
+  };
+  for (const [id, slot] of Object.entries(mirrorMap)) {
+    const sw = el(id);
+    if (sw) {
+      const eff = getEffectiveSlotColor(slot);
+      sw.style.setProperty('--swatch-color', eff);
+      sw.style.background = eff;
+    }
+  }
+  const resetBgTokens = el('reset-panelBg-tokens');
+  if (resetBgTokens) {
+    const hasBg = Boolean(customColors.panelBg);
+    resetBgTokens.setAttribute('data-mode', hasBg ? 'custom' : 'auto');
+    resetBgTokens.textContent = hasBg ? t('colors.btn.restoreDefault') : t('cp.followTheme');
+  }
+}
 
-  let pickerOpVersion = 0;
+function getContinuousScaleStops() {
+  const scale = getEffectiveHeatmapScale();
+  const isLight = resolveTheme() === 'light';
+  const hasCustomHeat = Boolean(
+    customColors.heatLow ||
+    customColors.heatHigh ||
+    customColors.heatLvl1 ||
+    customColors.heatLvl2 ||
+    customColors.heatLvl3 ||
+    customColors.heatLvl4
+  );
+  if (!isLight && heatPreset === 'purple' && !hasCustomHeat) {
+    return ['#2E1A47', '#6D28D9', '#9333EA', '#D8B4FE'];
+  }
+  return [scale[1], scale[2], scale[3], scale[4]].filter(Boolean);
+}
 
-  function positionColorPickerPopover() {
-    const pop = el('color-picker-popover');
-    if (!pop || pop.hidden) return;
+function getContinuousHeatColor(value, modeOrAnchor = 'heat') {
+  const v = Number(value) || 0;
+  if (v <= 0) return null;
+  const core = globalThis.__AGContextMeterCore || {};
+  let resp = 0;
+  if (typeof modeOrAnchor === 'string') {
+    resp = typeof core.computeColorScaleResponse === 'function'
+      ? core.computeColorScaleResponse(v, modeOrAnchor)
+      : (typeof core.computeMixedScaleResponse === 'function' ? core.computeMixedScaleResponse(v, 100e6) : 0.5);
+  } else {
+    const anchor = Number(modeOrAnchor) || 100e6;
+    resp = typeof core.computeMixedScaleResponse === 'function'
+      ? core.computeMixedScaleResponse(v, anchor)
+      : Math.max(0, Math.min(1, Math.pow(Math.min(v, anchor) / anchor, 0.42)));
     try {
-      const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
-      const vh = (typeof window !== 'undefined' && window.innerHeight) || 800;
-      const popW = 304;
-      const popH = pop.offsetHeight > 0 ? pop.offsetHeight : 340;
-      let minLeft = 12;
-      if (typeof document.querySelector === 'function') {
-        const navEl = document.querySelector('div[role="navigation"]');
-        if (navEl?.getBoundingClientRect) {
-          const nr = navEl.getBoundingClientRect();
-          if (nr.width > 0 && nr.left <= 8 && nr.right < vw - 320) {
-            minLeft = Math.ceil(nr.right + 12);
-          }
-        }
-      }
-      const snapPx = typeof snapToDevicePixel === 'function' ? snapToDevicePixel : Math.round;
-      let left = snapPx((vw - popW) / 2);
-      let top = 90;
-      if (activePickerAnchor?.getBoundingClientRect) {
-        const ar = activePickerAnchor.getBoundingClientRect();
-        if (ar.width > 0 || ar.height > 0) {
-          left = snapPx(ar.right - popW);
-          top = snapPx(ar.bottom + 6);
-          if (top + popH > vh - 12 && ar.top > popH + 12) {
-            top = snapPx(ar.top - popH - 6);
-          }
-        }
-      }
-      left = snapPx(Math.max(minLeft, Math.min(vw - popW - 12, left)));
-      top = snapPx(Math.max(42, Math.min(vh - popH - 12, top)));
-      pop.style.left = `${left}px`;
-      pop.style.top = `${top}px`;
+      if (typeof syncHostSettingsThemeAttrs === 'function') syncHostSettingsThemeAttrs();
     } catch {}
   }
+  const stops = getContinuousScaleStops();
+  if (typeof core.interpolateScaleColorHsl === 'function') {
+    return core.interpolateScaleColorHsl(resp, stops);
+  }
+  return stops[stops.length - 1] || '#9333ea';
+}
 
-  function openColorPicker(slotKey, anchorEl = null, labelText = '') {
-    if (!Object.prototype.hasOwnProperty.call(COLOR_SLOTS, slotKey)) return;
-    const pop = el('color-picker-popover');
-    if (!pop) return;
+let __chartsReady = false;
 
-    const op = ++pickerOpVersion;
-    activePickerSlot = slotKey;
-    activePickerAnchor = anchorEl;
+function refreshActiveChartViews() {
+  if (!__chartsReady) return;
+  if (activeHeatView === 'daily' && typeof renderHeatmapGrid === 'function') renderHeatmapGrid(true);
+  else if (activeHeatView === 'weekly' && typeof renderHeatmapWeekly === 'function') renderHeatmapWeekly();
+  else if (activeHeatView === 'monthly' && typeof renderHeatmapMonthly === 'function') renderHeatmapMonthly();
+  else if (activeHeatView === 'yearly' && typeof renderHeatmapYearly === 'function') renderHeatmapYearly();
+  else if (activeHeatView === 'cum' && typeof renderHeatmapCum === 'function') renderHeatmapCum();
+  const modelViewEl = el('model-usage-view');
+  if (modelViewEl && modelViewEl.style && modelViewEl.style.display === 'block' && typeof renderModelUsageView === 'function') {
+    renderModelUsageView();
+  }
+}
 
-    const lbl = el('cp-target-name');
-    if (lbl) lbl.textContent = labelText ? `· ${labelText}` : `· ${slotKey}`;
-    const cpResetBtn = el('cp-reset-slot');
-    if (cpResetBtn) {
-      cpResetBtn.textContent = slotKey.startsWith('heat') ? t('colors.resetLevel') : t('colors.followTheme');
-    }
-    const startHex = getEffectiveSlotColor(slotKey);
-    const rgb = hexToRgb(startHex) || { r: 101, g: 42, b: 183 };
-    cpHsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
-    syncPickerUiFromHsv();
-
-    pop.setAttribute?.('data-closing', 'false');
-    pop.classList?.remove?.('is-closing');
-    pop.classList?.add?.('is-opening');
-    pop.hidden = false;
-    positionColorPickerPopover();
-
-    if (typeof requestAnimationFrame === 'function') {
-      requestAnimationFrame(() => {
-        if (pickerOpVersion === op) {
-          pop.classList?.remove?.('is-opening');
-        }
-      });
+function applyCustomColors() {
+  for (const [key, cssVar] of Object.entries(COLOR_SLOTS)) {
+    const val = customColors[key];
+    if (val) {
+      host.style.setProperty(cssVar, val);
+    } else if (host.style.removeProperty) {
+      host.style.removeProperty(cssVar);
     } else {
-      pop.classList?.remove?.('is-opening');
+      host.style.setProperty(cssVar, '');
     }
   }
-
-  function closeColorPicker(immediate = false) {
-    const pop = el('color-picker-popover');
-    const isMock = !pop?.classList || typeof pop.classList.add !== 'function' || typeof pop.animate !== 'function';
-    const isClosing = pop?.classList ? pop.classList.contains('is-closing') : pop?.getAttribute('data-closing') === 'true';
-    if (!pop || pop.hidden || isClosing) {
-      activePickerSlot = null;
-      activePickerAnchor = null;
-      return;
+  if (customColors.panelBg) {
+    const lum = parseRgbLuminance(customColors.panelBg);
+    if (lum != null) {
+      host.setAttribute('data-panel-tone', lum > 0.55 ? 'light' : 'dark');
     }
-    const op = ++pickerOpVersion;
+  } else {
+    host.removeAttribute('data-panel-tone');
+  }
+  applyHeatmapPalette();
+  syncSwatchAndResetButtons();
+  refreshActiveChartViews();
+  try {
+    if (typeof syncHostSettingsUi === 'function') syncHostSettingsUi();
+  } catch { }
+}
+
+function setCustomColor(key, value) {
+  if (!Object.prototype.hasOwnProperty.call(COLOR_SLOTS, key)) return;
+  const raw = value ? String(value).trim() : '';
+  const norm = raw ? (normalizeHex(raw) || raw) : '';
+  customColors[key] = norm;
+  if (key === 'heatLow' && norm) customColors.heatLvl0 = '';
+  if (key === 'heatHigh' && norm) customColors.heatLvl4 = '';
+  saveCustomColors();
+  applyCustomColors();
+}
+
+function setHeatPreset(presetName) {
+  if (!HEAT_PRESETS[presetName]) return;
+  heatPreset = presetName;
+  customColors.heatLow = '';
+  customColors.heatHigh = '';
+  for (let i = 0; i < 5; i++) {
+    customColors[`heatLvl${i}`] = '';
+  }
+  saveCustomColors();
+  applyCustomColors();
+}
+
+function resetHeatmapLevels() {
+  customColors.heatLow = '';
+  customColors.heatHigh = '';
+  for (let i = 0; i < 5; i++) {
+    customColors[`heatLvl${i}`] = '';
+    try {
+      if (typeof syncHostSettingsThemeAttrs === 'function') syncHostSettingsThemeAttrs();
+    } catch {}
+  }
+  saveCustomColors();
+  applyCustomColors();
+}
+
+function resetCustomColors() {
+  for (const key of Object.keys(COLOR_SLOTS)) customColors[key] = '';
+  heatPreset = 'purple';
+  saveCustomColors();
+  applyCustomColors();
+}
+
+function resolveHostAccentColor() {
+  const isNeutralOrInvalid = (hex) => {
+    if (!hex || !/^#[0-9a-f]{6}$/i.test(hex)) return true;
+    const h = hex.toLowerCase();
+    if (h === '#000000' || h === '#ffffff') return true;
+    const r = parseInt(h.slice(1, 3), 16);
+    const g = parseInt(h.slice(3, 5), 16);
+    const b = parseInt(h.slice(5, 7), 16);
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    // 过滤纯灰/接近无彩度的背景前景色
+    return (max - min) < 18;
+  };
+  try {
+    if (typeof getComputedStyle === 'function' && typeof document !== 'undefined') {
+      const modalNode = typeof document.querySelector === 'function'
+        ? document.querySelector('.settings-modal-container, [role="dialog"]')
+        : null;
+      const probeStyles = [
+        modalNode && !modalNode.closest?.('#ag-context-meter, #ag-cm-host-settings-page') ? getComputedStyle(modalNode) : null,
+        document.documentElement ? getComputedStyle(document.documentElement) : null,
+        document.body ? getComputedStyle(document.body) : null
+      ].filter(Boolean);
+      const varNames = [
+        '--ag-accent-override',
+        '--accent',
+        '--primary',
+        '--color-accent',
+        '--vscode-button-background',
+        '--vscode-focusBorder',
+        '--brand-accent',
+        '--vscode-textLink-foreground',
+        '--ring'
+      ];
+      for (const st of probeStyles) {
+        for (const vName of varNames) {
+          const raw = st?.getPropertyValue?.(vName) || '';
+          const hex = normalizeHex(raw) || resolveCssColorToHex(raw, 'color') || (raw.trim() ? resolveCssColorToHex(`var(${vName})`, 'color') : '');
+          if (hex && !isNeutralOrInvalid(hex)) return hex;
+        }
+      }
+      // 兜底从宿主原生可见的选中态开关/高对比切换器提取强调色
+      if (typeof document.querySelectorAll === 'function') {
+        const nativeToggles = document.querySelectorAll('button[role="switch"][aria-checked="true"], [role="switch"][aria-checked="true"], input[type="checkbox"]:checked, [data-testid*="settings"] button[aria-pressed="true"], .settings-modal-container button[aria-checked="true"]');
+        for (const node of Array.from(nativeToggles || [])) {
+          if (!node || node.id?.startsWith?.('ag-') || node.closest?.('#ag-context-meter, #ag-context-meter-radial-host, #ag-cm-host-settings-page')) continue;
+          const st = getComputedStyle(node);
+          const hex = normalizeHex(st?.backgroundColor || '') || resolveCssColorToHex(st?.backgroundColor || '', 'backgroundColor');
+          if (hex && !isNeutralOrInvalid(hex)) return hex;
+          const child = node.firstElementChild;
+          if (child) {
+            const cst = getComputedStyle(child);
+            const cHex = normalizeHex(cst?.backgroundColor || '') || resolveCssColorToHex(cst?.backgroundColor || '', 'backgroundColor');
+            if (cHex && !isNeutralOrInvalid(cHex)) return cHex;
+          }
+        }
+      }
+    }
+  } catch { }
+  return '#7748CF';
+}
+
+function syncHostAccentCssVar() {
+  const accent = resolveHostAccentColor();
+  try {
+    host?.style?.setProperty?.('--ag-host-accent', accent);
+    host?.style?.setProperty?.('--ag-accent', accent);
+    if (typeof syncHostSettingsThemeAttrs === 'function') {
+      syncHostSettingsThemeAttrs();
+    }
+  } catch { }
+  return accent;
+}
+
+function applyTheme() {
+  const activeTheme = resolveTheme();
+  host.setAttribute('data-theme', activeTheme);
+  const hostBg = getHostZeroLevelBg(activeTheme === 'light');
+  host.style.setProperty('--ag-host-bg', hostBg);
+  syncHostAccentCssVar();
+  const btns = [el('theme-toggle'), el('theme-toggle-tokens')].filter(Boolean);
+  btns.forEach(btn => {
+    if (currentThemeMode === 'auto') {
+      btn.textContent = activeTheme === 'light' ? '🌗' : '🌓';
+      btn.title = t('theme.autoTitle', { mode: activeTheme === 'light' ? t('theme.light') : t('theme.dark') });
+    } else if (currentThemeMode === 'light') {
+      btn.textContent = '☀️';
+      btn.title = t('theme.lightTitle');
+    } else {
+      btn.textContent = '🌙';
+      btn.title = t('theme.darkTitle');
+    }
+  });
+  applyHeatmapPalette();
+  syncSwatchAndResetButtons();
+  refreshActiveChartViews();
+  syncNativeOverlayTheme();
+}
+
+let lastSyncedOverlayKey = '';
+let overlayColorProbeEl = null;
+function resolveCssColorToHex(cssExpr, prop = 'color') {
+  if (!cssExpr || typeof cssExpr !== 'string') return '';
+  const trimmed = cssExpr.trim();
+  if (!trimmed || trimmed === 'transparent' || trimmed === 'rgba(0, 0, 0, 0)') return '';
+  const direct = normalizeHex(trimmed);
+  if (direct) return direct;
+  try {
+    if (typeof document === 'undefined' || !document.body || typeof window?.getComputedStyle !== 'function') return '';
+    if (!overlayColorProbeEl) {
+      overlayColorProbeEl = document.createElement('div');
+      if (overlayColorProbeEl.style) {
+        overlayColorProbeEl.style.cssText = 'position:fixed;width:0;height:0;overflow:hidden;opacity:0;pointer-events:none;z-index:-1;';
+      }
+      overlayColorProbeEl.setAttribute?.('aria-hidden', 'true');
+    }
+    if (!overlayColorProbeEl.isConnected && typeof document.body.appendChild === 'function') {
+      document.body.appendChild(overlayColorProbeEl);
+    }
+    if (!overlayColorProbeEl.style) return '';
+    overlayColorProbeEl.style[prop] = '';
+    overlayColorProbeEl.style[prop] = trimmed;
+    const computed = window.getComputedStyle(overlayColorProbeEl)?.[prop] || '';
+    return normalizeHex(computed) || '';
+  } catch {
+    return '';
+  }
+}
+
+function resolveNativeTitlebarOverlayColors() {
+  const pickHex = (candidates, prop = 'color') => {
+    for (const raw of candidates) {
+      if (!raw || typeof raw !== 'string') continue;
+      const tVal = raw.trim();
+      if (!tVal || tVal === 'transparent' || tVal === 'rgba(0, 0, 0, 0)') continue;
+      const hex = normalizeHex(tVal) || resolveCssColorToHex(tVal, prop);
+      if (hex) return hex;
+    }
+    return '';
+  };
+  // 严格读取宿主系统主题判断深浅色兜底值，避免插件自身切换主题时污染原生窗口控制按钮
+  const hostIsLight = getSystemTheme() === 'light';
+  try {
+    const nativeStyle = typeof getComputedStyle === 'function' ? getComputedStyle(document.documentElement) : null;
+    const bodyStyle = typeof getComputedStyle === 'function' && document.body ? getComputedStyle(document.body) : null;
+    const menuBarNode = typeof document.querySelector === 'function'
+      ? document.querySelector('[data-testid="title-menu-bar"]')
+      : null;
+    const menuBarStyle = menuBarNode && typeof getComputedStyle === 'function' ? getComputedStyle(menuBarNode) : null;
+    const barNode = typeof document.querySelector === 'function'
+      ? (document.querySelector('[class*="@container/titlebar"]') || document.querySelector('header, nav, .titlebar'))
+      : null;
+    const barStyle = barNode && typeof getComputedStyle === 'function' ? getComputedStyle(barNode) : null;
+    const sidebarVarRaw = nativeStyle?.getPropertyValue?.('--sidebar') || '';
+    const secFgVarRaw = nativeStyle?.getPropertyValue?.('--secondary-foreground') || '';
+    const bg = pickHex([
+      menuBarStyle?.backgroundColor,
+      nativeStyle?.getPropertyValue?.('--vscode-titleBar-activeBackground'),
+      sidebarVarRaw,
+      sidebarVarRaw ? 'var(--sidebar)' : '',
+      barStyle?.backgroundColor,
+      nativeStyle?.getPropertyValue?.('--background'),
+      bodyStyle?.backgroundColor
+    ], 'backgroundColor') || (hostIsLight ? '#fafafa' : '#131313');
+    const fg = pickHex([
+      nativeStyle?.getPropertyValue?.('--vscode-titleBar-activeForeground'),
+      secFgVarRaw,
+      secFgVarRaw ? 'var(--secondary-foreground)' : '',
+      menuBarStyle?.color,
+      barStyle?.color,
+      nativeStyle?.getPropertyValue?.('--foreground'),
+      bodyStyle?.color
+    ], 'color') || (hostIsLight ? '#383a42' : '#fafafa');
+    return { bg, fg };
+  } catch {
+    return { bg: hostIsLight ? '#fafafa' : '#131313', fg: hostIsLight ? '#383a42' : '#fafafa' };
+  }
+}
+
+function syncNativeOverlayTheme() {
+  try {
+    if (typeof window === 'undefined') return;
+    const { bg, fg } = resolveNativeTitlebarOverlayColors();
+    if (!/^#[0-9a-f]{6}$/i.test(bg) || !/^#[0-9a-f]{6}$/i.test(fg)) return;
+    const overlayKey = `${bg}|${fg}|30`;
+    if (overlayKey === lastSyncedOverlayKey) return;
+    lastSyncedOverlayKey = overlayKey;
+    if (typeof window.contextMeterAPI?.syncOverlay === 'function') {
+      void window.contextMeterAPI.syncOverlay({ color: bg, symbolColor: fg, height: 30, heightCssPx: 30 });
+    } else if (typeof window.electronNative?.setTitleBarOverlay === 'function') {
+      void window.electronNative.setTitleBarOverlay({ color: bg, symbolColor: fg, height: 30 });
+    }
+  } catch { }
+}
+
+function cycleTheme() {
+  if (currentThemeMode === 'auto') currentThemeMode = 'light';
+  else if (currentThemeMode === 'light') currentThemeMode = 'dark';
+  else currentThemeMode = 'auto';
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem('ag_theme_mode', currentThemeMode);
+  } catch { }
+  applyTheme();
+}
+
+let themeObserver = null;
+let overlayMediaCleanup = null;
+const overlaySyncTimers = [];
+try {
+  if (typeof MutationObserver !== 'undefined' && document.body) {
+    themeObserver = new MutationObserver(() => {
+      syncHostAccentCssVar();
+      if (currentThemeMode === 'auto') applyTheme();
+      else syncNativeOverlayTheme();
+    });
+    themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
+    if (document.documentElement) {
+      themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
+    }
+  }
+  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+    const mqlDark = window.matchMedia('(prefers-color-scheme: dark)');
+    const onSchemeChange = () => {
+      if (state.disposed) return;
+      if (currentThemeMode === 'auto') applyTheme();
+      else syncNativeOverlayTheme();
+    };
+    if (typeof mqlDark?.addEventListener === 'function') {
+      mqlDark.addEventListener('change', onSchemeChange);
+      overlayMediaCleanup = () => { try { mqlDark.removeEventListener('change', onSchemeChange); } catch { } };
+    } else if (typeof mqlDark?.addListener === 'function') {
+      mqlDark.addListener(onSchemeChange);
+      overlayMediaCleanup = () => { try { mqlDark.removeListener(onSchemeChange); } catch { } };
+    }
+  }
+  for (const delayMs of [80, 600, 1800]) {
+    const tid = setTimeout(() => {
+      if (!state.disposed) syncNativeOverlayTheme();
+    }, delayMs);
+    overlaySyncTimers.push(tid);
+  }
+  if (typeof activeDisposers?.add === 'function') {
+    activeDisposers.add(() => {
+      for (const tid of overlaySyncTimers) clearTimeout(tid);
+      overlaySyncTimers.length = 0;
+      if (overlayMediaCleanup) { overlayMediaCleanup(); overlayMediaCleanup = null; }
+      try { overlayColorProbeEl?.remove?.(); } catch { }
+      overlayColorProbeEl = null;
+    });
+  }
+} catch { }
+
+applyTheme();
+applyCustomColors();
+
+// =========================================================================
+// 自定义「颜色选取器」面板交互逻辑（吸管 + 预设圆点 + SV主色区 + 色相条 + HEX/RGB/HSL）
+// =========================================================================
+let activePickerSlot = null;
+let activePickerAnchor = null;
+let cpHsv = { h: 265, s: 77, v: 72 };
+
+function syncPickerUiFromHsv(skipInputId = '', exactRgb = null) {
+  const rgb = exactRgb || hsvToRgb(cpHsv.h, cpHsv.s, cpHsv.v);
+  const hex = rgbToHex(rgb.r, rgb.g, rgb.b);
+  const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+
+  const svArea = el('cp-sv-area');
+  const svThumb = el('cp-sv-thumb');
+  const hueThumb = el('cp-hue-thumb');
+  const sidePreview = el('cp-side-preview');
+  if (svArea) svArea.style.backgroundColor = `hsl(${cpHsv.h}, 100%, 50%)`;
+  if (svThumb) {
+    svThumb.style.left = `${cpHsv.s}%`;
+    svThumb.style.top = `${100 - cpHsv.v}%`;
+  }
+  if (hueThumb) {
+    hueThumb.style.left = `${(cpHsv.h / 360) * 100}%`;
+  }
+  if (sidePreview) {
+    sidePreview.style.background = hex;
+  }
+
+  const inHex = el('cp-input-hex');
+  const inRgb = el('cp-input-rgb');
+  const inHsl = el('cp-input-hsl');
+  if (inHex && skipInputId !== 'cp-input-hex') inHex.value = hex;
+  if (inRgb && skipInputId !== 'cp-input-rgb') inRgb.value = `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`;
+  if (inHsl && skipInputId !== 'cp-input-hsl') inHsl.value = `hsl(${hsl.h}, ${hsl.s}%, ${hsl.l}%)`;
+  return hex;
+}
+
+function applyPickerHex(hexStr, skipInputId = '') {
+  const norm = normalizeHex(hexStr);
+  if (!norm) return false;
+  const rgb = hexToRgb(norm);
+  if (!rgb) return false;
+  cpHsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
+  const appliedHex = syncPickerUiFromHsv(skipInputId, rgb);
+  if (activePickerSlot) {
+    setCustomColor(activePickerSlot, appliedHex);
+  }
+  return true;
+}
+
+let pickerOpVersion = 0;
+
+function positionColorPickerPopover() {
+  const pop = el('color-picker-popover');
+  if (!pop || pop.hidden) return;
+  try {
+    const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
+    const vh = (typeof window !== 'undefined' && window.innerHeight) || 800;
+    const popW = 304;
+    const popH = pop.offsetHeight > 0 ? pop.offsetHeight : 340;
+    let minLeft = 12;
+    if (typeof document.querySelector === 'function') {
+      const navEl = document.querySelector('div[role="navigation"]');
+      if (navEl?.getBoundingClientRect) {
+        const nr = navEl.getBoundingClientRect();
+        if (nr.width > 0 && nr.left <= 8 && nr.right < vw - 320) {
+          minLeft = Math.ceil(nr.right + 12);
+        }
+      }
+    }
+    const snapPx = typeof snapToDevicePixel === 'function' ? snapToDevicePixel : Math.round;
+    let left = snapPx((vw - popW) / 2);
+    let top = 90;
+    if (activePickerAnchor?.getBoundingClientRect) {
+      const ar = activePickerAnchor.getBoundingClientRect();
+      if (ar.width > 0 || ar.height > 0) {
+        left = snapPx(ar.right - popW);
+        top = snapPx(ar.bottom + 6);
+        if (top + popH > vh - 12 && ar.top > popH + 12) {
+          top = snapPx(ar.top - popH - 6);
+        }
+      }
+    }
+    left = snapPx(Math.max(minLeft, Math.min(vw - popW - 12, left)));
+    top = snapPx(Math.max(42, Math.min(vh - popH - 12, top)));
+    pop.style.left = `${left}px`;
+    pop.style.top = `${top}px`;
+  } catch { }
+}
+
+function openColorPicker(slotKey, anchorEl = null, labelText = '') {
+  if (!Object.prototype.hasOwnProperty.call(COLOR_SLOTS, slotKey)) return;
+  const pop = el('color-picker-popover');
+  if (!pop) return;
+
+  const op = ++pickerOpVersion;
+  activePickerSlot = slotKey;
+  activePickerAnchor = anchorEl;
+
+  const lbl = el('cp-target-name');
+  if (lbl) lbl.textContent = labelText ? `· ${labelText}` : `· ${slotKey}`;
+  const cpResetBtn = el('cp-reset-slot');
+  if (cpResetBtn) {
+    cpResetBtn.textContent = slotKey.startsWith('heat') ? t('colors.resetLevel') : t('colors.followTheme');
+  }
+  const startHex = getEffectiveSlotColor(slotKey);
+  const rgb = hexToRgb(startHex) || { r: 101, g: 42, b: 183 };
+  cpHsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
+  syncPickerUiFromHsv();
+
+  pop.setAttribute?.('data-closing', 'false');
+  pop.classList?.remove?.('is-closing');
+  pop.classList?.add?.('is-opening');
+  pop.hidden = false;
+  positionColorPickerPopover();
+
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => {
+      if (pickerOpVersion === op) {
+        pop.classList?.remove?.('is-opening');
+      }
+    });
+  } else {
+    pop.classList?.remove?.('is-opening');
+  }
+}
+
+function closeColorPicker(immediate = false) {
+  const pop = el('color-picker-popover');
+  const isMock = !pop?.classList || typeof pop.classList.add !== 'function' || typeof pop.animate !== 'function';
+  const isClosing = pop?.classList ? pop.classList.contains('is-closing') : pop?.getAttribute('data-closing') === 'true';
+  if (!pop || pop.hidden || isClosing) {
     activePickerSlot = null;
     activePickerAnchor = null;
+    return;
+  }
+  const op = ++pickerOpVersion;
+  activePickerSlot = null;
+  activePickerAnchor = null;
 
-    const isImmediate = typeof immediate === 'boolean' ? immediate : false;
-    if (isImmediate || isMock || (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches)) {
+  const isImmediate = typeof immediate === 'boolean' ? immediate : false;
+  if (isImmediate || isMock || (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches)) {
+    pop.setAttribute?.('data-closing', 'false');
+    pop.classList?.remove?.('is-opening', 'is-closing');
+    pop.hidden = true;
+    return;
+  }
+
+  pop.setAttribute?.('data-closing', 'true');
+  pop.classList?.add?.('is-closing');
+  setTimeout(() => {
+    if (pickerOpVersion === op) {
       pop.setAttribute?.('data-closing', 'false');
       pop.classList?.remove?.('is-opening', 'is-closing');
       pop.hidden = true;
-      return;
     }
+  }, 130);
+}
 
-    pop.setAttribute?.('data-closing', 'true');
-    pop.classList?.add?.('is-closing');
-    setTimeout(() => {
-      if (pickerOpVersion === op) {
-        pop.setAttribute?.('data-closing', 'false');
-        pop.classList?.remove?.('is-opening', 'is-closing');
-        pop.hidden = true;
-      }
-    }, 130);
-  }
+const getHeatLvlLabel = (idx) => t(`colors.lvl${idx}`);
 
-  const getHeatLvlLabel = (idx) => t(`colors.lvl${idx}`);
-
-  // 绑定所有颜色色块与恢复按钮事件
-  for (const key of Object.keys(COLOR_SLOTS)) {
-    const inputEl = el(`color-${key}`);
-    const resetBtn = el(`reset-${key}`);
-    const swatchBtn = el(`swatch-${key}`);
-    inputEl?.addEventListener('input', e => setCustomColor(key, e.target?.value || ''));
-    inputEl?.addEventListener('change', e => setCustomColor(key, e.target?.value || ''));
-    resetBtn?.addEventListener('click', () => {
-      setCustomColor(key, '');
-      if (activePickerSlot === key) {
-        const eff = getEffectiveSlotColor(key);
-        const rgb = hexToRgb(eff) || { r: 101, g: 42, b: 183 };
-        cpHsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
-        syncPickerUiFromHsv();
-      }
-    });
-    swatchBtn?.addEventListener('click', e => {
-      e?.stopPropagation?.();
-      openColorPicker(key, swatchBtn, swatchBtn.getAttribute('data-color-label') || key);
-    });
-  }
-
-  // 热力图右下角「少 ▢▢▢▢▢ 多」5 个小色块图例直接点击弹出颜色选取器单独调色
-  for (let i = 0; i < 5; i++) {
-    const legBtn = el(`heat-leg-${i}`);
-    const slotKey = `heatLvl${i}`;
-    legBtn?.addEventListener('click', e => {
-      e?.stopPropagation?.();
-      toggleTokenColorsDrawer(true);
-      const swatchBtn = el(`swatch-${slotKey}`) || legBtn;
-      openColorPicker(slotKey, swatchBtn, getHeatLvlLabel(i));
-    });
-  }
-  el('reset-heat-lvls')?.addEventListener('click', () => {
-    resetHeatmapLevels();
-    if (activePickerSlot?.startsWith('heat')) {
-      const eff = getEffectiveSlotColor(activePickerSlot);
+// 绑定所有颜色色块与恢复按钮事件
+for (const key of Object.keys(COLOR_SLOTS)) {
+  const inputEl = el(`color-${key}`);
+  const resetBtn = el(`reset-${key}`);
+  const swatchBtn = el(`swatch-${key}`);
+  inputEl?.addEventListener('input', e => setCustomColor(key, e.target?.value || ''));
+  inputEl?.addEventListener('change', e => setCustomColor(key, e.target?.value || ''));
+  resetBtn?.addEventListener('click', () => {
+    setCustomColor(key, '');
+    if (activePickerSlot === key) {
+      const eff = getEffectiveSlotColor(key);
       const rgb = hexToRgb(eff) || { r: 101, g: 42, b: 183 };
       cpHsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
       syncPickerUiFromHsv();
     }
   });
-
-  // 面板 A 镜像色块与预设按钮事件
-  ['swatch-panelBg-tokens', 'swatch-tokenTotal-tokens', 'swatch-tokenAccent-tokens'].forEach(id => {
-    const btn = el(id);
-    btn?.addEventListener('click', e => {
-      e?.stopPropagation?.();
-      const slot = btn.getAttribute('data-color-slot');
-      if (slot) openColorPicker(slot, btn, btn.getAttribute('data-color-label') || slot);
-    });
+  swatchBtn?.addEventListener('click', e => {
+    e?.stopPropagation?.();
+    openColorPicker(key, swatchBtn, swatchBtn.getAttribute('data-color-label') || key);
   });
-  el('reset-panelBg-tokens')?.addEventListener('click', () => setCustomColor('panelBg', ''));
-  el('reset-all-colors')?.addEventListener('click', () => { resetCustomColors(); closeColorPicker(); });
-  el('reset-all-colors-tokens')?.addEventListener('click', () => { resetCustomColors(); closeColorPicker(); });
+}
 
-  try {
-    const presetGroup = el('heat-preset-group');
-    if (presetGroup?.querySelectorAll) {
-      for (const btn of presetGroup.querySelectorAll('[data-heat-preset]')) {
-        btn.addEventListener('click', () => {
-          const p = btn.getAttribute('data-heat-preset');
-          if (p) setHeatPreset(p);
-        });
-      }
-    }
-  } catch {}
-
-  // 颜色选取器内部控件绑定（SV 拖拽、Hue 拖拽、预设圆点、吸管、HEX/RGB/HSL 输入与复制）
-  el('cp-close')?.addEventListener('click', () => closeColorPicker(false));
-  el('cp-reset-slot')?.addEventListener('click', () => {
-    if (activePickerSlot) {
-      setCustomColor(activePickerSlot, '');
-      const eff = getEffectiveSlotColor(activePickerSlot);
-      const rgb = hexToRgb(eff) || { r: 101, g: 42, b: 183 };
-      cpHsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
-      syncPickerUiFromHsv();
-    }
+// 热力图右下角「少 ▢▢▢▢▢ 多」5 个小色块图例直接点击弹出颜色选取器单独调色
+for (let i = 0; i < 5; i++) {
+  const legBtn = el(`heat-leg-${i}`);
+  const slotKey = `heatLvl${i}`;
+  legBtn?.addEventListener('click', e => {
+    e?.stopPropagation?.();
+    toggleTokenColorsDrawer(true);
+    const swatchBtn = el(`swatch-${slotKey}`) || legBtn;
+    openColorPicker(slotKey, swatchBtn, getHeatLvlLabel(i));
   });
+}
+el('reset-heat-lvls')?.addEventListener('click', () => {
+  resetHeatmapLevels();
+  if (activePickerSlot?.startsWith('heat')) {
+    const eff = getEffectiveSlotColor(activePickerSlot);
+    const rgb = hexToRgb(eff) || { r: 101, g: 42, b: 183 };
+    cpHsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
+    syncPickerUiFromHsv();
+  }
+});
 
-  try {
-    const presetsWrap = el('cp-presets');
-    if (presetsWrap?.querySelectorAll) {
-      for (const dot of presetsWrap.querySelectorAll('[data-cp-hex]')) {
-        dot.addEventListener('click', () => {
-          const hex = dot.getAttribute('data-cp-hex');
-          if (hex) applyPickerHex(hex);
-        });
-      }
+// 面板 A 镜像色块与预设按钮事件
+['swatch-panelBg-tokens', 'swatch-tokenTotal-tokens', 'swatch-tokenAccent-tokens'].forEach(id => {
+  const btn = el(id);
+  btn?.addEventListener('click', e => {
+    e?.stopPropagation?.();
+    const slot = btn.getAttribute('data-color-slot');
+    if (slot) openColorPicker(slot, btn, btn.getAttribute('data-color-label') || slot);
+  });
+});
+el('reset-panelBg-tokens')?.addEventListener('click', () => setCustomColor('panelBg', ''));
+el('reset-all-colors')?.addEventListener('click', () => { resetCustomColors(); closeColorPicker(); });
+el('reset-all-colors-tokens')?.addEventListener('click', () => { resetCustomColors(); closeColorPicker(); });
+
+try {
+  const presetGroup = el('heat-preset-group');
+  if (presetGroup?.querySelectorAll) {
+    for (const btn of presetGroup.querySelectorAll('[data-heat-preset]')) {
+      btn.addEventListener('click', () => {
+        const p = btn.getAttribute('data-heat-preset');
+        if (p) setHeatPreset(p);
+      });
     }
-  } catch {}
+  }
+} catch { }
 
-  el('cp-eyedropper')?.addEventListener('click', async () => {
+// 颜色选取器内部控件绑定（SV 拖拽、Hue 拖拽、预设圆点、吸管、HEX/RGB/HSL 输入与复制）
+el('cp-close')?.addEventListener('click', () => closeColorPicker(false));
+el('cp-reset-slot')?.addEventListener('click', () => {
+  if (activePickerSlot) {
+    setCustomColor(activePickerSlot, '');
+    const eff = getEffectiveSlotColor(activePickerSlot);
+    const rgb = hexToRgb(eff) || { r: 101, g: 42, b: 183 };
+    cpHsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
+    syncPickerUiFromHsv();
+  }
+});
+
+try {
+  const presetsWrap = el('cp-presets');
+  if (presetsWrap?.querySelectorAll) {
+    for (const dot of presetsWrap.querySelectorAll('[data-cp-hex]')) {
+      dot.addEventListener('click', () => {
+        const hex = dot.getAttribute('data-cp-hex');
+        if (hex) applyPickerHex(hex);
+      });
+    }
+  }
+} catch { }
+
+el('cp-eyedropper')?.addEventListener('click', async () => {
+  const statusEl = el('cp-status-msg');
+  try {
+    if (typeof window !== 'undefined' && typeof window.EyeDropper === 'function') {
+      const dropper = new window.EyeDropper();
+      const res = await dropper.open();
+      if (res?.sRGBHex) {
+        applyPickerHex(res.sRGBHex);
+        if (statusEl) statusEl.textContent = t('colors.eyedropperPicked', { hex: res.sRGBHex.toUpperCase() });
+      }
+    } else {
+      el('cp-input-hex')?.focus?.();
+      if (statusEl) statusEl.textContent = t('colors.eyedropperUnsupported');
+    }
+  } catch { }
+});
+
+el('cp-input-hex')?.addEventListener('input', e => {
+  const raw = e.target?.value || '';
+  const norm = normalizeHex(raw);
+  if (norm) {
+    applyPickerHex(norm, 'cp-input-hex');
     const statusEl = el('cp-status-msg');
-    try {
-      if (typeof window !== 'undefined' && typeof window.EyeDropper === 'function') {
-        const dropper = new window.EyeDropper();
-        const res = await dropper.open();
-        if (res?.sRGBHex) {
-          applyPickerHex(res.sRGBHex);
-          if (statusEl) statusEl.textContent = t('colors.eyedropperPicked', { hex: res.sRGBHex.toUpperCase() });
-        }
-      } else {
-        el('cp-input-hex')?.focus?.();
-        if (statusEl) statusEl.textContent = t('colors.eyedropperUnsupported');
-      }
-    } catch {}
-  });
-
-  el('cp-input-hex')?.addEventListener('input', e => {
-    const raw = e.target?.value || '';
-    const norm = normalizeHex(raw);
-    if (norm) {
-      applyPickerHex(norm, 'cp-input-hex');
-      const statusEl = el('cp-status-msg');
-      if (statusEl) statusEl.textContent = t('colors.appliedHex', { hex: norm.toUpperCase() });
-    }
-  });
-  el('cp-input-hex')?.addEventListener('change', e => {
-    const raw = e.target?.value || '';
-    const norm = normalizeHex(raw);
-    if (norm) applyPickerHex(norm);
-  });
-
-  el('cp-input-rgb')?.addEventListener('input', e => {
-    const norm = normalizeHex(e.target?.value || '');
-    if (norm) applyPickerHex(norm, 'cp-input-rgb');
-  });
-  el('cp-input-hsl')?.addEventListener('input', e => {
-    const norm = normalizeHex(e.target?.value || '');
-    if (norm) applyPickerHex(norm, 'cp-input-hsl');
-  });
-
-  function copyPickerText(inputId, label) {
-    const input = el(inputId);
-    const val = input?.value || '';
-    if (!val) return;
-    try {
-      navigator?.clipboard?.writeText?.(val);
-    } catch {}
-    const statusEl = el('cp-status-msg');
-    if (statusEl) statusEl.textContent = t('colors.copied', { label, val });
+    if (statusEl) statusEl.textContent = t('colors.appliedHex', { hex: norm.toUpperCase() });
   }
-  el('cp-copy-hex')?.addEventListener('click', () => copyPickerText('cp-input-hex', 'HEX'));
-  el('cp-copy-rgb')?.addEventListener('click', () => copyPickerText('cp-input-rgb', 'RGB'));
-  el('cp-copy-hsl')?.addEventListener('click', () => copyPickerText('cp-input-hsl', 'HSL'));
+});
+el('cp-input-hex')?.addEventListener('change', e => {
+  const raw = e.target?.value || '';
+  const norm = normalizeHex(raw);
+  if (norm) applyPickerHex(norm);
+});
 
-  const svAreaEl = el('cp-sv-area');
-  const hueWrapEl = el('cp-hue-wrap');
-  let draggingSv = false;
-  let draggingHue = false;
+el('cp-input-rgb')?.addEventListener('input', e => {
+  const norm = normalizeHex(e.target?.value || '');
+  if (norm) applyPickerHex(norm, 'cp-input-rgb');
+});
+el('cp-input-hsl')?.addEventListener('input', e => {
+  const norm = normalizeHex(e.target?.value || '');
+  if (norm) applyPickerHex(norm, 'cp-input-hsl');
+});
 
-  function updateSvFromPointer(e) {
-    if (!svAreaEl?.getBoundingClientRect) return;
-    const r = svAreaEl.getBoundingClientRect();
-    if (!r.width || !r.height) return;
-    const s = clampNum(((e.clientX - r.left) / r.width) * 100, 0, 100);
-    const v = clampNum(100 - ((e.clientY - r.top) / r.height) * 100, 0, 100);
-    cpHsv.s = Math.round(s);
-    cpHsv.v = Math.round(v);
-    const hex = syncPickerUiFromHsv();
-    if (activePickerSlot) setCustomColor(activePickerSlot, hex);
-  }
-
-  function updateHueFromPointer(e) {
-    if (!hueWrapEl?.getBoundingClientRect) return;
-    const r = hueWrapEl.getBoundingClientRect();
-    if (!r.width) return;
-    const h = clampNum(((e.clientX - r.left) / r.width) * 360, 0, 360);
-    cpHsv.h = Math.round(h);
-    const hex = syncPickerUiFromHsv();
-    if (activePickerSlot) setCustomColor(activePickerSlot, hex);
-  }
-
-  svAreaEl?.addEventListener('mousedown', e => {
-    draggingSv = true;
-    updateSvFromPointer(e);
-  });
-  hueWrapEl?.addEventListener('mousedown', e => {
-    draggingHue = true;
-    updateHueFromPointer(e);
-  });
-  const onPointerMove = e => {
-    if (draggingSv) updateSvFromPointer(e);
-    else if (draggingHue) updateHueFromPointer(e);
-  };
-  const onPointerUp = () => {
-    draggingSv = false;
-    draggingHue = false;
-  };
+function copyPickerText(inputId, label) {
+  const input = el(inputId);
+  const val = input?.value || '';
+  if (!val) return;
   try {
-    window.addEventListener?.('mousemove', onPointerMove);
-    window.addEventListener?.('mouseup', onPointerUp);
-  } catch {}
+    navigator?.clipboard?.writeText?.(val);
+  } catch { }
+  const statusEl = el('cp-status-msg');
+  if (statusEl) statusEl.textContent = t('colors.copied', { label, val });
+}
+el('cp-copy-hex')?.addEventListener('click', () => copyPickerText('cp-input-hex', 'HEX'));
+el('cp-copy-rgb')?.addEventListener('click', () => copyPickerText('cp-input-rgb', 'RGB'));
+el('cp-copy-hsl')?.addEventListener('click', () => copyPickerText('cp-input-hsl', 'HSL'));
+
+const svAreaEl = el('cp-sv-area');
+const hueWrapEl = el('cp-hue-wrap');
+let draggingSv = false;
+let draggingHue = false;
+
+function updateSvFromPointer(e) {
+  if (!svAreaEl?.getBoundingClientRect) return;
+  const r = svAreaEl.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  const s = clampNum(((e.clientX - r.left) / r.width) * 100, 0, 100);
+  const v = clampNum(100 - ((e.clientY - r.top) / r.height) * 100, 0, 100);
+  cpHsv.s = Math.round(s);
+  cpHsv.v = Math.round(v);
+  const hex = syncPickerUiFromHsv();
+  if (activePickerSlot) setCustomColor(activePickerSlot, hex);
+}
+
+function updateHueFromPointer(e) {
+  if (!hueWrapEl?.getBoundingClientRect) return;
+  const r = hueWrapEl.getBoundingClientRect();
+  if (!r.width) return;
+  const h = clampNum(((e.clientX - r.left) / r.width) * 360, 0, 360);
+  cpHsv.h = Math.round(h);
+  const hex = syncPickerUiFromHsv();
+  if (activePickerSlot) setCustomColor(activePickerSlot, hex);
+}
+
+svAreaEl?.addEventListener('mousedown', e => {
+  draggingSv = true;
+  updateSvFromPointer(e);
+});
+hueWrapEl?.addEventListener('mousedown', e => {
+  draggingHue = true;
+  updateHueFromPointer(e);
+});
+const onPointerMove = e => {
+  if (draggingSv) updateSvFromPointer(e);
+  else if (draggingHue) updateHueFromPointer(e);
+};
+const onPointerUp = () => {
+  draggingSv = false;
+  draggingHue = false;
+};
+try {
+  window.addEventListener?.('mousemove', onPointerMove);
+  window.addEventListener?.('mouseup', onPointerUp);
+} catch { }
   // =========================================================================
   // 模块 2: 宿主布局挂载、右上角原生窗口控制区预留、渐进式宽度收缩与悬浮层定位
   // =========================================================================
@@ -28061,8 +28902,11 @@ function formatPeriodCalendarLabel(currentPeriod) {
             return false;
           }
         })();
+        const isStandaloneWeb = Boolean(typeof window !== 'undefined' && window.__AG_CM_STANDALONE_BROWSER__);
         const activeWco = wcoWidth > 0 || titlebarWcoPad > 0;
-        const enableTitlebarDrag = activeWco || isMacPlatform || !hasStandaloneMenuBar;
+        // 桌面宿主窗口（无论是否显示顶部独立菜单栏）均开启标题栏与菜单栏空白区拖动，
+        // 同时将交互控件与可见插件入口精确标记为 no-drag，不遮挡系统四边四角缩放热区与控制按钮
+        const enableTitlebarDrag = !isStandaloneWeb && (activeWco || isMacPlatform || hasStandaloneMenuBar || !hasStandaloneMenuBar);
         const cssText = [
           '[data-aux-pane-focus-scope="true"] > div[data-active-tab-id] {',
           '  padding-right: calc(var(--right-cluster-width, 140px) - 4px) !important;',
@@ -28073,7 +28917,9 @@ function formatPeriodCalendarLabel(currentPeriod) {
             '}'
           ].join('\n') : '',
           enableTitlebarDrag ? [
-            '[class*="@container/titlebar"],',
+            '[class*="@container/titlebar"]:not([style*="cursor: grab"]),',
+            '[data-testid="titlebar-service-announcement-slot"],',
+            '[data-testid="title-menu-bar"],',
             '[data-aux-pane-focus-scope="true"] > div[data-active-tab-id],',
             'div[role="navigation"][aria-label] > div.shrink-0:first-child {',
             '  -webkit-app-region: drag;',
@@ -28081,18 +28927,28 @@ function formatPeriodCalendarLabel(currentPeriod) {
             '[class*="@container/titlebar"] button,',
             '[class*="@container/titlebar"] a,',
             '[class*="@container/titlebar"] input,',
+            '[class*="@container/titlebar"] select,',
+            '[class*="@container/titlebar"] textarea,',
             '[class*="@container/titlebar"] [role="button"],',
-            '[data-testid="pane-titlebar-toolbar"] > *,',
+            '[class*="@container/titlebar"] [role="tab"],',
+            '[data-testid="title-menu-bar"] button,',
+            '[data-testid="title-menu-bar"] a,',
+            '[data-testid="title-menu-bar"] input,',
+            '[data-testid="title-menu-bar"] [role="button"],',
+            '[data-testid="title-menu-bar"] [role="menuitem"],',
+            '[data-testid="title-menu-bar"] [data-testid="title-menu-bar-item"],',
+            '[data-testid="pane-titlebar-toolbar"] > :not([aria-hidden="true"]),',
             '[data-aux-pane-focus-scope="true"] > div[data-active-tab-id] button,',
             '[data-aux-pane-focus-scope="true"] > div[data-active-tab-id] [data-tab-id],',
             'div[role="navigation"][aria-label] > div.shrink-0:first-child button,',
             'div[role="navigation"][aria-label] > div.shrink-0:first-child a,',
-            '#ag-context-meter {',
+            '#ag-context-meter:not([hidden]):not([data-collapsed-hidden="true"]) {',
             '  -webkit-app-region: no-drag;',
             '}'
           ].join('\n') : '',
-          // 无论是否存在 WCO 宽度，始终强制顶栏容器与内部控件可点击且不触发窗口拖动
-          '#ag-context-meter, #ag-context-meter * { -webkit-app-region: no-drag !important; pointer-events: auto; }'
+          // 仅对可见且非隐藏的插件宿主及其内部控件保持可点击，避免隐藏占位吞掉顶栏拖动或边缘缩放
+          '#ag-context-meter[hidden], #ag-context-meter[data-collapsed-hidden="true"] { pointer-events: none !important; }',
+          '#ag-context-meter:not([hidden]):not([data-collapsed-hidden="true"]), #ag-context-meter:not([hidden]):not([data-collapsed-hidden="true"]) *:not([hidden]) { -webkit-app-region: no-drag !important; pointer-events: auto; }'
         ].join('\n');
         if (styleEl.textContent !== cssText) {
           styleEl.textContent = cssText;
@@ -28248,6 +29104,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
 
   function enforceMarketplaceAvoidance(forceActive) {
     const active = typeof forceActive === 'boolean' ? forceActive : isHostMarketplaceActive();
+    if (active && host.getAttribute?.('data-marketplace-active') === 'true') return true;
     try {
       if (active) {
         host.setAttribute('data-marketplace-active', 'true');
@@ -29318,8 +30175,21 @@ function formatPeriodCalendarLabel(currentPeriod) {
           font-variant-numeric: tabular-nums !important;
         }
         #composer-status-bar .csb-runtime-pill {
+          order: -10 !important;
+          flex-shrink: 0 !important;
           gap: 5px !important;
-          cursor: default !important;
+          cursor: pointer !important;
+        }
+        #composer-status-bar[data-csb-width="tight"] .csb-runtime-pill {
+          display: inline-flex !important;
+          order: -10 !important;
+          flex-shrink: 0 !important;
+          max-width: none !important;
+          overflow: visible !important;
+        }
+        #composer-status-bar[data-csb-width="tight"] #csb-runtime-text {
+          max-width: none !important;
+          overflow: visible !important;
         }
         #composer-status-bar .csb-status-dot {
           display: inline-block !important;
@@ -30296,7 +31166,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
     }
     const marketplaceActive = isHostMarketplaceActive();
     ensureComposerStatusBarMounted({ marketplaceActive });
-    if (typeof syncModelPickers === 'function') syncModelPickers();
+    hostSettingsCtrl?.syncModalMount?.();
     scheduleHostModelSync();
     checkHostDomCompactionSignals();
     // 进入 Customizations / Marketplace / Installed 页面时自动收起已打开面板、浮层与辅助栏
@@ -30327,8 +31197,8 @@ function formatPeriodCalendarLabel(currentPeriod) {
             const elNode = target.nodeType === 1 ? target : target.parentElement;
             if (!elNode) return false;
             if (elNode === host || (typeof host.contains === 'function' && host.contains(elNode))) return true;
-            if (elNode.id === 'ag-composer-status-bar' || elNode.className === 'ag-cm-turn-footer') return true;
-            if (elNode.closest?.('#ag-context-meter, #ag-composer-status-bar, .ag-cm-turn-footer')) return true;
+            if (elNode.id === 'ag-composer-status-bar' || elNode.id === 'ag-cm-host-settings-nav' || elNode.id === 'ag-cm-host-settings-page' || elNode.className === 'ag-cm-turn-footer') return true;
+            if (elNode.closest?.('#ag-context-meter, #ag-composer-status-bar, .ag-cm-turn-footer, #ag-cm-host-settings-nav, #ag-cm-host-settings-page')) return true;
             if (isIdleConv && elNode.closest?.('[data-testid="conversation-view"]')) return true;
             return false;
           };
@@ -30578,6 +31448,10 @@ function formatPeriodCalendarLabel(currentPeriod) {
         void refreshUnlockStatus();
       } else if (activeContextTab === 'speed' && !isContextSettingsView) {
         renderSpeedComparisonTab?.();
+      } else if (activeContextTab === 'accounts' && !isContextSettingsView) {
+        if (typeof renderAccountsOverviewSection === 'function') renderAccountsOverviewSection();
+        if (typeof refreshAccountsOverview === 'function') void refreshAccountsOverview({ silent: true });
+        if (typeof renderQuotaBoard === 'function') renderQuotaBoard(Date.now(), { animate: false });
       }
       if (isContextSettingsView) {
         void refreshModulesDisplay();
@@ -30630,6 +31504,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
     }
     if (el('panel') && !el('panel').hidden) {
       if (isContextSettingsView || activeContextTab === 'settings') return 'settings';
+      if (activeContextTab === 'accounts') return 'accounts';
       if (activeContextTab === 'models') return 'models';
       if (activeContextTab === 'speed') return 'speed';
       if (activeContextTab === 'session' && state.historyDrawerOpen) return 'context_detail';
@@ -32127,7 +33002,13 @@ function formatPeriodCalendarLabel(currentPeriod) {
     openContextSettings();
   });
   el('btn-settings-back')?.addEventListener('click', () => {
-    switchContextTab('session');
+    closeContextSettings();
+  });
+  el('btn-settings-retry-host')?.addEventListener('click', () => {
+    openContextSettings({ forceRetryHost: true });
+  });
+  el('btn-settings-open-pools-tab')?.addEventListener('click', () => {
+    openPluginAccountsTab();
   });
   el('badge-dock-wake')?.addEventListener('click', () => {
     toggleOverflowMenu();
@@ -32141,65 +33022,195 @@ function formatPeriodCalendarLabel(currentPeriod) {
   el('btn-dock-open-browser')?.addEventListener('click', () => {
     void openStandaloneBrowserPage();
   });
+  function setToggleFeedbackUi(statusId, tone, text) {
+    const node = el(statusId);
+    if (!node) return;
+    if (tone) node.setAttribute?.('data-tone', tone);
+    else node.removeAttribute?.('data-tone');
+    node.textContent = String(text || '');
+  }
+  const prefToggleTracker = new Map();
+  const prefToggleFeedbackMap = new Map();
+  async function persistBooleanPreferenceToggle({
+    payloadKey,
+    next,
+    prev,
+    checkboxEl,
+    statusId,
+    localStorageKey = '',
+    onApplyState,
+    onUiSync
+  }) {
+    const tracker = prefToggleTracker.get(payloadKey) || { seq: 0, inFlight: 0, lastConfirmed: Boolean(prev) };
+    if (tracker.inFlight === 0) {
+      tracker.lastConfirmed = Boolean(prev);
+    }
+    tracker.seq += 1;
+    tracker.inFlight += 1;
+    prefToggleTracker.set(payloadKey, tracker);
+    const mySeq = tracker.seq;
+
+    const targetVal = Boolean(next);
+    onApplyState(targetVal);
+    if (checkboxEl) {
+      checkboxEl.checked = targetVal;
+      checkboxEl.setAttribute?.('aria-busy', 'true');
+    }
+    if (localStorageKey) {
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem(localStorageKey, targetVal ? 'true' : 'false');
+      } catch { }
+    }
+    const savingText = t('prefs.saving');
+    prefToggleFeedbackMap.set(payloadKey, { busy: true, tone: 'busy', text: savingText });
+    setToggleFeedbackUi(statusId, 'busy', savingText);
+    onUiSync();
+    syncHostSettingsUi();
+    const hasBridge = typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge();
+    if (!hasBridge) {
+      tracker.inFlight = Math.max(0, tracker.inFlight - 1);
+      if (mySeq === tracker.seq) {
+        tracker.lastConfirmed = targetVal;
+        if (checkboxEl) checkboxEl.removeAttribute?.('aria-busy');
+        const idleText = targetVal ? t('prefs.stateOn') : t('prefs.stateOff');
+        prefToggleFeedbackMap.set(payloadKey, { busy: false, tone: 'idle', text: idleText });
+        setToggleFeedbackUi(statusId, 'idle', idleText);
+        onUiSync();
+        syncHostSettingsUi();
+      }
+      return { ok: true, enabled: targetVal };
+    }
+    let res = { ok: false, error: t('msg.noHostBridge') };
+    try {
+      res = await saveSettingsPayloadBridge({ [payloadKey]: targetVal });
+    } catch (err) {
+      res = { ok: false, error: err?.message || t('msg.unknownErr') };
+    } finally {
+      tracker.inFlight = Math.max(0, tracker.inFlight - 1);
+    }
+    if (mySeq !== tracker.seq) {
+      return { ok: true, stale: true, enabled: targetVal };
+    }
+    if (checkboxEl) {
+      checkboxEl.removeAttribute?.('aria-busy');
+    }
+    if (!res?.ok) {
+      const revertVal = Boolean(tracker.lastConfirmed);
+      const reason = res?.error || t('msg.unknownErr');
+      onApplyState(revertVal);
+      if (checkboxEl) checkboxEl.checked = revertVal;
+      if (localStorageKey) {
+        try {
+          if (typeof localStorage !== 'undefined') localStorage.setItem(localStorageKey, revertVal ? 'true' : 'false');
+        } catch { }
+      }
+      const failText = t('prefs.toggleFailed', { reason });
+      prefToggleFeedbackMap.set(payloadKey, { busy: false, tone: 'error', text: failText });
+      setToggleFeedbackUi(statusId, 'error', failText);
+      onUiSync();
+      syncHostSettingsUi();
+      return { ok: false, enabled: revertVal, error: reason };
+    }
+    tracker.lastConfirmed = targetVal;
+    const okText = targetVal ? t('prefs.stateOn') : t('prefs.stateOff');
+    prefToggleFeedbackMap.set(payloadKey, { busy: false, tone: 'idle', text: okText });
+    setToggleFeedbackUi(statusId, 'idle', okText);
+    onUiSync();
+    syncHostSettingsUi();
+    return { ok: true, enabled: targetVal };
+  }
   const onShowTurnFooterToggle = (e) => {
     const chk = el('chk-show-turn-footer-stats');
-    const next = e?.target ? Boolean(e.target.checked) : (chk ? Boolean(chk.checked) : showTurnFooterStats);
-    showTurnFooterStats = next;
-    if (chk) chk.checked = showTurnFooterStats;
-    try {
-      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_show_turn_footer_stats', showTurnFooterStats ? 'true' : 'false');
-    } catch { }
-    renderTurnFooterStats();
-    if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
-      void saveSettingsPayloadBridge({ showTurnFooterStats });
-    }
+    const prev = showTurnFooterStats;
+    const next = e?.target ? Boolean(e.target.checked) : (chk ? Boolean(chk.checked) : prev);
+    void persistBooleanPreferenceToggle({
+      payloadKey: 'showTurnFooterStats',
+      next,
+      prev,
+      checkboxEl: chk,
+      statusId: 'status-turn-footer',
+      localStorageKey: 'ag_show_turn_footer_stats',
+      onApplyState: (val) => { showTurnFooterStats = val; },
+      onUiSync: () => { renderTurnFooterStats(); }
+    });
   };
   el('chk-show-turn-footer-stats')?.addEventListener('change', onShowTurnFooterToggle);
   const onShowComposerQuotaToggle = (e) => {
     const chk = el('chk-show-composer-quota');
-    const next = e?.target ? Boolean(e.target.checked) : (chk ? Boolean(chk.checked) : showComposerQuotaSummary);
-    showComposerQuotaSummary = next;
-    if (chk) chk.checked = showComposerQuotaSummary;
-    try {
-      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_show_composer_quota', showComposerQuotaSummary ? 'true' : 'false');
-    } catch { }
-    if (typeof renderComposerQuotaSummary === 'function') {
-      renderComposerQuotaSummary(lastComputedQuotaView || null, Date.now());
-    }
-    ensureComposerStatusBarMounted();
-    if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
-      void saveSettingsPayloadBridge({ showComposerQuotaSummary });
-    }
+    const prev = showComposerQuotaSummary;
+    const next = e?.target ? Boolean(e.target.checked) : (chk ? Boolean(chk.checked) : prev);
+    void persistBooleanPreferenceToggle({
+      payloadKey: 'showComposerQuotaSummary',
+      next,
+      prev,
+      checkboxEl: chk,
+      statusId: 'status-composer-quota',
+      localStorageKey: 'ag_show_composer_quota',
+      onApplyState: (val) => { showComposerQuotaSummary = val; },
+      onUiSync: () => {
+        if (typeof renderComposerQuotaSummary === 'function') {
+          renderComposerQuotaSummary(lastComputedQuotaView || null, Date.now());
+        }
+        ensureComposerStatusBarMounted();
+      }
+    });
   };
   el('chk-show-composer-quota')?.addEventListener('change', onShowComposerQuotaToggle);
-  const onSimplifiedModelPickerToggle = (e) => {
-    const chk = el('chk-simplified-model-picker');
-    const next = e?.target ? Boolean(e.target.checked) : (chk ? Boolean(chk.checked) : simplifiedModelPickerEnabled);
-    simplifiedModelPickerEnabled = next;
-    if (chk) chk.checked = simplifiedModelPickerEnabled;
+  function cleanupLegacyModelPickerArtifacts() {
     try {
-      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_simplified_model_picker', simplifiedModelPickerEnabled ? 'true' : 'false');
+      document.getElementById?.('ag-model-picker-style')?.remove?.();
     } catch { }
-    if (typeof syncModelPickers === 'function') syncModelPickers();
-    if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
-      void saveSettingsPayloadBridge({ simplifiedModelPickerEnabled });
+    try {
+      document.body?.classList?.remove?.('ag-mp-native-probing');
+    } catch { }
+    try {
+      if (typeof document.querySelectorAll === 'function') {
+        for (const trig of Array.from(document.querySelectorAll('.ag-mp-native-hidden') || [])) {
+          trig?.classList?.remove?.('ag-mp-native-hidden');
+        }
+        for (const node of Array.from(document.querySelectorAll('[data-ag-model-picker="true"], .ag-mp-wrap, .ag-mp-popover') || [])) {
+          node?.remove?.();
+        }
+      }
+    } catch { }
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.removeItem('ag_simplified_model_picker');
+    } catch { }
+  }
+  function setNextPromptEnabledState(enabled, { persist = true } = {}) {
+    const prev = nextPromptEnabled;
+    const next = Boolean(enabled);
+    const chk = el('chk-next-prompt-enabled');
+    if (!persist) {
+      nextPromptEnabled = next;
+      if (chk) chk.checked = nextPromptEnabled;
+      if (!nextPromptEnabled && typeof dismissNextPromptSuggestion === 'function') {
+        dismissNextPromptSuggestion(true);
+      }
+      setToggleFeedbackUi('status-next-prompt', 'idle', nextPromptEnabled ? t('prefs.stateOn') : t('prefs.stateOff'));
+      syncHostSettingsUi();
+      return nextPromptEnabled;
     }
-  };
-  el('chk-simplified-model-picker')?.addEventListener('change', onSimplifiedModelPickerToggle);
+    return persistBooleanPreferenceToggle({
+      payloadKey: 'nextPromptEnabled',
+      next,
+      prev,
+      checkboxEl: chk,
+      statusId: 'status-next-prompt',
+      localStorageKey: 'ag_next_prompt_enabled',
+      onApplyState: (val) => {
+        nextPromptEnabled = val;
+        if (!val && typeof dismissNextPromptSuggestion === 'function') {
+          dismissNextPromptSuggestion(true);
+        }
+      },
+      onUiSync: () => { syncHostSettingsUi(); }
+    });
+  }
   const onNextPromptToggle = (e) => {
     const chk = el('chk-next-prompt-enabled');
     const next = e?.target ? Boolean(e.target.checked) : (chk ? Boolean(chk.checked) : nextPromptEnabled);
-    nextPromptEnabled = next;
-    if (chk) chk.checked = nextPromptEnabled;
-    try {
-      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_next_prompt_enabled', nextPromptEnabled ? 'true' : 'false');
-    } catch { }
-    if (!nextPromptEnabled && typeof dismissNextPromptSuggestion === 'function') {
-      dismissNextPromptSuggestion(true);
-    }
-    if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
-      void saveSettingsPayloadBridge({ nextPromptEnabled });
-    }
+    void setNextPromptEnabledState(next, { persist: true });
   };
   el('chk-next-prompt-enabled')?.addEventListener('change', onNextPromptToggle);
   el('dock-fallback-note')?.addEventListener('click', () => {
@@ -32215,32 +33226,11 @@ function formatPeriodCalendarLabel(currentPeriod) {
     const btn = e.target?.closest?.('[data-nav-target]');
     const targetId = btn?.getAttribute?.('data-nav-target');
     if (targetId) {
-      if (activeContextTab !== 'settings' || isContextSettingsView !== true) {
+      const mountedInHost = Boolean(hostSettingsCtrl?.isHostPageSelected?.());
+      if (!mountedInHost && (activeContextTab !== 'settings' || isContextSettingsView !== true)) {
         openContextSettings();
       }
-      const targetEl = el(targetId);
-      if (targetEl) {
-        // 仅当目标元素本身就是抽屉容器时自动展开；卡片内部的附属技术抽屉不自动触发
-        const drawerTrigger = targetEl.classList?.contains('tech-drawer')
-          ? targetEl.querySelector?.('.drawer-trigger')
-          : null;
-        if (drawerTrigger && drawerTrigger.getAttribute('aria-expanded') !== 'true') {
-          drawerTrigger.click();
-        }
-        // 确保父级抽屉或折叠项也被展开
-        const parentDrawer = targetEl.closest?.('.tech-drawer');
-        if (parentDrawer && parentDrawer !== targetEl) {
-          const pt = parentDrawer.querySelector('.drawer-trigger');
-          if (pt && pt.getAttribute('aria-expanded') !== 'true') pt.click();
-        }
-
-        setTimeout(() => {
-          targetEl.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
-          targetEl.style.transition = 'box-shadow 0.3s ease';
-          targetEl.style.boxShadow = '0 0 0 2px var(--ag-accent, #6366f1)';
-          setTimeout(() => { targetEl.style.boxShadow = ''; }, 1400);
-        }, 60);
-      }
+      focusSettingsCardSection(targetId);
       for (const b of Array.from(e.currentTarget.children || [])) {
         b.classList.toggle('active', b === btn);
       }
@@ -32368,7 +33358,10 @@ function formatPeriodCalendarLabel(currentPeriod) {
   let restoreRequestSeq = 0;
 
 function closeAllDropdowns(exceptWrap = null) {
-    const rootScope = (typeof shadow !== 'undefined' && shadow && shadow.querySelectorAll) ? shadow : (typeof document !== 'undefined' ? document : null);
+  const roots = typeof getPluginSearchRoots === 'function'
+    ? getPluginSearchRoots()
+    : [(typeof shadow !== 'undefined' && shadow && shadow.querySelectorAll) ? shadow : (typeof document !== 'undefined' ? document : null)].filter(Boolean);
+  for (const rootScope of roots) {
     try {
       rootScope?.querySelectorAll?.('.ag-dropdown-wrapper.is-open')?.forEach(w => {
         if (w !== exceptWrap) {
@@ -32376,1956 +33369,1986 @@ function closeAllDropdowns(exceptWrap = null) {
           w.querySelector?.('.ag-dropdown-trigger')?.setAttribute?.('aria-expanded', 'false');
         }
       });
-    } catch {}
-    if (typeof closeValidEndDatePicker === 'function') {
-      const dpWrap = el('valid-end-picker-wrap');
-      if (!exceptWrap || exceptWrap !== dpWrap) {
-        closeValidEndDatePicker();
-      }
+    } catch { }
+  }
+  if (typeof closeValidEndDatePicker === 'function') {
+    const dpWrap = el('valid-end-picker-wrap');
+    if (!exceptWrap || exceptWrap !== dpWrap) {
+      closeValidEndDatePicker();
+    }
+  }
+}
+
+function initDropdownController(cfg) {
+  const wrap = el(cfg.wrapId);
+  const trigger = el(cfg.triggerId);
+  const label = el(cfg.labelId);
+  const menu = el(cfg.menuId);
+  const linkedSelect = cfg.selectId ? el(cfg.selectId) : null;
+  if (!wrap || !trigger || !label || !menu) return null;
+  if (trigger._bound) return wrap._controller || null;
+  trigger._bound = true;
+
+  trigger.setAttribute?.('role', 'combobox');
+  trigger.setAttribute?.('aria-haspopup', 'listbox');
+  trigger.setAttribute?.('aria-expanded', 'false');
+  const ariaLbl = cfg.ariaLabel || linkedSelect?.getAttribute?.('aria-label');
+  if (ariaLbl) trigger.setAttribute?.('aria-label', ariaLbl);
+  menu.setAttribute?.('role', 'listbox');
+
+  let keyboardFocusIndex = -1;
+  let listScrollTimer = null;
+  let lastClosedMenuSig = '';
+  const renderedItemMap = new Map();
+
+  /**
+   * 清空挂起的菜单内定位定时器，避免关闭或重建后继续触发滚动。
+   */
+  function clearListScrollTimer() {
+    if (listScrollTimer) {
+      clearTimeout(listScrollTimer);
+      listScrollTimer = null;
     }
   }
 
-  function initDropdownController(cfg) {
-    const wrap = el(cfg.wrapId);
-    const trigger = el(cfg.triggerId);
-    const label = el(cfg.labelId);
-    const menu = el(cfg.menuId);
-    const linkedSelect = cfg.selectId ? el(cfg.selectId) : null;
-    if (!wrap || !trigger || !label || !menu) return null;
-    if (trigger._bound) return wrap._controller || null;
-    trigger._bound = true;
+  /**
+   * 仅在不触发祖先滚动容器跳转的前提下聚焦元素。
+   */
+  function focusNoScroll(targetEl) {
+    if (!targetEl || typeof targetEl.focus !== 'function') return;
+    try {
+      targetEl.focus({ preventScroll: true });
+    } catch {
+      targetEl.focus();
+    }
+  }
 
-    trigger.setAttribute?.('role', 'combobox');
-    trigger.setAttribute?.('aria-haspopup', 'listbox');
-    trigger.setAttribute?.('aria-expanded', 'false');
-    const ariaLbl = cfg.ariaLabel || linkedSelect?.getAttribute?.('aria-label');
-    if (ariaLbl) trigger.setAttribute?.('aria-label', ariaLbl);
-    menu.setAttribute?.('role', 'listbox');
-
-    let keyboardFocusIndex = -1;
-    let listScrollTimer = null;
-    let lastClosedMenuSig = '';
-    const renderedItemMap = new Map();
-
-    /**
-     * 清空挂起的菜单内定位定时器，避免关闭或重建后继续触发滚动。
-     */
-    function clearListScrollTimer() {
-      if (listScrollTimer) {
-        clearTimeout(listScrollTimer);
-        listScrollTimer = null;
+  /**
+   * 仅调整下拉菜单自身 scrollTop，严禁调用会穿透滚动外层面板的 scrollIntoView。
+   */
+  function scrollChildNearestInContainer(scrollBox, childEl) {
+    if (!scrollBox || !childEl) return;
+    if (typeof scrollBox.getBoundingClientRect !== 'function' || typeof childEl.getBoundingClientRect !== 'function') return;
+    try {
+      const boxRect = scrollBox.getBoundingClientRect();
+      const itemRect = childEl.getBoundingClientRect();
+      if (!boxRect || !itemRect || boxRect.height <= 0 || itemRect.height <= 0) return;
+      const searchBar = menu.querySelector ? menu.querySelector('.ag-dropdown-search-wrap') : null;
+      const stickyTopH = (searchBar && typeof searchBar.getBoundingClientRect === 'function')
+        ? Math.max(0, Math.round(searchBar.getBoundingClientRect().height || 0))
+        : 0;
+      const visTop = boxRect.top + stickyTopH;
+      const visBottom = boxRect.bottom;
+      const curScroll = Number(scrollBox.scrollTop) || 0;
+      if (itemRect.top < visTop) {
+        scrollBox.scrollTop = Math.max(0, curScroll - (visTop - itemRect.top + 4));
+      } else if (itemRect.bottom > visBottom) {
+        scrollBox.scrollTop = curScroll + (itemRect.bottom - visBottom + 4);
       }
+    } catch { }
+  }
+
+  function renderMenu(kw = '', menuOpts = {}) {
+    clearListScrollTimer();
+    menu.innerHTML = '';
+    if (typeof menu.replaceChildren === 'function') menu.replaceChildren();
+    keyboardFocusIndex = -1;
+
+    const allItemsForSearch = cfg.getOptions();
+    const selectableCount = allItemsForSearch.filter(x => x && !x.isGroupHeader).length;
+    const showSearch = cfg.searchable === true || (cfg.searchable !== false && selectableCount > 6);
+
+    // 1. 搜索框（超过 6 项或显式启用时展示，短列表直接展示整洁选项）
+    let searchInput = null;
+    if (showSearch) {
+      const searchWrap = document.createElement('div');
+      searchWrap.className = 'ag-dropdown-search-wrap';
+      searchInput = document.createElement('input');
+      searchInput.type = 'text';
+      searchInput.className = 'ag-dropdown-search-input';
+      searchInput.placeholder = (typeof cfg.searchPlaceholder === 'function' ? cfg.searchPlaceholder() : cfg.searchPlaceholder) || t('dropdown.searchPlaceholder');
+      searchInput.value = kw;
+      searchWrap.appendChild(searchInput);
+      menu.appendChild(searchWrap);
+
+      searchInput.addEventListener('click', (e) => e?.stopPropagation?.());
+      searchInput.addEventListener('input', (e) => {
+        renderList(e.target.value.trim().toLowerCase(), { scrollSelected: false });
+      });
     }
 
-    /**
-     * 仅在不触发祖先滚动容器跳转的前提下聚焦元素。
-     */
-    function focusNoScroll(targetEl) {
-      if (!targetEl || typeof targetEl.focus !== 'function') return;
-      try {
-        targetEl.focus({ preventScroll: true });
-      } catch {
-        targetEl.focus();
-      }
-    }
+    // 2. 列表容器
+    const listContainer = document.createElement('div');
+    listContainer.className = 'ag-dropdown-list-container';
+    menu.appendChild(listContainer);
 
-    /**
-     * 仅调整下拉菜单自身 scrollTop，严禁调用会穿透滚动外层面板的 scrollIntoView。
-     */
-    function scrollChildNearestInContainer(scrollBox, childEl) {
-      if (!scrollBox || !childEl) return;
-      if (typeof scrollBox.getBoundingClientRect !== 'function' || typeof childEl.getBoundingClientRect !== 'function') return;
-      try {
-        const boxRect = scrollBox.getBoundingClientRect();
-        const itemRect = childEl.getBoundingClientRect();
-        if (!boxRect || !itemRect || boxRect.height <= 0 || itemRect.height <= 0) return;
-        const searchBar = menu.querySelector ? menu.querySelector('.ag-dropdown-search-wrap') : null;
-        const stickyTopH = (searchBar && typeof searchBar.getBoundingClientRect === 'function')
-          ? Math.max(0, Math.round(searchBar.getBoundingClientRect().height || 0))
-          : 0;
-        const visTop = boxRect.top + stickyTopH;
-        const visBottom = boxRect.bottom;
-        const curScroll = Number(scrollBox.scrollTop) || 0;
-        if (itemRect.top < visTop) {
-          scrollBox.scrollTop = Math.max(0, curScroll - (visTop - itemRect.top + 4));
-        } else if (itemRect.bottom > visBottom) {
-          scrollBox.scrollTop = curScroll + (itemRect.bottom - visBottom + 4);
+    let visibleItems = [];
+
+    function updateKeyboardHighlight(newIdx) {
+      const itemEls = listContainer.querySelectorAll ? listContainer.querySelectorAll('.ag-dropdown-item') : (listContainer.children || []);
+      if (!itemEls.length) return;
+      keyboardFocusIndex = Math.max(0, Math.min(newIdx, itemEls.length - 1));
+      Array.from(itemEls).forEach((elNode, idx) => {
+        if (idx === keyboardFocusIndex) {
+          addClass(elNode, 'is-keyboard-focus');
+          scrollChildNearestInContainer(menu, elNode);
+        } else {
+          removeClass(elNode, 'is-keyboard-focus');
         }
-      } catch { }
+      });
     }
 
-    function renderMenu(kw = '', menuOpts = {}) {
+    function renderList(searchKey = '', listOpts = {}) {
       clearListScrollTimer();
-      menu.innerHTML = '';
-      if (typeof menu.replaceChildren === 'function') menu.replaceChildren();
-      keyboardFocusIndex = -1;
+      if (typeof listContainer.replaceChildren === 'function') listContainer.replaceChildren();
+      listContainer.innerHTML = '';
+      renderedItemMap.clear();
+      const allItems = cfg.getOptions();
+      const selectedVal = cfg.getSelectedValue();
 
-      const allItemsForSearch = cfg.getOptions();
-      const selectableCount = allItemsForSearch.filter(x => x && !x.isGroupHeader).length;
-      const showSearch = cfg.searchable === true || (cfg.searchable !== false && selectableCount > 6);
+      const matchesItem = it => {
+        if (!searchKey) return true;
+        if (cfg.filterItem) return cfg.filterItem(it, searchKey);
+        const t1 = String(it.label || '').toLowerCase();
+        const t2 = String(it.value || '').toLowerCase();
+        const t3 = String(it.code || '').toLowerCase();
+        const aliases = (it.aliases || []).map(a => String(a).toLowerCase());
+        return t1.includes(searchKey) || t2.includes(searchKey) || t3.includes(searchKey) || aliases.some(a => a.includes(searchKey));
+      };
 
-      // 1. 搜索框（超过 6 项或显式启用时展示，短列表直接展示整洁选项）
-      let searchInput = null;
-      if (showSearch) {
-        const searchWrap = document.createElement('div');
-        searchWrap.className = 'ag-dropdown-search-wrap';
-        searchInput = document.createElement('input');
-        searchInput.type = 'text';
-        searchInput.className = 'ag-dropdown-search-input';
-        searchInput.placeholder = (typeof cfg.searchPlaceholder === 'function' ? cfg.searchPlaceholder() : cfg.searchPlaceholder) || t('dropdown.searchPlaceholder');
-        searchInput.value = kw;
-        searchWrap.appendChild(searchInput);
-        menu.appendChild(searchWrap);
-
-        searchInput.addEventListener('click', (e) => e?.stopPropagation?.());
-        searchInput.addEventListener('input', (e) => {
-          renderList(e.target.value.trim().toLowerCase(), { scrollSelected: false });
-        });
-      }
-
-      // 2. 列表容器
-      const listContainer = document.createElement('div');
-      listContainer.className = 'ag-dropdown-list-container';
-      menu.appendChild(listContainer);
-
-      let visibleItems = [];
-
-      function updateKeyboardHighlight(newIdx) {
-        const itemEls = listContainer.querySelectorAll ? listContainer.querySelectorAll('.ag-dropdown-item') : (listContainer.children || []);
-        if (!itemEls.length) return;
-        keyboardFocusIndex = Math.max(0, Math.min(newIdx, itemEls.length - 1));
-        Array.from(itemEls).forEach((elNode, idx) => {
-          if (idx === keyboardFocusIndex) {
-            addClass(elNode, 'is-keyboard-focus');
-            scrollChildNearestInContainer(menu, elNode);
-          } else {
-            removeClass(elNode, 'is-keyboard-focus');
-          }
-        });
-      }
-
-      function renderList(searchKey = '', listOpts = {}) {
-        clearListScrollTimer();
-        if (typeof listContainer.replaceChildren === 'function') listContainer.replaceChildren();
-        listContainer.innerHTML = '';
-        renderedItemMap.clear();
-        const allItems = cfg.getOptions();
-        const selectedVal = cfg.getSelectedValue();
-
-        const matchesItem = it => {
-          if (!searchKey) return true;
-          if (cfg.filterItem) return cfg.filterItem(it, searchKey);
-          const t1 = String(it.label || '').toLowerCase();
-          const t2 = String(it.value || '').toLowerCase();
-          const t3 = String(it.code || '').toLowerCase();
-          const aliases = (it.aliases || []).map(a => String(a).toLowerCase());
-          return t1.includes(searchKey) || t2.includes(searchKey) || t3.includes(searchKey) || aliases.some(a => a.includes(searchKey));
-        };
-
-        // 过滤可选项；组标题仅在后续存在命中项时显示且不可选
-        const renderEntries = [];
-        let pendingHeader = null;
-        visibleItems = [];
-        for (const it of allItems) {
-          if (it && it.isGroupHeader) {
-            pendingHeader = it;
-            continue;
-          }
-          if (matchesItem(it)) {
-            if (pendingHeader) {
-              renderEntries.push(pendingHeader);
-              pendingHeader = null;
-            }
-            renderEntries.push(it);
-            visibleItems.push(it);
-          }
+      // 过滤可选项；组标题仅在后续存在命中项时显示且不可选
+      const renderEntries = [];
+      let pendingHeader = null;
+      visibleItems = [];
+      for (const it of allItems) {
+        if (it && it.isGroupHeader) {
+          pendingHeader = it;
+          continue;
         }
+        if (matchesItem(it)) {
+          if (pendingHeader) {
+            renderEntries.push(pendingHeader);
+            pendingHeader = null;
+          }
+          renderEntries.push(it);
+          visibleItems.push(it);
+        }
+      }
 
-        if (!visibleItems.length) {
-          const emptyDiv = document.createElement('div');
-          emptyDiv.style.cssText = 'padding:10px;text-align:center;color:var(--ag-text-muted);font-size:11px';
-          emptyDiv.textContent = (typeof cfg.emptyText === 'function' ? cfg.emptyText() : cfg.emptyText) || t('dropdown.empty');
-          listContainer.appendChild(emptyDiv);
+      if (!visibleItems.length) {
+        const emptyDiv = document.createElement('div');
+        emptyDiv.style.cssText = 'padding:10px;text-align:center;color:var(--ag-text-muted);font-size:11px';
+        emptyDiv.textContent = (typeof cfg.emptyText === 'function' ? cfg.emptyText() : cfg.emptyText) || t('dropdown.empty');
+        listContainer.appendChild(emptyDiv);
+        return;
+      }
+
+      let selectableIdx = 0;
+      renderEntries.forEach((opt) => {
+        if (opt && opt.isGroupHeader) {
+          const groupEl = document.createElement('div');
+          groupEl.className = 'ag-dropdown-group-title';
+          groupEl.setAttribute?.('role', 'presentation');
+          if (opt.dotColor) {
+            const dot = document.createElement('span');
+            dot.className = 'ag-vendor-dot';
+            dot.style.backgroundColor = opt.dotColor;
+            groupEl.appendChild(dot);
+          }
+          const lbl = document.createElement('span');
+          lbl.textContent = opt.label || '';
+          groupEl.appendChild(lbl);
+          listContainer.appendChild(groupEl);
           return;
         }
 
-        let selectableIdx = 0;
-        renderEntries.forEach((opt) => {
-          if (opt && opt.isGroupHeader) {
-            const groupEl = document.createElement('div');
-            groupEl.className = 'ag-dropdown-group-title';
-            groupEl.setAttribute?.('role', 'presentation');
-            if (opt.dotColor) {
-              const dot = document.createElement('span');
-              dot.className = 'ag-vendor-dot';
-              dot.style.backgroundColor = opt.dotColor;
-              groupEl.appendChild(dot);
-            }
-            const lbl = document.createElement('span');
-            lbl.textContent = opt.label || '';
-            groupEl.appendChild(lbl);
-            listContainer.appendChild(groupEl);
-            return;
-          }
+        const idx = selectableIdx++;
+        const itemEl = document.createElement('div');
+        const isSelected = cfg.isItemSelected ? cfg.isItemSelected(opt, selectedVal) : (opt.value === selectedVal);
+        itemEl.className = 'ag-dropdown-item' + (isSelected ? ' is-selected' : '');
+        itemEl.setAttribute?.('role', 'option');
+        itemEl.setAttribute?.('aria-selected', isSelected ? 'true' : 'false');
+        itemEl.setAttribute?.('data-index', String(idx));
+        itemEl.setAttribute?.('data-value', String(opt.value || ''));
+        itemEl.title = opt.tooltip || opt.displayLeft || opt.label || '';
 
-          const idx = selectableIdx++;
-          const itemEl = document.createElement('div');
-          const isSelected = cfg.isItemSelected ? cfg.isItemSelected(opt, selectedVal) : (opt.value === selectedVal);
-          itemEl.className = 'ag-dropdown-item' + (isSelected ? ' is-selected' : '');
-          itemEl.setAttribute?.('role', 'option');
-          itemEl.setAttribute?.('aria-selected', isSelected ? 'true' : 'false');
-          itemEl.setAttribute?.('data-index', String(idx));
-          itemEl.setAttribute?.('data-value', String(opt.value || ''));
-          itemEl.title = opt.tooltip || opt.displayLeft || opt.label || '';
+        const leftSpan = document.createElement('span');
+        leftSpan.className = 'ag-dropdown-item-text';
+        leftSpan.textContent = opt.displayLeft || opt.label;
+        itemEl.appendChild(leftSpan);
 
-          const leftSpan = document.createElement('span');
-          leftSpan.className = 'ag-dropdown-item-text';
-          leftSpan.textContent = opt.displayLeft || opt.label;
-          itemEl.appendChild(leftSpan);
+        if (opt.badgeText) {
+          const b = document.createElement('span');
+          b.className = 'ag-dropdown-badge';
+          b.textContent = opt.badgeText;
+          itemEl.appendChild(b);
+        }
 
-          if (opt.badgeText) {
-            const b = document.createElement('span');
-            b.className = 'ag-dropdown-badge';
-            b.textContent = opt.badgeText;
-            itemEl.appendChild(b);
-          }
+        const rightSpan = document.createElement('span');
+        rightSpan.className = 'ag-dropdown-item-sub';
+        if (opt.displayRight) {
+          rightSpan.textContent = opt.displayRight;
+        }
 
-          const rightSpan = document.createElement('span');
-          rightSpan.className = 'ag-dropdown-item-sub';
-          if (opt.displayRight) {
-            rightSpan.textContent = opt.displayRight;
-          }
+        const extraEl = typeof cfg.renderOptionExtras === 'function' ? cfg.renderOptionExtras(opt) : null;
 
-          const extraEl = typeof cfg.renderOptionExtras === 'function' ? cfg.renderOptionExtras(opt) : null;
+        const check = document.createElement('span');
+        check.className = 'ag-dropdown-item-check';
+        check.textContent = '✓';
 
-          const check = document.createElement('span');
-          check.className = 'ag-dropdown-item-check';
-          check.textContent = '✓';
+        if (extraEl) {
+          const rightGroup = document.createElement('span');
+          rightGroup.className = 'ag-dropdown-item-right';
+          rightGroup.appendChild(extraEl);
+          if (opt.displayRight) rightGroup.appendChild(rightSpan);
+          itemEl.appendChild(rightGroup);
+        } else if (opt.displayRight) {
+          itemEl.appendChild(rightSpan);
+        }
+        itemEl.appendChild(check);
 
-          if (extraEl) {
-            const rightGroup = document.createElement('span');
-            rightGroup.className = 'ag-dropdown-item-right';
-            rightGroup.appendChild(extraEl);
-            if (opt.displayRight) rightGroup.appendChild(rightSpan);
-            itemEl.appendChild(rightGroup);
-          } else if (opt.displayRight) {
-            itemEl.appendChild(rightSpan);
-          }
-          itemEl.appendChild(check);
+        renderedItemMap.set(opt.value, { itemEl, extraEl });
 
-          renderedItemMap.set(opt.value, { itemEl, extraEl });
-
-          itemEl.addEventListener('click', (e) => {
-            e?.stopPropagation?.();
-            selectOption(opt);
-          });
-
-          listContainer.appendChild(itemEl);
+        itemEl.addEventListener('click', (e) => {
+          e?.stopPropagation?.();
+          selectOption(opt);
         });
 
-        // 仅在主动展开菜单时，将当前选中项滚动到下拉列表自身可视区域（绝不触发祖先面板滚动）
-        if (listOpts.scrollSelected === true) {
-          listScrollTimer = setTimeout(() => {
-            listScrollTimer = null;
-            if (!hasClass(wrap, 'is-open')) return;
-            const selNode = listContainer.querySelector ? listContainer.querySelector('.ag-dropdown-item.is-selected') : null;
-            scrollChildNearestInContainer(menu, selNode);
-          }, 30);
-        }
-      }
+        listContainer.appendChild(itemEl);
+      });
 
-      function selectOption(opt) {
-        clearListScrollTimer();
-        clearInputFocusTimer();
-        removeClass(wrap, 'is-open');
-        trigger.setAttribute?.('aria-expanded', 'false');
-        const text = cfg.getLabelText ? cfg.getLabelText(opt) : (opt.label || opt.value);
-        label.textContent = text;
-        label.title = text || '';
-        if (linkedSelect) {
-          runWithUiHydration(() => {
-            linkedSelect.value = opt.value;
-          });
-        }
-        if (cfg.onSelect) cfg.onSelect(opt);
-        focusNoScroll(trigger);
-      }
-
-      renderList(kw, menuOpts);
-
-      // 键盘导航
-      const keyHandler = (e) => {
-        if (!hasClass(wrap, 'is-open')) return;
-        if (e.key === 'ArrowDown') {
-          e.preventDefault?.();
-          updateKeyboardHighlight(keyboardFocusIndex + 1);
-        } else if (e.key === 'ArrowUp') {
-          e.preventDefault?.();
-          updateKeyboardHighlight(keyboardFocusIndex <= 0 ? 0 : keyboardFocusIndex - 1);
-        } else if (e.key === 'Enter') {
-          e.preventDefault?.();
-          if (keyboardFocusIndex >= 0 && visibleItems[keyboardFocusIndex]) {
-            selectOption(visibleItems[keyboardFocusIndex]);
-          } else if (visibleItems.length === 1) {
-            selectOption(visibleItems[0]);
-          }
-        } else if (e.key === 'Escape') {
-          e.preventDefault?.();
-          clearListScrollTimer();
-          clearInputFocusTimer();
-          removeClass(wrap, 'is-open');
-          trigger.setAttribute?.('aria-expanded', 'false');
-          focusNoScroll(trigger);
-        }
-      };
-
-      if (searchInput) searchInput.addEventListener('keydown', keyHandler);
-      menu.addEventListener('keydown', keyHandler);
-      wrap._activeKeyHandler = keyHandler;
-    }
-
-    let inputFocusTimer = null;
-    function clearInputFocusTimer() {
-      if (inputFocusTimer) {
-        clearTimeout(inputFocusTimer);
-        inputFocusTimer = null;
-      }
-    }
-
-    // 立即预渲染一次菜单内容，避免初次点击或测试环境遇到空白（不触发滚动）
-    renderMenu('', { scrollSelected: false });
-
-    function toggleOpen() {
-      const isOpen = hasClass(wrap, 'is-open');
-      if (!isOpen) {
-        closeAllDropdowns(wrap);
-        clearInputFocusTimer();
-
-        // 上下空间与左右边缘防裁剪自适应展开方向
-        try {
-          const rect = trigger.getBoundingClientRect?.() || { bottom: 0, top: 0, left: 0, right: 0, width: 0 };
-          const spaceBelow = (typeof window !== 'undefined' ? (window.innerHeight || 800) : 800) - rect.bottom;
-          if (spaceBelow < 240 && rect.top > 240) {
-            addClass(wrap, 'open-up');
-          } else {
-            removeClass(wrap, 'open-up');
-          }
-          const containerEl = wrap.closest?.('#panel, #panel-tokens, #panel-quota, #panel-settings') || null;
-          const cRect = containerEl?.getBoundingClientRect?.() || { left: 8, right: (typeof window !== 'undefined' ? (window.innerWidth || 1000) : 1000) - 8 };
-          const estW = Math.max(rect.width || 0, cfg.minMenuWidth || 190);
-          if (rect.left + estW > cRect.right - 6 && (rect.right - estW) >= cRect.left - 6) {
-            addClass(wrap, 'align-right');
-          } else {
-            removeClass(wrap, 'align-right');
-          }
-        } catch {
-          removeClass(wrap, 'open-up');
-          removeClass(wrap, 'align-right');
-        }
-
-        addClass(wrap, 'is-open');
-        trigger.setAttribute?.('aria-expanded', 'true');
-        renderMenu('', { scrollSelected: true });
-        inputFocusTimer = setTimeout(() => {
-          inputFocusTimer = null;
+      // 仅在主动展开菜单时，将当前选中项滚动到下拉列表自身可视区域（绝不触发祖先面板滚动）
+      if (listOpts.scrollSelected === true) {
+        listScrollTimer = setTimeout(() => {
+          listScrollTimer = null;
           if (!hasClass(wrap, 'is-open')) return;
-          const input = menu.querySelector ? menu.querySelector('.ag-dropdown-search-input') : null;
-          if (input) focusNoScroll(input);
-        }, 50);
-      } else {
-        clearListScrollTimer();
-        clearInputFocusTimer();
-        removeClass(wrap, 'is-open');
-        trigger.setAttribute?.('aria-expanded', 'false');
+          const selNode = listContainer.querySelector ? listContainer.querySelector('.ag-dropdown-item.is-selected') : null;
+          scrollChildNearestInContainer(menu, selNode);
+        }, 30);
       }
     }
 
-    trigger.addEventListener('click', (e) => {
-      e?.stopPropagation?.();
-      toggleOpen();
-    });
+    function selectOption(opt) {
+      clearListScrollTimer();
+      clearInputFocusTimer();
+      removeClass(wrap, 'is-open');
+      trigger.setAttribute?.('aria-expanded', 'false');
+      const text = cfg.getLabelText ? cfg.getLabelText(opt) : (opt.label || opt.value);
+      label.textContent = text;
+      label.title = text || '';
+      if (linkedSelect) {
+        runWithUiHydration(() => {
+          linkedSelect.value = opt.value;
+        });
+      }
+      if (cfg.onSelect) cfg.onSelect(opt);
+      focusNoScroll(trigger);
+    }
 
-    trigger.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
+    renderList(kw, menuOpts);
+
+    // 键盘导航
+    const keyHandler = (e) => {
+      if (!hasClass(wrap, 'is-open')) return;
+      if (e.key === 'ArrowDown') {
         e.preventDefault?.();
-        if (hasClass(wrap, 'is-open') && e.key === 'Enter' && typeof wrap._activeKeyHandler === 'function') {
-          wrap._activeKeyHandler(e);
-        } else {
-          toggleOpen();
-        }
-      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-        if (!hasClass(wrap, 'is-open')) {
-          e.preventDefault?.();
-          toggleOpen();
-        }
-        if (typeof wrap._activeKeyHandler === 'function') {
-          wrap._activeKeyHandler(e);
+        updateKeyboardHighlight(keyboardFocusIndex + 1);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault?.();
+        updateKeyboardHighlight(keyboardFocusIndex <= 0 ? 0 : keyboardFocusIndex - 1);
+      } else if (e.key === 'Enter') {
+        e.preventDefault?.();
+        if (keyboardFocusIndex >= 0 && visibleItems[keyboardFocusIndex]) {
+          selectOption(visibleItems[keyboardFocusIndex]);
+        } else if (visibleItems.length === 1) {
+          selectOption(visibleItems[0]);
         }
       } else if (e.key === 'Escape') {
+        e.preventDefault?.();
         clearListScrollTimer();
         clearInputFocusTimer();
         removeClass(wrap, 'is-open');
         trigger.setAttribute?.('aria-expanded', 'false');
+        focusNoScroll(trigger);
       }
-    });
-
-    const controller = {
-      refresh: () => {
-        const val = cfg.getSelectedValue();
-        const opts = cfg.getOptions();
-        const found = opts.find(o => !o.isGroupHeader && o.value === val);
-        const nextText = found
-          ? (cfg.getLabelText ? cfg.getLabelText(found) : (found.label || found.value))
-          : (typeof cfg.emptyLabel === 'function' ? cfg.emptyLabel() : cfg.emptyLabel);
-        if (nextText != null && label.textContent !== nextText) {
-          label.textContent = nextText;
-        }
-        label.title = label.textContent || '';
-        const nextAria = cfg.getAriaLabel ? cfg.getAriaLabel() : (linkedSelect?.getAttribute?.('aria-label') || cfg.ariaLabel);
-        if (nextAria) trigger.setAttribute?.('aria-label', nextAria);
-        // 关闭态仅在选项结构/选中项变化时静态同步菜单（scrollSelected: false 绝不触发滚动），避免轮询无意义重建或抢滚动
-        if (!hasClass(wrap, 'is-open')) {
-          const langTag = typeof currentPanelLanguage !== 'undefined' ? currentPanelLanguage : 'zh-CN';
-          const optsSig = `${langTag}|${val || ''}|` + opts.map(o => `${o.value || ''}:${o.label || ''}:${o.displayRight || ''}:${o.badgeText || ''}:${o.isGroupHeader ? 1 : 0}`).join(';');
-          if (optsSig !== lastClosedMenuSig) {
-            lastClosedMenuSig = optsSig;
-            renderMenu('', { scrollSelected: false });
-          }
-        }
-      },
-      isOpen: () => hasClass(wrap, 'is-open'),
-      updateItemsInPlace: (updater) => {
-        if (typeof updater !== 'function') return;
-        for (const [val, entry] of renderedItemMap.entries()) {
-          updater(val, entry.itemEl, entry.extraEl);
-        }
-      },
-      close: () => {
-        clearListScrollTimer();
-        clearInputFocusTimer();
-        removeClass(wrap, 'is-open');
-        trigger.setAttribute?.('aria-expanded', 'false');
-      },
-      open: () => toggleOpen(),
-      wrap
     };
-    wrap._controller = controller;
-    return controller;
+
+    if (searchInput) searchInput.addEventListener('keydown', keyHandler);
+    menu.addEventListener('keydown', keyHandler);
+    wrap._activeKeyHandler = keyHandler;
   }
 
-  function formatOptionLabelByLang(opt) {
-    if (!opt) return '';
-    if (currentPanelLanguage === 'en') {
-      if (opt.labelEn) return opt.labelEn;
-      if (opt.code && opt.symbol) return `${opt.code} · ${opt.symbol}${opt.nameEn ? ' ' + opt.nameEn : ''}`;
-      if (opt.value && opt.value !== '未知') {
-        const flagMatch = String(opt.label || '').match(/^([\u{1F1E6}-\u{1F1FF}]{2}|🌐|🌏)\s*/u);
-        const flag = flagMatch ? flagMatch[1] + ' ' : '';
-        return `${flag}${opt.code || opt.value}`;
-      }
-      return t('plan.country.auto');
-    }
-    if (currentPanelLanguage === 'zh-TW') {
-      if (opt.labelTw) return opt.labelTw;
-    }
-    return opt.label;
-  }
-
-  const PLAN_TIER_OPTIONS = [
-    { value: 'auto', label: '✨ 自动检测', labelZh: '✨ 自动检测', labelTw: '✨ 自動檢測', labelEn: '✨ Auto-detect' },
-    { value: 'free', label: '免费版', labelZh: '免费版', labelTw: '免費版', labelEn: 'Free' },
-    { value: 'plus', label: 'Google AI Plus', labelZh: 'Google AI Plus', labelTw: 'Google AI Plus', labelEn: 'Google AI Plus' },
-    { value: 'pro', label: 'Google AI Pro', labelZh: 'Google AI Pro', labelTw: 'Google AI Pro', labelEn: 'Google AI Pro' },
-    { value: 'ultra_5x', label: 'Google AI Ultra 5x', labelZh: 'Google AI Ultra 5x', labelTw: 'Google AI Ultra 5x', labelEn: 'Google AI Ultra 5x' },
-    { value: 'ultra_20x', label: 'Google AI Ultra 20x', labelZh: 'Google AI Ultra 20x', labelTw: 'Google AI Ultra 20x', labelEn: 'Google AI Ultra 20x' },
-    { value: 'ultra', label: 'Google AI Ultra', labelZh: 'Google AI Ultra', labelTw: 'Google AI Ultra', labelEn: 'Google AI Ultra' }
-  ];
-
-  function getActivePlanSpecKeyForDropdown() {
-    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
-    const ps = ANTIGRAVITY_TOKEN_DATA?.planStatus || {};
-    if (core && typeof core.resolvePlanSpecKey === 'function') {
-      const sk = core.resolvePlanSpecKey(
-        ps.planTierOverride && ps.planTierOverride !== 'auto' ? ps.planTierOverride : (ps.tierKey || 'pro'),
-        ps.multiplier,
-        ps.planTierOverride && ps.planTierOverride !== 'auto' ? ps.planTierOverride : (ps.tierName || '')
-      );
-      return (sk === 'unknown' || sk === 'custom') ? 'pro' : sk;
-    }
-    if (ps.planTierOverride && ps.planTierOverride !== 'auto') return ps.planTierOverride;
-    return (!ps.tierKey || ps.tierKey === 'unknown' || ps.tierKey === 'custom') ? 'pro' : ps.tierKey;
-  }
-
-  // 刷新套餐规格直接选择器显示
-  function refreshDirectPlanTierDisplay(currentVal) {
-    const label = el('direct-tier-label');
-    const tag = el('p-det-tier-tag');
-    if (!label) return;
-    const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
-    const email = ps.email || 'default';
-    const effectiveCustom = (typeof getStoredCustomPlanSnapshot === 'function') ? getStoredCustomPlanSnapshot(email) : null;
-    const override = currentVal || ps.planTierOverride || effectiveCustom?.planTierOverride || 'auto';
-    const matched = PLAN_TIER_OPTIONS.find(o => o.value === override);
-    if (override && override !== 'auto') {
-      label.textContent = matched ? formatOptionLabelByLang(matched) : override;
-      if (tag) tag.style.display = 'inline-block';
-    } else {
-      label.textContent = formatOptionLabelByLang(PLAN_TIER_OPTIONS[0]);
-      if (tag) tag.style.display = 'none';
+  let inputFocusTimer = null;
+  function clearInputFocusTimer() {
+    if (inputFocusTimer) {
+      clearTimeout(inputFocusTimer);
+      inputFocusTimer = null;
     }
   }
 
-  // 刷新国家直接选择器显示
-  function refreshDirectCountryDisplay(currentCountryVal) {
-    const label = el('direct-country-label');
-    if (!label) return;
-    const rawVal = currentCountryVal || ANTIGRAVITY_TOKEN_DATA.planStatus?.country || '';
-    const val = (!rawVal || rawVal === '未知' || rawVal === 'Unknown') ? '未知' : String(rawVal).trim();
-    const matched = COUNTRY_OPTIONS.find(o => o.value === val || o.label === val || o.labelTw === val || o.labelEn === val)
-      || (val !== '未知' ? COUNTRY_OPTIONS.find(o => o.value !== '未知' && localizeRegionDisplayValue(o.value, currentPanelLanguage) === localizeRegionDisplayValue(val, currentPanelLanguage)) : null);
-    if (matched) {
-      label.textContent = formatOptionLabelByLang(matched);
-    } else if (val !== '未知') {
-      label.textContent = `🌐 ${localizeRegionDisplayValue(val) || val}`;
-    } else {
-      label.textContent = t('plan.country.auto');
-    }
-  }
+  // 立即预渲染一次菜单内容，避免初次点击或测试环境遇到空白（不触发滚动）
+  renderMenu('', { scrollSelected: false });
 
-  // 刷新订阅地区直接选择器显示
-  function refreshDirectRegionDisplay(currentRegionText) {
-    const directLabel = el('direct-region-label');
-    if (!directLabel) return;
-    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
-    const presets = core?.SUBSCRIPTION_REGIONS_PRESET || [];
-    const reg = currentRegionText || ANTIGRAVITY_TOKEN_DATA.planStatus?.region || '未知';
-    const isUnk = !reg || reg === '未知' || reg === 'Unknown' || String(reg).includes('未在当前会话中获取');
-    const matched = !isUnk
-      ? (core?.findRegionPreset ? core.findRegionPreset(reg) : presets.find(p => p.id === reg || p.name === reg || p.nameTw === reg || p.nameEn === reg))
-      : null;
-    if (matched) {
-      const activeSpecKey = getActivePlanSpecKeyForDropdown();
-      directLabel.textContent = formatPresetRegionLineParts(matched, currentPanelLanguage, activeSpecKey).full;
-    } else if (!isUnk) {
-      directLabel.textContent = '🌏 ' + (localizeRegionDisplayValue(reg) || reg);
-    } else {
-      directLabel.textContent = t('dropdown.regionUnknownShort');
-    }
-  }
+  function toggleOpen() {
+    const isOpen = hasClass(wrap, 'is-open');
+    if (!isOpen) {
+      closeAllDropdowns(wrap);
+      clearInputFocusTimer();
 
-  // 刷新币种直接选择器显示
-  function refreshDirectCurrencyDisplay(currentCurrencyVal) {
-    const label = el('direct-currency-label');
-    if (!label) return;
-    let val = currentCurrencyVal || ANTIGRAVITY_TOKEN_DATA.planStatus?.currency || 'USD';
-    if (val === 'NTD') val = 'TWD';
-    const matched = CURRENCY_OPTIONS.find(o => o.value === val);
-    label.textContent = matched ? formatOptionLabelByLang(matched) : val;
-  }
-
-  function renderDirectRegionMenu(filterText = '') {
-    const directWrap = el('direct-region-wrap');
-    if (directWrap?._controller) {
-      directWrap._controller.open();
-    }
-  }
-
-  // =========================================================================
-  // 插件栏设置持久化（币种、国家、订阅地区）与详情面板生命周期管理
-  // =========================================================================
-  let planDetailExpanded = false;
-  let lastSavedCustomPlan = null;
-  let lastSaveResult = { ok: true, error: '' };
-  let saveFeedbackTimer = null;
-
-  function showPlanSaveFeedback(ok, message) {
-    lastSaveResult = { ok: Boolean(ok), error: ok ? '' : (message || t('dropdown.saveFailed')) };
-    const fb = el('plan-save-feedback');
-    if (!fb) return;
-    if (saveFeedbackTimer) {
-      clearTimeout(saveFeedbackTimer);
-      saveFeedbackTimer = null;
-    }
-    fb.style.display = 'inline-block';
-    fb.style.color = ok ? '#22c55e' : '#ef4444';
-    fb.textContent = ok ? (message || t('dropdown.autoSaved')) : t('dropdown.saveFailedDetail', { msg: message || t('dropdown.writeCfgFailed') });
-    if (ok) {
-      saveFeedbackTimer = setTimeout(() => {
-        if (fb) fb.style.display = 'none';
-        saveFeedbackTimer = null;
-      }, 2800);
-    }
-  }
-
-  function closeOpenRegionDropdowns() {
-    try {
-      const rootScope = (typeof shadow !== 'undefined' && shadow && shadow.querySelectorAll) ? shadow : document;
-      rootScope?.querySelectorAll?.('.ag-dropdown-wrapper.is-open')?.forEach(w => w.classList.remove('is-open'));
-    } catch {}
-  }
-
-  // 统一控制 AI Pro 详情面板展开与收回（手动按钮、切换预估费用、关闭面板共用同一套清理逻辑）
-  function setPlanDetailExpanded(expanded, options = {}) {
-    const next = Boolean(expanded) && activeTokenView === 'tokens';
-    planDetailExpanded = next;
-    const card = el('plan-detail-card');
-    const btn = el('btn-plan-detail-toggle');
-    const form = el('plan-custom-form');
-
-    if (card) {
-      card.style.display = next ? 'block' : 'none';
-      card.classList?.toggle?.('is-expanded', next);
-      card.setAttribute?.('data-expanded', String(next));
-      if (!next) {
-        try { card.scrollTop = 0; } catch {}
-      }
-    }
-    if (btn) {
-      btn.textContent = next ? t('plan.detail.toggleClose') : t('plan.detail.toggleOpen');
-      btn.setAttribute?.('aria-expanded', String(next));
-    }
-    if (!next) {
-      if (form) form.style.display = 'none';
-      closeOpenRegionDropdowns();
-    }
-    if (!options.skipReposition) {
-      positionFloatingPanels();
-    }
-    return planDetailExpanded;
-  }
-
-  let currentSaveSeq = 0;
-
-  function getStoredCustomPlanSnapshot(email = 'default') {
-    if (lastSavedCustomPlan && typeof lastSavedCustomPlan === 'object') {
-      return { ...lastSavedCustomPlan };
-    }
-    try {
-      const key = email && email !== 'default' ? 'ag_custom_plan_' + String(email).toLowerCase() : 'ag_custom_plan_default';
-      const raw = localStorage?.getItem(key) || localStorage?.getItem('ag_custom_plan_default');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object') return parsed;
-      }
-    } catch {}
-    const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
-    const hasExplicitCustomPaid = Boolean(ps.isZeroExtraCost || (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined && ps.actualPricePaid !== ''));
-    const pm = (ps.priceMode === 'custom' || ps.priceMode === 'preset')
-      ? ps.priceMode
-      : (ps.priceSource === 'custom' && hasExplicitCustomPaid ? 'custom' : 'preset');
-    return {
-      ...(ps.planTierOverride && ps.planTierOverride !== 'auto' ? { planTierOverride: ps.planTierOverride } : {}),
-      accountRegion: (ps.accountRegion && !ps.accountRegion.includes('未知')) ? ps.accountRegion : ((ps.country && !ps.country.includes('未知')) ? ps.country : undefined),
-      country: (ps.country && !ps.country.includes('未知')) ? ps.country : undefined,
-      subscriptionCountry: (ps.subscriptionCountry && !ps.subscriptionCountry.includes('未知')) ? ps.subscriptionCountry : ((ps.subscriptionRegion && !ps.subscriptionRegion.includes('未知')) ? ps.subscriptionRegion : ((ps.region && !ps.region.includes('未知')) ? ps.region : undefined)),
-      subscriptionRegion: (ps.subscriptionRegion && !ps.subscriptionRegion.includes('未知')) ? ps.subscriptionRegion : ((ps.region && !ps.region.includes('未知')) ? ps.region : undefined),
-      region: (ps.region && !ps.region.includes('未知')) ? ps.region : undefined,
-      subscriptionCurrency: ps.subscriptionCurrency || ps.currency || 'USD',
-      currency: ps.currency || 'USD',
-      currencySource: ps.currencySource || 'default',
-      currencySymbol: ps.currencySymbol || '$',
-      actualPricePaid: ps.actualPricePaid ?? null,
-      customActualPrice: (pm === 'custom' && ps.actualPricePaid !== null) ? ps.actualPricePaid : (lastSavedCustomPlan?.customActualPrice ?? null),
-      priceMode: pm,
-      billingCycle: (ps.billingCycle && !ps.billingCycle.includes('未知')) ? ps.billingCycle : '月付',
-      acquisitionSource: ps.acquisitionSource || 'normal_paid',
-      acquisitionSourceName: ps.acquisitionSourceName || undefined,
-      isZeroExtraCost: Boolean(ps.isZeroExtraCost),
-      validEndDate: ps.validEndDate || null,
-      customNote: ps.customNote || '',
-      priceSource: ps.priceSource || (pm === 'preset' ? 'preset_region' : 'custom')
-    };
-  }
-
-  async function persistSettingsToHost(payload = {}) {
-    const thisSeq = ++currentSaveSeq;
-    const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
-    const email = payload.email || ps.email || 'default';
-    const customObj = payload.customPlan || null;
-
-    // 保存前检查通信桥接，缺失时返回失败
-    const hasIpc = typeof window !== 'undefined' && typeof window.contextMeterAPI?.saveSettings === 'function';
-    const hasLive = typeof window !== 'undefined' && Boolean(window.__AGContextMeterLive?.port);
-    if (!hasIpc && !hasLive) {
-      showPlanSaveFeedback(false, t('dropdown.noPersistBridge'));
-      return { ok: false, error: 'NO_HOST_BRIDGE' };
-    }
-
-    try {
-      let res = null;
-      const savePayload = { ...payload, email, saveSeq: thisSeq };
-      if (typeof callBackendWithPriority === 'function') {
-        const out = await callBackendWithPriority({
-          ipcCall: hasIpc ? () => window.contextMeterAPI.saveSettings(savePayload) : null,
-          liveRoute: '/save-settings',
-          liveBody: savePayload
-        });
-        res = out.result;
-      } else if (hasIpc) {
-        res = await window.contextMeterAPI.saveSettings(savePayload);
-      } else if (hasLive) {
-        const live = window.__AGContextMeterLive;
-        const resp = await fetch(`http://127.0.0.1:${live.port}/save-settings`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-          body: JSON.stringify(savePayload)
-        });
-        if (!resp.ok) {
-          showPlanSaveFeedback(false, `HTTP ${resp.status}`);
-          return { ok: false, error: `HTTP ${resp.status}` };
+      // 上下空间与左右边缘防裁剪自适应展开方向
+      try {
+        const rect = trigger.getBoundingClientRect?.() || { bottom: 0, top: 0, left: 0, right: 0, width: 0 };
+        const spaceBelow = (typeof window !== 'undefined' ? (window.innerHeight || 800) : 800) - rect.bottom;
+        if (spaceBelow < 240 && rect.top > 240) {
+          addClass(wrap, 'open-up');
+        } else {
+          removeClass(wrap, 'open-up');
         }
-        res = await resp.json().catch(() => null);
-      }
-
-      // 请求序列检查：若在此保存期间发生更新的操作，丢弃旧回包，避免旧响应乱序覆盖
-      if (thisSeq < currentSaveSeq) {
-        return { ok: true, superseded: true };
-      }
-
-      if (!res || res.ok === false) {
-        const errMsg = translateBackendText(res?.error) || t('dropdown.writeCfgFailed');
-        showPlanSaveFeedback(false, errMsg);
-        return { ok: false, error: errMsg };
-      }
-
-      // 宿主落盘确认成功后，才更新内存已保存缓存与全局快照
-      if (payload.clearPlan) {
-        lastSavedCustomPlan = null;
-        if (typeof window !== 'undefined') {
-          window.__AGContextMeterSettings = { ok: true, customPlan: null };
+        const containerEl = wrap.closest?.('#panel, #panel-tokens, #panel-quota, #panel-settings') || null;
+        const cRect = containerEl?.getBoundingClientRect?.() || { left: 8, right: (typeof window !== 'undefined' ? (window.innerWidth || 1000) : 1000) - 8 };
+        const estW = Math.max(rect.width || 0, cfg.minMenuWidth || 190);
+        if (rect.left + estW > cRect.right - 6 && (rect.right - estW) >= cRect.left - 6) {
+          addClass(wrap, 'align-right');
+        } else {
+          removeClass(wrap, 'align-right');
         }
-        try {
-          if (email && email !== 'default') localStorage?.removeItem('ag_custom_plan_' + String(email).toLowerCase());
-          localStorage?.removeItem('ag_custom_plan_default');
-        } catch {}
+      } catch {
+        removeClass(wrap, 'open-up');
+        removeClass(wrap, 'align-right');
+      }
+
+      addClass(wrap, 'is-open');
+      trigger.setAttribute?.('aria-expanded', 'true');
+      renderMenu('', { scrollSelected: true });
+      inputFocusTimer = setTimeout(() => {
+        inputFocusTimer = null;
+        if (!hasClass(wrap, 'is-open')) return;
+        const input = menu.querySelector ? menu.querySelector('.ag-dropdown-search-input') : null;
+        if (input) focusNoScroll(input);
+      }, 50);
+    } else {
+      clearListScrollTimer();
+      clearInputFocusTimer();
+      removeClass(wrap, 'is-open');
+      trigger.setAttribute?.('aria-expanded', 'false');
+    }
+  }
+
+  trigger.addEventListener('click', (e) => {
+    e?.stopPropagation?.();
+    toggleOpen();
+  });
+
+  trigger.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault?.();
+      if (hasClass(wrap, 'is-open') && e.key === 'Enter' && typeof wrap._activeKeyHandler === 'function') {
+        wrap._activeKeyHandler(e);
       } else {
-        const savedPlan = res.customPlan || customObj;
-        lastSavedCustomPlan = { ...savedPlan };
-        if (typeof window !== 'undefined') {
-          window.__AGContextMeterSettings = { ok: true, customPlan: { ...savedPlan } };
+        toggleOpen();
+      }
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (!hasClass(wrap, 'is-open')) {
+        e.preventDefault?.();
+        toggleOpen();
+      }
+      if (typeof wrap._activeKeyHandler === 'function') {
+        wrap._activeKeyHandler(e);
+      }
+    } else if (e.key === 'Escape') {
+      clearListScrollTimer();
+      clearInputFocusTimer();
+      removeClass(wrap, 'is-open');
+      trigger.setAttribute?.('aria-expanded', 'false');
+    }
+  });
+
+  const controller = {
+    refresh: () => {
+      const val = cfg.getSelectedValue();
+      const opts = cfg.getOptions();
+      const found = opts.find(o => !o.isGroupHeader && o.value === val);
+      const nextText = found
+        ? (cfg.getLabelText ? cfg.getLabelText(found) : (found.label || found.value))
+        : (typeof cfg.emptyLabel === 'function' ? cfg.emptyLabel() : cfg.emptyLabel);
+      if (nextText != null && label.textContent !== nextText) {
+        label.textContent = nextText;
+      }
+      label.title = label.textContent || '';
+      const nextAria = cfg.getAriaLabel ? cfg.getAriaLabel() : (linkedSelect?.getAttribute?.('aria-label') || cfg.ariaLabel);
+      if (nextAria) trigger.setAttribute?.('aria-label', nextAria);
+      // 关闭态仅在选项结构/选中项变化时静态同步菜单（scrollSelected: false 绝不触发滚动），避免轮询无意义重建或抢滚动
+      if (!hasClass(wrap, 'is-open')) {
+        const langTag = typeof currentPanelLanguage !== 'undefined' ? currentPanelLanguage : 'zh-CN';
+        const optsSig = `${langTag}|${val || ''}|` + opts.map(o => `${o.value || ''}:${o.label || ''}:${o.displayRight || ''}:${o.badgeText || ''}:${o.isGroupHeader ? 1 : 0}`).join(';');
+        if (optsSig !== lastClosedMenuSig) {
+          lastClosedMenuSig = optsSig;
+          renderMenu('', { scrollSelected: false });
         }
-        try {
-          const jsonStr = JSON.stringify(savedPlan);
-          if (email && email !== 'default') {
-            localStorage?.setItem('ag_custom_plan_' + String(email).toLowerCase(), jsonStr);
-          }
-          localStorage?.setItem('ag_custom_plan_default', jsonStr);
-        } catch {}
       }
-
-      showPlanSaveFeedback(true, t('dropdown.autoSaved'));
-      return res;
-    } catch (err) {
-      if (thisSeq >= currentSaveSeq) {
-        showPlanSaveFeedback(false, err?.message || t('dropdown.persistErr'));
+    },
+    isOpen: () => hasClass(wrap, 'is-open'),
+    updateItemsInPlace: (updater) => {
+      if (typeof updater !== 'function') return;
+      for (const [val, entry] of renderedItemMap.entries()) {
+        updater(val, entry.itemEl, entry.extraEl);
       }
-      return { ok: false, error: err?.message || t('dropdown.persistErr') };
+    },
+    close: () => {
+      clearListScrollTimer();
+      clearInputFocusTimer();
+      removeClass(wrap, 'is-open');
+      trigger.setAttribute?.('aria-expanded', 'false');
+    },
+    open: () => toggleOpen(),
+    wrap
+  };
+  wrap._controller = controller;
+  return controller;
+}
+
+function formatOptionLabelByLang(opt) {
+  if (!opt) return '';
+  if (currentPanelLanguage === 'en') {
+    if (opt.labelEn) return opt.labelEn;
+    if (opt.code && opt.symbol) return `${opt.code} · ${opt.symbol}${opt.nameEn ? ' ' + opt.nameEn : ''}`;
+    if (opt.value && opt.value !== '未知') {
+      const flagMatch = String(opt.label || '').match(/^([\u{1F1E6}-\u{1F1FF}]{2}|🌐|🌏)\s*/u);
+      const flag = flagMatch ? flagMatch[1] + ' ' : '';
+      return `${flag}${opt.code || opt.value}`;
     }
+    return t('plan.country.auto');
   }
-
-  function applyCustomPlanObjectLocally(customObj, email = 'default') {
-    if (customObj && typeof customObj === 'object') {
-      lastSavedCustomPlan = { ...customObj };
-    }
-    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
-    const rawLive = ANTIGRAVITY_TOKEN_DATA.rawPlanStatus || null;
-    const cleanLive = rawLive
-      ? { ...rawLive, region: '未知', subscriptionRegion: '未知', country: '未知', actualPricePaid: null, regionSource: 'unknown', priceSource: 'unknown' }
-      : null;
-
-    if (core && core.resolveEffectivePlanStatus) {
-      ANTIGRAVITY_TOKEN_DATA.planStatus = core.resolveEffectivePlanStatus(cleanLive, customObj, { currentEmail: email });
-    } else if (customObj) {
-      const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
-      const sym = (core?.CURRENCY_SYMBOLS && customObj.currency) ? (core.CURRENCY_SYMBOLS[customObj.currency] || customObj.currencySymbol || '$') : (customObj.currencySymbol || '$');
-      ANTIGRAVITY_TOKEN_DATA.planStatus = {
-        ...ps,
-        country: customObj.country || ps.country || '未知',
-        countrySource: customObj.country ? 'custom' : (ps.countrySource || 'unknown'),
-        region: customObj.subscriptionRegion || customObj.region || ps.region || '未知',
-        subscriptionRegion: customObj.subscriptionRegion || customObj.region || ps.subscriptionRegion || '未知',
-        regionSource: (customObj.subscriptionRegion || customObj.region) ? 'custom' : (ps.regionSource || 'unknown'),
-        currency: customObj.currency || ps.currency || 'USD',
-        currencySource: customObj.currency ? 'custom' : (ps.currencySource || 'default'),
-        currencySymbol: sym,
-        actualPricePaid: customObj.actualPricePaid !== undefined ? customObj.actualPricePaid : ps.actualPricePaid,
-        priceSource: customObj.priceSource || 'custom'
-      };
-    }
-    renderPlanDetail(ANTIGRAVITY_TOKEN_DATA.planStatus);
-    renderActiveCostEstimateView();
+  if (currentPanelLanguage === 'zh-TW') {
+    if (opt.labelTw) return opt.labelTw;
   }
+  return opt.label;
+}
 
-  // 明确切换价格模式：'preset' (跟随订阅国家参考价) 与 'custom' (自定义实付金额)
-  function switchPlanPriceMode(newMode) {
-    ++userActionSeq;
-    const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
-    const email = ps.email || 'default';
-    const prevCustom = getStoredCustomPlanSnapshot(email);
-    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
-    const targetMode = newMode === 'custom' ? 'custom' : 'preset';
+const PLAN_TIER_OPTIONS = [
+  { value: 'auto', label: '✨ 自动检测', labelZh: '✨ 自动检测', labelTw: '✨ 自動檢測', labelEn: '✨ Auto-detect' },
+  { value: 'free', label: '免费版', labelZh: '免费版', labelTw: '免費版', labelEn: 'Free' },
+  { value: 'plus', label: 'Google AI Plus', labelZh: 'Google AI Plus', labelTw: 'Google AI Plus', labelEn: 'Google AI Plus' },
+  { value: 'pro', label: 'Google AI Pro', labelZh: 'Google AI Pro', labelTw: 'Google AI Pro', labelEn: 'Google AI Pro' },
+  { value: 'ultra_5x', label: 'Google AI Ultra 5x', labelZh: 'Google AI Ultra 5x', labelTw: 'Google AI Ultra 5x', labelEn: 'Google AI Ultra 5x' },
+  { value: 'ultra_20x', label: 'Google AI Ultra 20x', labelZh: 'Google AI Ultra 20x', labelTw: 'Google AI Ultra 20x', labelEn: 'Google AI Ultra 20x' },
+  { value: 'ultra', label: 'Google AI Ultra', labelZh: 'Google AI Ultra', labelTw: 'Google AI Ultra', labelEn: 'Google AI Ultra' }
+];
 
-    let customObj = null;
-    if (targetMode === 'preset') {
-      // 切换为「跟随订阅国家参考价」：按当前生效套餐 × 订阅国家实时派生官方参考价与币种，清空旧实付锁死
-      const activeSpecKey = getActivePlanSpecKeyForDropdown();
-      const currentReg = prevCustom.subscriptionCountry || prevCustom.subscriptionRegion || prevCustom.region || ps.region || '';
-      const matched = core?.findRegionPreset
-        ? core.findRegionPreset(currentReg)
-        : core?.SUBSCRIPTION_REGIONS_PRESET?.find(p => p.id === currentReg || p.name === currentReg);
-      const refLookup = (matched && typeof core?.getRegionPlanReferencePrice === 'function')
-        ? core.getRegionPlanReferencePrice(matched, activeSpecKey)
-        : null;
-      const curCode = refLookup?.currency || matched?.currency || prevCustom.subscriptionCurrency || prevCustom.currency || 'USD';
-      const curSymbol = refLookup?.symbol || matched?.symbol || core?.CURRENCY_SYMBOLS?.[curCode] || '$';
-      const paid = (refLookup && refLookup.available && refLookup.monthlyPrice !== null && refLookup.monthlyPrice !== undefined)
-        ? refLookup.monthlyPrice
-        : null;
-
-      customObj = {
-        ...prevCustom,
-        priceMode: 'preset',
-        priceSource: paid !== null ? (refLookup?.source || 'preset_region') : 'unknown',
-        resetCustomPaid: true,
-        subscriptionCurrency: curCode,
-        currency: curCode,
-        currencySource: matched ? 'preset_region' : (prevCustom.currencySource || 'default'),
-        currencySymbol: curSymbol,
-        billingCycle: activeSpecKey === 'free' ? '免费/赠送' : '月付',
-        isZeroExtraCost: activeSpecKey === 'free',
-        updatedAt: new Date().toISOString()
-      };
-      delete customObj.customActualPrice;
-      if (paid !== null) customObj.actualPricePaid = paid;
-      else delete customObj.actualPricePaid;
-      applyCustomPlanObjectLocally(customObj, email);
-      void persistSettingsToHost({ email, customPlan: customObj });
-    } else {
-      // 切换为「自定义实付金额」：开启自定义模式并展开行内编辑表单
-      const isZero = Boolean(prevCustom.isZeroExtraCost || prevCustom.actualPricePaid === 0);
-      const paid = isZero ? 0 : (prevCustom.actualPricePaid !== null && prevCustom.actualPricePaid !== undefined ? prevCustom.actualPricePaid : (prevCustom.customActualPrice ?? null));
-
-      customObj = {
-        ...prevCustom,
-        priceMode: 'custom',
-        priceSource: 'custom',
-        actualPricePaid: paid,
-        customActualPrice: paid,
-        updatedAt: new Date().toISOString()
-      };
-      applyCustomPlanObjectLocally(customObj, email);
-      togglePlanCustomForm(true);
-      void persistSettingsToHost({ email, customPlan: customObj });
-    }
+function getActivePlanSpecKeyForDropdown() {
+  const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+  const ps = ANTIGRAVITY_TOKEN_DATA?.planStatus || {};
+  if (core && typeof core.resolvePlanSpecKey === 'function') {
+    const sk = core.resolvePlanSpecKey(
+      ps.planTierOverride && ps.planTierOverride !== 'auto' ? ps.planTierOverride : (ps.tierKey || 'pro'),
+      ps.multiplier,
+      ps.planTierOverride && ps.planTierOverride !== 'auto' ? ps.planTierOverride : (ps.tierName || '')
+    );
+    return (sk === 'unknown' || sk === 'custom') ? 'pro' : sk;
   }
+  if (ps.planTierOverride && ps.planTierOverride !== 'auto') return ps.planTierOverride;
+  return (!ps.tierKey || ps.tierKey === 'unknown' || ps.tierKey === 'custom') ? 'pro' : ps.tierKey;
+}
 
-  // 用户点选「订阅国家」：在参考价模式下实时派生价格与币种，在自定义模式下保持用户实付金额与币种
-  function applyDirectRegionSelection(regionItem) {
-    if (!regionItem) return;
-    ++userActionSeq;
-    const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
-    const email = ps.email || 'default';
-    const prevCustom = getStoredCustomPlanSnapshot(email);
-    const localizedName = getLocalizedPresetName(regionItem, currentPanelLanguage).trim();
-    const regionName = `${regionItem.id} ${localizedName}`;
-    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+// 刷新套餐规格直接选择器显示
+function refreshDirectPlanTierDisplay(currentVal) {
+  const label = el('direct-tier-label');
+  const tag = el('p-det-tier-tag');
+  if (!label) return;
+  const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+  const email = ps.email || 'default';
+  const effectiveCustom = (typeof getStoredCustomPlanSnapshot === 'function') ? getStoredCustomPlanSnapshot(email) : null;
+  const override = currentVal || ps.planTierOverride || effectiveCustom?.planTierOverride || 'auto';
+  const matched = PLAN_TIER_OPTIONS.find(o => o.value === override);
+  if (override && override !== 'auto') {
+    label.textContent = matched ? formatOptionLabelByLang(matched) : override;
+    if (tag) tag.style.display = 'inline-block';
+  } else {
+    label.textContent = formatOptionLabelByLang(PLAN_TIER_OPTIONS[0]);
+    if (tag) tag.style.display = 'none';
+  }
+}
+
+// 刷新国家直接选择器显示
+function refreshDirectCountryDisplay(currentCountryVal) {
+  const label = el('direct-country-label');
+  if (!label) return;
+  const rawVal = currentCountryVal || ANTIGRAVITY_TOKEN_DATA.planStatus?.country || '';
+  const val = (!rawVal || rawVal === '未知' || rawVal === 'Unknown') ? '未知' : String(rawVal).trim();
+  const matched = COUNTRY_OPTIONS.find(o => o.value === val || o.label === val || o.labelTw === val || o.labelEn === val)
+    || (val !== '未知' ? COUNTRY_OPTIONS.find(o => o.value !== '未知' && localizeRegionDisplayValue(o.value, currentPanelLanguage) === localizeRegionDisplayValue(val, currentPanelLanguage)) : null);
+  if (matched) {
+    label.textContent = formatOptionLabelByLang(matched);
+  } else if (val !== '未知') {
+    label.textContent = `🌐 ${localizeRegionDisplayValue(val) || val}`;
+  } else {
+    label.textContent = t('plan.country.auto');
+  }
+}
+
+// 刷新订阅地区直接选择器显示
+function refreshDirectRegionDisplay(currentRegionText) {
+  const directLabel = el('direct-region-label');
+  if (!directLabel) return;
+  const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+  const presets = core?.SUBSCRIPTION_REGIONS_PRESET || [];
+  const reg = currentRegionText || ANTIGRAVITY_TOKEN_DATA.planStatus?.region || '未知';
+  const isUnk = !reg || reg === '未知' || reg === 'Unknown' || String(reg).includes('未在当前会话中获取');
+  const matched = !isUnk
+    ? (core?.findRegionPreset ? core.findRegionPreset(reg) : presets.find(p => p.id === reg || p.name === reg || p.nameTw === reg || p.nameEn === reg))
+    : null;
+  if (matched) {
     const activeSpecKey = getActivePlanSpecKeyForDropdown();
+    directLabel.textContent = formatPresetRegionLineParts(matched, currentPanelLanguage, activeSpecKey).full;
+  } else if (!isUnk) {
+    directLabel.textContent = '🌏 ' + (localizeRegionDisplayValue(reg) || reg);
+  } else {
+    directLabel.textContent = t('dropdown.regionUnknownShort');
+  }
+}
 
-    const hasExplicitCustomPaid = Boolean(prevCustom.isZeroExtraCost || (prevCustom.actualPricePaid !== null && prevCustom.actualPricePaid !== undefined && prevCustom.actualPricePaid !== ''));
-    const currentPriceMode = (prevCustom.priceMode === 'custom' || prevCustom.priceMode === 'preset')
-      ? prevCustom.priceMode
-      : (prevCustom.priceSource === 'custom' && hasExplicitCustomPaid ? 'custom' : 'preset');
+// 刷新币种直接选择器显示
+function refreshDirectCurrencyDisplay(currentCurrencyVal) {
+  const label = el('direct-currency-label');
+  if (!label) return;
+  let val = currentCurrencyVal || ANTIGRAVITY_TOKEN_DATA.planStatus?.currency || 'USD';
+  if (val === 'NTD') val = 'TWD';
+  const matched = CURRENCY_OPTIONS.find(o => o.value === val);
+  label.textContent = matched ? formatOptionLabelByLang(matched) : val;
+}
 
-    let curCode = regionItem.currency;
-    let curSymbol = core?.CURRENCY_SYMBOLS?.[curCode] || regionItem.symbol || '$';
-    let paid = null;
-    let priceSource = 'preset_region';
-    let isZero = false;
-    let cycle = '月付';
+function renderDirectRegionMenu(filterText = '') {
+  const directWrap = el('direct-region-wrap');
+  if (directWrap?._controller) {
+    directWrap._controller.open();
+  }
+}
 
-    if (currentPriceMode === 'custom') {
-      // 自定义实付模式：切换国家严格保留用户此前设置的实付金额与币种，绝不静默覆盖
-      isZero = Boolean(prevCustom.isZeroExtraCost || prevCustom.actualPricePaid === 0);
-      curCode = prevCustom.subscriptionCurrency || prevCustom.currency || regionItem.currency;
-      curSymbol = core?.CURRENCY_SYMBOLS?.[curCode] || '$';
-      paid = isZero ? 0 : (prevCustom.actualPricePaid !== null && prevCustom.actualPricePaid !== undefined ? prevCustom.actualPricePaid : null);
-      priceSource = 'custom';
-      cycle = isZero ? '免费/赠送' : (prevCustom.billingCycle || '月付');
-    } else {
-      // 跟随订阅国家参考价模式：按当前套餐规格 × 地区二维定价矩阵实时查询参考价
-      const refLookup = typeof core?.getRegionPlanReferencePrice === 'function'
-        ? core.getRegionPlanReferencePrice(regionItem, activeSpecKey)
-        : null;
-      curCode = refLookup?.currency || regionItem.currency;
-      curSymbol = refLookup?.symbol || core?.CURRENCY_SYMBOLS?.[curCode] || regionItem.symbol || '$';
-      paid = (refLookup && refLookup.available && refLookup.monthlyPrice !== null && refLookup.monthlyPrice !== undefined)
-        ? refLookup.monthlyPrice
-        : (activeSpecKey === 'pro' ? regionItem.monthlyPrice : null);
-      priceSource = paid !== null ? (refLookup?.source || 'preset_region') : 'unknown';
-      isZero = activeSpecKey === 'free';
-      cycle = activeSpecKey === 'free' ? '免费/赠送' : '月付';
+// =========================================================================
+// 插件栏设置持久化（币种、国家、订阅地区）与详情面板生命周期管理
+// =========================================================================
+let planDetailExpanded = false;
+let lastSavedCustomPlan = null;
+let lastSaveResult = { ok: true, error: '' };
+let saveFeedbackTimer = null;
+
+function showPlanSaveFeedback(ok, message) {
+  lastSaveResult = { ok: Boolean(ok), error: ok ? '' : (message || t('dropdown.saveFailed')) };
+  const fb = el('plan-save-feedback');
+  if (!fb) return;
+  if (saveFeedbackTimer) {
+    clearTimeout(saveFeedbackTimer);
+    saveFeedbackTimer = null;
+  }
+  fb.style.display = 'inline-block';
+  fb.style.color = ok ? '#22c55e' : '#ef4444';
+  fb.textContent = ok ? (message || t('dropdown.autoSaved')) : t('dropdown.saveFailedDetail', { msg: message || t('dropdown.writeCfgFailed') });
+  if (ok) {
+    saveFeedbackTimer = setTimeout(() => {
+      if (fb) fb.style.display = 'none';
+      saveFeedbackTimer = null;
+    }, 2800);
+  }
+}
+
+function closeOpenRegionDropdowns() {
+  const roots = typeof getPluginSearchRoots === 'function'
+    ? getPluginSearchRoots()
+    : [(typeof shadow !== 'undefined' && shadow && shadow.querySelectorAll) ? shadow : document].filter(Boolean);
+  for (const rootScope of roots) {
+    try {
+      rootScope?.querySelectorAll?.('.ag-dropdown-wrapper.is-open')?.forEach(w => w.classList.remove('is-open'));
+    } catch { }
+  }
+}
+
+// 统一控制 AI Pro 详情面板展开与收回（手动按钮、切换预估费用、关闭面板共用同一套清理逻辑）
+function setPlanDetailExpanded(expanded, options = {}) {
+  const next = Boolean(expanded) && activeTokenView === 'tokens';
+  planDetailExpanded = next;
+  const card = el('plan-detail-card');
+  const btn = el('btn-plan-detail-toggle');
+  const form = el('plan-custom-form');
+
+  if (card) {
+    card.style.display = next ? 'block' : 'none';
+    card.classList?.toggle?.('is-expanded', next);
+    card.setAttribute?.('data-expanded', String(next));
+    if (!next) {
+      try { card.scrollTop = 0; } catch { }
+    }
+  }
+  if (btn) {
+    btn.textContent = next ? t('plan.detail.toggleClose') : t('plan.detail.toggleOpen');
+    btn.setAttribute?.('aria-expanded', String(next));
+  }
+  if (!next) {
+    if (form) form.style.display = 'none';
+    closeOpenRegionDropdowns();
+  }
+  if (!options.skipReposition) {
+    positionFloatingPanels();
+  }
+  return planDetailExpanded;
+}
+
+let currentSaveSeq = 0;
+
+function getStoredCustomPlanSnapshot(email = 'default') {
+  if (lastSavedCustomPlan && typeof lastSavedCustomPlan === 'object') {
+    return { ...lastSavedCustomPlan };
+  }
+  try {
+    const key = email && email !== 'default' ? 'ag_custom_plan_' + String(email).toLowerCase() : 'ag_custom_plan_default';
+    const raw = localStorage?.getItem(key) || localStorage?.getItem('ag_custom_plan_default');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') return parsed;
+    }
+  } catch { }
+  const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+  const hasExplicitCustomPaid = Boolean(ps.isZeroExtraCost || (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined && ps.actualPricePaid !== ''));
+  const pm = (ps.priceMode === 'custom' || ps.priceMode === 'preset')
+    ? ps.priceMode
+    : (ps.priceSource === 'custom' && hasExplicitCustomPaid ? 'custom' : 'preset');
+  return {
+    ...(ps.planTierOverride && ps.planTierOverride !== 'auto' ? { planTierOverride: ps.planTierOverride } : {}),
+    accountRegion: (ps.accountRegion && !ps.accountRegion.includes('未知')) ? ps.accountRegion : ((ps.country && !ps.country.includes('未知')) ? ps.country : undefined),
+    country: (ps.country && !ps.country.includes('未知')) ? ps.country : undefined,
+    subscriptionCountry: (ps.subscriptionCountry && !ps.subscriptionCountry.includes('未知')) ? ps.subscriptionCountry : ((ps.subscriptionRegion && !ps.subscriptionRegion.includes('未知')) ? ps.subscriptionRegion : ((ps.region && !ps.region.includes('未知')) ? ps.region : undefined)),
+    subscriptionRegion: (ps.subscriptionRegion && !ps.subscriptionRegion.includes('未知')) ? ps.subscriptionRegion : ((ps.region && !ps.region.includes('未知')) ? ps.region : undefined),
+    region: (ps.region && !ps.region.includes('未知')) ? ps.region : undefined,
+    subscriptionCurrency: ps.subscriptionCurrency || ps.currency || 'USD',
+    currency: ps.currency || 'USD',
+    currencySource: ps.currencySource || 'default',
+    currencySymbol: ps.currencySymbol || '$',
+    actualPricePaid: ps.actualPricePaid ?? null,
+    customActualPrice: (pm === 'custom' && ps.actualPricePaid !== null) ? ps.actualPricePaid : (lastSavedCustomPlan?.customActualPrice ?? null),
+    priceMode: pm,
+    billingCycle: (ps.billingCycle && !ps.billingCycle.includes('未知')) ? ps.billingCycle : '月付',
+    acquisitionSource: ps.acquisitionSource || 'normal_paid',
+    acquisitionSourceName: ps.acquisitionSourceName || undefined,
+    isZeroExtraCost: Boolean(ps.isZeroExtraCost),
+    validEndDate: ps.validEndDate || null,
+    customNote: ps.customNote || '',
+    priceSource: ps.priceSource || (pm === 'preset' ? 'preset_region' : 'custom')
+  };
+}
+
+async function persistSettingsToHost(payload = {}) {
+  const thisSeq = ++currentSaveSeq;
+  const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+  const email = payload.email || ps.email || 'default';
+  const customObj = payload.customPlan || null;
+
+  // 保存前检查通信桥接，缺失时返回失败
+  const hasIpc = typeof window !== 'undefined' && typeof window.contextMeterAPI?.saveSettings === 'function';
+  const hasLive = typeof window !== 'undefined' && Boolean(window.__AGContextMeterLive?.port);
+  if (!hasIpc && !hasLive) {
+    showPlanSaveFeedback(false, t('dropdown.noPersistBridge'));
+    return { ok: false, error: 'NO_HOST_BRIDGE' };
+  }
+
+  try {
+    let res = null;
+    const savePayload = { ...payload, email, saveSeq: thisSeq };
+    if (typeof callBackendWithPriority === 'function') {
+      const out = await callBackendWithPriority({
+        ipcCall: hasIpc ? () => window.contextMeterAPI.saveSettings(savePayload) : null,
+        liveRoute: '/save-settings',
+        liveBody: savePayload
+      });
+      res = out.result;
+    } else if (hasIpc) {
+      res = await window.contextMeterAPI.saveSettings(savePayload);
+    } else if (hasLive) {
+      const live = window.__AGContextMeterLive;
+      const resp = await fetch(`http://127.0.0.1:${live.port}/save-settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+        body: JSON.stringify(savePayload)
+      });
+      if (!resp.ok) {
+        showPlanSaveFeedback(false, `HTTP ${resp.status}`);
+        return { ok: false, error: `HTTP ${resp.status}` };
+      }
+      res = await resp.json().catch(() => null);
     }
 
-    const customObj = {
+    // 请求序列检查：若在此保存期间发生更新的操作，丢弃旧回包，避免旧响应乱序覆盖
+    if (thisSeq < currentSaveSeq) {
+      return { ok: true, superseded: true };
+    }
+
+    if (!res || res.ok === false) {
+      const errMsg = translateBackendText(res?.error) || t('dropdown.writeCfgFailed');
+      showPlanSaveFeedback(false, errMsg);
+      return { ok: false, error: errMsg };
+    }
+
+    // 宿主落盘确认成功后，才更新内存已保存缓存与全局快照
+    if (payload.clearPlan) {
+      lastSavedCustomPlan = null;
+      if (typeof window !== 'undefined') {
+        window.__AGContextMeterSettings = { ok: true, customPlan: null };
+      }
+      try {
+        if (email && email !== 'default') localStorage?.removeItem('ag_custom_plan_' + String(email).toLowerCase());
+        localStorage?.removeItem('ag_custom_plan_default');
+      } catch { }
+    } else {
+      const savedPlan = res.customPlan || customObj;
+      lastSavedCustomPlan = { ...savedPlan };
+      if (typeof window !== 'undefined') {
+        window.__AGContextMeterSettings = { ok: true, customPlan: { ...savedPlan } };
+      }
+      try {
+        const jsonStr = JSON.stringify(savedPlan);
+        if (email && email !== 'default') {
+          localStorage?.setItem('ag_custom_plan_' + String(email).toLowerCase(), jsonStr);
+        }
+        localStorage?.setItem('ag_custom_plan_default', jsonStr);
+      } catch { }
+    }
+
+    showPlanSaveFeedback(true, t('dropdown.autoSaved'));
+    return res;
+  } catch (err) {
+    if (thisSeq >= currentSaveSeq) {
+      showPlanSaveFeedback(false, err?.message || t('dropdown.persistErr'));
+    }
+    return { ok: false, error: err?.message || t('dropdown.persistErr') };
+  }
+}
+
+function applyCustomPlanObjectLocally(customObj, email = 'default') {
+  if (customObj && typeof customObj === 'object') {
+    lastSavedCustomPlan = { ...customObj };
+  }
+  const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+  const rawLive = ANTIGRAVITY_TOKEN_DATA.rawPlanStatus || null;
+  const cleanLive = rawLive
+    ? { ...rawLive, region: '未知', subscriptionRegion: '未知', country: '未知', actualPricePaid: null, regionSource: 'unknown', priceSource: 'unknown' }
+    : null;
+
+  if (core && core.resolveEffectivePlanStatus) {
+    ANTIGRAVITY_TOKEN_DATA.planStatus = core.resolveEffectivePlanStatus(cleanLive, customObj, { currentEmail: email });
+  } else if (customObj) {
+    const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+    const sym = (core?.CURRENCY_SYMBOLS && customObj.currency) ? (core.CURRENCY_SYMBOLS[customObj.currency] || customObj.currencySymbol || '$') : (customObj.currencySymbol || '$');
+    ANTIGRAVITY_TOKEN_DATA.planStatus = {
+      ...ps,
+      country: customObj.country || ps.country || '未知',
+      countrySource: customObj.country ? 'custom' : (ps.countrySource || 'unknown'),
+      region: customObj.subscriptionRegion || customObj.region || ps.region || '未知',
+      subscriptionRegion: customObj.subscriptionRegion || customObj.region || ps.subscriptionRegion || '未知',
+      regionSource: (customObj.subscriptionRegion || customObj.region) ? 'custom' : (ps.regionSource || 'unknown'),
+      currency: customObj.currency || ps.currency || 'USD',
+      currencySource: customObj.currency ? 'custom' : (ps.currencySource || 'default'),
+      currencySymbol: sym,
+      actualPricePaid: customObj.actualPricePaid !== undefined ? customObj.actualPricePaid : ps.actualPricePaid,
+      priceSource: customObj.priceSource || 'custom'
+    };
+  }
+  renderPlanDetail(ANTIGRAVITY_TOKEN_DATA.planStatus);
+  renderActiveCostEstimateView();
+}
+
+// 明确切换价格模式：'preset' (跟随订阅国家参考价) 与 'custom' (自定义实付金额)
+function switchPlanPriceMode(newMode) {
+  ++userActionSeq;
+  const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+  const email = ps.email || 'default';
+  const prevCustom = getStoredCustomPlanSnapshot(email);
+  const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+  const targetMode = newMode === 'custom' ? 'custom' : 'preset';
+
+  let customObj = null;
+  if (targetMode === 'preset') {
+    // 切换为「跟随订阅国家参考价」：按当前生效套餐 × 订阅国家实时派生官方参考价与币种，清空旧实付锁死
+    const activeSpecKey = getActivePlanSpecKeyForDropdown();
+    const currentReg = prevCustom.subscriptionCountry || prevCustom.subscriptionRegion || prevCustom.region || ps.region || '';
+    const matched = core?.findRegionPreset
+      ? core.findRegionPreset(currentReg)
+      : core?.SUBSCRIPTION_REGIONS_PRESET?.find(p => p.id === currentReg || p.name === currentReg);
+    const refLookup = (matched && typeof core?.getRegionPlanReferencePrice === 'function')
+      ? core.getRegionPlanReferencePrice(matched, activeSpecKey)
+      : null;
+    const curCode = refLookup?.currency || matched?.currency || prevCustom.subscriptionCurrency || prevCustom.currency || 'USD';
+    const curSymbol = refLookup?.symbol || matched?.symbol || core?.CURRENCY_SYMBOLS?.[curCode] || '$';
+    const paid = (refLookup && refLookup.available && refLookup.monthlyPrice !== null && refLookup.monthlyPrice !== undefined)
+      ? refLookup.monthlyPrice
+      : null;
+
+    customObj = {
       ...prevCustom,
-      accountRegion: prevCustom.accountRegion || prevCustom.country || undefined,
-      country: prevCustom.country || prevCustom.accountRegion || undefined,
-      subscriptionCountry: regionName,
-      subscriptionRegion: regionName,
-      region: regionName,
-      acquisitionSource: prevCustom.acquisitionSource || ps.acquisitionSource || 'normal_paid',
-      acquisitionSourceName: prevCustom.acquisitionSourceName || ps.acquisitionSourceName || undefined,
-      isZeroExtraCost: isZero,
-      actualPricePaid: paid,
-      customActualPrice: currentPriceMode === 'custom' ? paid : null,
-      ...(currentPriceMode === 'preset' ? { resetCustomPaid: true } : {}),
-      priceMode: currentPriceMode,
+      priceMode: 'preset',
+      priceSource: paid !== null ? (refLookup?.source || 'preset_region') : 'unknown',
+      resetCustomPaid: true,
       subscriptionCurrency: curCode,
       currency: curCode,
-      currencySource: currentPriceMode === 'custom' ? 'custom' : 'preset_region',
+      currencySource: matched ? 'preset_region' : (prevCustom.currencySource || 'default'),
       currencySymbol: curSymbol,
-      billingCycle: isZero ? '免费/赠送' : cycle,
-      priceSource,
+      billingCycle: activeSpecKey === 'free' ? '免费/赠送' : '月付',
+      isZeroExtraCost: activeSpecKey === 'free',
       updatedAt: new Date().toISOString()
     };
-
-    refreshDirectRegionDisplay(regionName);
-    refreshDirectCurrencyDisplay(curCode);
-    applyCustomPlanObjectLocally(customObj, email);
-
-    // 双向同步：更新订阅国家表单及币种（使用纯同步防护守卫，防级联循环）
-    runWithUiHydration(() => {
-      const directCurSel = el('direct-currency-select');
-      if (directCurSel) directCurSel.value = curCode === 'TWD' ? 'TWD' : curCode;
-      const form = el('plan-custom-form');
-      if (form) {
-        const regInput = el('input-custom-region');
-        const curSelect = el('select-custom-currency');
-        const paidInput = el('input-custom-paid');
-        const zeroCheck = el('check-zero-extra');
-        if (regInput) regInput.value = localizeRegionDisplayValue(regionName) || regionName;
-        if (curSelect) {
-          curSelect.value = curCode;
-          enhancedDropdowns.get('select-custom-currency')?.refresh?.();
-        }
-        if (paidInput && !zeroCheck?.checked) {
-          paidInput.value = (paid !== null && paid !== undefined) ? paid : '';
-        }
-        const prevEl = el('region-cny-preview');
-        if (prevEl) {
-          if (paid !== null && paid !== undefined && Number(paid) > 0) {
-            prevEl.textContent = formatSubscriptionSecondaryConversion(paid, curCode, regionItem.name, { perMonth: true, detail: true }) || '';
-          } else {
-            prevEl.textContent = '';
-          }
-        }
-      }
-    });
-
-    void persistSettingsToHost({ email, customPlan: customObj });
-  }
-
-  // 用户单独修改「账号所在地区」：仅修改本地记录，绝不影响订阅国家、订阅币种或订阅金额
-  function applyDirectCountrySelection(newCountryVal) {
-    ++userActionSeq;
-    const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
-    const email = ps.email || 'default';
-    const prevCustom = getStoredCustomPlanSnapshot(email);
-    const cleanCountry = (newCountryVal && newCountryVal !== '未知' && newCountryVal !== 'Unknown') ? String(newCountryVal).trim() : '';
-
-    const customObj = {
-      ...prevCustom,
-      accountRegion: cleanCountry || undefined,
-      country: cleanCountry || undefined,
-      updatedAt: new Date().toISOString()
-    };
-    if (!cleanCountry) {
-      delete customObj.accountRegion;
-      delete customObj.country;
-    }
-
-    refreshDirectCountryDisplay(cleanCountry || '未知');
-
-    runWithUiHydration(() => {
-      const countryInput = el('input-custom-country');
-      if (countryInput) countryInput.value = cleanCountry ? (localizeRegionDisplayValue(cleanCountry) || cleanCountry) : '';
-      const directCountrySel = el('direct-country-select');
-      if (directCountrySel) directCountrySel.value = cleanCountry || '未知';
-    });
-
+    delete customObj.customActualPrice;
+    if (paid !== null) customObj.actualPricePaid = paid;
+    else delete customObj.actualPricePaid;
     applyCustomPlanObjectLocally(customObj, email);
     void persistSettingsToHost({ email, customPlan: customObj });
-  }
-
-  // 用户单独修改「订阅币种」：独立更新结算币种与符号，严格保持账号所在地区和订阅国家不变
-  function applyDirectCurrencySelection(newCurrencyVal) {
-    if (!newCurrencyVal) return;
-    ++userActionSeq;
-    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
-    const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
-    const email = ps.email || 'default';
-    const prevCustom = getStoredCustomPlanSnapshot(email);
-    let curCode = String(newCurrencyVal).trim().toUpperCase();
-    if (curCode === 'NTD') curCode = 'TWD';
-    const curSymbol = core?.CURRENCY_SYMBOLS?.[curCode] || '$';
-
-    refreshDirectCurrencyDisplay(curCode);
-
-    const hasExplicitCustomPaid = Boolean(prevCustom.isZeroExtraCost || (prevCustom.actualPricePaid !== null && prevCustom.actualPricePaid !== undefined && prevCustom.actualPricePaid !== ''));
-    const currentPriceMode = (prevCustom.priceMode === 'custom' || prevCustom.priceMode === 'preset')
-      ? prevCustom.priceMode
-      : (prevCustom.priceSource === 'custom' && hasExplicitCustomPaid ? 'custom' : 'preset');
-    let paid = prevCustom.actualPricePaid;
-    let priceSource = currentPriceMode === 'custom' ? 'custom' : 'preset_region';
+  } else {
+    // 切换为「自定义实付金额」：开启自定义模式并展开行内编辑表单
     const isZero = Boolean(prevCustom.isZeroExtraCost || prevCustom.actualPricePaid === 0);
+    const paid = isZero ? 0 : (prevCustom.actualPricePaid !== null && prevCustom.actualPricePaid !== undefined ? prevCustom.actualPricePaid : (prevCustom.customActualPrice ?? null));
 
-    if (isZero) {
-      paid = 0;
-      priceSource = 'custom';
-    } else if (currentPriceMode === 'preset') {
-      // 检查新币种在预设库中是否有基准定价，并按当前生效套餐档位查询参考价
-      const activeSpecKey = getActivePlanSpecKeyForDropdown();
-      const matchedNewPreset = core?.SUBSCRIPTION_REGIONS_PRESET?.find(p => p.currency === curCode);
-      if (matchedNewPreset) {
-        const refLookup = typeof core?.getRegionPlanReferencePrice === 'function'
-          ? core.getRegionPlanReferencePrice(matchedNewPreset, activeSpecKey)
-          : null;
-        paid = (refLookup && refLookup.available && refLookup.monthlyPrice !== null && refLookup.monthlyPrice !== undefined)
-          ? refLookup.monthlyPrice
-          : (activeSpecKey === 'pro' ? matchedNewPreset.monthlyPrice : null);
-        priceSource = paid !== null ? (refLookup?.source || 'preset_region') : 'unknown';
-      } else {
-        paid = prevCustom.actualPricePaid;
-      }
-    } else {
-      paid = prevCustom.actualPricePaid;
-      priceSource = 'custom';
-    }
-
-    const customObj = {
+    customObj = {
       ...prevCustom,
-      accountRegion: prevCustom.accountRegion || prevCustom.country || undefined,
-      country: prevCustom.country || prevCustom.accountRegion || undefined,
-      subscriptionCountry: prevCustom.subscriptionCountry || prevCustom.subscriptionRegion || prevCustom.region || undefined,
-      subscriptionRegion: prevCustom.subscriptionRegion || prevCustom.region || undefined,
-      region: prevCustom.subscriptionRegion || prevCustom.region || undefined,
-      subscriptionCurrency: curCode,
-      currency: curCode,
-      currencySource: 'custom',
-      currencySymbol: curSymbol,
+      priceMode: 'custom',
+      priceSource: 'custom',
       actualPricePaid: paid,
-      customActualPrice: currentPriceMode === 'custom' ? paid : (prevCustom.customActualPrice ?? null),
-      priceMode: currentPriceMode,
-      priceSource,
+      customActualPrice: paid,
       updatedAt: new Date().toISOString()
     };
+    applyCustomPlanObjectLocally(customObj, email);
+    togglePlanCustomForm(true);
+    void persistSettingsToHost({ email, customPlan: customObj });
+  }
+}
 
-    runWithUiHydration(() => {
-      const formCurSel = el('select-custom-currency');
-      if (formCurSel) {
-        formCurSel.value = curCode;
+// 用户点选「订阅国家」：在参考价模式下实时派生价格与币种，在自定义模式下保持用户实付金额与币种
+function applyDirectRegionSelection(regionItem) {
+  if (!regionItem) return;
+  ++userActionSeq;
+  const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+  const email = ps.email || 'default';
+  const prevCustom = getStoredCustomPlanSnapshot(email);
+  const localizedName = getLocalizedPresetName(regionItem, currentPanelLanguage).trim();
+  const regionName = `${regionItem.id} ${localizedName}`;
+  const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+  const activeSpecKey = getActivePlanSpecKeyForDropdown();
+
+  const hasExplicitCustomPaid = Boolean(prevCustom.isZeroExtraCost || (prevCustom.actualPricePaid !== null && prevCustom.actualPricePaid !== undefined && prevCustom.actualPricePaid !== ''));
+  const currentPriceMode = (prevCustom.priceMode === 'custom' || prevCustom.priceMode === 'preset')
+    ? prevCustom.priceMode
+    : (prevCustom.priceSource === 'custom' && hasExplicitCustomPaid ? 'custom' : 'preset');
+
+  let curCode = regionItem.currency;
+  let curSymbol = core?.CURRENCY_SYMBOLS?.[curCode] || regionItem.symbol || '$';
+  let paid = null;
+  let priceSource = 'preset_region';
+  let isZero = false;
+  let cycle = '月付';
+
+  if (currentPriceMode === 'custom') {
+    // 自定义实付模式：切换国家严格保留用户此前设置的实付金额与币种，绝不静默覆盖
+    isZero = Boolean(prevCustom.isZeroExtraCost || prevCustom.actualPricePaid === 0);
+    curCode = prevCustom.subscriptionCurrency || prevCustom.currency || regionItem.currency;
+    curSymbol = core?.CURRENCY_SYMBOLS?.[curCode] || '$';
+    paid = isZero ? 0 : (prevCustom.actualPricePaid !== null && prevCustom.actualPricePaid !== undefined ? prevCustom.actualPricePaid : null);
+    priceSource = 'custom';
+    cycle = isZero ? '免费/赠送' : (prevCustom.billingCycle || '月付');
+  } else {
+    // 跟随订阅国家参考价模式：按当前套餐规格 × 地区二维定价矩阵实时查询参考价
+    const refLookup = typeof core?.getRegionPlanReferencePrice === 'function'
+      ? core.getRegionPlanReferencePrice(regionItem, activeSpecKey)
+      : null;
+    curCode = refLookup?.currency || regionItem.currency;
+    curSymbol = refLookup?.symbol || core?.CURRENCY_SYMBOLS?.[curCode] || regionItem.symbol || '$';
+    paid = (refLookup && refLookup.available && refLookup.monthlyPrice !== null && refLookup.monthlyPrice !== undefined)
+      ? refLookup.monthlyPrice
+      : (activeSpecKey === 'pro' ? regionItem.monthlyPrice : null);
+    priceSource = paid !== null ? (refLookup?.source || 'preset_region') : 'unknown';
+    isZero = activeSpecKey === 'free';
+    cycle = activeSpecKey === 'free' ? '免费/赠送' : '月付';
+  }
+
+  const customObj = {
+    ...prevCustom,
+    accountRegion: prevCustom.accountRegion || prevCustom.country || undefined,
+    country: prevCustom.country || prevCustom.accountRegion || undefined,
+    subscriptionCountry: regionName,
+    subscriptionRegion: regionName,
+    region: regionName,
+    acquisitionSource: prevCustom.acquisitionSource || ps.acquisitionSource || 'normal_paid',
+    acquisitionSourceName: prevCustom.acquisitionSourceName || ps.acquisitionSourceName || undefined,
+    isZeroExtraCost: isZero,
+    actualPricePaid: paid,
+    customActualPrice: currentPriceMode === 'custom' ? paid : null,
+    ...(currentPriceMode === 'preset' ? { resetCustomPaid: true } : {}),
+    priceMode: currentPriceMode,
+    subscriptionCurrency: curCode,
+    currency: curCode,
+    currencySource: currentPriceMode === 'custom' ? 'custom' : 'preset_region',
+    currencySymbol: curSymbol,
+    billingCycle: isZero ? '免费/赠送' : cycle,
+    priceSource,
+    updatedAt: new Date().toISOString()
+  };
+
+  refreshDirectRegionDisplay(regionName);
+  refreshDirectCurrencyDisplay(curCode);
+  applyCustomPlanObjectLocally(customObj, email);
+
+  // 双向同步：更新订阅国家表单及币种（使用纯同步防护守卫，防级联循环）
+  runWithUiHydration(() => {
+    const directCurSel = el('direct-currency-select');
+    if (directCurSel) directCurSel.value = curCode === 'TWD' ? 'TWD' : curCode;
+    const form = el('plan-custom-form');
+    if (form) {
+      const regInput = el('input-custom-region');
+      const curSelect = el('select-custom-currency');
+      const paidInput = el('input-custom-paid');
+      const zeroCheck = el('check-zero-extra');
+      if (regInput) regInput.value = localizeRegionDisplayValue(regionName) || regionName;
+      if (curSelect) {
+        curSelect.value = curCode;
         enhancedDropdowns.get('select-custom-currency')?.refresh?.();
       }
-      const directCurSel = el('direct-currency-select');
-      if (directCurSel) directCurSel.value = curCode;
-      const paidInput = el('input-custom-paid');
-      if (paidInput && !isZero) {
+      if (paidInput && !zeroCheck?.checked) {
         paidInput.value = (paid !== null && paid !== undefined) ? paid : '';
       }
       const prevEl = el('region-cny-preview');
       if (prevEl) {
-        if (!isZero && paid !== null && paid !== undefined && Number(paid) > 0) {
-          prevEl.textContent = formatSubscriptionSecondaryConversion(paid, curCode, customObj.region, { perMonth: true, detail: true }) || '';
+        if (paid !== null && paid !== undefined && Number(paid) > 0) {
+          prevEl.textContent = formatSubscriptionSecondaryConversion(paid, curCode, regionItem.name, { perMonth: true, detail: true }) || '';
         } else {
           prevEl.textContent = '';
         }
       }
-    });
+    }
+  });
 
-    applyCustomPlanObjectLocally(customObj, email);
-    void persistSettingsToHost({ email, customPlan: customObj });
+  void persistSettingsToHost({ email, customPlan: customObj });
+}
+
+// 用户单独修改「账号所在地区」：仅修改本地记录，绝不影响订阅国家、订阅币种或订阅金额
+function applyDirectCountrySelection(newCountryVal) {
+  ++userActionSeq;
+  const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+  const email = ps.email || 'default';
+  const prevCustom = getStoredCustomPlanSnapshot(email);
+  const cleanCountry = (newCountryVal && newCountryVal !== '未知' && newCountryVal !== 'Unknown') ? String(newCountryVal).trim() : '';
+
+  const customObj = {
+    ...prevCustom,
+    accountRegion: cleanCountry || undefined,
+    country: cleanCountry || undefined,
+    updatedAt: new Date().toISOString()
+  };
+  if (!cleanCountry) {
+    delete customObj.accountRegion;
+    delete customObj.country;
   }
 
-  function applyDirectPlanTierSelection(tierVal) {
-    ++userActionSeq;
-    const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
-    const email = ps.email || 'default';
-    const prevCustom = (typeof getStoredCustomPlanSnapshot === 'function') ? getStoredCustomPlanSnapshot(email) : null;
-    const customObj = {
-      ...(prevCustom || {})
-    };
-    if (tierVal && tierVal !== 'auto') {
-      customObj.planTierOverride = tierVal;
+  refreshDirectCountryDisplay(cleanCountry || '未知');
+
+  runWithUiHydration(() => {
+    const countryInput = el('input-custom-country');
+    if (countryInput) countryInput.value = cleanCountry ? (localizeRegionDisplayValue(cleanCountry) || cleanCountry) : '';
+    const directCountrySel = el('direct-country-select');
+    if (directCountrySel) directCountrySel.value = cleanCountry || '未知';
+  });
+
+  applyCustomPlanObjectLocally(customObj, email);
+  void persistSettingsToHost({ email, customPlan: customObj });
+}
+
+// 用户单独修改「订阅币种」：独立更新结算币种与符号，严格保持账号所在地区和订阅国家不变
+function applyDirectCurrencySelection(newCurrencyVal) {
+  if (!newCurrencyVal) return;
+  ++userActionSeq;
+  const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+  const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+  const email = ps.email || 'default';
+  const prevCustom = getStoredCustomPlanSnapshot(email);
+  let curCode = String(newCurrencyVal).trim().toUpperCase();
+  if (curCode === 'NTD') curCode = 'TWD';
+  const curSymbol = core?.CURRENCY_SYMBOLS?.[curCode] || '$';
+
+  refreshDirectCurrencyDisplay(curCode);
+
+  const hasExplicitCustomPaid = Boolean(prevCustom.isZeroExtraCost || (prevCustom.actualPricePaid !== null && prevCustom.actualPricePaid !== undefined && prevCustom.actualPricePaid !== ''));
+  const currentPriceMode = (prevCustom.priceMode === 'custom' || prevCustom.priceMode === 'preset')
+    ? prevCustom.priceMode
+    : (prevCustom.priceSource === 'custom' && hasExplicitCustomPaid ? 'custom' : 'preset');
+  let paid = prevCustom.actualPricePaid;
+  let priceSource = currentPriceMode === 'custom' ? 'custom' : 'preset_region';
+  const isZero = Boolean(prevCustom.isZeroExtraCost || prevCustom.actualPricePaid === 0);
+
+  if (isZero) {
+    paid = 0;
+    priceSource = 'custom';
+  } else if (currentPriceMode === 'preset') {
+    // 检查新币种在预设库中是否有基准定价，并按当前生效套餐档位查询参考价
+    const activeSpecKey = getActivePlanSpecKeyForDropdown();
+    const matchedNewPreset = core?.SUBSCRIPTION_REGIONS_PRESET?.find(p => p.currency === curCode);
+    if (matchedNewPreset) {
+      const refLookup = typeof core?.getRegionPlanReferencePrice === 'function'
+        ? core.getRegionPlanReferencePrice(matchedNewPreset, activeSpecKey)
+        : null;
+      paid = (refLookup && refLookup.available && refLookup.monthlyPrice !== null && refLookup.monthlyPrice !== undefined)
+        ? refLookup.monthlyPrice
+        : (activeSpecKey === 'pro' ? matchedNewPreset.monthlyPrice : null);
+      priceSource = paid !== null ? (refLookup?.source || 'preset_region') : 'unknown';
     } else {
-      customObj.planTierOverride = null;
+      paid = prevCustom.actualPricePaid;
     }
-    // 切换套餐时全链路自动重置为新套餐对应地区参考价模式，清除旧套餐实付金额锁定
-    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
-    const rawLiveTier = ANTIGRAVITY_TOKEN_DATA.rawPlanStatus?.tierKey || ps.tierKey || 'pro';
-    const targetSpecKey = (core && typeof core.resolvePlanSpecKey === 'function')
-      ? core.resolvePlanSpecKey(tierVal && tierVal !== 'auto' ? tierVal : rawLiveTier)
-      : (tierVal && tierVal !== 'auto' ? tierVal : rawLiveTier);
+  } else {
+    paid = prevCustom.actualPricePaid;
+    priceSource = 'custom';
+  }
 
-    customObj.priceMode = 'preset';
-    customObj.priceSource = targetSpecKey === 'ultra' ? 'unknown' : 'preset_region';
-    customObj.resetCustomPaid = true;
-    customObj.isZeroExtraCost = targetSpecKey === 'free';
-    customObj.billingCycle = targetSpecKey === 'free' ? '免费/赠送' : '月付';
-    delete customObj.actualPricePaid;
-    delete customObj.customActualPrice;
-    customObj.updatedAt = new Date().toISOString();
+  const customObj = {
+    ...prevCustom,
+    accountRegion: prevCustom.accountRegion || prevCustom.country || undefined,
+    country: prevCustom.country || prevCustom.accountRegion || undefined,
+    subscriptionCountry: prevCustom.subscriptionCountry || prevCustom.subscriptionRegion || prevCustom.region || undefined,
+    subscriptionRegion: prevCustom.subscriptionRegion || prevCustom.region || undefined,
+    region: prevCustom.subscriptionRegion || prevCustom.region || undefined,
+    subscriptionCurrency: curCode,
+    currency: curCode,
+    currencySource: 'custom',
+    currencySymbol: curSymbol,
+    actualPricePaid: paid,
+    customActualPrice: currentPriceMode === 'custom' ? paid : (prevCustom.customActualPrice ?? null),
+    priceMode: currentPriceMode,
+    priceSource,
+    updatedAt: new Date().toISOString()
+  };
 
-    applyCustomPlanObjectLocally(customObj, email);
-    void persistSettingsToHost({ email, customPlan: customObj });
-    refreshDirectPlanTierDisplay(tierVal);
-    const updatedPs = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
-    refreshDirectRegionDisplay(updatedPs.region);
-    refreshDirectCurrencyDisplay(updatedPs.currency);
-    el('direct-region-wrap')?._controller?.refresh?.();
-    el('direct-currency-wrap')?._controller?.refresh?.();
-    if (typeof refreshRegionPresetSelectOptions === 'function') refreshRegionPresetSelectOptions();
-
-    runWithUiHydration(() => {
-      const form = el('plan-custom-form');
-      if (form) {
-        const paidInput = el('input-custom-paid');
-        const zeroCheck = el('check-zero-extra');
-        const curSel = el('select-custom-currency');
-        if (zeroCheck) zeroCheck.checked = Boolean(updatedPs.isZeroExtraCost);
-        if (paidInput) {
-          paidInput.disabled = Boolean(updatedPs.isZeroExtraCost);
-          paidInput.value = (updatedPs.actualPricePaid !== null && updatedPs.actualPricePaid !== undefined)
-            ? String(updatedPs.actualPricePaid)
-            : '';
-        }
-        if (curSel && updatedPs.currency) {
-          curSel.value = updatedPs.currency === 'NTD' ? 'TWD' : updatedPs.currency;
-          enhancedDropdowns.get('select-custom-currency')?.refresh?.();
-        }
-        if (typeof updateRegionCnyPreviewFromForm === 'function') updateRegionCnyPreviewFromForm();
+  runWithUiHydration(() => {
+    const formCurSel = el('select-custom-currency');
+    if (formCurSel) {
+      formCurSel.value = curCode;
+      enhancedDropdowns.get('select-custom-currency')?.refresh?.();
+    }
+    const directCurSel = el('direct-currency-select');
+    if (directCurSel) directCurSel.value = curCode;
+    const paidInput = el('input-custom-paid');
+    if (paidInput && !isZero) {
+      paidInput.value = (paid !== null && paid !== undefined) ? paid : '';
+    }
+    const prevEl = el('region-cny-preview');
+    if (prevEl) {
+      if (!isZero && paid !== null && paid !== undefined && Number(paid) > 0) {
+        prevEl.textContent = formatSubscriptionSecondaryConversion(paid, curCode, customObj.region, { perMonth: true, detail: true }) || '';
+      } else {
+        prevEl.textContent = '';
       }
-    });
-  }
-
-  el('direct-tier-select')?.addEventListener('change', (e) => {
-    if (isHydratingUiControls) return;
-    applyDirectPlanTierSelection(e.target?.value || 'auto');
+    }
   });
 
-  function initDirectPlanTierDropdown() {
-    return initDropdownController({
-      wrapId: 'direct-tier-wrap',
-      triggerId: 'direct-tier-trigger',
-      labelId: 'direct-tier-label',
-      menuId: 'direct-tier-menu',
-      selectId: 'direct-tier-select',
-      getAriaLabel: () => t('plan.tier.aria'),
-      searchPlaceholder: () => t('dropdown.tierSearch'),
-      getOptions: () => PLAN_TIER_OPTIONS.map(o => ({ ...o, label: formatOptionLabelByLang(o) })),
-      getSelectedValue: () => {
-        const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
-        const email = ps.email || 'default';
-        const effectiveCustom = (typeof getStoredCustomPlanSnapshot === 'function') ? getStoredCustomPlanSnapshot(email) : null;
-        return ps.planTierOverride || effectiveCustom?.planTierOverride || 'auto';
-      },
-      getLabelText: (opt) => formatOptionLabelByLang(opt),
-      onSelect: (opt) => {
-        applyDirectPlanTierSelection(opt.value);
-      },
-      emptyText: () => t('dropdown.tierEmpty')
-    });
+  applyCustomPlanObjectLocally(customObj, email);
+  void persistSettingsToHost({ email, customPlan: customObj });
+}
+
+function applyDirectPlanTierSelection(tierVal) {
+  ++userActionSeq;
+  const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+  const email = ps.email || 'default';
+  const prevCustom = (typeof getStoredCustomPlanSnapshot === 'function') ? getStoredCustomPlanSnapshot(email) : null;
+  const customObj = {
+    ...(prevCustom || {})
+  };
+  if (tierVal && tierVal !== 'auto') {
+    customObj.planTierOverride = tierVal;
+  } else {
+    customObj.planTierOverride = null;
   }
+  // 切换套餐时全链路自动重置为新套餐对应地区参考价模式，清除旧套餐实付金额锁定
+  const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+  const rawLiveTier = ANTIGRAVITY_TOKEN_DATA.rawPlanStatus?.tierKey || ps.tierKey || 'pro';
+  const targetSpecKey = (core && typeof core.resolvePlanSpecKey === 'function')
+    ? core.resolvePlanSpecKey(tierVal && tierVal !== 'auto' ? tierVal : rawLiveTier)
+    : (tierVal && tierVal !== 'auto' ? tierVal : rawLiveTier);
 
-  el('direct-country-select')?.addEventListener('change', (e) => {
-    if (isHydratingUiControls) return;
-    applyDirectCountrySelection(e.target?.value || '');
-  });
+  customObj.priceMode = 'preset';
+  customObj.priceSource = targetSpecKey === 'ultra' ? 'unknown' : 'preset_region';
+  customObj.resetCustomPaid = true;
+  customObj.isZeroExtraCost = targetSpecKey === 'free';
+  customObj.billingCycle = targetSpecKey === 'free' ? '免费/赠送' : '月付';
+  delete customObj.actualPricePaid;
+  delete customObj.customActualPrice;
+  customObj.updatedAt = new Date().toISOString();
 
-  el('direct-currency-select')?.addEventListener('change', (e) => {
-    if (isHydratingUiControls) return;
-    applyDirectCurrencySelection(e.target?.value || 'USD');
-  });
+  applyCustomPlanObjectLocally(customObj, email);
+  void persistSettingsToHost({ email, customPlan: customObj });
+  refreshDirectPlanTierDisplay(tierVal);
+  const updatedPs = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+  refreshDirectRegionDisplay(updatedPs.region);
+  refreshDirectCurrencyDisplay(updatedPs.currency);
+  el('direct-region-wrap')?._controller?.refresh?.();
+  el('direct-currency-wrap')?._controller?.refresh?.();
+  if (typeof refreshRegionPresetSelectOptions === 'function') refreshRegionPresetSelectOptions();
 
-  // 绑定统一定制「账号所在地区」、「订阅国家」与「订阅币种」下拉组件
-  function initDirectCountryDropdown() {
-    return initDropdownController({
-      wrapId: 'direct-country-wrap',
-      triggerId: 'direct-country-trigger',
-      labelId: 'direct-country-label',
-      menuId: 'direct-country-menu',
-      selectId: 'direct-country-select',
-      getAriaLabel: () => t('plan.form.countryLabel'),
-      searchPlaceholder: () => t('dropdown.countrySearch'),
-      getOptions: () => COUNTRY_OPTIONS.map(o => ({ ...o, label: formatOptionLabelByLang(o) })),
-      getSelectedValue: () => {
-        const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
-        return (ps.country && !String(ps.country).includes('未知')) ? String(ps.country).trim() : '未知';
-      },
-      getLabelText: (opt) => formatOptionLabelByLang(opt),
-      onSelect: (opt) => {
-        applyDirectCountrySelection(opt.value);
-      },
-      emptyText: () => t('dropdown.countryEmpty')
-    });
-  }
-
-  function initDirectRegionDropdown() {
-    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
-    const presets = core?.SUBSCRIPTION_REGIONS_PRESET || [];
-    return initDropdownController({
-      wrapId: 'direct-region-wrap',
-      triggerId: 'direct-region-trigger',
-      labelId: 'direct-region-label',
-      menuId: 'direct-region-menu',
-      getAriaLabel: () => t('plan.form.regionLabel'),
-      searchPlaceholder: () => t('dropdown.regionSearch'),
-      getOptions: () => {
-        const activeSpecKey = getActivePlanSpecKeyForDropdown();
-        return presets.map(p => {
-          const curCode = p.currency === 'TWD' ? 'NTD' : p.currency;
-          const parts = formatPresetRegionLineParts(p, currentPanelLanguage, activeSpecKey);
-          return {
-            value: p.id,
-            rawItem: p,
-            label: parts.left,
-            displayLeft: parts.left,
-            displayRight: parts.right,
-            code: p.id,
-            currency: curCode,
-            aliases: [p.name, p.nameTw, p.nameEn, ...(p.aliases || [])].filter(Boolean)
-          };
-        });
-      },
-      getSelectedValue: () => {
-        const currentReg = ANTIGRAVITY_TOKEN_DATA.planStatus?.region || '';
-        const matched = core?.findRegionPreset ? core.findRegionPreset(currentReg) : presets.find(p => p.id === currentReg || p.name === currentReg);
-        return matched ? matched.id : '';
-      },
-      filterItem: (it, kw) => {
-        const curCode = String(it.currency || '').toLowerCase();
-        const name = String(it.label || '').toLowerCase();
-        const id = String(it.code || '').toLowerCase();
-        const aliases = (it.aliases || []).map(a => String(a).toLowerCase());
-        return name.includes(kw) || id.includes(kw) || curCode.includes(kw) || aliases.some(a => a.includes(kw));
-      },
-      getLabelText: (opt) => {
-        const p = opt.rawItem;
-        if (!p) return opt.label;
-        const activeSpecKey = getActivePlanSpecKeyForDropdown();
-        return formatPresetRegionLineParts(p, currentPanelLanguage, activeSpecKey).full;
-      },
-      onSelect: (opt) => {
-        if (opt.rawItem) applyDirectRegionSelection(opt.rawItem);
-      },
-      emptyText: () => t('dropdown.regionEmpty')
-    });
-  }
-
-  function initDirectCurrencyDropdown() {
-    return initDropdownController({
-      wrapId: 'direct-currency-wrap',
-      triggerId: 'direct-currency-trigger',
-      labelId: 'direct-currency-label',
-      menuId: 'direct-currency-menu',
-      selectId: 'direct-currency-select',
-      getAriaLabel: () => String(t('plan.dt.currency') || 'Currency').replace(/[：:]\s*$/, ''),
-      searchPlaceholder: () => t('dropdown.currencySearch'),
-      getOptions: () => CURRENCY_OPTIONS.map(o => ({ ...o, label: formatOptionLabelByLang(o) })),
-      getSelectedValue: () => {
-        const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
-        let cur = ps.currency || 'USD';
-        if (cur === 'NTD') cur = 'TWD';
-        return cur;
-      },
-      filterItem: (it, kw) => {
-        const name = String(it.name || '').toLowerCase();
-        const code = String(it.code || '').toLowerCase();
-        const sym = String(it.symbol || '').toLowerCase();
-        const label = String(it.label || '').toLowerCase();
-        const aliases = (it.aliases || []).map(a => String(a).toLowerCase());
-        return name.includes(kw) || code.includes(kw) || sym.includes(kw) || label.includes(kw) || aliases.some(a => a.includes(kw));
-      },
-      getLabelText: (opt) => formatOptionLabelByLang(opt),
-      onSelect: (opt) => {
-        applyDirectCurrencySelection(opt.value);
-      },
-      emptyText: () => t('dropdown.currencyEmpty')
-    });
-  }
-
-  // 立即触发初始化四大原生定制下拉
-  initDirectPlanTierDropdown();
-  initDirectCountryDropdown();
-  initDirectRegionDropdown();
-  initDirectCurrencyDropdown();
-
-  // 全局点击外部关闭所有下拉
-  if (typeof shadow !== 'undefined' && shadow && shadow.addEventListener) {
-    shadow.addEventListener('click', (e) => {
-      if (!e.target?.closest?.('.ag-dropdown-wrapper')) {
-        closeAllDropdowns();
+  runWithUiHydration(() => {
+    const form = el('plan-custom-form');
+    if (form) {
+      const paidInput = el('input-custom-paid');
+      const zeroCheck = el('check-zero-extra');
+      const curSel = el('select-custom-currency');
+      if (zeroCheck) zeroCheck.checked = Boolean(updatedPs.isZeroExtraCost);
+      if (paidInput) {
+        paidInput.disabled = Boolean(updatedPs.isZeroExtraCost);
+        paidInput.value = (updatedPs.actualPricePaid !== null && updatedPs.actualPricePaid !== undefined)
+          ? String(updatedPs.actualPricePaid)
+          : '';
       }
-    });
-  }
-  if (typeof document !== 'undefined' && document.addEventListener) {
-    document.addEventListener('click', (e) => {
-      if (!e.target?.closest?.('.ag-dropdown-wrapper')) {
-        closeAllDropdowns();
+      if (curSel && updatedPs.currency) {
+        curSel.value = updatedPs.currency === 'NTD' ? 'TWD' : updatedPs.currency;
+        enhancedDropdowns.get('select-custom-currency')?.refresh?.();
       }
-    });
+      if (typeof updateRegionCnyPreviewFromForm === 'function') updateRegionCnyPreviewFromForm();
+    }
+  });
+}
+
+el('direct-tier-select')?.addEventListener('change', (e) => {
+  if (isHydratingUiControls) return;
+  applyDirectPlanTierSelection(e.target?.value || 'auto');
+});
+
+function initDirectPlanTierDropdown() {
+  return initDropdownController({
+    wrapId: 'direct-tier-wrap',
+    triggerId: 'direct-tier-trigger',
+    labelId: 'direct-tier-label',
+    menuId: 'direct-tier-menu',
+    selectId: 'direct-tier-select',
+    getAriaLabel: () => t('plan.tier.aria'),
+    searchPlaceholder: () => t('dropdown.tierSearch'),
+    getOptions: () => PLAN_TIER_OPTIONS.map(o => ({ ...o, label: formatOptionLabelByLang(o) })),
+    getSelectedValue: () => {
+      const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+      const email = ps.email || 'default';
+      const effectiveCustom = (typeof getStoredCustomPlanSnapshot === 'function') ? getStoredCustomPlanSnapshot(email) : null;
+      return ps.planTierOverride || effectiveCustom?.planTierOverride || 'auto';
+    },
+    getLabelText: (opt) => formatOptionLabelByLang(opt),
+    onSelect: (opt) => {
+      applyDirectPlanTierSelection(opt.value);
+    },
+    emptyText: () => t('dropdown.tierEmpty')
+  });
+}
+
+el('direct-country-select')?.addEventListener('change', (e) => {
+  if (isHydratingUiControls) return;
+  applyDirectCountrySelection(e.target?.value || '');
+});
+
+el('direct-currency-select')?.addEventListener('change', (e) => {
+  if (isHydratingUiControls) return;
+  applyDirectCurrencySelection(e.target?.value || 'USD');
+});
+
+// 绑定统一定制「账号所在地区」、「订阅国家」与「订阅币种」下拉组件
+function initDirectCountryDropdown() {
+  return initDropdownController({
+    wrapId: 'direct-country-wrap',
+    triggerId: 'direct-country-trigger',
+    labelId: 'direct-country-label',
+    menuId: 'direct-country-menu',
+    selectId: 'direct-country-select',
+    getAriaLabel: () => t('plan.form.countryLabel'),
+    searchPlaceholder: () => t('dropdown.countrySearch'),
+    getOptions: () => COUNTRY_OPTIONS.map(o => ({ ...o, label: formatOptionLabelByLang(o) })),
+    getSelectedValue: () => {
+      const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+      return (ps.country && !String(ps.country).includes('未知')) ? String(ps.country).trim() : '未知';
+    },
+    getLabelText: (opt) => formatOptionLabelByLang(opt),
+    onSelect: (opt) => {
+      applyDirectCountrySelection(opt.value);
+    },
+    emptyText: () => t('dropdown.countryEmpty')
+  });
+}
+
+function initDirectRegionDropdown() {
+  const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+  const presets = core?.SUBSCRIPTION_REGIONS_PRESET || [];
+  return initDropdownController({
+    wrapId: 'direct-region-wrap',
+    triggerId: 'direct-region-trigger',
+    labelId: 'direct-region-label',
+    menuId: 'direct-region-menu',
+    getAriaLabel: () => t('plan.form.regionLabel'),
+    searchPlaceholder: () => t('dropdown.regionSearch'),
+    getOptions: () => {
+      const activeSpecKey = getActivePlanSpecKeyForDropdown();
+      return presets.map(p => {
+        const curCode = p.currency === 'TWD' ? 'NTD' : p.currency;
+        const parts = formatPresetRegionLineParts(p, currentPanelLanguage, activeSpecKey);
+        return {
+          value: p.id,
+          rawItem: p,
+          label: parts.left,
+          displayLeft: parts.left,
+          displayRight: parts.right,
+          code: p.id,
+          currency: curCode,
+          aliases: [p.name, p.nameTw, p.nameEn, ...(p.aliases || [])].filter(Boolean)
+        };
+      });
+    },
+    getSelectedValue: () => {
+      const currentReg = ANTIGRAVITY_TOKEN_DATA.planStatus?.region || '';
+      const matched = core?.findRegionPreset ? core.findRegionPreset(currentReg) : presets.find(p => p.id === currentReg || p.name === currentReg);
+      return matched ? matched.id : '';
+    },
+    filterItem: (it, kw) => {
+      const curCode = String(it.currency || '').toLowerCase();
+      const name = String(it.label || '').toLowerCase();
+      const id = String(it.code || '').toLowerCase();
+      const aliases = (it.aliases || []).map(a => String(a).toLowerCase());
+      return name.includes(kw) || id.includes(kw) || curCode.includes(kw) || aliases.some(a => a.includes(kw));
+    },
+    getLabelText: (opt) => {
+      const p = opt.rawItem;
+      if (!p) return opt.label;
+      const activeSpecKey = getActivePlanSpecKeyForDropdown();
+      return formatPresetRegionLineParts(p, currentPanelLanguage, activeSpecKey).full;
+    },
+    onSelect: (opt) => {
+      if (opt.rawItem) applyDirectRegionSelection(opt.rawItem);
+    },
+    emptyText: () => t('dropdown.regionEmpty')
+  });
+}
+
+function initDirectCurrencyDropdown() {
+  return initDropdownController({
+    wrapId: 'direct-currency-wrap',
+    triggerId: 'direct-currency-trigger',
+    labelId: 'direct-currency-label',
+    menuId: 'direct-currency-menu',
+    selectId: 'direct-currency-select',
+    getAriaLabel: () => String(t('plan.dt.currency') || 'Currency').replace(/[：:]\s*$/, ''),
+    searchPlaceholder: () => t('dropdown.currencySearch'),
+    getOptions: () => CURRENCY_OPTIONS.map(o => ({ ...o, label: formatOptionLabelByLang(o) })),
+    getSelectedValue: () => {
+      const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+      let cur = ps.currency || 'USD';
+      if (cur === 'NTD') cur = 'TWD';
+      return cur;
+    },
+    filterItem: (it, kw) => {
+      const name = String(it.name || '').toLowerCase();
+      const code = String(it.code || '').toLowerCase();
+      const sym = String(it.symbol || '').toLowerCase();
+      const label = String(it.label || '').toLowerCase();
+      const aliases = (it.aliases || []).map(a => String(a).toLowerCase());
+      return name.includes(kw) || code.includes(kw) || sym.includes(kw) || label.includes(kw) || aliases.some(a => a.includes(kw));
+    },
+    getLabelText: (opt) => formatOptionLabelByLang(opt),
+    onSelect: (opt) => {
+      applyDirectCurrencySelection(opt.value);
+    },
+    emptyText: () => t('dropdown.currencyEmpty')
+  });
+}
+
+// 立即触发初始化四大原生定制下拉
+initDirectPlanTierDropdown();
+initDirectCountryDropdown();
+initDirectRegionDropdown();
+initDirectCurrencyDropdown();
+
+// 全局点击外部关闭所有下拉
+if (typeof shadow !== 'undefined' && shadow && shadow.addEventListener) {
+  shadow.addEventListener('click', (e) => {
+    if (!e.target?.closest?.('.ag-dropdown-wrapper')) {
+      closeAllDropdowns();
+    }
+  });
+}
+if (typeof document !== 'undefined' && document.addEventListener) {
+  document.addEventListener('click', (e) => {
+    if (!e.target?.closest?.('.ag-dropdown-wrapper')) {
+      closeAllDropdowns();
+    }
+  });
+}
+
+// 套餐详情卡片展开与收回（统一单入口 #btn-plan-detail-toggle 与底部 #btn-plan-detail-collapse）
+el('btn-plan-detail-toggle')?.addEventListener('click', () => {
+  const card = el('plan-detail-card');
+  const currentlyHidden = !card || card.style.display === 'none' || !card.style.display;
+  setPlanDetailExpanded(currentlyHidden);
+});
+el('btn-plan-detail-collapse')?.addEventListener('click', () => {
+  setPlanDetailExpanded(false);
+});
+
+// 统一基于 initDropdownController 将原生 <select> 改造为高端自定义下拉组件（全界面风格与交互 100% 一致）
+const enhancedDropdowns = new Map();
+const NATIVE_DROPDOWN_SPECS = [
+  { selectId: 'token-account-select', wrapId: 'token-account-dropdown-wrap', triggerId: 'token-account-dropdown-trigger', labelId: 'token-account-dropdown-label', menuId: 'token-account-dropdown-menu', compact: true },
+  { selectId: 'select-custom-acq', wrapId: 'select-custom-acq-dropdown-wrap', triggerId: 'select-custom-acq-dropdown-trigger', labelId: 'select-custom-acq-dropdown-label', menuId: 'select-custom-acq-dropdown-menu', compact: true },
+  { selectId: 'select-custom-region-preset', wrapId: 'select-custom-region-preset-dropdown-wrap', triggerId: 'select-custom-region-preset-dropdown-trigger', labelId: 'select-custom-region-preset-dropdown-label', menuId: 'select-custom-region-preset-dropdown-menu', compact: true, searchable: true },
+  { selectId: 'select-custom-currency', wrapId: 'select-custom-currency-dropdown-wrap', triggerId: 'select-custom-currency-dropdown-trigger', labelId: 'select-custom-currency-dropdown-label', menuId: 'select-custom-currency-dropdown-menu', compact: true, searchable: true, minMenuWidth: 130 },
+  { selectId: 'select-custom-cycle', wrapId: 'select-custom-cycle-dropdown-wrap', triggerId: 'select-custom-cycle-dropdown-trigger', labelId: 'select-custom-cycle-dropdown-label', menuId: 'select-custom-cycle-dropdown-menu', compact: true },
+  { selectId: 'sel-auto-switch-target', wrapId: 'sel-auto-switch-target-dropdown-wrap', triggerId: 'sel-auto-switch-target-dropdown-trigger', labelId: 'sel-auto-switch-target-dropdown-label', menuId: 'sel-auto-switch-target-dropdown-menu', compact: true },
+  { selectId: 'sel-auto-switch-mode', wrapId: 'sel-auto-switch-mode-dropdown-wrap', triggerId: 'sel-auto-switch-mode-dropdown-trigger', labelId: 'sel-auto-switch-mode-dropdown-label', menuId: 'sel-auto-switch-mode-dropdown-menu', compact: true }
+];
+
+function initNativeSelectDropdown(selectId, opts = {}) {
+  const sel = el(selectId);
+  if (!sel) return null;
+  if (enhancedDropdowns.has(selectId)) {
+    const existing = enhancedDropdowns.get(selectId);
+    existing?.refresh?.();
+    return existing;
   }
 
-  // 套餐详情卡片展开与收回（统一单入口 #btn-plan-detail-toggle 与底部 #btn-plan-detail-collapse）
-  el('btn-plan-detail-toggle')?.addEventListener('click', () => {
-    const card = el('plan-detail-card');
-    const currentlyHidden = !card || card.style.display === 'none' || !card.style.display;
-    setPlanDetailExpanded(currentlyHidden);
-  });
-  el('btn-plan-detail-collapse')?.addEventListener('click', () => {
-    setPlanDetailExpanded(false);
-  });
+  if (sel.style) sel.style.display = 'none';
+  sel.setAttribute?.('aria-hidden', 'true');
+  sel.setAttribute?.('tabindex', '-1');
 
-  // 统一基于 initDropdownController 将原生 <select> 改造为高端自定义下拉组件（全界面风格与交互 100% 一致）
-  const enhancedDropdowns = new Map();
-  const NATIVE_DROPDOWN_SPECS = [
-    { selectId: 'token-account-select', wrapId: 'token-account-dropdown-wrap', triggerId: 'token-account-dropdown-trigger', labelId: 'token-account-dropdown-label', menuId: 'token-account-dropdown-menu', compact: true },
-    { selectId: 'select-custom-acq', wrapId: 'select-custom-acq-dropdown-wrap', triggerId: 'select-custom-acq-dropdown-trigger', labelId: 'select-custom-acq-dropdown-label', menuId: 'select-custom-acq-dropdown-menu', compact: true },
-    { selectId: 'select-custom-region-preset', wrapId: 'select-custom-region-preset-dropdown-wrap', triggerId: 'select-custom-region-preset-dropdown-trigger', labelId: 'select-custom-region-preset-dropdown-label', menuId: 'select-custom-region-preset-dropdown-menu', compact: true, searchable: true },
-    { selectId: 'select-custom-currency', wrapId: 'select-custom-currency-dropdown-wrap', triggerId: 'select-custom-currency-dropdown-trigger', labelId: 'select-custom-currency-dropdown-label', menuId: 'select-custom-currency-dropdown-menu', compact: true, searchable: true, minMenuWidth: 130 },
-    { selectId: 'select-custom-cycle', wrapId: 'select-custom-cycle-dropdown-wrap', triggerId: 'select-custom-cycle-dropdown-trigger', labelId: 'select-custom-cycle-dropdown-label', menuId: 'select-custom-cycle-dropdown-menu', compact: true },
-    { selectId: 'sel-auto-switch-pool', wrapId: 'sel-auto-switch-pool-dropdown-wrap', triggerId: 'sel-auto-switch-pool-dropdown-trigger', labelId: 'sel-auto-switch-pool-dropdown-label', menuId: 'sel-auto-switch-pool-dropdown-menu', compact: true },
-    { selectId: 'sel-auto-switch-mode', wrapId: 'sel-auto-switch-mode-dropdown-wrap', triggerId: 'sel-auto-switch-mode-dropdown-trigger', labelId: 'sel-auto-switch-mode-dropdown-label', menuId: 'sel-auto-switch-mode-dropdown-menu', compact: true },
-    { selectId: 'sel-auto-switch-window', wrapId: 'sel-auto-switch-window-dropdown-wrap', triggerId: 'sel-auto-switch-window-dropdown-trigger', labelId: 'sel-auto-switch-window-dropdown-label', menuId: 'sel-auto-switch-window-dropdown-menu', compact: true }
-  ];
+  const preset = NATIVE_DROPDOWN_SPECS.find(s => s.selectId === selectId) || {};
+  const wrapId = opts.wrapId || preset.wrapId || `${selectId}-dropdown-wrap`;
+  const triggerId = opts.triggerId || preset.triggerId || `${selectId}-dropdown-trigger`;
+  const labelId = opts.labelId || preset.labelId || `${selectId}-dropdown-label`;
+  const menuId = opts.menuId || preset.menuId || `${selectId}-dropdown-menu`;
 
-  function initNativeSelectDropdown(selectId, opts = {}) {
-    const sel = el(selectId);
-    if (!sel) return null;
-    if (enhancedDropdowns.has(selectId)) {
-      const existing = enhancedDropdowns.get(selectId);
-      existing?.refresh?.();
-      return existing;
-    }
-
-    if (sel.style) sel.style.display = 'none';
-    sel.setAttribute?.('aria-hidden', 'true');
-    sel.setAttribute?.('tabindex', '-1');
-
-    const preset = NATIVE_DROPDOWN_SPECS.find(s => s.selectId === selectId) || {};
-    const wrapId = opts.wrapId || preset.wrapId || `${selectId}-dropdown-wrap`;
-    const triggerId = opts.triggerId || preset.triggerId || `${selectId}-dropdown-trigger`;
-    const labelId = opts.labelId || preset.labelId || `${selectId}-dropdown-label`;
-    const menuId = opts.menuId || preset.menuId || `${selectId}-dropdown-menu`;
-
-    let wrap = el(wrapId);
-    if (!wrap && sel.parentNode && typeof document !== 'undefined' && typeof document.createElement === 'function') {
-      wrap = document.createElement('div');
-      wrap.id = wrapId;
-      wrap.className = `ag-dropdown-wrapper${opts.compact !== false && preset.compact !== false ? ' ag-dropdown-compact' : ''}`;
-      wrap.setAttribute?.('data-target-select', selectId);
-
-      const trigger = document.createElement('div');
-      trigger.id = triggerId;
-      trigger.className = 'ag-dropdown-trigger';
-      trigger.setAttribute?.('tabindex', '0');
-
-      const label = document.createElement('span');
-      label.id = labelId;
-      label.className = 'ag-dropdown-label';
-
-      const arrow = document.createElement('div');
-      arrow.className = 'ag-dropdown-arrow';
-      arrow.innerHTML = '<svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>';
-
-      trigger.appendChild?.(label);
-      trigger.appendChild?.(arrow);
-      wrap.appendChild?.(trigger);
-
-      const menu = document.createElement('div');
-      menu.id = menuId;
-      menu.className = 'ag-dropdown-menu';
-      wrap.appendChild?.(menu);
-
-      sel.parentNode.insertBefore?.(wrap, sel.nextSibling);
-    }
-
-    if (!wrap || !el(triggerId) || !el(labelId) || !el(menuId)) {
-      return null;
-    }
-
+  let wrap = el(wrapId);
+  if (!wrap && sel.parentNode && typeof document !== 'undefined' && typeof document.createElement === 'function') {
+    wrap = document.createElement('div');
+    wrap.id = wrapId;
+    wrap.className = `ag-dropdown-wrapper${opts.compact !== false && preset.compact !== false ? ' ag-dropdown-compact' : ''}`;
     wrap.setAttribute?.('data-target-select', selectId);
-    const controller = initDropdownController({
-      wrapId,
-      triggerId,
-      labelId,
-      menuId,
-      selectId,
-      searchable: opts.searchable ?? preset.searchable,
-      minMenuWidth: opts.minMenuWidth ?? preset.minMenuWidth,
-      ariaLabel: sel.getAttribute?.('aria-label') || opts.ariaLabel || '',
-      getAriaLabel: () => sel.getAttribute?.('aria-label') || opts.ariaLabel || '',
-      emptyLabel: () => (sel.selectedOptions?.[0]?.textContent || sel.options?.[0]?.textContent || ''),
-      getSelectedValue: () => sel.value || '',
-      getOptions: () => Array.from(sel.options || []).map(o => {
+
+    const trigger = document.createElement('div');
+    trigger.id = triggerId;
+    trigger.className = 'ag-dropdown-trigger';
+    trigger.setAttribute?.('tabindex', '0');
+
+    const label = document.createElement('span');
+    label.id = labelId;
+    label.className = 'ag-dropdown-label';
+
+    const arrow = document.createElement('div');
+    arrow.className = 'ag-dropdown-arrow';
+    arrow.innerHTML = '<svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>';
+
+    trigger.appendChild?.(label);
+    trigger.appendChild?.(arrow);
+    wrap.appendChild?.(trigger);
+
+    const menu = document.createElement('div');
+    menu.id = menuId;
+    menu.className = 'ag-dropdown-menu';
+    wrap.appendChild?.(menu);
+
+    sel.parentNode.insertBefore?.(wrap, sel.nextSibling);
+  }
+
+  if (!wrap || !el(triggerId) || !el(labelId) || !el(menuId)) {
+    return null;
+  }
+
+  wrap.setAttribute?.('data-target-select', selectId);
+  const controller = initDropdownController({
+    wrapId,
+    triggerId,
+    labelId,
+    menuId,
+    selectId,
+    searchable: opts.searchable ?? preset.searchable,
+    minMenuWidth: opts.minMenuWidth ?? preset.minMenuWidth,
+    ariaLabel: sel.getAttribute?.('aria-label') || opts.ariaLabel || '',
+    getAriaLabel: () => sel.getAttribute?.('aria-label') || opts.ariaLabel || '',
+    emptyLabel: () => (sel.selectedOptions?.[0]?.textContent || sel.options?.[0]?.textContent || ''),
+    getSelectedValue: () => sel.value || '',
+    getOptions: () => {
+      const items = [];
+      const pushOption = (o) => {
+        if (!o || o.hidden || o.disabled) return;
         const rawText = String(o.textContent || o.text || o.value || '').trim();
         const dotIdx = rawText.indexOf(' · ');
-        return {
+        items.push({
           value: o.value,
           label: rawText,
           displayLeft: dotIdx > 0 ? rawText.slice(0, dotIdx) : rawText,
           displayRight: dotIdx > 0 ? rawText.slice(dotIdx + 3) : '',
           tooltip: rawText
-        };
-      }),
-      onSelect: (opt) => {
-        sel.value = opt.value;
-        if (typeof Event !== 'undefined') sel.dispatchEvent?.(new Event('change', { bubbles: true }));
-        else sel.dispatchEvent?.({ type: 'change', target: sel });
-      }
-    });
-
-    if (controller) {
-      if (!sel._dropdownSyncBound) {
-        sel._dropdownSyncBound = true;
-        sel.addEventListener?.('change', () => controller.refresh());
-      }
-      controller.refresh();
-      enhancedDropdowns.set(selectId, controller);
-    }
-    return controller;
-  }
-
-  function enhanceCustomSelect(selectId) {
-    return initNativeSelectDropdown(selectId);
-  }
-
-  function syncAllNativeSelectDropdowns() {
-    for (const spec of NATIVE_DROPDOWN_SPECS) {
-      const ctrl = enhancedDropdowns.get(spec.selectId) || initNativeSelectDropdown(spec.selectId, spec);
-      ctrl?.refresh?.();
-    }
-    for (const wrapId of ['direct-country-wrap', 'direct-region-wrap', 'direct-currency-wrap', 'direct-tier-wrap']) {
-      el(wrapId)?._controller?.refresh?.();
-    }
-  }
-
-  syncAllNativeSelectDropdowns();
-
-  // 点击外部自动收起下拉浮层（closeAllDropdowns 同步更新 aria-expanded）
-  if (typeof document !== 'undefined' && document.addEventListener) {
-    document.addEventListener('click', (e) => {
-      try {
-        if (!e.target?.closest?.('.ag-dropdown-wrapper')) {
-          closeAllDropdowns();
-        }
-      } catch {}
-    });
-  }
-
-  function updateRegionCnyPreviewFromForm() {
-    const prevEl = el('region-cny-preview');
-    if (!prevEl) return;
-    const isZero = Boolean(el('check-zero-extra')?.checked);
-    const rawPaidVal = el('input-custom-paid')?.value;
-    const rawPaid = (rawPaidVal !== undefined && rawPaidVal !== null) ? String(rawPaidVal).trim() : '';
-    const paid = isZero ? 0 : (rawPaid !== '' && !Number.isNaN(Number(rawPaid)) ? Number(rawPaid) : null);
-    const cur = el('select-custom-currency')?.value || 'USD';
-    const regVal = el('input-custom-region')?.value;
-    const reg = (regVal !== undefined && regVal !== null) ? String(regVal).trim() : '';
-    if (isZero || paid === null || paid <= 0) {
-      prevEl.textContent = '';
-      return;
-    }
-    prevEl.textContent = formatSubscriptionSecondaryConversion(paid, cur, reg, { perMonth: true, detail: true }) || '';
-  }
-
-  function normalizeBillingCycleValue(rawCycle) {
-    if (!rawCycle) return '';
-    const cleaned = String(rawCycle).replace(/[（(].*[）)]/g, '').trim();
-    if (!cleaned || cleaned === '未知' || cleaned === 'Unknown') return '';
-    if (cleaned === '月付' || cleaned === '月繳' || cleaned === 'Monthly' || cleaned === 'monthly') return '月付';
-    if (cleaned === '年付' || cleaned === '年繳' || cleaned === 'Yearly' || cleaned === 'yearly') return '年付';
-    if (cleaned === '免费/赠送' || cleaned === '免費/贈送' || cleaned === 'Free / Promo' || cleaned === '随套餐赠送/免费') return '免费/赠送';
-    if (cleaned === '随套餐包含' || cleaned === '隨方案包含' || cleaned === 'Included in bundle') return '随套餐包含';
-    if (cleaned === '其他周期' || cleaned === '其他週期' || cleaned === 'Other cycle') return '其他周期';
-    return cleaned;
-  }
-
-  const DP_EN_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-  let validEndDpState = null;
-
-  function formatLocalYmdDate(dt) {
-    const y = dt.getFullYear();
-    const m = String(dt.getMonth() + 1).padStart(2, '0');
-    const d = String(dt.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
-  }
-
-  function closeValidEndDatePicker() {
-    if (!validEndDpState) return;
-    validEndDpState.isOpen = false;
-    removeClass(validEndDpState.wrap, 'is-open');
-    removeClass(validEndDpState.wrap, 'open-up');
-    if (validEndDpState.popover) validEndDpState.popover.style.display = 'none';
-    validEndDpState.trigger?.setAttribute?.('aria-expanded', 'false');
-  }
-
-  function syncValidEndDatePickerLabel() {
-    const labelEl = el('valid-end-label');
-    const hiddenEl = el('input-valid-end');
-    const triggerEl = el('valid-end-trigger');
-    if (triggerEl) triggerEl.setAttribute?.('aria-label', t('datePicker.ariaLabel'));
-    if (!labelEl) return;
-    const raw = String(hiddenEl?.value || '').trim();
-    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-      labelEl.textContent = raw;
-      removeClass(labelEl, 'is-placeholder');
-    } else {
-      labelEl.textContent = t('datePicker.placeholder');
-      addClass(labelEl, 'is-placeholder');
-    }
-  }
-
-  function refreshValidEndDatePicker() {
-    syncValidEndDatePickerLabel();
-    if (validEndDpState?.isOpen) {
-      validEndDpState.renderCalendar();
-    }
-  }
-
-  function initValidEndDatePicker() {
-    const wrap = el('valid-end-picker-wrap');
-    const trigger = el('valid-end-trigger');
-    const popover = el('valid-end-popover');
-    const hiddenInput = el('input-valid-end');
-    if (!wrap || !trigger || !popover || !hiddenInput) return null;
-    if (trigger._dpBound) {
-      refreshValidEndDatePicker();
-      return validEndDpState;
-    }
-    trigger._dpBound = true;
-
-    const now = new Date();
-    validEndDpState = {
-      wrap,
-      trigger,
-      popover,
-      hiddenInput,
-      isOpen: false,
-      viewYear: now.getFullYear(),
-      viewMonth: now.getMonth(),
-      renderCalendar: () => {}
-    };
-
-    const dispatchHiddenChange = () => {
-      if (typeof Event !== 'undefined') hiddenInput.dispatchEvent?.(new Event('change', { bubbles: true }));
-      else hiddenInput.dispatchEvent?.({ type: 'change', target: hiddenInput });
-    };
-
-    const commitDateValue = (ymd) => {
-      hiddenInput.value = ymd || '';
-      syncValidEndDatePickerLabel();
-      dispatchHiddenChange();
-      closeValidEndDatePicker();
-    };
-
-    const renderCalendar = () => {
-      const y = validEndDpState.viewYear;
-      const m = validEndDpState.viewMonth;
-      const todayYmd = formatLocalYmdDate(new Date());
-      const selRaw = String(hiddenInput.value || '').trim();
-      const selectedYmd = /^\d{4}-\d{2}-\d{2}$/.test(selRaw) ? selRaw : '';
-
-      if (typeof popover.replaceChildren === 'function') popover.replaceChildren();
-      else popover.innerHTML = '';
-
-      if (typeof document === 'undefined' || typeof document.createElement !== 'function') return;
-
-      const header = document.createElement('div');
-      header.className = 'ag-dp-header';
-
-      const prevBtn = document.createElement('button');
-      prevBtn.type = 'button';
-      prevBtn.className = 'ag-dp-nav-btn';
-      prevBtn.textContent = '‹';
-      prevBtn.setAttribute('aria-label', t('datePicker.prevMonth'));
-      prevBtn.title = t('datePicker.prevMonth');
-      prevBtn.addEventListener('click', (e) => {
-        e?.stopPropagation?.();
-        if (validEndDpState.viewMonth === 0) {
-          validEndDpState.viewMonth = 11;
-          validEndDpState.viewYear -= 1;
-        } else {
-          validEndDpState.viewMonth -= 1;
-        }
-        renderCalendar();
-      });
-
-      const titleSpan = document.createElement('span');
-      titleSpan.className = 'ag-dp-month-title';
-      titleSpan.textContent = t('datePicker.monthTitle', { y, m: m + 1, monthEn: DP_EN_MONTHS[m] });
-
-      const nextBtn = document.createElement('button');
-      nextBtn.type = 'button';
-      nextBtn.className = 'ag-dp-nav-btn';
-      nextBtn.textContent = '›';
-      nextBtn.setAttribute('aria-label', t('datePicker.nextMonth'));
-      nextBtn.title = t('datePicker.nextMonth');
-      nextBtn.addEventListener('click', (e) => {
-        e?.stopPropagation?.();
-        if (validEndDpState.viewMonth === 11) {
-          validEndDpState.viewMonth = 0;
-          validEndDpState.viewYear += 1;
-        } else {
-          validEndDpState.viewMonth += 1;
-        }
-        renderCalendar();
-      });
-
-      header.appendChild(prevBtn);
-      header.appendChild(titleSpan);
-      header.appendChild(nextBtn);
-      popover.appendChild(header);
-
-      const weekdaysRow = document.createElement('div');
-      weekdaysRow.className = 'ag-dp-weekdays';
-      const wkLabels = String(t('datePicker.weekdays')).split(',');
-      for (const wk of wkLabels) {
-        const wCell = document.createElement('div');
-        wCell.className = 'ag-dp-weekday';
-        wCell.textContent = wk;
-        weekdaysRow.appendChild(wCell);
-      }
-      popover.appendChild(weekdaysRow);
-
-      const grid = document.createElement('div');
-      grid.className = 'ag-dp-grid';
-      const firstDow = new Date(y, m, 1).getDay();
-      for (let i = 0; i < 42; i++) {
-        const cellDate = new Date(y, m, 1 - firstDow + i);
-        const ymd = formatLocalYmdDate(cellDate);
-        const inCurMonth = cellDate.getMonth() === m && cellDate.getFullYear() === y;
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        let cls = 'ag-dp-day';
-        if (!inCurMonth) cls += ' is-outside';
-        if (ymd === todayYmd) cls += ' is-today';
-        if (ymd === selectedYmd) cls += ' is-selected';
-        btn.className = cls;
-        btn.setAttribute('data-date', ymd);
-        btn.setAttribute('aria-label', ymd);
-        btn.textContent = String(cellDate.getDate());
-        btn.addEventListener('click', (e) => {
-          e?.stopPropagation?.();
-          commitDateValue(ymd);
         });
-        grid.appendChild(btn);
-      }
-      popover.appendChild(grid);
-
-      const footer = document.createElement('div');
-      footer.className = 'ag-dp-footer';
-
-      const clearBtn = document.createElement('button');
-      clearBtn.type = 'button';
-      clearBtn.className = 'ag-dp-action-btn';
-      clearBtn.setAttribute('data-dp-action', 'clear');
-      clearBtn.textContent = t('datePicker.clear');
-      clearBtn.addEventListener('click', (e) => {
-        e?.stopPropagation?.();
-        commitDateValue('');
-      });
-
-      const todayBtn = document.createElement('button');
-      todayBtn.type = 'button';
-      todayBtn.className = 'ag-dp-action-btn is-today-btn';
-      todayBtn.setAttribute('data-dp-action', 'today');
-      todayBtn.textContent = t('datePicker.today');
-      todayBtn.addEventListener('click', (e) => {
-        e?.stopPropagation?.();
-        const tNow = new Date();
-        validEndDpState.viewYear = tNow.getFullYear();
-        validEndDpState.viewMonth = tNow.getMonth();
-        commitDateValue(formatLocalYmdDate(tNow));
-      });
-
-      footer.appendChild(clearBtn);
-      footer.appendChild(todayBtn);
-      popover.appendChild(footer);
-    };
-
-    validEndDpState.renderCalendar = renderCalendar;
-
-    const openPicker = () => {
-      closeAllDropdowns(wrap);
-      const curVal = String(hiddenInput.value || '').trim();
-      const m = curVal.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-      if (m) {
-        validEndDpState.viewYear = Number(m[1]);
-        validEndDpState.viewMonth = Math.max(0, Math.min(11, Number(m[2]) - 1));
-      } else {
-        const curNow = new Date();
-        validEndDpState.viewYear = curNow.getFullYear();
-        validEndDpState.viewMonth = curNow.getMonth();
-      }
-      renderCalendar();
-      validEndDpState.isOpen = true;
-      addClass(wrap, 'is-open');
-      try {
-        const tRect = trigger.getBoundingClientRect?.();
-        if (tRect && typeof window !== 'undefined' && window.innerHeight && tRect.bottom + 240 > window.innerHeight && tRect.top > 240) {
-          addClass(wrap, 'open-up');
-        } else {
-          removeClass(wrap, 'open-up');
+      };
+      const directChildren = Array.from(sel.children || []);
+      if (directChildren.length > 0) {
+        for (const child of directChildren) {
+          const tag = String(child?.tagName || '').toUpperCase();
+          if (tag === 'OPTGROUP') {
+            const grpOpts = Array.from(child.children || []).filter(o => o && !o.hidden && !o.disabled);
+            if (grpOpts.length > 0) {
+              const grpLabel = String(child.getAttribute?.('label') || child.label || '').trim();
+              if (grpLabel) items.push({ isGroupHeader: true, label: grpLabel });
+              for (const o of grpOpts) pushOption(o);
+            }
+          } else if (tag === 'OPTION') {
+            pushOption(child);
+          }
         }
-      } catch {}
-      popover.style.display = 'block';
-      trigger.setAttribute?.('aria-expanded', 'true');
-    };
-
-    trigger.addEventListener('click', (e) => {
-      e?.stopPropagation?.();
-      if (validEndDpState.isOpen) closeValidEndDatePicker();
-      else openPicker();
-    });
-
-    trigger.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        if (validEndDpState.isOpen) closeValidEndDatePicker();
-        else openPicker();
-      } else if (e.key === 'Escape' && validEndDpState.isOpen) {
-        e.preventDefault();
-        closeValidEndDatePicker();
       }
-    });
-
-    popover.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        closeValidEndDatePicker();
-        trigger.focus?.();
+      if (items.length === 0) {
+        for (const o of Array.from(sel.options || [])) {
+          pushOption(o);
+        }
       }
-    });
+      return items;
+    },
+    onSelect: (opt) => {
+      sel.value = opt.value;
+      if (typeof Event !== 'undefined') sel.dispatchEvent?.(new Event('change', { bubbles: true }));
+      else sel.dispatchEvent?.({ type: 'change', target: sel });
+    }
+  });
 
-    popover.addEventListener('click', (e) => {
-      e?.stopPropagation?.();
-    });
+  if (controller) {
+    if (!sel._dropdownSyncBound) {
+      sel._dropdownSyncBound = true;
+      sel.addEventListener?.('change', () => controller.refresh());
+    }
+    controller.refresh();
+    enhancedDropdowns.set(selectId, controller);
+  }
+  return controller;
+}
 
-    syncValidEndDatePickerLabel();
+function enhanceCustomSelect(selectId) {
+  return initNativeSelectDropdown(selectId);
+}
+
+function syncAllNativeSelectDropdowns() {
+  for (const spec of NATIVE_DROPDOWN_SPECS) {
+    const ctrl = enhancedDropdowns.get(spec.selectId) || initNativeSelectDropdown(spec.selectId, spec);
+    ctrl?.refresh?.();
+  }
+  for (const wrapId of ['direct-country-wrap', 'direct-region-wrap', 'direct-currency-wrap', 'direct-tier-wrap']) {
+    el(wrapId)?._controller?.refresh?.();
+  }
+}
+
+syncAllNativeSelectDropdowns();
+
+// 点击外部自动收起下拉浮层（closeAllDropdowns 同步更新 aria-expanded）
+if (typeof document !== 'undefined' && document.addEventListener) {
+  document.addEventListener('click', (e) => {
+    try {
+      if (!e.target?.closest?.('.ag-dropdown-wrapper')) {
+        closeAllDropdowns();
+      }
+    } catch { }
+  });
+}
+
+function updateRegionCnyPreviewFromForm() {
+  const prevEl = el('region-cny-preview');
+  if (!prevEl) return;
+  const isZero = Boolean(el('check-zero-extra')?.checked);
+  const rawPaidVal = el('input-custom-paid')?.value;
+  const rawPaid = (rawPaidVal !== undefined && rawPaidVal !== null) ? String(rawPaidVal).trim() : '';
+  const paid = isZero ? 0 : (rawPaid !== '' && !Number.isNaN(Number(rawPaid)) ? Number(rawPaid) : null);
+  const cur = el('select-custom-currency')?.value || 'USD';
+  const regVal = el('input-custom-region')?.value;
+  const reg = (regVal !== undefined && regVal !== null) ? String(regVal).trim() : '';
+  if (isZero || paid === null || paid <= 0) {
+    prevEl.textContent = '';
+    return;
+  }
+  prevEl.textContent = formatSubscriptionSecondaryConversion(paid, cur, reg, { perMonth: true, detail: true }) || '';
+}
+
+function normalizeBillingCycleValue(rawCycle) {
+  if (!rawCycle) return '';
+  const cleaned = String(rawCycle).replace(/[（(].*[）)]/g, '').trim();
+  if (!cleaned || cleaned === '未知' || cleaned === 'Unknown') return '';
+  if (cleaned === '月付' || cleaned === '月繳' || cleaned === 'Monthly' || cleaned === 'monthly') return '月付';
+  if (cleaned === '年付' || cleaned === '年繳' || cleaned === 'Yearly' || cleaned === 'yearly') return '年付';
+  if (cleaned === '免费/赠送' || cleaned === '免費/贈送' || cleaned === 'Free / Promo' || cleaned === '随套餐赠送/免费') return '免费/赠送';
+  if (cleaned === '随套餐包含' || cleaned === '隨方案包含' || cleaned === 'Included in bundle') return '随套餐包含';
+  if (cleaned === '其他周期' || cleaned === '其他週期' || cleaned === 'Other cycle') return '其他周期';
+  return cleaned;
+}
+
+const DP_EN_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+let validEndDpState = null;
+
+function formatLocalYmdDate(dt) {
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, '0');
+  const d = String(dt.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function closeValidEndDatePicker() {
+  if (!validEndDpState) return;
+  validEndDpState.isOpen = false;
+  removeClass(validEndDpState.wrap, 'is-open');
+  removeClass(validEndDpState.wrap, 'open-up');
+  if (validEndDpState.popover) validEndDpState.popover.style.display = 'none';
+  validEndDpState.trigger?.setAttribute?.('aria-expanded', 'false');
+}
+
+function syncValidEndDatePickerLabel() {
+  const labelEl = el('valid-end-label');
+  const hiddenEl = el('input-valid-end');
+  const triggerEl = el('valid-end-trigger');
+  if (triggerEl) triggerEl.setAttribute?.('aria-label', t('datePicker.ariaLabel'));
+  if (!labelEl) return;
+  const raw = String(hiddenEl?.value || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    labelEl.textContent = raw;
+    removeClass(labelEl, 'is-placeholder');
+  } else {
+    labelEl.textContent = t('datePicker.placeholder');
+    addClass(labelEl, 'is-placeholder');
+  }
+}
+
+function refreshValidEndDatePicker() {
+  syncValidEndDatePickerLabel();
+  if (validEndDpState?.isOpen) {
+    validEndDpState.renderCalendar();
+  }
+}
+
+function initValidEndDatePicker() {
+  const wrap = el('valid-end-picker-wrap');
+  const trigger = el('valid-end-trigger');
+  const popover = el('valid-end-popover');
+  const hiddenInput = el('input-valid-end');
+  if (!wrap || !trigger || !popover || !hiddenInput) return null;
+  if (trigger._dpBound) {
+    refreshValidEndDatePicker();
     return validEndDpState;
   }
+  trigger._dpBound = true;
 
-  initValidEndDatePicker();
+  const now = new Date();
+  validEndDpState = {
+    wrap,
+    trigger,
+    popover,
+    hiddenInput,
+    isOpen: false,
+    viewYear: now.getFullYear(),
+    viewMonth: now.getMonth(),
+    renderCalendar: () => { }
+  };
 
-  // 就地行内自定义订阅表单交互（实际读取优先于手填，支持官方依据活动来源）
-  function togglePlanCustomForm(forceOpen) {
-    const form = el('plan-custom-form');
-    if (!form) return;
-    const curHidden = form.style.display === 'none' || !form.style.display;
-    const next = typeof forceOpen === 'boolean' ? forceOpen : curHidden;
-    form.style.display = next ? 'block' : 'none';
-    if (!next) {
+  const dispatchHiddenChange = () => {
+    if (typeof Event !== 'undefined') hiddenInput.dispatchEvent?.(new Event('change', { bubbles: true }));
+    else hiddenInput.dispatchEvent?.({ type: 'change', target: hiddenInput });
+  };
+
+  const commitDateValue = (ymd) => {
+    hiddenInput.value = ymd || '';
+    syncValidEndDatePickerLabel();
+    dispatchHiddenChange();
+    closeValidEndDatePicker();
+  };
+
+  const renderCalendar = () => {
+    const y = validEndDpState.viewYear;
+    const m = validEndDpState.viewMonth;
+    const todayYmd = formatLocalYmdDate(new Date());
+    const selRaw = String(hiddenInput.value || '').trim();
+    const selectedYmd = /^\d{4}-\d{2}-\d{2}$/.test(selRaw) ? selRaw : '';
+
+    if (typeof popover.replaceChildren === 'function') popover.replaceChildren();
+    else popover.innerHTML = '';
+
+    if (typeof document === 'undefined' || typeof document.createElement !== 'function') return;
+
+    const header = document.createElement('div');
+    header.className = 'ag-dp-header';
+
+    const prevBtn = document.createElement('button');
+    prevBtn.type = 'button';
+    prevBtn.className = 'ag-dp-nav-btn';
+    prevBtn.textContent = '‹';
+    prevBtn.setAttribute('aria-label', t('datePicker.prevMonth'));
+    prevBtn.title = t('datePicker.prevMonth');
+    prevBtn.addEventListener('click', (e) => {
+      e?.stopPropagation?.();
+      if (validEndDpState.viewMonth === 0) {
+        validEndDpState.viewMonth = 11;
+        validEndDpState.viewYear -= 1;
+      } else {
+        validEndDpState.viewMonth -= 1;
+      }
+      renderCalendar();
+    });
+
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'ag-dp-month-title';
+    titleSpan.textContent = t('datePicker.monthTitle', { y, m: m + 1, monthEn: DP_EN_MONTHS[m] });
+
+    const nextBtn = document.createElement('button');
+    nextBtn.type = 'button';
+    nextBtn.className = 'ag-dp-nav-btn';
+    nextBtn.textContent = '›';
+    nextBtn.setAttribute('aria-label', t('datePicker.nextMonth'));
+    nextBtn.title = t('datePicker.nextMonth');
+    nextBtn.addEventListener('click', (e) => {
+      e?.stopPropagation?.();
+      if (validEndDpState.viewMonth === 11) {
+        validEndDpState.viewMonth = 0;
+        validEndDpState.viewYear += 1;
+      } else {
+        validEndDpState.viewMonth += 1;
+      }
+      renderCalendar();
+    });
+
+    header.appendChild(prevBtn);
+    header.appendChild(titleSpan);
+    header.appendChild(nextBtn);
+    popover.appendChild(header);
+
+    const weekdaysRow = document.createElement('div');
+    weekdaysRow.className = 'ag-dp-weekdays';
+    const wkLabels = String(t('datePicker.weekdays')).split(',');
+    for (const wk of wkLabels) {
+      const wCell = document.createElement('div');
+      wCell.className = 'ag-dp-weekday';
+      wCell.textContent = wk;
+      weekdaysRow.appendChild(wCell);
+    }
+    popover.appendChild(weekdaysRow);
+
+    const grid = document.createElement('div');
+    grid.className = 'ag-dp-grid';
+    const firstDow = new Date(y, m, 1).getDay();
+    for (let i = 0; i < 42; i++) {
+      const cellDate = new Date(y, m, 1 - firstDow + i);
+      const ymd = formatLocalYmdDate(cellDate);
+      const inCurMonth = cellDate.getMonth() === m && cellDate.getFullYear() === y;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      let cls = 'ag-dp-day';
+      if (!inCurMonth) cls += ' is-outside';
+      if (ymd === todayYmd) cls += ' is-today';
+      if (ymd === selectedYmd) cls += ' is-selected';
+      btn.className = cls;
+      btn.setAttribute('data-date', ymd);
+      btn.setAttribute('aria-label', ymd);
+      btn.textContent = String(cellDate.getDate());
+      btn.addEventListener('click', (e) => {
+        e?.stopPropagation?.();
+        commitDateValue(ymd);
+      });
+      grid.appendChild(btn);
+    }
+    popover.appendChild(grid);
+
+    const footer = document.createElement('div');
+    footer.className = 'ag-dp-footer';
+
+    const clearBtn = document.createElement('button');
+    clearBtn.type = 'button';
+    clearBtn.className = 'ag-dp-action-btn';
+    clearBtn.setAttribute('data-dp-action', 'clear');
+    clearBtn.textContent = t('datePicker.clear');
+    clearBtn.addEventListener('click', (e) => {
+      e?.stopPropagation?.();
+      commitDateValue('');
+    });
+
+    const todayBtn = document.createElement('button');
+    todayBtn.type = 'button';
+    todayBtn.className = 'ag-dp-action-btn is-today-btn';
+    todayBtn.setAttribute('data-dp-action', 'today');
+    todayBtn.textContent = t('datePicker.today');
+    todayBtn.addEventListener('click', (e) => {
+      e?.stopPropagation?.();
+      const tNow = new Date();
+      validEndDpState.viewYear = tNow.getFullYear();
+      validEndDpState.viewMonth = tNow.getMonth();
+      commitDateValue(formatLocalYmdDate(tNow));
+    });
+
+    footer.appendChild(clearBtn);
+    footer.appendChild(todayBtn);
+    popover.appendChild(footer);
+  };
+
+  validEndDpState.renderCalendar = renderCalendar;
+
+  const openPicker = () => {
+    closeAllDropdowns(wrap);
+    const curVal = String(hiddenInput.value || '').trim();
+    const m = curVal.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (m) {
+      validEndDpState.viewYear = Number(m[1]);
+      validEndDpState.viewMonth = Math.max(0, Math.min(11, Number(m[2]) - 1));
+    } else {
+      const curNow = new Date();
+      validEndDpState.viewYear = curNow.getFullYear();
+      validEndDpState.viewMonth = curNow.getMonth();
+    }
+    renderCalendar();
+    validEndDpState.isOpen = true;
+    addClass(wrap, 'is-open');
+    try {
+      const tRect = trigger.getBoundingClientRect?.();
+      if (tRect && typeof window !== 'undefined' && window.innerHeight && tRect.bottom + 240 > window.innerHeight && tRect.top > 240) {
+        addClass(wrap, 'open-up');
+      } else {
+        removeClass(wrap, 'open-up');
+      }
+    } catch { }
+    popover.style.display = 'block';
+    trigger.setAttribute?.('aria-expanded', 'true');
+  };
+
+  trigger.addEventListener('click', (e) => {
+    e?.stopPropagation?.();
+    if (validEndDpState.isOpen) closeValidEndDatePicker();
+    else openPicker();
+  });
+
+  trigger.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      if (validEndDpState.isOpen) closeValidEndDatePicker();
+      else openPicker();
+    } else if (e.key === 'Escape' && validEndDpState.isOpen) {
+      e.preventDefault();
       closeValidEndDatePicker();
     }
-    if (next) {
-      const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
-      const acqSelect = el('select-custom-acq');
-      const acqNameInput = el('input-custom-acq-name');
-      const zeroCheck = el('check-zero-extra');
-      const countryInput = el('input-custom-country');
-      const regInput = el('input-custom-region');
-      const paidInput = el('input-custom-paid');
-      const curSelect = el('select-custom-currency');
-      const cycleSelect = el('select-custom-cycle');
-      const validEndInput = el('input-valid-end');
-      const noteInput = el('input-custom-note');
+  });
 
-      runWithUiHydration(() => {
-        if (acqSelect && ps.acquisitionSource) acqSelect.value = ps.acquisitionSource;
-        if (acqNameInput) acqNameInput.value = (ps.acquisitionSourceName && ps.acquisitionSourceName !== '正常付费订阅') ? ps.acquisitionSourceName : '';
-        if (zeroCheck) zeroCheck.checked = Boolean(ps.isZeroExtraCost || ps.actualPricePaid === 0);
-        if (countryInput) {
-          const cVal = (ps.country && !String(ps.country).includes('未知') && ps.country !== 'Unknown') ? ps.country : '';
-          countryInput.value = cVal ? (localizeRegionDisplayValue(cVal) || cVal) : '';
-        }
-        if (regInput) {
-          const rVal = (ps.region && !String(ps.region).includes('未知') && ps.region !== 'Unknown') ? ps.region : '';
-          regInput.value = rVal ? (localizeRegionDisplayValue(rVal) || rVal) : '';
-        }
-        if (paidInput) {
-          paidInput.value = (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) ? ps.actualPricePaid : (zeroCheck?.checked ? '0' : '');
-          paidInput.disabled = Boolean(zeroCheck?.checked);
-        }
-        if (curSelect && ps.currency) curSelect.value = ps.currency;
-        if (cycleSelect && ps.billingCycle) {
-          const normCycle = normalizeBillingCycleValue(ps.billingCycle);
-          if (normCycle) cycleSelect.value = normCycle;
-        }
-        if (validEndInput) validEndInput.value = ps.validEndDate || '';
-        initValidEndDatePicker();
-        refreshValidEndDatePicker();
-        if (noteInput) noteInput.value = ps.customNote || '';
-        updateRegionCnyPreviewFromForm();
-        ['select-custom-acq', 'select-custom-region-preset', 'select-custom-currency', 'select-custom-cycle'].forEach(id => enhanceCustomSelect(id));
-      });
-      regInput?.focus?.();
+  popover.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeValidEndDatePicker();
+      trigger.focus?.();
     }
-    positionFloatingPanels();
+  });
+
+  popover.addEventListener('click', (e) => {
+    e?.stopPropagation?.();
+  });
+
+  syncValidEndDatePickerLabel();
+  return validEndDpState;
+}
+
+initValidEndDatePicker();
+
+// 就地行内自定义订阅表单交互（实际读取优先于手填，支持官方依据活动来源）
+function togglePlanCustomForm(forceOpen) {
+  const form = el('plan-custom-form');
+  if (!form) return;
+  const curHidden = form.style.display === 'none' || !form.style.display;
+  const next = typeof forceOpen === 'boolean' ? forceOpen : curHidden;
+  form.style.display = next ? 'block' : 'none';
+  if (!next) {
+    closeValidEndDatePicker();
+  }
+  if (next) {
+    const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+    const acqSelect = el('select-custom-acq');
+    const acqNameInput = el('input-custom-acq-name');
+    const zeroCheck = el('check-zero-extra');
+    const countryInput = el('input-custom-country');
+    const regInput = el('input-custom-region');
+    const paidInput = el('input-custom-paid');
+    const curSelect = el('select-custom-currency');
+    const cycleSelect = el('select-custom-cycle');
+    const validEndInput = el('input-valid-end');
+    const noteInput = el('input-custom-note');
+
+    runWithUiHydration(() => {
+      if (acqSelect && ps.acquisitionSource) acqSelect.value = ps.acquisitionSource;
+      if (acqNameInput) acqNameInput.value = (ps.acquisitionSourceName && ps.acquisitionSourceName !== '正常付费订阅') ? ps.acquisitionSourceName : '';
+      if (zeroCheck) zeroCheck.checked = Boolean(ps.isZeroExtraCost || ps.actualPricePaid === 0);
+      if (countryInput) {
+        const cVal = (ps.country && !String(ps.country).includes('未知') && ps.country !== 'Unknown') ? ps.country : '';
+        countryInput.value = cVal ? (localizeRegionDisplayValue(cVal) || cVal) : '';
+      }
+      if (regInput) {
+        const rVal = (ps.region && !String(ps.region).includes('未知') && ps.region !== 'Unknown') ? ps.region : '';
+        regInput.value = rVal ? (localizeRegionDisplayValue(rVal) || rVal) : '';
+      }
+      if (paidInput) {
+        paidInput.value = (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) ? ps.actualPricePaid : (zeroCheck?.checked ? '0' : '');
+        paidInput.disabled = Boolean(zeroCheck?.checked);
+      }
+      if (curSelect && ps.currency) curSelect.value = ps.currency;
+      if (cycleSelect && ps.billingCycle) {
+        const normCycle = normalizeBillingCycleValue(ps.billingCycle);
+        if (normCycle) cycleSelect.value = normCycle;
+      }
+      if (validEndInput) validEndInput.value = ps.validEndDate || '';
+      initValidEndDatePicker();
+      refreshValidEndDatePicker();
+      if (noteInput) noteInput.value = ps.customNote || '';
+      updateRegionCnyPreviewFromForm();
+      ['select-custom-acq', 'select-custom-region-preset', 'select-custom-currency', 'select-custom-cycle'].forEach(id => enhanceCustomSelect(id));
+    });
+    regInput?.focus?.();
+  }
+  positionFloatingPanels();
+}
+
+el('input-custom-paid')?.addEventListener('input', () => {
+  if (!isHydratingUiControls) updateRegionCnyPreviewFromForm();
+});
+el('select-custom-currency')?.addEventListener('change', () => {
+  if (!isHydratingUiControls) updateRegionCnyPreviewFromForm();
+});
+el('input-custom-region')?.addEventListener('input', () => {
+  if (!isHydratingUiControls) updateRegionCnyPreviewFromForm();
+});
+
+el('select-custom-region-preset')?.addEventListener('change', (e) => {
+  if (isHydratingUiControls) return;
+  const presetId = e.target?.value || '';
+  if (!presetId || presetId === 'custom') return;
+  const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+  const matched = core?.SUBSCRIPTION_REGIONS_PRESET?.find(p => p.id === presetId);
+  if (matched) {
+    applyDirectRegionSelection(matched);
+  }
+});
+
+el('check-zero-extra')?.addEventListener('change', (e) => {
+  if (isHydratingUiControls) return;
+  const paidInput = el('input-custom-paid');
+  if (e.target.checked) {
+    if (paidInput) {
+      paidInput.value = '0';
+      paidInput.disabled = true;
+    }
+  } else {
+    if (paidInput) {
+      paidInput.disabled = false;
+      if (paidInput.value === '0') paidInput.value = '';
+    }
+  }
+  updateRegionCnyPreviewFromForm();
+});
+
+el('select-custom-acq')?.addEventListener('change', (e) => {
+  if (isHydratingUiControls) return;
+  const val = e.target.value;
+  const zeroCheck = el('check-zero-extra');
+  const paidInput = el('input-custom-paid');
+  const cycleSelect = el('select-custom-cycle');
+  const freeBundlePresets = ['student_offer', 'pixel_bundle', 'chromebook_bundle', 'samsung_galaxy', 'jio_offer', 'official_promo'];
+  if (freeBundlePresets.includes(val)) {
+    if (zeroCheck) zeroCheck.checked = true;
+    if (paidInput) {
+      paidInput.value = '0';
+      paidInput.disabled = true;
+    }
+    if (cycleSelect) cycleSelect.value = '免费/赠送';
+  } else if (val === 'normal_paid') {
+    if (zeroCheck) zeroCheck.checked = false;
+    if (paidInput) {
+      paidInput.disabled = false;
+      const curTierKey = ANTIGRAVITY_TOKEN_DATA?.planStatus?.tierKey;
+      if ((!paidInput.value || paidInput.value === '0') && curTierKey !== 'ultra') paidInput.value = '19.99';
+    }
+    if (cycleSelect) {
+      cycleSelect.value = '月付';
+      enhancedDropdowns.get('select-custom-cycle')?.refresh?.();
+    }
+  }
+  enhancedDropdowns.get('select-custom-acq')?.refresh?.();
+  enhancedDropdowns.get('select-custom-cycle')?.refresh?.();
+});
+
+el('btn-mode-preset')?.addEventListener('click', () => switchPlanPriceMode('preset'));
+el('btn-mode-custom')?.addEventListener('click', () => switchPlanPriceMode('custom'));
+el('btn-edit-plan-custom')?.addEventListener('click', () => togglePlanCustomForm());
+el('btn-custom-plan-cancel')?.addEventListener('click', () => togglePlanCustomForm(false));
+
+el('btn-custom-plan-save')?.addEventListener('click', () => {
+  ++userActionSeq;
+  const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+  const email = ps.email || 'default';
+  const prevCustom = getStoredCustomPlanSnapshot(email);
+  const acq = el('select-custom-acq')?.value || 'normal_paid';
+  const acqName = String(el('input-custom-acq-name')?.value ?? '').trim();
+  const isZero = Boolean(el('check-zero-extra')?.checked);
+  const countryInputEl = el('input-custom-country');
+  const countryVal = countryInputEl ? String(countryInputEl.value ?? '').trim() : (prevCustom.accountRegion || prevCustom.country || '');
+  const regInputEl = el('input-custom-region');
+  const reg = regInputEl ? String(regInputEl.value ?? '').trim() : (prevCustom.subscriptionCountry || prevCustom.subscriptionRegion || prevCustom.region || '');
+  const rawPaidVal = el('input-custom-paid')?.value;
+  const rawPaid = (rawPaidVal !== undefined && rawPaidVal !== null) ? String(rawPaidVal).trim() : '';
+  const paid = isZero ? 0 : (rawPaid !== '' && !Number.isNaN(Number(rawPaid)) ? Number(rawPaid) : null);
+  const cur = el('select-custom-currency')?.value || prevCustom.subscriptionCurrency || prevCustom.currency || 'USD';
+  const cycle = el('select-custom-cycle')?.value || (isZero ? '随套餐赠送/免费' : '月付');
+  const validEnd = String(el('input-valid-end')?.value ?? '').trim();
+  const note = String(el('input-custom-note')?.value ?? '').trim();
+
+  const customObj = {
+    ...prevCustom,
+    accountRegion: countryVal || undefined,
+    country: countryVal || undefined,
+    subscriptionCountry: reg || undefined,
+    subscriptionRegion: reg || undefined,
+    region: reg || undefined,
+    acquisitionSource: acq,
+    acquisitionSourceName: acqName || undefined,
+    isZeroExtraCost: isZero,
+    actualPricePaid: paid,
+    customActualPrice: paid,
+    priceMode: 'custom',
+    subscriptionCurrency: cur,
+    currency: cur,
+    currencySource: 'custom',
+    billingCycle: cycle,
+    validEndDate: validEnd || null,
+    customNote: note,
+    priceSource: 'custom',
+    updatedAt: new Date().toISOString()
+  };
+  if (!countryVal) {
+    delete customObj.accountRegion;
+    delete customObj.country;
+  }
+  if (!reg) {
+    delete customObj.subscriptionCountry;
+    delete customObj.subscriptionRegion;
+    delete customObj.region;
   }
 
-  el('input-custom-paid')?.addEventListener('input', () => {
-    if (!isHydratingUiControls) updateRegionCnyPreviewFromForm();
-  });
-  el('select-custom-currency')?.addEventListener('change', () => {
-    if (!isHydratingUiControls) updateRegionCnyPreviewFromForm();
-  });
-  el('input-custom-region')?.addEventListener('input', () => {
-    if (!isHydratingUiControls) updateRegionCnyPreviewFromForm();
-  });
+  applyCustomPlanObjectLocally(customObj, email);
+  togglePlanCustomForm(false);
+  void persistSettingsToHost({ email, customPlan: customObj });
+});
 
-  el('select-custom-region-preset')?.addEventListener('change', (e) => {
-    if (isHydratingUiControls) return;
-    const presetId = e.target?.value || '';
-    if (!presetId || presetId === 'custom') return;
-    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
-    const matched = core?.SUBSCRIPTION_REGIONS_PRESET?.find(p => p.id === presetId);
-    if (matched) {
-      applyDirectRegionSelection(matched);
-    }
-  });
+el('btn-custom-plan-clear')?.addEventListener('click', () => {
+  ++userActionSeq;
+  const validEndInput = el('input-valid-end');
+  if (validEndInput) validEndInput.value = '';
+  refreshValidEndDatePicker();
+  const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+  const email = ps.email || 'default';
+  const rawLive = ANTIGRAVITY_TOKEN_DATA.rawPlanStatus || null;
+  const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+  if (core && core.resolveEffectivePlanStatus) {
+    ANTIGRAVITY_TOKEN_DATA.planStatus = core.resolveEffectivePlanStatus(rawLive, { priceMode: 'preset' }, { currentEmail: email });
+  }
+  togglePlanCustomForm(false);
+  renderPlanDetail(ANTIGRAVITY_TOKEN_DATA.planStatus);
+  renderActiveCostEstimateView();
+  void persistSettingsToHost({ email, clearPlan: true });
+});
 
-  el('check-zero-extra')?.addEventListener('change', (e) => {
-    if (isHydratingUiControls) return;
-    const paidInput = el('input-custom-paid');
-    if (e.target.checked) {
-      if (paidInput) {
-        paidInput.value = '0';
-        paidInput.disabled = true;
-      }
-    } else {
-      if (paidInput) {
-        paidInput.disabled = false;
-        if (paidInput.value === '0') paidInput.value = '';
-      }
-    }
-    updateRegionCnyPreviewFromForm();
-  });
-
-  el('select-custom-acq')?.addEventListener('change', (e) => {
-    if (isHydratingUiControls) return;
-    const val = e.target.value;
-    const zeroCheck = el('check-zero-extra');
-    const paidInput = el('input-custom-paid');
-    const cycleSelect = el('select-custom-cycle');
-    const freeBundlePresets = ['student_offer', 'pixel_bundle', 'chromebook_bundle', 'samsung_galaxy', 'jio_offer', 'official_promo'];
-    if (freeBundlePresets.includes(val)) {
-      if (zeroCheck) zeroCheck.checked = true;
-      if (paidInput) {
-        paidInput.value = '0';
-        paidInput.disabled = true;
-      }
-      if (cycleSelect) cycleSelect.value = '免费/赠送';
-    } else if (val === 'normal_paid') {
-      if (zeroCheck) zeroCheck.checked = false;
-      if (paidInput) {
-        paidInput.disabled = false;
-        const curTierKey = ANTIGRAVITY_TOKEN_DATA?.planStatus?.tierKey;
-        if ((!paidInput.value || paidInput.value === '0') && curTierKey !== 'ultra') paidInput.value = '19.99';
-      }
-      if (cycleSelect) {
-        cycleSelect.value = '月付';
-        enhancedDropdowns.get('select-custom-cycle')?.refresh?.();
-      }
-    }
-    enhancedDropdowns.get('select-custom-acq')?.refresh?.();
-    enhancedDropdowns.get('select-custom-cycle')?.refresh?.();
-  });
-
-  el('btn-mode-preset')?.addEventListener('click', () => switchPlanPriceMode('preset'));
-  el('btn-mode-custom')?.addEventListener('click', () => switchPlanPriceMode('custom'));
-  el('btn-edit-plan-custom')?.addEventListener('click', () => togglePlanCustomForm());
-  el('btn-custom-plan-cancel')?.addEventListener('click', () => togglePlanCustomForm(false));
-
-  el('btn-custom-plan-save')?.addEventListener('click', () => {
-    ++userActionSeq;
-    const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
-    const email = ps.email || 'default';
-    const prevCustom = getStoredCustomPlanSnapshot(email);
-    const acq = el('select-custom-acq')?.value || 'normal_paid';
-    const acqName = String(el('input-custom-acq-name')?.value ?? '').trim();
-    const isZero = Boolean(el('check-zero-extra')?.checked);
-    const countryInputEl = el('input-custom-country');
-    const countryVal = countryInputEl ? String(countryInputEl.value ?? '').trim() : (prevCustom.accountRegion || prevCustom.country || '');
-    const regInputEl = el('input-custom-region');
-    const reg = regInputEl ? String(regInputEl.value ?? '').trim() : (prevCustom.subscriptionCountry || prevCustom.subscriptionRegion || prevCustom.region || '');
-    const rawPaidVal = el('input-custom-paid')?.value;
-    const rawPaid = (rawPaidVal !== undefined && rawPaidVal !== null) ? String(rawPaidVal).trim() : '';
-    const paid = isZero ? 0 : (rawPaid !== '' && !Number.isNaN(Number(rawPaid)) ? Number(rawPaid) : null);
-    const cur = el('select-custom-currency')?.value || prevCustom.subscriptionCurrency || prevCustom.currency || 'USD';
-    const cycle = el('select-custom-cycle')?.value || (isZero ? '随套餐赠送/免费' : '月付');
-    const validEnd = String(el('input-valid-end')?.value ?? '').trim();
-    const note = String(el('input-custom-note')?.value ?? '').trim();
-
-    const customObj = {
-      ...prevCustom,
-      accountRegion: countryVal || undefined,
-      country: countryVal || undefined,
-      subscriptionCountry: reg || undefined,
-      subscriptionRegion: reg || undefined,
-      region: reg || undefined,
-      acquisitionSource: acq,
-      acquisitionSourceName: acqName || undefined,
-      isZeroExtraCost: isZero,
-      actualPricePaid: paid,
-      customActualPrice: paid,
-      priceMode: 'custom',
-      subscriptionCurrency: cur,
-      currency: cur,
-      currencySource: 'custom',
-      billingCycle: cycle,
-      validEndDate: validEnd || null,
-      customNote: note,
-      priceSource: 'custom',
-      updatedAt: new Date().toISOString()
-    };
-    if (!countryVal) {
-      delete customObj.accountRegion;
-      delete customObj.country;
-    }
-    if (!reg) {
-      delete customObj.subscriptionCountry;
-      delete customObj.subscriptionRegion;
-      delete customObj.region;
-    }
-
-    applyCustomPlanObjectLocally(customObj, email);
-    togglePlanCustomForm(false);
-    void persistSettingsToHost({ email, customPlan: customObj });
-  });
-
-  el('btn-custom-plan-clear')?.addEventListener('click', () => {
-    ++userActionSeq;
-    const validEndInput = el('input-valid-end');
-    if (validEndInput) validEndInput.value = '';
-    refreshValidEndDatePicker();
-    const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
-    const email = ps.email || 'default';
-    const rawLive = ANTIGRAVITY_TOKEN_DATA.rawPlanStatus || null;
-    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
-    if (core && core.resolveEffectivePlanStatus) {
-      ANTIGRAVITY_TOKEN_DATA.planStatus = core.resolveEffectivePlanStatus(rawLive, { priceMode: 'preset' }, { currentEmail: email });
-    }
-    togglePlanCustomForm(false);
-    renderPlanDetail(ANTIGRAVITY_TOKEN_DATA.planStatus);
-    renderActiveCostEstimateView();
-    void persistSettingsToHost({ email, clearPlan: true });
-  });
-
-  let lastBadgePriceState = null;
-  let activeBadgeRafId = null;
-  let activeBadgeTimerId = null;
-  let activeCnyTimerId = null;
+let lastBadgePriceState = null;
+let activeBadgeRafId = null;
+let activeBadgeTimerId = null;
+let activeCnyTimerId = null;
   function renderPlanSummaryPriceBadge(targetSymbol, targetNum, targetCycle, targetCnyText, options = {}) {
     const priceValEl = el('plan-summary-price-val');
     const priceCnyEl = el('plan-summary-price-cny');
@@ -34822,10 +35845,12 @@ function closeAllDropdowns(exceptWrap = null) {
   let activeTokenAccountFilter = 'all'; // 'all' | 'unattributed' | 'acct_xxx'
   const accountsUiState = {
     overview: null,
+    loadError: null,
     toolsPreview: null,
     feedback: '',
     feedbackTone: 'info',
     busy: false,
+    mutationSeq: 0,
     autoSwitchDraft: {
       dirty: false,
       saving: false,
@@ -36079,6 +37104,7 @@ function closeAllDropdowns(exceptWrap = null) {
     const csbBar = el('composer-status-bar');
     if (!csbBar) return;
     ensureComposerStatusBarMounted();
+    syncComposerStatusBarWidth();
 
     // 1. 组 1: 轮次/步数与速度 (⏱ X 轮 Y 步 · Z tok/s)
     const speedTextEl = el('csb-speed-text');
@@ -36131,9 +37157,12 @@ function closeAllDropdowns(exceptWrap = null) {
     const isPendingWait = Boolean(state.livePendingRequest && state.livePendingRequest.cascadeId === state.route);
     const isPendingQueued = Boolean(isPendingWait && state.livePendingRequest.stage === 'queued');
     const hasSpeedVal = speedCandidate !== null && speedCandidate !== undefined && Number.isFinite(Number(speedCandidate)) && Number(speedCandidate) >= 0;
+    const isRemoteSpeedUnavailable = !hasSpeedVal && state.lastSpeedEval?.phase === 'remote_unavailable';
     const speedStr = hasSpeedVal
       ? `${Number(speedCandidate).toFixed(0)} tok/s`
-      : (isPendingQueued ? t('composer.speedQueued') : (isPendingWait ? t('composer.speedWaiting') : '—'));
+      : (isRemoteSpeedUnavailable
+        ? (state.lastSpeedEval?.badge?.text || '远程对话')
+        : (isPendingQueued ? t('composer.speedQueued') : (isPendingWait ? t('composer.speedWaiting') : '—')));
     if (speedTextEl) {
       if (state.loading && turnsCount === 0 && stepsCount === 0) {
         speedTextEl.textContent = t('badge.reading');
@@ -36147,7 +37176,8 @@ function closeAllDropdowns(exceptWrap = null) {
     }
     const speedGroupEl = el('csb-group-speed');
     if (speedGroupEl) {
-      speedGroupEl.setAttribute('data-tooltip', speedTextEl?.textContent || '速度与轮步');
+      const remoteComment = isRemoteSpeedUnavailable && state.lastSpeedEval?.comment ? ` · ${state.lastSpeedEval.comment}` : '';
+      speedGroupEl.setAttribute('data-tooltip', `${speedTextEl?.textContent || '速度与轮步'}${remoteComment}`);
       speedGroupEl.title = '';
     }
 
@@ -36372,7 +37402,8 @@ function closeAllDropdowns(exceptWrap = null) {
     const csbRuntimeText = el('csb-runtime-text');
     if (csbStatusGroup) {
       csbStatusGroup.setAttribute('data-runtime-state', runtimeStatus.state);
-      csbStatusGroup.setAttribute('data-tooltip', `${t('composer.runtime.title')}: ${runtimeLabel}`);
+      csbStatusGroup.setAttribute('data-tooltip', `${t('composer.runtime.title')}: ${runtimeLabel} · ${t('composer.runtime.clickHint')}`);
+      csbStatusGroup.setAttribute('aria-label', `${t('composer.runtime.title')}: ${runtimeLabel} · ${t('composer.runtime.clickHint')}`);
       csbStatusGroup.title = '';
     }
     if (csbDot) {
@@ -36403,7 +37434,6 @@ function closeAllDropdowns(exceptWrap = null) {
 
   /**
    * 渲染每条助手回复与 Side Question 尾部的单行统计微徽标（受 showTurnFooterStats 控制）
-   * 启发来源: antigravity-codex-theme (MIT, core/runtime/50-telemetry-ui.js)
    */
   function syncOverflowMenuMetrics() {
     try {
@@ -37367,7 +38397,10 @@ function closeAllDropdowns(exceptWrap = null) {
         ?? state.speedOverrideForTest?.tps
         ?? null;
       const hasSpeedVal = speedCandidate !== null && speedCandidate !== undefined && Number.isFinite(Number(speedCandidate)) && Number(speedCandidate) >= 0;
-      if (speedValEl) speedValEl.textContent = hasSpeedVal ? `${Number(speedCandidate).toFixed(0)} tok/s` : '—';
+      const remoteSpeedText = !hasSpeedVal && state.lastSpeedEval?.phase === 'remote_unavailable'
+        ? (state.lastSpeedEval?.badge?.text || '远程对话')
+        : '—';
+      if (speedValEl) speedValEl.textContent = hasSpeedVal ? `${Number(speedCandidate).toFixed(0)} tok/s` : remoteSpeedText;
       const ttftCandidate = state.lastSpeedEval?.ttftSec ?? state.liveSpeed?.ttftSec ?? state.latest?.speed?.ttftSec ?? null;
       if (speedTtftEl) speedTtftEl.textContent = (ttftCandidate != null && Number.isFinite(Number(ttftCandidate))) ? `${Number(ttftCandidate).toFixed(2)}s` : '—';
       const durationCandidate = state.lastSpeedEval?.durationSec ?? state.liveSpeed?.durationSec ?? state.latest?.speed?.durationSec ?? null;
@@ -37615,10 +38648,11 @@ function closeAllDropdowns(exceptWrap = null) {
   const btnTabSession = el('tab-ctx-session');
   const btnTabModels = el('tab-ctx-models');
   const btnTabSpeed = el('tab-ctx-speed');
-  const btnTabSettings = el('tab-ctx-settings');
+  const btnTabAccounts = el('tab-ctx-accounts');
   const paneSession = el('pane-ctx-session');
   const paneModels = el('pane-ctx-models');
   const paneSpeed = el('pane-ctx-speed');
+  const paneAccounts = el('pane-ctx-accounts');
   const paneSettings = el('pane-ctx-settings');
   const ctxTabsBar = el('ctx-tabs-bar');
   const btnCtxSettings = el('btn-ctx-settings');
@@ -37737,7 +38771,10 @@ function closeAllDropdowns(exceptWrap = null) {
   activeContextTab = 'session';
   try {
     const savedTab = localStorage?.getItem(CTX_ACTIVE_TAB_KEY);
-    if (savedTab === 'session' || savedTab === 'models' || savedTab === 'speed') {
+    if (savedTab === 'settings') {
+      activeContextTab = 'accounts';
+      try { localStorage?.setItem(CTX_ACTIVE_TAB_KEY, 'accounts'); } catch { }
+    } else if (savedTab === 'session' || savedTab === 'models' || savedTab === 'speed' || savedTab === 'accounts') {
       activeContextTab = savedTab;
     }
   } catch { }
@@ -39720,6 +40757,7 @@ function closeAllDropdowns(exceptWrap = null) {
       if (pane.style) pane.style.display = active ? '' : 'none';
     };
     setPaneVis(paneSettings, activeContextTab === 'settings');
+    setPaneVis(paneAccounts, activeContextTab === 'accounts');
     setPaneVis(paneSession, activeContextTab === 'session');
     setPaneVis(paneModels, activeContextTab === 'models');
     setPaneVis(paneSpeed, activeContextTab === 'speed');
@@ -39727,26 +40765,46 @@ function closeAllDropdowns(exceptWrap = null) {
     setPillActive(btnTabSession, activeContextTab === 'session');
     setPillActive(btnTabModels, activeContextTab === 'models');
     setPillActive(btnTabSpeed, activeContextTab === 'speed');
-    setPillActive(btnTabSettings, activeContextTab === 'settings');
+    setPillActive(btnTabAccounts, activeContextTab === 'accounts');
     btnTabSession?.setAttribute('aria-selected', String(activeContextTab === 'session'));
     btnTabModels?.setAttribute('aria-selected', String(activeContextTab === 'models'));
     btnTabSpeed?.setAttribute('aria-selected', String(activeContextTab === 'speed'));
-    btnTabSettings?.setAttribute('aria-selected', String(activeContextTab === 'settings'));
+    btnTabAccounts?.setAttribute('aria-selected', String(activeContextTab === 'accounts'));
   }
 
   let prevTabBeforeSettings = 'models';
+  let settingsRouteState = {
+    mode: 'unopened',
+    reason: null,
+    section: null,
+    updatedAtMs: 0
+  };
+
+  function openPluginAccountsTab() {
+    showPanel('context');
+    switchContextTab('accounts');
+    if (typeof refreshAccountsOverview === 'function') void refreshAccountsOverview({ silent: true });
+    if (typeof renderQuotaBoard === 'function') renderQuotaBoard(Date.now(), { animate: false });
+  }
 
   function switchContextTab(tabName) {
-    if (tabName !== 'session' && tabName !== 'models' && tabName !== 'speed' && tabName !== 'settings') return;
-    if (tabName !== 'session') closeCockpitWidgetManager();
-    if (activeContextTab !== 'settings') {
+    const normTab = tabName === 'settings' ? 'settings' : tabName;
+    if (normTab !== 'session' && normTab !== 'models' && normTab !== 'speed' && normTab !== 'accounts' && normTab !== 'settings') return;
+    if (normTab !== 'session') closeCockpitWidgetManager();
+    if (activeContextTab !== 'settings' && normTab === 'settings') {
       prevTabBeforeSettings = activeContextTab;
+    } else if (normTab !== 'settings') {
+      prevTabBeforeSettings = normTab;
     }
-    activeContextTab = tabName;
-    isContextSettingsView = tabName === 'settings';
-    try { localStorage?.setItem(CTX_ACTIVE_TAB_KEY, tabName); } catch { }
+    activeContextTab = normTab;
+    isContextSettingsView = normTab === 'settings';
+    try {
+      if (normTab !== 'settings') {
+        localStorage?.setItem(CTX_ACTIVE_TAB_KEY, normTab);
+      }
+    } catch { }
     applyContextViewVisibility();
-    if (tabName === 'session') {
+    if (normTab === 'session') {
       if (dockPosition === 'aux' && !dockFallbackReason && !state.historyDrawerOpen && state.route && state.ctxAutoExpandedAuxRoute !== state.route) {
         state.historyDrawerOpen = true;
         state.ctxAutoExpandedAuxRoute = state.route;
@@ -39762,15 +40820,19 @@ function closeAllDropdowns(exceptWrap = null) {
         void fetchSessionTimeline(state.route, { force: false });
       }
       if (state.historyDrawerOpen && typeof renderSessionTimeline === 'function') renderSessionTimeline();
-    } else if (tabName === 'models') {
+    } else if (normTab === 'models') {
       renderModelSettingsTab();
       if (!currentUnlockStatus && !unlockStatusFetchError) {
         void refreshUnlockStatus();
       }
-    } else if (tabName === 'speed') {
+    } else if (normTab === 'speed') {
       // 速度对比页只读取已有本地记录，绝不发起任何请求或 IPC
       renderSpeedComparisonTab();
-    } else if (tabName === 'settings') {
+    } else if (normTab === 'accounts') {
+      if (typeof renderAccountsOverviewSection === 'function') renderAccountsOverviewSection();
+      if (typeof refreshAccountsOverview === 'function') void refreshAccountsOverview({ silent: true });
+      if (typeof renderQuotaBoard === 'function') renderQuotaBoard(Date.now(), { animate: false });
+    } else if (normTab === 'settings') {
       void refreshModulesDisplay();
       if (typeof refreshAccountsOverview === 'function') void refreshAccountsOverview({ silent: true });
       if (!currentUnlockStatus && !unlockStatusFetchError && typeof refreshUnlockStatus === 'function') {
@@ -39795,6 +40857,17 @@ function closeAllDropdowns(exceptWrap = null) {
     const targetEl = el(targetId);
     if (!targetEl) return;
     try {
+      const drawerTrigger = targetEl.classList?.contains('tech-drawer')
+        ? targetEl.querySelector?.('.drawer-trigger')
+        : null;
+      if (drawerTrigger && drawerTrigger.getAttribute('aria-expanded') !== 'true') {
+        drawerTrigger.click();
+      }
+      const parentDrawer = targetEl.closest?.('.tech-drawer');
+      if (parentDrawer && parentDrawer !== targetEl) {
+        const pt = parentDrawer.querySelector('.drawer-trigger');
+        if (pt && pt.getAttribute('aria-expanded') !== 'true') pt.click();
+      }
       setTimeout(() => {
         targetEl.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
         if (targetEl.style) {
@@ -39806,45 +40879,174 @@ function closeAllDropdowns(exceptWrap = null) {
     } catch { }
   }
 
+  function resolveSettingsSectionTarget(opts = {}) {
+    if (opts.scrollToUpdate) return 'settings-about-update-card';
+    if (opts.section === 'accounts') return 'settings-accounts-card';
+    if (typeof opts.section === 'string' && opts.section) return opts.section;
+    if (opts.openColors) return 'ag-ns-colors-body';
+    return null;
+  }
+
+  function renderSettingsFallbackBanner(visible, reasonCode = '') {
+    const banner = el('settings-fallback-banner');
+    const reasonEl = el('settings-fallback-reason-text');
+    if (!banner) return;
+    banner.hidden = !visible;
+    if (visible && reasonEl) {
+      const isStandalone = reasonCode === 'standalone_browser';
+      reasonEl.textContent = isStandalone
+        ? t('settings.fallback.standaloneBrowser')
+        : t('settings.fallback.noHostModal');
+    }
+  }
+
+  let settingsOpenReqSeq = 0;
+
   function openContextSettings(opts = {}) {
-    if (el('panel')?.hidden) {
-      if (activeContextTab !== 'settings') {
-        prevTabBeforeSettings = activeContextTab;
+    const reqSeq = ++settingsOpenReqSeq;
+    const targetSectionId = resolveSettingsSectionTarget(opts);
+    const hasDesktopBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI === 'object' && window.contextMeterAPI !== null;
+    const isStandaloneBrowser = Boolean(typeof window !== 'undefined' && window.__AG_CM_STANDALONE_BROWSER__)
+      || (!hasDesktopBridge && typeof location !== 'undefined' && /^https?:/i.test(String(location.protocol || '')) && !document.querySelector?.('[data-testid="settings-sidebar"], .settings-modal-container'));
+
+    const applyHostOpenedSuccess = (mountRes) => {
+      renderSettingsFallbackBanner(false);
+      settingsRouteState = {
+        mode: 'host',
+        reason: mountRes?.reason || 'matched_host_settings',
+        section: targetSectionId,
+        updatedAtMs: Date.now()
+      };
+      if (isContextSettingsView || activeContextTab === 'settings') {
+        switchContextTab(prevTabBeforeSettings || 'session');
       }
-      activeContextTab = 'settings';
-      isContextSettingsView = true;
-      try { localStorage?.setItem(CTX_ACTIVE_TAB_KEY, 'settings'); } catch { }
-      applyContextViewVisibility();
-      showPanel('context');
-      void refreshModulesDisplay();
-      if (typeof refreshAccountsOverview === 'function') void refreshAccountsOverview({ silent: true });
-    } else {
-      switchContextTab('settings');
+      if (opts.openColors) {
+        hostSettingsCtrl?.openColorsDrawer?.();
+      }
+      if (targetSectionId) {
+        hostSettingsCtrl?.scrollToSection?.(targetSectionId);
+      }
+      return { ...settingsRouteState };
+    };
+
+    const applyFallbackPane = (reasonText) => {
+      settingsRouteState = {
+        mode: 'fallback',
+        reason: reasonText || 'host_settings_unavailable',
+        section: targetSectionId,
+        updatedAtMs: Date.now()
+      };
+      // 降级路径：若此时存在未挂载成功的宿主空弹窗挡在前方，尝试先触发原生关闭按钮以免遮挡备用表单
+      try {
+        const blockingModal = typeof document?.querySelector === 'function'
+          ? document.querySelector('.settings-modal-container, [role="dialog"]')
+          : null;
+        if (blockingModal && !blockingModal.closest?.('#ag-context-meter, #ag-context-meter-radial-host')) {
+          const closeBtn = blockingModal.querySelector?.('button[aria-label*="close" i], button[aria-label*="关闭" i], button[aria-label*="關閉" i], button[data-testid*="close" i]');
+          if (closeBtn && typeof closeBtn.click === 'function') closeBtn.click();
+        }
+      } catch { }
+      if (hostSettingsCtrl && hostSettingsCtrl.isHostPageSelected?.()) {
+        hostSettingsCtrl.deactivateHostPage?.();
+      }
+      const wsNode = el('ag-cm-settings-workspace');
+      if (wsNode && paneSettings && wsNode.parentElement !== paneSettings) {
+        try {
+          paneSettings.appendChild(wsNode);
+          wsNode.classList?.remove?.('is-host-mounted');
+        } catch { }
+      }
+      renderSettingsFallbackBanner(true, settingsRouteState.reason);
+
+      if (el('panel')?.hidden) {
+        if (activeContextTab !== 'settings') {
+          prevTabBeforeSettings = activeContextTab;
+        }
+        activeContextTab = 'settings';
+        isContextSettingsView = true;
+        applyContextViewVisibility();
+        showPanel('context');
+        void refreshModulesDisplay();
+        if (typeof refreshAccountsOverview === 'function') void refreshAccountsOverview({ silent: true });
+        if (!currentUnlockStatus && !unlockStatusFetchError && typeof refreshUnlockStatus === 'function') {
+          void refreshUnlockStatus();
+        }
+        if (typeof refreshEnhanceStatus === 'function') void refreshEnhanceStatus();
+        if (typeof refreshRehydrateStatus === 'function') void refreshRehydrateStatus();
+      } else {
+        switchContextTab('settings');
+      }
+      if (opts.openColors) {
+        toggleColorsDrawer(true);
+      }
+      focusSettingsCardSection(targetSectionId);
+      positionFloatingPanels();
+      return { ...settingsRouteState };
+    };
+
+    if (!opts.forceFallbackPane && !isStandaloneBrowser && hostSettingsCtrl && typeof hostSettingsCtrl.openHostSettingsPage === 'function') {
+      const mountRes = hostSettingsCtrl.openHostSettingsPage({
+        section: targetSectionId,
+        autoOpenHost: opts.autoOpenHost !== false,
+        onResolved: (finalRes) => {
+          if (state.disposed || reqSeq !== settingsOpenReqSeq) return;
+          if (finalRes?.ok) {
+            applyHostOpenedSuccess(finalRes);
+          } else {
+            applyFallbackPane(finalRes?.reason || 'host_settings_unavailable');
+          }
+        }
+      });
+      if (mountRes?.ok) {
+        return applyHostOpenedSuccess(mountRes);
+      }
+      if (mountRes?.pending) {
+        settingsRouteState = {
+          mode: 'host_opening',
+          reason: mountRes.reason || 'awaiting_host_modal_mount',
+          section: targetSectionId,
+          updatedAtMs: Date.now()
+        };
+        return { ...settingsRouteState };
+      }
+      return applyFallbackPane(mountRes?.reason || 'host_settings_unavailable');
     }
-    if (opts.openColors) {
-      toggleColorsDrawer(true);
-    }
-    if (opts.scrollToUpdate) {
-      focusSettingsCardSection('settings-about-update-card');
-    } else if (opts.section === 'accounts') {
-      focusSettingsCardSection('settings-accounts-card');
-    } else if (typeof opts.section === 'string' && opts.section) {
-      focusSettingsCardSection(opts.section);
-    }
-    positionFloatingPanels();
+
+    return applyFallbackPane(opts.forceFallbackPane ? 'forced_fallback_pane' : (isStandaloneBrowser ? 'standalone_browser' : 'host_controller_unavailable'));
   }
 
   function closeContextSettings() {
-    switchContextTab(prevTabBeforeSettings || 'models');
+    renderSettingsFallbackBanner(false);
+    const backTab = (prevTabBeforeSettings && prevTabBeforeSettings !== 'settings') ? prevTabBeforeSettings : 'accounts';
+    switchContextTab(backTab);
     positionFloatingPanels();
   }
 
   btnTabSession?.addEventListener('click', () => switchContextTab('session'));
   btnTabModels?.addEventListener('click', () => switchContextTab('models'));
   btnTabSpeed?.addEventListener('click', () => switchContextTab('speed'));
-  btnTabSettings?.addEventListener('click', () => switchContextTab('settings'));
-  btnCtxSettings?.addEventListener('click', () => switchContextTab('settings'));
+  btnTabAccounts?.addEventListener('click', () => switchContextTab('accounts'));
+  btnCtxSettings?.addEventListener('click', () => openContextSettings());
   btnCtxSettingsBack?.addEventListener('click', () => closeContextSettings());
+  ctxTabsBar?.addEventListener('keydown', (e) => {
+    const key = e?.key;
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(key)) return;
+    const tabs = [btnTabSession, btnTabSpeed, btnTabModels, btnTabAccounts].filter(Boolean);
+    if (!tabs.length) return;
+    const curIdx = tabs.findIndex(b => b === shadow.activeElement || b === document.activeElement || b.getAttribute?.('aria-selected') === 'true');
+    let nextIdx = curIdx >= 0 ? curIdx : 0;
+    if (key === 'ArrowRight') nextIdx = (nextIdx + 1) % tabs.length;
+    else if (key === 'ArrowLeft') nextIdx = (nextIdx - 1 + tabs.length) % tabs.length;
+    else if (key === 'Home') nextIdx = 0;
+    else if (key === 'End') nextIdx = tabs.length - 1;
+    const targetBtn = tabs[nextIdx];
+    const targetTab = targetBtn?.getAttribute?.('data-ctx-tab');
+    if (targetBtn && targetTab) {
+      e.preventDefault?.();
+      switchContextTab(targetTab);
+      targetBtn.focus?.();
+    }
+  });
 
   btnGotoModelSettings?.addEventListener('click', () => {
     if (activeSessionProductKey) {
@@ -42425,6 +43627,59 @@ function closeAllDropdowns(exceptWrap = null) {
     }, 15000);
   }
 
+  function disposeModalTopHost() {
+    try {
+      if (modalTopHost) {
+        modalTopHost.remove?.();
+      }
+    } catch { }
+    modalTopHost = null;
+    modalTopShadow = null;
+  }
+
+  function ensureGlobalRestartModalTopLayer() {
+    if (!globalRestartModal || typeof document === 'undefined' || !document.body) return;
+    if (typeof document.createElement !== 'function') return;
+    try {
+      const activePortal = typeof document.querySelector === 'function'
+        ? (document.querySelector('[data-base-ui-portal] .settings-modal-container')?.closest?.('[data-base-ui-portal]')
+          || document.querySelector('.settings-modal-backdrop')?.closest?.('[data-base-ui-portal]')
+          || null)
+        : null;
+      const targetParent = activePortal || document.body;
+      if (!modalTopHost || !modalTopShadow) {
+        const candidate = document.createElement('div');
+        if (!candidate || typeof candidate.attachShadow !== 'function') return;
+        const cShadow = candidate.attachShadow({ mode: 'open' });
+        if (!cShadow || cShadow === shadow) return;
+        candidate.id = MODAL_TOP_HOST_ID;
+        candidate.setAttribute?.('data-ag-modal-top-layer', 'true');
+        if (candidate.style) {
+          candidate.style.cssText = 'position:fixed!important;inset:0!important;width:0!important;height:0!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;overflow:visible!important;pointer-events:none!important;z-index:2147483647!important;';
+        }
+        const srcStyle = shadow.querySelector?.('style')?.textContent || '';
+        const stEl = document.createElement('style');
+        if (stEl) {
+          stEl.textContent = srcStyle;
+          cShadow.appendChild?.(stEl);
+        }
+        cShadow.appendChild?.(globalRestartModal);
+        modalTopHost = candidate;
+        modalTopShadow = cShadow;
+        earlyDisposeHooks.push(disposeModalTopHost);
+      }
+      if (modalTopHost.parentElement !== targetParent) {
+        targetParent.appendChild?.(modalTopHost);
+      }
+      try {
+        modalTopHost.inert = false;
+        modalTopHost.removeAttribute?.('inert');
+        modalTopHost.removeAttribute?.('aria-hidden');
+        syncHostSettingsThemeAttrs(modalTopHost);
+      } catch { }
+    } catch { }
+  }
+
   function openClientRestartConfirmFlow() {
     if (isRestartInProgress || globalRestartModal?.open) return;
     if (!hostSupportsRestart) {
@@ -42439,13 +43694,34 @@ function closeAllDropdowns(exceptWrap = null) {
       return;
     }
     if (globalRestartModal) {
+      ensureGlobalRestartModalTopLayer();
+      const titleEl = el('modal-restart-title');
+      const textEl = el('modal-restart-text');
+      if (titleEl) titleEl.textContent = t('models.restartConfirm.title');
+      if (textEl) textEl.textContent = t('models.restartConfirm.text');
+      if (btnModalRestartCancel) btnModalRestartCancel.textContent = t('models.restartConfirm.cancel');
+      if (btnModalRestartConfirm) {
+        btnModalRestartConfirm.textContent = t('models.restartConfirm.go');
+        btnModalRestartConfirm.disabled = false;
+      }
       if (modalRestartFeedback) {
         modalRestartFeedback.textContent = '';
         modalRestartFeedback.hidden = true;
       }
-      if (btnModalRestartConfirm) btnModalRestartConfirm.disabled = false;
       globalRestartModal.hidden = false;
-      globalRestartModal.showModal?.();
+      try {
+        if (typeof globalRestartModal.showModal === 'function' && !globalRestartModal.open) {
+          globalRestartModal.showModal();
+        }
+      } catch { }
+      try {
+        btnModalRestartConfirm?.focus?.();
+        setTimeout(() => {
+          if (!state.disposed && globalRestartModal && !globalRestartModal.hidden) {
+            try { btnModalRestartConfirm?.focus?.(); } catch { }
+          }
+        }, 0);
+      } catch { }
       return;
     }
     if (ctxRestartConfirm) {
@@ -42463,21 +43739,33 @@ function closeAllDropdowns(exceptWrap = null) {
 
   function closeClientRestartConfirm() {
     if (!globalRestartModal) return;
-    if (globalRestartModal.open) globalRestartModal.close();
+    try {
+      if (globalRestartModal.open && typeof globalRestartModal.close === 'function') {
+        globalRestartModal.close();
+      }
+    } catch { }
     globalRestartModal.hidden = true;
   }
 
-  btnModalRestartCancel?.addEventListener('click', closeClientRestartConfirm);
+  btnModalRestartCancel?.addEventListener('click', (e) => {
+    e?.stopPropagation?.();
+    closeClientRestartConfirm();
+  });
   globalRestartModal?.addEventListener('click', (e) => {
+    e?.stopPropagation?.();
     if (e.target === globalRestartModal) closeClientRestartConfirm();
   });
   globalRestartModal?.addEventListener('cancel', (e) => {
-    e.preventDefault();
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
     closeClientRestartConfirm();
   });
   earlyDisposeHooks.push(closeClientRestartConfirm);
 
-  btnModalRestartConfirm?.addEventListener('click', () => executeClientRestart(true));
+  btnModalRestartConfirm?.addEventListener('click', (e) => {
+    e?.stopPropagation?.();
+    void executeClientRestart(true);
+  });
 
   btnRestartCancel?.addEventListener('click', () => {
     if (ctxRestartConfirm) ctxRestartConfirm.hidden = true;
@@ -42943,10 +44231,12 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
 
   function renderSpeedPkCards(groups) {
     const grid = el('speed-pk-cards');
-    if (!grid) return;
-    grid.replaceChildren();
     const picked = ensureSpeedPkSelection(groups);
     const pickedGroups = picked.map(id => groups.find(g => g.modelExactId === id)).filter(Boolean);
+    const countEl = el('speed-pk-count');
+    if (countEl) countEl.textContent = String(pickedGroups.length);
+    if (!grid) return;
+    grid.replaceChildren();
     if (!pickedGroups.length) {
       const empty = document.createElement('div');
       empty.className = 'ctx-speed-empty-cell';
@@ -43101,9 +44391,6 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       });
       grid.appendChild(card);
     });
-
-    const countEl = el('speed-pk-count');
-    if (countEl) countEl.textContent = String(pickedGroups.length);
   }
 
   function speedTrendLegendSuffixes(groups) {
@@ -43516,6 +44803,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
   function resetSpeedFilters() {
     speedRankQuery = '';
     speedRankSort = 'tps';
+    speedPkUserCleared = false;
     speedPkSelection = [];
     const search = el('speed-rank-search');
     if (search) search.value = '';
@@ -43528,8 +44816,12 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       }
     }
     speedRangeDays = '7';
+    speedDateRange = null;
     speedOriginFilter = 'all';
     speedMetric = 'tps';
+    speedAlgorithm = 'median';
+    const dateErrorEl = el('speed-date-error');
+    if (dateErrorEl) dateErrorEl.hidden = true;
     const syncSegActive = (map, activeId) => {
       for (const id of Object.keys(map)) {
         const btn = el(id);
@@ -43542,7 +44834,9 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     syncSegActive(SPEED_RANGE_MAP, 'speed-range-7d');
     syncSegActive(SPEED_ORIGIN_MAP, 'speed-origin-all');
     syncSegActive(SPEED_METRIC_MAP, 'speed-metric-tps');
-    renderSpeedComparisonTab();  }
+    syncSegActive(SPEED_ALGO_MAP, 'speed-algo-median');
+    renderSpeedComparisonTab();
+  }
 
   function exportSpeedCsv() {
     const groups = Array.isArray(lastSpeedGroups) ? lastSpeedGroups : [];
@@ -43833,6 +45127,9 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
   const panelLangSaveBadge = el('panel-lang-save-badge');
   const btnClientLangZhCn = el('btn-client-lang-zh-CN');
   const btnClientLangEn = el('btn-client-lang-en');
+  let selectedClientLanguage = null;
+  let clientLangExplicitlyPicked = false;
+  let isClientLangBusy = false;
   let hasExplicitPanelLanguage = Boolean(resolveExplicitPanelLanguagePref());
 
   function syncPanelLanguageButtons(lang) {
@@ -43855,15 +45152,17 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
   }
 
   function syncClientLanguageButtons() {
+    const activeClientLang = selectedClientLanguage || (currentChineseEnabled ? 'zh-CN' : 'en');
+    const isZh = activeClientLang === 'zh-CN';
     if (btnClientLangZhCn) {
-      if (currentChineseEnabled) addClass(btnClientLangZhCn, 'active');
+      if (isZh) addClass(btnClientLangZhCn, 'active');
       else removeClass(btnClientLangZhCn, 'active');
-      btnClientLangZhCn.setAttribute?.('aria-pressed', String(currentChineseEnabled));
+      btnClientLangZhCn.setAttribute?.('aria-pressed', String(isZh));
     }
     if (btnClientLangEn) {
-      if (!currentChineseEnabled) addClass(btnClientLangEn, 'active');
+      if (!isZh) addClass(btnClientLangEn, 'active');
       else removeClass(btnClientLangEn, 'active');
-      btnClientLangEn.setAttribute?.('aria-pressed', String(!currentChineseEnabled));
+      btnClientLangEn.setAttribute?.('aria-pressed', String(!isZh));
     }
   }
 
@@ -43879,6 +45178,11 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     if (composerSummary && composerSummary.parentElement !== shadow) {
       applyStaticPanelTranslations(composerSummary);
     }
+    const hsRoot = hostSettingsCtrl?.getPageRoot?.();
+    if (hsRoot && hsRoot !== shadow) {
+      applyStaticPanelTranslations(hsRoot);
+    }
+    syncHostSettingsUi();
     renderComposerStatusBar();
 
     try {
@@ -44504,6 +45808,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       const open = enhanceDetailsBody.style.display === 'block';
       enhanceDetailsArrow.textContent = open ? t('drawer.shortCollapse') : t('drawer.shortExpand');
     }
+    syncHostSettingsUi();
   }
 
   /** 获取用于操作反馈插值的品牌名称展示值 */
@@ -44717,7 +46022,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       return;
     }
     const submittedTier = Number(selectedEnhanceTier);
-    const submittedTitle = enhanceChineseTitleCheck ? Boolean(enhanceChineseTitleCheck.checked) : Boolean(enhanceTitleDraft);
+    const submittedTitle = enhanceTitleDirty ? Boolean(enhanceTitleDraft) : (enhanceChineseTitleCheck ? Boolean(enhanceChineseTitleCheck.checked) : Boolean(enhanceTitleDraft));
     isEnhanceBusy = true;
     syncEnhanceInteractiveDisabledState();
     if (btnApplyEnhancePrompt) {
@@ -45179,6 +46484,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       const open = rehydrateDetailsBody.style.display === 'block';
       rehydrateDetailsArrow.textContent = open ? t('drawer.shortCollapse') : t('drawer.shortExpand');
     }
+    syncHostSettingsUi();
   }
 
   function applyRehydrateStatusPayload(statusData) {
@@ -45615,7 +46921,11 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         showEnhanceResultBox(false, () => translateBackendText(res.configError));
       }
 
-      currentChineseEnabled = Boolean(cfg.modules?.chinese?.enabled);
+      const cfgLangNorm = String(cfg.modules?.chinese?.language || '').trim().toLowerCase();
+      currentChineseEnabled = cfgLangNorm ? (cfgLangNorm === 'zh-cn') : Boolean(cfg.modules?.chinese?.enabled);
+      if (!isClientLangBusy && !clientLangExplicitlyPicked) {
+        selectedClientLanguage = currentChineseEnabled ? 'zh-CN' : 'en';
+      }
       syncRecommendedCheckboxes();
       currentBrandTitle = cfg.modules?.chinese?.brandTitle || 'english';
       syncBrandTitleButtons(currentBrandTitle);
@@ -45717,7 +47027,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         }
       }
       if (btnToggleChineseModule) {
-        btnToggleChineseModule.textContent = currentChineseEnabled ? t('mod.zh.btnDisable') : t('mod.zh.btnEnable');
+        btnToggleChineseModule.textContent = t('settings.clientLang.applyRestart');
       }
       syncClientLanguageButtons();
 
@@ -45788,6 +47098,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         btnToggleProxyModule.setAttribute('aria-checked', String(currentProxyEnabled));
       }
       syncProxySaveButtonState();
+      syncHostSettingsUi();
     } catch (err) {
       if (seq !== modulesStatusReqSeq) return;
       const errMsg = err?.message || String(err);
@@ -45805,61 +47116,106 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       if (proxyStatusDesc) {
         proxyStatusDesc.textContent = t('mod.proxy.errDetect', { err: errMsg });
       }
+      syncHostSettingsUi();
     }
   }
 
-  async function setClientLanguageTarget(wantChinese) {
-    if (Boolean(wantChinese) === Boolean(currentChineseEnabled)) return;
+  let clientLangFeedbackState = { ok: null, text: '' };
+
+  async function setClientLanguageTarget(targetLangOrBool, opts = {}) {
+    if (isClientLangBusy) return null;
+    const targetLang = typeof targetLangOrBool === 'string'
+      ? (targetLangOrBool.toLowerCase() === 'zh-cn' ? 'zh-CN' : 'en')
+      : (targetLangOrBool ? 'zh-CN' : 'en');
+    const wantChinese = targetLang === 'zh-CN';
+    selectedClientLanguage = targetLang;
+    syncClientLanguageButtons();
+
+    isClientLangBusy = true;
+    clientLangFeedbackState = { ok: true, text: t('mod.zh.submitting') };
     if (btnToggleChineseModule) {
       btnToggleChineseModule.disabled = true;
-      btnToggleChineseModule.textContent = t('mod.processing');
+      btnToggleChineseModule.textContent = t('mod.zh.submitting');
     }
+    showEnhanceResultBox(true, () => t('mod.zh.submitting'), { needsHostRestart: false });
+    syncHostSettingsUi();
     try {
       await yieldForSettingsPaint();
-      const res = await invokeModulesApi('toggle', 'chinese', Boolean(wantChinese), {
-        language: wantChinese ? 'zh-CN' : 'en',
+      const res = await invokeModulesApi('toggle', 'chinese', wantChinese, {
+        language: targetLang,
         brandTitle: currentBrandTitle
       });
       if (!res || !res.ok) {
         const errPayload = res;
-        showEnhanceResultBox(false, () => resolveSettingsErrorText(errPayload, 'mod.zh.toggleFail'));
-      } else {
-        needsRestartAfterApply = Boolean(res.restartRequired);
-        renderClientStatusBar();
-        if (res.restartRequired) {
-          showEnhanceResultBox(
-            true,
-            () => t(wantChinese ? 'mod.zh.savedEnableRestart' : 'mod.zh.savedDisableRestart'),
-            { needsHostRestart: true }
-          );
-        } else {
-          showEnhanceResultBox(
-            true,
-            () => translateBackendText(res.message || '已同步回当前运行状态，无需重启'),
-            { needsHostRestart: false }
-          );
+        const msg = resolveSettingsErrorText(errPayload, 'mod.zh.toggleFail');
+        clientLangFeedbackState = { ok: false, text: msg };
+        showEnhanceResultBox(false, () => msg);
+        return res || { ok: false, error: msg };
+      }
+      const returnedCh = res.data?.modules?.chinese;
+      if (returnedCh) {
+        const readbackLang = String(returnedCh.language || (returnedCh.enabled ? 'zh-CN' : 'en')).toLowerCase() === 'zh-cn' ? 'zh-CN' : 'en';
+        if (readbackLang !== targetLang) {
+          const mismatchMsg = t('mod.zh.readbackMismatch');
+          clientLangFeedbackState = { ok: false, text: mismatchMsg };
+          showEnhanceResultBox(false, () => mismatchMsg);
+          return { ok: false, error: mismatchMsg };
         }
       }
+      needsRestartAfterApply = Boolean(res.restartRequired);
+      renderClientStatusBar();
+      if (res.restartRequired) {
+        const savedMsg = t(wantChinese ? 'mod.zh.savedEnableRestart' : 'mod.zh.savedDisableRestart');
+        clientLangFeedbackState = {
+          ok: true,
+          text: hostSupportsRestart ? savedMsg : `${savedMsg} ${t('client.restart.hostNotSupported')}`
+        };
+        showEnhanceResultBox(true, () => savedMsg, { needsHostRestart: true });
+      } else {
+        const syncedMsg = translateBackendText(res.message || '已同步回当前运行状态，无需重启');
+        clientLangFeedbackState = { ok: true, text: syncedMsg };
+        showEnhanceResultBox(true, () => syncedMsg, { needsHostRestart: false });
+      }
       await refreshModulesDisplay();
+      if (res.restartRequired && opts.triggerRestartIfSupported && hostSupportsRestart && globalRestartModal) {
+        openClientRestartConfirmFlow();
+      }
+      clientLangExplicitlyPicked = false;
+      return res;
     } catch (e) {
-      showEnhanceResultBox(false, () => `${t('mod.zh.toggleFail')}: ${resolveSettingsErrorText(e, 'msg.unknownErr')}`);
+      const failMsg = `${t('mod.zh.toggleFail')}: ${resolveSettingsErrorText(e, 'msg.unknownErr')}`;
+      clientLangFeedbackState = { ok: false, text: failMsg };
+      showEnhanceResultBox(false, () => failMsg);
+      return { ok: false, error: e?.message || t('mod.zh.toggleFail') };
     } finally {
+      isClientLangBusy = false;
       if (btnToggleChineseModule) {
         btnToggleChineseModule.disabled = false;
-        btnToggleChineseModule.textContent = currentChineseEnabled ? t('mod.zh.btnDisable') : t('mod.zh.btnEnable');
+        btnToggleChineseModule.textContent = t('settings.clientLang.applyRestart');
       }
+      syncHostSettingsUi();
     }
   }
 
   btnClientLangZhCn?.addEventListener('click', () => {
-    void setClientLanguageTarget(true);
+    selectedClientLanguage = 'zh-CN';
+    clientLangExplicitlyPicked = true;
+    syncClientLanguageButtons();
   });
   btnClientLangEn?.addEventListener('click', () => {
-    void setClientLanguageTarget(false);
+    selectedClientLanguage = 'en';
+    clientLangExplicitlyPicked = true;
+    syncClientLanguageButtons();
   });
 
   btnToggleChineseModule?.addEventListener('click', () => {
-    void setClientLanguageTarget(!currentChineseEnabled);
+    const curLang = currentChineseEnabled ? 'zh-CN' : 'en';
+    const nextLang = clientLangExplicitlyPicked && selectedClientLanguage
+      ? selectedClientLanguage
+      : (selectedClientLanguage && selectedClientLanguage !== curLang
+        ? selectedClientLanguage
+        : (selectedClientLanguage && needsRestartAfterApply ? selectedClientLanguage : (currentChineseEnabled ? 'en' : 'zh-CN')));
+    void setClientLanguageTarget(nextLang, { triggerRestartIfSupported: true });
   });
 
   async function applyProxyModuleUpdate(enableTarget) {
@@ -46600,9 +47956,19 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
   }
   const outside = e => {
     const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
-    const insideHost = path.includes(host) || Boolean(radialHost && path.includes(radialHost));
+    const hsHost = hostSettingsCtrl?.getPageHost?.();
+    const hsRoot = hostSettingsCtrl?.getPageRoot?.();
+    const insideHostSettings = Boolean(
+      (hsHost && (path.includes(hsHost) || e?.target === hsHost || hsHost.contains?.(e?.target)))
+      || (hsRoot && (path.includes(hsRoot) || hsRoot.contains?.(e?.target)))
+    );
+    const insideHost = path.includes(host)
+      || Boolean(radialHost && path.includes(radialHost))
+      || Boolean(modalTopHost && (path.includes(modalTopHost) || path.includes(modalTopShadow)))
+      || insideHostSettings;
     if (!insideHost) {
       closeColorPicker(true);
+      if (typeof closeAllDropdowns === 'function') closeAllDropdowns();
       const isPersistentDocked = (dockPosition === 'aux' || dockPosition === 'page') && !dockFallbackReason;
       if (!isPersistentDocked) {
         toggle(false);
@@ -46616,12 +47982,24 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     closeColorPickerIfOutside(e);
     closePanelPickerIfOutside(e);
     closeRadialIfOutside(e);
+    if (typeof closeAllDropdowns === 'function') {
+      const hitDropdown = path.find(n => n?.classList?.contains?.('ag-dropdown-wrapper'));
+      closeAllDropdowns(hitDropdown || null);
+    }
   };
-  const isFocusInsidePlugin = () => typeof document !== 'undefined'
-    && (document.activeElement === host
-      || Boolean(shadow?.activeElement)
-      || Boolean(radialHost && document.activeElement === radialHost)
-      || Boolean(radialShadow?.activeElement));
+  const isFocusInsidePlugin = () => {
+    const hsHost = hostSettingsCtrl?.getPageHost?.();
+    const hsRoot = hostSettingsCtrl?.getPageRoot?.();
+    return typeof document !== 'undefined'
+      && (document.activeElement === host
+        || Boolean(shadow?.activeElement)
+        || Boolean(radialHost && document.activeElement === radialHost)
+        || Boolean(radialShadow?.activeElement)
+        || Boolean(modalTopHost && document.activeElement === modalTopHost)
+        || Boolean(modalTopShadow?.activeElement)
+        || Boolean(hsHost && document.activeElement === hsHost)
+        || Boolean(hsRoot && hsRoot.activeElement));
+  };
   const escape = e => {
     if (e.key === 'Escape') {
       if (globalRestartModal?.open) return;
@@ -46930,7 +48308,6 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       if (!hasExisting || (incomingHasCaps && !existingHasCaps)) {
         state.cascadeModelConfigs = payload.cascadeModelConfigs;
         renderHeaderModelDropdown();
-        if (typeof syncModelPickers === 'function') syncModelPickers();
         if (!isContextSettingsView && activeContextTab === 'models') renderModelSettingsTab();
       }
     }
@@ -47647,9 +49024,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           ? settingsRes.allowBetaUpdates
           : settingsRes.uiPreferences?.allowBetaUpdates;
         if (savedAllowBeta !== undefined) {
-          allowBetaUpdates = savedAllowBeta === true;
-          const chkBeta = el('check-allow-beta-updates');
-          if (chkBeta) chkBeta.checked = allowBetaUpdates;
+          setAllowBetaUpdatesState(savedAllowBeta === true, { persist: false });
         }
         const savedTopbarMode = settingsRes.topbarMode || settingsRes.uiPreferences?.topbarMode;
         const savedPanelDockMode = settingsRes.panelDockMode || settingsRes.uiPreferences?.panelDockMode;
@@ -47752,7 +49127,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           }
         } else {
           try {
-            const localLang = localStorage?.getItem('ag_panel_language');
+            const localLang = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_panel_language') : null;
             if (localLang && ['zh-CN', 'zh-TW', 'en'].includes(localLang)) {
               hasExplicitPanelLanguage = true;
               if (localLang !== currentPanelLanguage) {
@@ -47766,6 +49141,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           showTurnFooterStats = savedTurnFooter !== false;
           const chkTurnFooter = el('chk-show-turn-footer-stats');
           if (chkTurnFooter) chkTurnFooter.checked = showTurnFooterStats;
+          setToggleFeedbackUi('status-turn-footer', 'idle', showTurnFooterStats ? t('prefs.stateOn') : t('prefs.stateOff'));
           renderTurnFooterStats();
         }
         const savedComposerQuota = settingsRes.showComposerQuotaSummary ?? settingsRes.uiPreferences?.showComposerQuotaSummary;
@@ -47773,24 +49149,16 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           showComposerQuotaSummary = savedComposerQuota !== false;
           const chkCompQuota = el('chk-show-composer-quota');
           if (chkCompQuota) chkCompQuota.checked = showComposerQuotaSummary;
+          setToggleFeedbackUi('status-composer-quota', 'idle', showComposerQuotaSummary ? t('prefs.stateOn') : t('prefs.stateOff'));
           if (typeof renderComposerQuotaSummary === 'function') {
             renderComposerQuotaSummary(lastComputedQuotaView || null, Date.now());
           }
           ensureComposerStatusBarMounted();
         }
-        const savedModelPicker = settingsRes.simplifiedModelPickerEnabled ?? settingsRes.uiPreferences?.simplifiedModelPickerEnabled;
-        if (savedModelPicker !== undefined) {
-          simplifiedModelPickerEnabled = savedModelPicker !== false;
-          const chkMp = el('chk-simplified-model-picker');
-          if (chkMp) chkMp.checked = simplifiedModelPickerEnabled;
-          if (typeof syncModelPickers === 'function') syncModelPickers();
-        }
+        cleanupLegacyModelPickerArtifacts();
         const savedNextPrompt = settingsRes.nextPromptEnabled ?? settingsRes.uiPreferences?.nextPromptEnabled;
         if (savedNextPrompt !== undefined) {
-          nextPromptEnabled = savedNextPrompt === true;
-          const chkNp = el('chk-next-prompt-enabled');
-          if (chkNp) chkNp.checked = nextPromptEnabled;
-          if (!nextPromptEnabled && typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggestion(true);
+          setNextPromptEnabledState(savedNextPrompt === true, { persist: false });
         }
         const savedCockpitLayout = settingsRes.sessionCockpitLayout || settingsRes.uiPreferences?.sessionCockpitLayout;
         if (savedCockpitLayout && typeof persistCockpitLayout === 'function') {
@@ -47800,7 +49168,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         hasCompletedStartupRestore = true;
       } else {
         try {
-          const localLang = localStorage?.getItem('ag_panel_language');
+          const localLang = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_panel_language') : null;
           if (localLang && ['zh-CN', 'zh-TW', 'en'].includes(localLang) && localLang !== currentPanelLanguage) {
             await applyPanelLanguage(localLang, { persist: false });
           }
@@ -47822,16 +49190,20 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
 
         const email = ANTIGRAVITY_TOKEN_DATA.planStatus?.email || settingsRes.customPlan?.account || currentEmail || 'default';
         try {
-          const jsonStr = JSON.stringify(settingsRes.customPlan);
-          if (email && email !== 'default') localStorage?.setItem('ag_custom_plan_' + String(email).toLowerCase(), jsonStr);
-          localStorage?.setItem('ag_custom_plan_default', jsonStr);
+          if (typeof localStorage !== 'undefined') {
+            const jsonStr = JSON.stringify(settingsRes.customPlan);
+            if (email && email !== 'default') localStorage.setItem('ag_custom_plan_' + String(email).toLowerCase(), jsonStr);
+            localStorage.setItem('ag_custom_plan_default', jsonStr);
+          }
         } catch { }
         applyCustomPlanObjectLocally(settingsRes.customPlan, email);
       } else {
         // 回退检查 localStorage
         const email = ANTIGRAVITY_TOKEN_DATA.planStatus?.email || 'default';
         const key = email && email !== 'default' ? 'ag_custom_plan_' + String(email).toLowerCase() : 'ag_custom_plan_default';
-        const savedRaw = localStorage?.getItem(key) || localStorage?.getItem('ag_custom_plan_default');
+        const savedRaw = typeof localStorage !== 'undefined'
+          ? (localStorage.getItem(key) || localStorage.getItem('ag_custom_plan_default'))
+          : null;
         if (savedRaw) {
           const parsed = JSON.parse(savedRaw);
           if (parsed && typeof parsed === 'object') {
@@ -47981,6 +49353,159 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     });
   }
 
+  function hasUpdateBridgeAvailable() {
+    const hasIpcUpdateBridge = typeof window !== 'undefined' && (
+      typeof window.contextMeterAPI?.checkUpdate === 'function' ||
+      typeof window.contextMeterAPI?.applyUpdate === 'function'
+    );
+    const hasLiveBridge = hasLiveHttpBridge() && (
+      hasLiveRouteCapability('/check-update') ||
+      hasLiveRouteCapability('/apply-update')
+    );
+    return Boolean(hasIpcUpdateBridge || hasLiveBridge);
+  }
+
+  function recomputeStrictUpdateState() {
+    const core = typeof __AGContextMeterCore !== 'undefined'
+      ? __AGContextMeterCore
+      : (typeof globalThis !== 'undefined' ? globalThis.__AGContextMeterCore : null);
+    const input = {
+      hasBridge: hasUpdateBridgeAvailable(),
+      rendererVersion: METER_RENDERER_VERSION,
+      backendVersion: backendStatus.backendVersion,
+      ipcBackendVersion: backendStatus.ipcBackendVersion,
+      liveHostVersion: backendStatus.liveHostVersion,
+      backendSource: backendStatus.backendSource,
+      backendVersionMismatch: backendStatus.backendVersionMismatch,
+      pendingUpdateRestart,
+      targetVersion: updateTargetVersion,
+      updateActivatedTarget,
+      actionPhase: updateActionPhase,
+      checkResult: lastCheckUpdateResult,
+      applyResult: lastApplyUpdateResult,
+      lastError: lastUpdateError
+    };
+    if (core && typeof core.computeStrictUpdateState === 'function') {
+      cachedStrictUpdateState = core.computeStrictUpdateState(input);
+    } else {
+      const stage = !input.hasBridge
+        ? 'unavailable'
+        : (updateActionPhase === 'checking'
+          ? 'checking'
+          : (updateActionPhase === 'downloading'
+            ? 'downloading'
+            : (updateActionPhase === 'error'
+              ? 'error'
+              : (lastApplyUpdateResult?.ok && (lastApplyUpdateResult.liveStaged || lastApplyUpdateResult.diskInstalled === false) && !lastApplyUpdateResult.liveInjected
+                ? 'downloaded'
+                : (pendingUpdateRestart || backendStatus.backendVersionMismatch ? 'pending_restart' : (updateActivatedTarget ? 'active' : 'idle'))))));
+      cachedStrictUpdateState = {
+        stage,
+        hasBridge: input.hasBridge,
+        rendererVersion: METER_RENDERER_VERSION,
+        backendVersion: backendStatus.backendVersion,
+        backendSource: backendStatus.backendSource,
+        backendMismatch: Boolean(backendStatus.backendVersionMismatch),
+        pendingRestart: Boolean(pendingUpdateRestart),
+        targetVersion: updateTargetVersion,
+        downloaded: stage === 'downloaded',
+        activeConfirmed: stage === 'active',
+        error: lastUpdateError
+      };
+    }
+    return cachedStrictUpdateState;
+  }
+
+  function syncHostSettingsUi() {
+    if (hostSettingsCtrl && typeof hostSettingsCtrl.renderPage === 'function') {
+      hostSettingsCtrl.renderPage();
+    }
+  }
+
+  function setAllowBetaUpdatesState(enabled, { persist = true } = {}) {
+    const prev = allowBetaUpdates;
+    const next = Boolean(enabled);
+    const chkBeta = el('check-allow-beta-updates');
+    if (!persist) {
+      allowBetaUpdates = next;
+      if (chkBeta) chkBeta.checked = allowBetaUpdates;
+      syncHostSettingsUi();
+      return allowBetaUpdates;
+    }
+    return persistBooleanPreferenceToggle({
+      payloadKey: 'allowBetaUpdates',
+      next,
+      prev,
+      checkboxEl: chkBeta,
+      statusId: '',
+      onApplyState: (val) => { allowBetaUpdates = val; },
+      onUiSync: () => { syncHostSettingsUi(); }
+    });
+  }
+
+  function syncPopoverByStrictStage(strictState, opts = {}) {
+    const titleEl = el('up-pop-title');
+    const bodyEl = el('up-pop-body');
+    const verEl = el('up-pop-ver');
+    const statusEl = el('up-pop-status');
+    const applyBtn = el('btn-apply-update');
+    const restartBtn = el('btn-update-restart');
+    const dot = el('update-badge-dot');
+    const dotCtx = el('update-badge-dot-ctx');
+    const stage = strictState?.stage || 'idle';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : METER_RENDERER_VERSION;
+    const targetVer = strictState?.targetVersion || opts.nextVer || currentVer;
+    const targetDisp = formatDisplayVersion(targetVer);
+    const showRestart = Boolean(stage === 'pending_restart' && hostSupportsRestart);
+    if (restartBtn) {
+      restartBtn.hidden = !showRestart;
+      if (restartBtn.style) restartBtn.style.display = showRestart ? 'inline-block' : 'none';
+    }
+    if (stage === 'downloaded') {
+      if (dot) dot.style.display = 'none';
+      if (dotCtx) dotCtx.style.display = 'none';
+      if (titleEl) titleEl.textContent = t('hostSettings.stage.downloaded');
+      if (verEl) verEl.textContent = targetDisp;
+      if (bodyEl) bodyEl.textContent = t('update.doneLiveSynced', { ver: targetDisp });
+      if (statusEl) {
+        statusEl.style.display = 'block';
+        statusEl.textContent = t('update.doneLiveSynced', { ver: targetDisp });
+      }
+      if (applyBtn) applyBtn.style.display = 'none';
+    } else if (stage === 'active') {
+      if (dot) dot.style.display = 'none';
+      if (dotCtx) dotCtx.style.display = 'none';
+      if (titleEl) titleEl.textContent = t('update.doneTitle');
+      if (verEl) verEl.textContent = t('update.doneVer', { ver: targetDisp });
+      if (bodyEl) bodyEl.textContent = t('update.doneHotFull', { ver: targetDisp });
+      if (statusEl) {
+        statusEl.style.display = 'block';
+        statusEl.textContent = t('update.doneHotFull', { ver: targetDisp });
+      }
+      if (applyBtn) {
+        applyBtn.textContent = t('update.btnUpdated');
+        applyBtn.disabled = false;
+      }
+    } else if (stage === 'pending_restart') {
+      if (dot) dot.style.display = 'none';
+      if (dotCtx) dotCtx.style.display = 'none';
+      if (titleEl) titleEl.textContent = t('hostSettings.stage.pendingRestart');
+      if (verEl) verEl.textContent = targetDisp;
+      const msg = opts.liveInjected
+        ? t('update.doneHot', { ver: targetDisp })
+        : (hostSupportsRestart ? t('update.doneDisk', { ver: targetDisp }) : `${t('update.doneDisk', { ver: targetDisp })} ${t('client.restart.hostNotSupported')}`);
+      if (bodyEl) bodyEl.textContent = msg;
+      if (statusEl) {
+        statusEl.style.display = 'block';
+        statusEl.textContent = msg;
+      }
+      if (applyBtn) {
+        applyBtn.textContent = t('update.btnUpdated');
+        applyBtn.disabled = false;
+      }
+    }
+  }
+
   async function checkAppUpdate(manual = false, trigger = currentUpdateTrigger) {
     const dot = el('update-badge-dot');
     const dotCtx = el('update-badge-dot-ctx');
@@ -47991,6 +49516,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     const statusEl = el('up-pop-status');
     const applyBtn = el('btn-apply-update');
     const restartBtn = el('btn-update-restart');
+    const usePopover = trigger !== 'host-settings';
     const setUpdateRestartVisible = (visible) => {
       if (!restartBtn) return;
       const show = Boolean(visible && hostSupportsRestart);
@@ -48005,6 +49531,11 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     const hasBridge = hasIpcUpdateBridge || (hasLiveHttpBridge() && hasLiveRouteCapability('/check-update'));
     if (!hasBridge) {
       cachedLatestRelease = null;
+      lastCheckUpdateResult = null;
+      updateActionPhase = 'idle';
+      lastUpdateError = null;
+      recomputeStrictUpdateState();
+      syncHostSettingsUi();
       if (dot) dot.style.display = 'none';
       if (dotCtx) dotCtx.style.display = 'none';
       if (titleEl) titleEl.textContent = t('update.unavailableTitle');
@@ -48013,13 +49544,18 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
       setUpdateRestartVisible(false);
-      if (manual) showUpdatePopover(trigger);
+      if (manual && usePopover) showUpdatePopover(trigger);
       return;
     }
 
+    updateActionPhase = 'checking';
+    lastUpdateError = null;
+    recomputeStrictUpdateState();
+    syncHostSettingsUi();
+
     if (manual) {
       cachedLatestRelease = null;
-      showUpdatePopover(trigger);
+      if (usePopover) showUpdatePopover(trigger);
       if (titleEl) titleEl.textContent = t('update.checkingTitle');
       if (verEl) verEl.textContent = t('update.checkingVer', { ver: currentDisplayVer });
       if (bodyEl) bodyEl.textContent = t('update.connecting');
@@ -48040,20 +49576,32 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       // 返回 null、非对象或 ok: false 均为检查失败，严禁显示“最新”
       if (!res || res.ok === false) {
         cachedLatestRelease = null;
+        lastCheckUpdateResult = res || null;
+        updateActionPhase = 'error';
+        const errMsg = res?.error ? translateBackendText(res.error) : t('update.failedFetch');
+        lastUpdateError = errMsg;
+        recomputeStrictUpdateState();
+        syncHostSettingsUi();
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
         if (titleEl) titleEl.textContent = t('update.failedTitle');
         if (verEl) verEl.textContent = t('update.failedVer', { ver: currentDisplayVer });
-        const errMsg = res?.error ? translateBackendText(res.error) : t('update.failedFetch');
         if (bodyEl) bodyEl.textContent = t('update.failedBody', { err: errMsg });
         if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
         setUpdateRestartVisible(false);
-        if (manual) showUpdatePopover(trigger);
+        if (manual && usePopover) showUpdatePopover(trigger);
         return;
       }
 
+      lastCheckUpdateResult = res;
+      updateActionPhase = 'idle';
+      lastUpdateError = null;
       if (res.hasUpdate && res.latestVersion) {
         cachedLatestRelease = res;
+        updateTargetVersion = res.latestVersion;
+        updateActivatedTarget = false;
+        recomputeStrictUpdateState();
+        syncHostSettingsUi();
         const nextDisplayVer = formatDisplayVersion(res.latestVersion);
         if (dot) dot.style.display = 'block';
         if (dotCtx) dotCtx.style.display = 'block';
@@ -48068,19 +49616,28 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           applyBtn.style.display = 'inline-block';
         }
         setUpdateRestartVisible(false);
-        if (manual) showUpdatePopover(trigger);
+        if (manual && usePopover) showUpdatePopover(trigger);
       } else {
         cachedLatestRelease = null;
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
-        if (titleEl) titleEl.textContent = t('update.latestTitle');
         const effectiveCurrent = res.installedVersion || res.currentVersion || currentVer;
         const effectiveDisplayVer = formatDisplayVersion(effectiveCurrent);
-        if (verEl) verEl.textContent = t('update.latestVer', { ver: effectiveDisplayVer });
         const needsDiskRestart = Boolean(res.diskPendingRestart);
         if (needsDiskRestart) {
           pendingUpdateRestart = true;
+          updateTargetVersion = effectiveCurrent;
+        } else if (res.livePendingReload) {
+          updateTargetVersion = res.stagedVersion || res.latestVersion || effectiveCurrent;
         }
+        const strictState = recomputeStrictUpdateState();
+        syncHostSettingsUi();
+        if (titleEl) {
+          titleEl.textContent = strictState.stage === 'downloaded'
+            ? t('hostSettings.stage.downloaded')
+            : (strictState.stage === 'pending_restart' ? t('hostSettings.stage.pendingRestart') : t('update.latestTitle'));
+        }
+        if (verEl) verEl.textContent = t('update.latestVer', { ver: effectiveDisplayVer });
         const updateStatusText = needsDiskRestart
           ? t('update.diskPending', { ver: effectiveDisplayVer })
           : t(res.livePendingReload ? 'update.liveStaged' : 'update.latestBody', { ver: effectiveDisplayVer });
@@ -48091,18 +49648,22 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           statusEl.style.display = 'block';
           statusEl.textContent = t('client.restart.hostNotSupported');
         }
-        if (manual) showUpdatePopover(trigger);
+        if (manual && usePopover) showUpdatePopover(trigger);
       }
     } catch (err) {
       cachedLatestRelease = null;
+      updateActionPhase = 'error';
+      lastUpdateError = translateBackendText(err.message);
+      recomputeStrictUpdateState();
+      syncHostSettingsUi();
       if (dot) dot.style.display = 'none';
       if (dotCtx) dotCtx.style.display = 'none';
       if (titleEl) titleEl.textContent = t('update.failedTitle');
       if (verEl) verEl.textContent = t('update.failedVer', { ver: currentDisplayVer });
-      if (bodyEl) bodyEl.textContent = t('update.failedNetBody', { err: translateBackendText(err.message) });
+      if (bodyEl) bodyEl.textContent = t('update.failedNetBody', { err: lastUpdateError });
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
       setUpdateRestartVisible(false);
-      if (manual) showUpdatePopover(trigger);
+      if (manual && usePopover) showUpdatePopover(trigger);
     }
   }
 
@@ -48117,6 +49678,12 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     const dot = el('update-badge-dot');
     const dotCtx = el('update-badge-dot-ctx');
     if (!cachedLatestRelease) return;
+
+    updateActionPhase = 'downloading';
+    lastUpdateError = null;
+    updateTargetVersion = cachedLatestRelease.latestVersion || updateTargetVersion;
+    recomputeStrictUpdateState();
+    syncHostSettingsUi();
 
     if (restartBtn) {
       restartBtn.hidden = true;
@@ -48138,7 +49705,8 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       if (hasIpcApply || hasLiveApply) {
         const updateRequest = {
           version: cachedLatestRelease.latestVersion,
-          allowBetaUpdates: allowBetaUpdates || cachedLatestRelease.prerelease === true
+          allowBetaUpdates: Boolean(allowBetaUpdates || cachedLatestRelease.prerelease === true),
+          prerelease: cachedLatestRelease.prerelease === true
         };
         const out = await callBackendWithPriority({
           ipcCall: hasIpcApply ? () => window.contextMeterAPI.applyUpdate(updateRequest) : null,
@@ -48152,18 +49720,24 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       if (state.disposed) return;
       if (res && res.ok) {
         const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8';
-        const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
+        const nextVer = res.version || res.targetVersion || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const nextDisplayVer = formatDisplayVersion(nextVer);
-        if (res.liveStaged) {
+        lastApplyUpdateResult = res;
+        updateActionPhase = 'idle';
+        lastUpdateError = null;
+        updateTargetVersion = nextVer;
+
+        const isLiveOnlyUpdate = Boolean(
+          (res.liveStaged === true || res.diskInstalled === false || res.mode === 'live') &&
+          !res.liveInjected
+        );
+        if (isLiveOnlyUpdate) {
           cachedLatestRelease = null;
           pendingUpdateRestart = false;
-          if (dot) dot.style.display = 'none';
-          if (dotCtx) dotCtx.style.display = 'none';
-          if (titleEl) titleEl.textContent = t('update.doneTitle');
-          if (verEl) verEl.textContent = t('update.doneVer', { ver: nextDisplayVer });
-          if (bodyEl) bodyEl.textContent = t('update.liveStaged', { ver: nextDisplayVer });
-          if (statusEl) statusEl.style.display = 'none';
-          if (applyBtn) applyBtn.style.display = 'none';
+          updateActivatedTarget = false;
+          const strictState = recomputeStrictUpdateState();
+          syncPopoverByStrictStage(strictState, { nextVer, liveInjected: false });
+          syncHostSettingsUi();
           return;
         }
         const vEl = el('v');
@@ -48172,48 +49746,34 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
 
-        const fullyHotReloaded = Boolean(res.liveInjected && res.backendHotReloaded);
-        pendingUpdateRestart = !fullyHotReloaded;
-        if (titleEl) titleEl.textContent = t('update.doneTitle');
-        if (verEl) verEl.textContent = t('update.doneVer', { ver: nextDisplayVer });
-        if (bodyEl) {
-          bodyEl.textContent = fullyHotReloaded
-            ? t('update.doneHotFull', { ver: nextDisplayVer })
-            : (res.liveInjected ? t('update.doneHot', { ver: nextDisplayVer }) : t('update.doneDisk', { ver: nextDisplayVer }));
+        updateActivatedTarget = Boolean(res.liveInjected || res.diskInstalled);
+        if (res.backendVersion) {
+          backendStatus.backendVersion = String(res.backendVersion);
+          backendStatus.backendVersionMismatch = Boolean(backendStatus.backendVersion !== METER_RENDERER_VERSION);
         }
-        if (applyBtn) {
-          applyBtn.textContent = t('update.btnUpdated');
-          applyBtn.disabled = false;
-        }
-        if (restartBtn) {
-          const showRestart = Boolean(!fullyHotReloaded && hostSupportsRestart);
-          restartBtn.hidden = !showRestart;
-          if (restartBtn.style) restartBtn.style.display = showRestart ? 'inline-block' : 'none';
-        }
-
-        if (fullyHotReloaded) {
-          if (statusEl) statusEl.textContent = t('update.doneHotFull', { ver: nextDisplayVer });
-          if (backendStatus.backendVersion === nextVer) {
-            backendStatus.backendVersionMismatch = false;
-          }
-        } else if (res.liveInjected) {
-          if (statusEl) statusEl.textContent = t('update.doneHot', { ver: nextDisplayVer });
-        } else {
-          if (statusEl) {
-            statusEl.textContent = hostSupportsRestart
-              ? t('update.doneDisk', { ver: nextDisplayVer })
-              : `${t('update.doneDisk', { ver: nextDisplayVer })} ${t('client.restart.hostNotSupported')}`;
-          }
-        }
+        const tentativeStrict = recomputeStrictUpdateState();
+        pendingUpdateRestart = tentativeStrict.stage !== 'active';
+        const finalStrict = recomputeStrictUpdateState();
+        syncPopoverByStrictStage(finalStrict, { nextVer, liveInjected: Boolean(res.liveInjected) });
+        syncHostSettingsUi();
         if (typeof renderQuotaBoard === 'function') {
           renderQuotaBoard(Date.now(), { animate: false });
         }
       } else {
-        if (statusEl) statusEl.textContent = t('update.failStatus', { err: translateBackendText(res?.error) || t('models.meta.archUnknown') });
+        updateActionPhase = 'error';
+        lastApplyUpdateResult = res || null;
+        lastUpdateError = translateBackendText(res?.error) || t('models.meta.archUnknown');
+        recomputeStrictUpdateState();
+        syncHostSettingsUi();
+        if (statusEl) statusEl.textContent = t('update.failStatus', { err: lastUpdateError });
         if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = t('update.btnRetry'); }
       }
     } catch (err) {
-      if (statusEl) statusEl.textContent = t('update.errStatus', { err: translateBackendText(err.message) });
+      updateActionPhase = 'error';
+      lastUpdateError = translateBackendText(err.message);
+      recomputeStrictUpdateState();
+      syncHostSettingsUi();
+      if (statusEl) statusEl.textContent = t('update.errStatus', { err: lastUpdateError });
       if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = t('update.btnRetry'); }
     }
   }
@@ -48259,20 +49819,25 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
   }
 
   el('check-auto-update')?.addEventListener('change', e => {
-    autoCheckUpdate = e.target.checked;
-    if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
-      void saveSettingsPayloadBridge({ autoCheckUpdate });
-    }
+    const chk = el('check-auto-update');
+    const prev = autoCheckUpdate;
+    const next = Boolean(e?.target?.checked);
+    void persistBooleanPreferenceToggle({
+      payloadKey: 'autoCheckUpdate',
+      next,
+      prev,
+      checkboxEl: chk,
+      statusId: '',
+      onApplyState: (val) => { autoCheckUpdate = val; },
+      onUiSync: () => { }
+    });
   });
 
   const chkBetaInit = el('check-allow-beta-updates');
   if (chkBetaInit) {
     chkBetaInit.checked = allowBetaUpdates;
     chkBetaInit.addEventListener('change', e => {
-      allowBetaUpdates = e.target.checked === true;
-      if (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge()) {
-        void saveSettingsPayloadBridge({ allowBetaUpdates });
-      }
+      void setAllowBetaUpdatesState(e.target.checked === true, { persist: true });
     });
   }
 
@@ -52263,1150 +53828,6 @@ function initSessionCockpitGrid() {
   applyCockpitLayoutToDom();
 }
 // =========================================================================
-  // 轻量模型与思考档位分离选择器模块（Phase 5 · 复用宿主链路的优雅增强层）
-  // 遵循规则：
-  // 1. 每个基础模型在菜单中仅出现一次；思考档位拆分到旁边独立控件；
-  // 2. 固定档位与 Orchestrator 只读展示或隐藏可选下拉，绝不虚构不支持的档位；
-  // 3. 切换模型优先沿用当前档位，不支持时按宿主规则回退并明确提示 High / Extra High；
-  // 4. 按 .surface-composer 独立隔离分屏与 Side Chat 会话归属；结构不可识别时无缝退回原生菜单。
-  // =========================================================================
-
-  function getMpCore() {
-    return (typeof __AGContextMeterCore !== 'undefined' && __AGContextMeterCore)
-      ? __AGContextMeterCore
-      : ((typeof globalThis !== 'undefined' && globalThis.__AGContextMeterCore) || {});
-  }
-
-  let simplifiedModelPickerEnabled = (() => {
-    try {
-      if (typeof localStorage !== 'undefined') {
-        const v = localStorage.getItem('ag_simplified_model_picker');
-        if (v === 'false' || v === '0') return false;
-      }
-    } catch { }
-    return true;
-  })();
-
-  const MODEL_PICKER_STYLE_ID = 'ag-model-picker-style';
-  const modelPickerWeakState = new WeakMap();
-  const mountedPickerRecords = new Set();
-  let activeOpenPickerState = null;
-  let globalPickerListenersBound = false;
-
-  function ensureModelPickerStyles() {
-    try {
-      if (typeof document === 'undefined' || !document.head) return;
-      if (document.getElementById(MODEL_PICKER_STYLE_ID)) return;
-      const style = document.createElement('style');
-      style.id = MODEL_PICKER_STYLE_ID;
-      style.textContent = `
-        .ag-mp-native-hidden {
-          position: absolute !important;
-          width: 1px !important;
-          height: 1px !important;
-          opacity: 0 !important;
-          pointer-events: none !important;
-          overflow: hidden !important;
-          margin: 0 !important;
-          padding: 0 !important;
-          border: 0 !important;
-        }
-        body.ag-mp-native-probing [role="listbox"],
-        body.ag-mp-native-probing [role="menu"],
-        body.ag-mp-native-probing [data-radix-popper-content-wrapper] {
-          opacity: 0 !important;
-          pointer-events: none !important;
-        }
-        .ag-mp-wrap {
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-          position: relative;
-          min-width: 0;
-          max-width: 100%;
-          flex-shrink: 1;
-          vertical-align: middle;
-          font-family: inherit;
-        }
-        .ag-mp-btn {
-          display: inline-flex;
-          align-items: center;
-          gap: 5px;
-          height: 26px;
-          padding: 0 8px;
-          border-radius: 7px;
-          border: 1px solid rgba(148, 163, 184, 0.24);
-          background: rgba(148, 163, 184, 0.08);
-          color: inherit;
-          font-size: 12px;
-          font-weight: 500;
-          line-height: 1;
-          cursor: pointer;
-          white-space: nowrap;
-          min-width: 0;
-          max-width: 210px;
-          transition: background 120ms ease, border-color 120ms ease;
-        }
-        .ag-mp-btn:hover,
-        .ag-mp-btn[aria-expanded="true"] {
-          background: rgba(148, 163, 184, 0.16);
-          border-color: rgba(148, 163, 184, 0.42);
-        }
-        .ag-mp-btn:focus-visible {
-          outline: 2px solid #8b5cf6;
-          outline-offset: 1px;
-        }
-        .ag-mp-model-lbl {
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-        .ag-mp-effort-btn {
-          max-width: 126px;
-        }
-        .ag-mp-effort-btn[data-readonly="true"] {
-          opacity: 0.68;
-          cursor: default;
-          background: rgba(148, 163, 184, 0.05);
-          border-style: dashed;
-        }
-        .ag-mp-effort-btn[data-readonly="true"]:hover {
-          background: rgba(148, 163, 184, 0.05);
-          border-color: rgba(148, 163, 184, 0.24);
-        }
-        .ag-mp-chevron {
-          opacity: 0.7;
-          font-size: 10px;
-          flex-shrink: 0;
-        }
-        .ag-mp-fallback-pill {
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-          padding: 2px 7px;
-          border-radius: 6px;
-          font-size: 11px;
-          line-height: 1.3;
-          background: rgba(148, 163, 184, 0.14);
-          border: 1px solid rgba(148, 163, 184, 0.28);
-          color: inherit;
-          white-space: nowrap;
-          max-width: 220px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-        .ag-mp-fallback-pill[data-level="high"] {
-          background: rgba(245, 158, 11, 0.16);
-          border-color: rgba(245, 158, 11, 0.5);
-          color: #f59e0b;
-        }
-        .ag-mp-fallback-pill[hidden] {
-          display: none !important;
-        }
-        .ag-mp-popover {
-          position: fixed;
-          z-index: 2147483000;
-          min-width: 228px;
-          max-width: min(320px, calc(100vw - 16px));
-          max-height: min(420px, calc(100vh - 24px));
-          overflow-y: auto;
-          padding: 6px;
-          border-radius: 10px;
-          border: 1px solid rgba(148, 163, 184, 0.28);
-          background: var(--vscode-menu-background, #18181b);
-          color: var(--vscode-menu-foreground, #f4f4f5);
-          box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
-          font-size: 12px;
-        }
-        .ag-mp-popover[hidden] {
-          display: none !important;
-        }
-        .ag-mp-popover[data-light="true"] {
-          background: #ffffff;
-          color: #18181b;
-          border-color: rgba(15, 23, 42, 0.16);
-          box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
-        }
-        .ag-mp-hdr {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 8px;
-          padding: 4px 8px 6px;
-          font-size: 11px;
-          opacity: 0.72;
-          border-bottom: 1px solid rgba(148, 163, 184, 0.16);
-          margin-bottom: 4px;
-        }
-        .ag-mp-item {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 8px;
-          width: 100%;
-          border: 0;
-          background: transparent;
-          color: inherit;
-          padding: 6px 8px;
-          border-radius: 6px;
-          text-align: left;
-          font-size: 12px;
-          cursor: pointer;
-        }
-        .ag-mp-item:hover,
-        .ag-mp-item.is-focused {
-          background: rgba(139, 92, 246, 0.18);
-        }
-        .ag-mp-item[aria-selected="true"] {
-          font-weight: 600;
-        }
-        .ag-mp-item[aria-disabled="true"] {
-          opacity: 0.46;
-          cursor: not-allowed;
-        }
-        .ag-mp-item[aria-disabled="true"]:hover {
-          background: transparent;
-        }
-        .ag-mp-item-meta {
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          font-size: 11px;
-          opacity: 0.78;
-          flex-shrink: 0;
-        }
-        .ag-mp-divider {
-          height: 1px;
-          background: rgba(148, 163, 184, 0.18);
-          margin: 5px 4px;
-        }
-        .ag-mp-subpanel {
-          padding: 4px 2px 2px;
-        }
-        .ag-mp-subpanel[hidden] {
-          display: none !important;
-        }
-        .ag-mp-sub-group-title {
-          font-size: 10.5px;
-          opacity: 0.68;
-          padding: 4px 8px 2px;
-          text-transform: uppercase;
-          letter-spacing: 0.04em;
-        }
-        @media (max-width: 480px) {
-          .ag-mp-btn { max-width: 138px; padding: 0 6px; font-size: 11px; }
-          .ag-mp-effort-btn { max-width: 82px; }
-          .ag-mp-fallback-pill { max-width: 136px; font-size: 10.5px; }
-        }
-      `;
-      document.head.appendChild(style);
-    } catch { }
-  }
-
-  function resolveComposerRouteContext(composer, trigger) {
-    try {
-      const convNode = composer?.closest?.('[data-testid="conversation-view"], [data-cascade-id], [data-session-id]');
-      const explicitId = convNode?.getAttribute?.('data-cascade-id') || convNode?.getAttribute?.('data-session-id') || null;
-      if (explicitId) return explicitId;
-      const layout = typeof parseConversationLayout === 'function' ? parseConversationLayout() : null;
-      if (layout?.targets?.length) {
-        const hit = layout.targets.find(tg => {
-          const elNode = tg.triggerEl || tg.containerEl || tg.node;
-          return elNode && (elNode === trigger || elNode === composer || composer?.contains?.(elNode) || elNode?.contains?.(composer));
-        });
-        if (hit?.id) return hit.id;
-      }
-    } catch { }
-    return state.route || null;
-  }
-
-  function parseTriggerTextAndEffort(trigger) {
-    if (!trigger) return { label: '', productLabel: '', effort: null, modelId: null, isOrchestrator: false };
-    let effortAttr = null;
-    try {
-      const efNode = trigger.querySelector?.('[data-testid="model-selector-effort-option"]') || trigger.querySelector?.('[data-effort]');
-      if (efNode) effortAttr = efNode.getAttribute?.('data-effort') || efNode.textContent?.trim() || null;
-    } catch { }
-
-    let rawText = '';
-    try {
-      const clone = trigger.cloneNode ? trigger.cloneNode(true) : trigger;
-      const svgs = clone.querySelectorAll ? clone.querySelectorAll('svg, [aria-hidden="true"]') : [];
-      if (svgs && svgs.forEach) svgs.forEach(s => s.remove());
-      rawText = String(clone.textContent || trigger.textContent || '').replace(/\s+/g, ' ').trim();
-    } catch {
-      rawText = String(trigger.textContent || '').replace(/\s+/g, ' ').trim();
-    }
-
-    const stripped = rawText.replace(/^(?:Orchestrator|Planner|Worker|Executor)\s*[·|:\-–—»/]+\s*/i, '').trim();
-    const isOrch = /^orchestrator\b/i.test(rawText);
-
-    const parsedSplit = typeof getMpCore().splitModelDisplayAndEffort === 'function'
-      ? getMpCore().splitModelDisplayAndEffort(stripped || rawText)
-      : null;
-
-    let baseName = parsedSplit?.baseName || stripped || rawText;
-    let effort = effortAttr ? (getMpCore().normalizeEffortValue?.(effortAttr) || effortAttr) : (parsedSplit?.effort || null);
-    if (isOrch) {
-      baseName = rawText;
-      effort = null;
-    }
-
-    return {
-      label: rawText,
-      productLabel: baseName,
-      effort,
-      isOrchestrator: isOrch
-    };
-  }
-
-  function getActiveGroupedMenu() {
-    const existingMenu = lastComputedQuotaView?.groupedModels
-      || quotaState?.snapshot?.groupedModels
-      || state?.groupedModels
-      || null;
-    if (existingMenu && Array.isArray(existingMenu.baseModels) && existingMenu.baseModels.length > 0) {
-      return existingMenu;
-    }
-    const rawUserStatusCfgs = quotaState?.rawInput?.userStatusRes?.userStatus?.cascadeModelConfigData?.clientModelConfigs
-      || quotaState?.rawInput?.userStatusRes?.cascadeModelConfigData?.clientModelConfigs
-      || quotaState?.rawInput?.cascadeModelConfigs
-      || [];
-    const rawUserStatusSorts = quotaState?.rawInput?.userStatusRes?.userStatus?.cascadeModelConfigData?.clientModelSorts
-      || quotaState?.rawInput?.userStatusRes?.cascadeModelConfigData?.clientModelSorts
-      || state.clientModelSorts
-      || [];
-    const configs = (Array.isArray(rawUserStatusCfgs) && rawUserStatusCfgs.length > 0)
-      ? rawUserStatusCfgs
-      : (Array.isArray(state.cascadeModelConfigs) && state.cascadeModelConfigs.length > 0
-        ? state.cascadeModelConfigs
-        : (Array.isArray(state.scan?.cascadeModelConfigs) ? state.scan.cascadeModelConfigs : []));
-    const mpCore = getMpCore();
-    if (!configs.length || typeof mpCore.buildGroupedModelMenu !== 'function') {
-      return null;
-    }
-    return mpCore.buildGroupedModelMenu({
-      cascadeModelConfigs: configs,
-      clientModelSorts: rawUserStatusSorts,
-      defaultOverrideModelConfig: state.defaultOverrideModelConfig || null,
-      pools: lastComputedQuotaView?.pools || quotaState?.snapshot?.pools || []
-    });
-  }
-
-  function findOpenNativeModelOptions() {
-    if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return [];
-    const containers = Array.from(document.querySelectorAll('[role="listbox"], [role="menu"], [data-radix-popper-content-wrapper], [data-testid*="model-selector-menu"]') || []);
-    const candidates = [];
-    for (const c of containers) {
-      if (!c || c.closest?.('.ag-mp-popover') || c.closest?.('#ag-context-meter')) continue;
-      const items = Array.from(c.querySelectorAll?.('[role="option"], [role="menuitem"], button, [data-value], [data-model-id]') || []);
-      for (const it of items) candidates.push(it);
-    }
-    return candidates;
-  }
-
-  async function dispatchHostModelSwitch(rec, variant, productLabel) {
-    if (!rec || !rec.trigger || !variant) return { ok: false, reason: 'missing_target' };
-    try {
-      // 1. 允许测试或宿主直接注册回调桥，否则通过隐藏探测点击真实宿主下拉项
-      const testHook = typeof window !== 'undefined' && typeof window.__agTestModelSelectHook === 'function'
-        ? window.__agTestModelSelectHook
-        : null;
-      if (testHook) {
-        const res = await testHook({
-          composer: rec.composer,
-          trigger: rec.trigger,
-          route: resolveComposerRouteContext(rec.composer, rec.trigger),
-          variant,
-          productLabel
-        });
-        if (res === false || res?.ok === false) {
-          return { ok: false, reason: res?.reason || 'host_hook_rejected' };
-        }
-        return { ok: true, method: 'hook', modelId: variant.modelId, effort: variant.effort || null };
-      }
-
-      if (typeof document !== 'undefined' && document.body) {
-        document.body.classList?.add?.('ag-mp-native-probing');
-      }
-      try {
-        rec.trigger.click?.();
-      } catch { }
-
-      const deadline = Date.now() + 200;
-      let matchedNode = null;
-      while (Date.now() <= deadline) {
-        const options = findOpenNativeModelOptions();
-        for (const opt of options) {
-          const dataModelId = String(opt.getAttribute?.('data-model-id') || opt.getAttribute?.('data-value') || '').trim();
-          if (dataModelId && (dataModelId === variant.modelId || (variant.alias && dataModelId === variant.alias))) {
-            matchedNode = opt;
-            break;
-          }
-          const txt = String(opt.textContent || '').replace(/\s+/g, ' ').trim();
-          const mpCore = getMpCore();
-          if (typeof mpCore.matchHostMenuOptionText === 'function'
-            ? mpCore.matchHostMenuOptionText(txt, variant, productLabel)
-            : (txt && txt.toLowerCase() === String(variant.label || '').toLowerCase())) {
-            matchedNode = opt;
-            break;
-          }
-        }
-        if (matchedNode) break;
-        await new Promise(r => setTimeout(r, 16));
-      }
-
-      if (!matchedNode) {
-        // 宿主结构不可识别：解除屏蔽并允许用户直接使用宿主原生按钮
-        try {
-          if (typeof document !== 'undefined' && document.body) {
-            document.body.classList?.remove?.('ag-mp-native-probing');
-          }
-        } catch { }
-        return { ok: false, reason: 'native_option_not_found' };
-      }
-
-      matchedNode.click?.();
-      await new Promise(r => setTimeout(r, 20));
-      return { ok: true, method: 'native_dom', modelId: variant.modelId, effort: variant.effort || null };
-    } catch (e) {
-      return { ok: false, reason: e?.message || 'dispatch_error' };
-    } finally {
-      try {
-        if (typeof document !== 'undefined' && document.body) {
-          document.body.classList?.remove?.('ag-mp-native-probing');
-        }
-      } catch { }
-      try { scheduleHostModelSync(); } catch { }
-    }
-  }
-
-  function closeActiveModelPicker(restoreFocus = false) {
-    if (!activeOpenPickerState) return;
-    const st = activeOpenPickerState;
-    const prevMode = st.openMode;
-    st.openMode = null;
-    st.submenuOpen = false;
-    st.focusedIndex = -1;
-    if (st.modelMenuEl) st.modelMenuEl.hidden = true;
-    if (st.effortMenuEl) st.effortMenuEl.hidden = true;
-    st.modelBtn?.setAttribute?.('aria-expanded', 'false');
-    st.effortBtn?.setAttribute?.('aria-expanded', 'false');
-    activeOpenPickerState = null;
-    if (restoreFocus) {
-      if (prevMode === 'effort' && !st.effortBtn?.disabled) {
-        st.effortBtn?.focus?.();
-      } else {
-        st.modelBtn?.focus?.();
-      }
-    }
-  }
-
-  function positionPickerPopover(anchorBtn, popoverEl) {
-    if (!anchorBtn || !popoverEl || !popoverEl.style) return;
-    try {
-      const vw = (typeof window !== 'undefined' && Number(window.innerWidth) > 0) ? Number(window.innerWidth) : 1280;
-      const vh = (typeof window !== 'undefined' && Number(window.innerHeight) > 0) ? Number(window.innerHeight) : 800;
-      const rect = anchorBtn.getBoundingClientRect ? anchorBtn.getBoundingClientRect() : { left: 20, top: 600, bottom: 626, width: 120 };
-      const popW = Math.min(320, Math.max(200, vw - 16));
-      const popH = Math.min(360, vh - 24);
-      const clampedLeft = Math.max(8, Math.min(rect.left || 8, vw - popW - 8));
-      const placeAbove = (rect.top || 0) > popH + 16 || (vh - (rect.bottom || 0)) < 180;
-      popoverEl.style.left = `${Math.round(clampedLeft)}px`;
-      if (placeAbove) {
-        popoverEl.style.top = 'auto';
-        popoverEl.style.bottom = `${Math.max(8, Math.round(vh - (rect.top || 0) + 6))}px`;
-      } else {
-        popoverEl.style.bottom = 'auto';
-        popoverEl.style.top = `${Math.min(vh - 48, Math.round((rect.bottom || 0) + 6))}px`;
-      }
-      popoverEl.style.maxWidth = `${Math.max(180, vw - 16)}px`;
-      const isLightHost = host?.getAttribute?.('data-theme') === 'light';
-      if (isLightHost) popoverEl.setAttribute('data-light', 'true');
-      else popoverEl.removeAttribute('data-light');
-    } catch { }
-  }
-
-  function bindGlobalPickerListeners() {
-    if (globalPickerListenersBound || typeof document === 'undefined' || typeof document.addEventListener !== 'function') return;
-    globalPickerListenersBound = true;
-    const onDocPointerDown = (e) => {
-      if (!activeOpenPickerState) return;
-      const tgt = e.target;
-      const inside = activeOpenPickerState.wrap?.contains?.(tgt)
-        || activeOpenPickerState.modelMenuEl?.contains?.(tgt)
-        || activeOpenPickerState.effortMenuEl?.contains?.(tgt);
-      if (!inside) closeActiveModelPicker(false);
-    };
-    const onDocKeyDown = (e) => {
-      if (!activeOpenPickerState) return;
-      const st = activeOpenPickerState;
-      const menuEl = st.openMode === 'effort' ? st.effortMenuEl : st.modelMenuEl;
-      if (!menuEl || menuEl.hidden) return;
-      if (e.key === 'Escape') {
-        e.preventDefault?.();
-        e.stopPropagation?.();
-        if (st.submenuOpen && st.openMode === 'model') {
-          st.submenuOpen = false;
-          renderModelMenuContents(st);
-          return;
-        }
-        closeActiveModelPicker(true);
-        return;
-      }
-      const focusableItems = Array.from(menuEl.querySelectorAll?.('.ag-mp-item[data-selectable="true"]') || []);
-      if (!focusableItems.length) return;
-      if (e.key === 'ArrowDown') {
-        e.preventDefault?.();
-        st.focusedIndex = (st.focusedIndex + 1 + focusableItems.length) % focusableItems.length;
-        updateMenuFocusHighlight(focusableItems, st.focusedIndex);
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault?.();
-        st.focusedIndex = (st.focusedIndex - 1 + focusableItems.length) % focusableItems.length;
-        updateMenuFocusHighlight(focusableItems, st.focusedIndex);
-      } else if (e.key === 'ArrowRight' && st.openMode === 'model') {
-        const curItem = focusableItems[st.focusedIndex];
-        if (curItem?.getAttribute?.('data-item-role') === 'orchestrator-entry') {
-          e.preventDefault?.();
-          st.submenuOpen = true;
-          renderModelMenuContents(st);
-        }
-      } else if (e.key === 'ArrowLeft' && st.openMode === 'model' && st.submenuOpen) {
-        e.preventDefault?.();
-        st.submenuOpen = false;
-        renderModelMenuContents(st);
-      } else if ((e.key === 'Enter' || e.key === ' ') && st.focusedIndex >= 0 && focusableItems[st.focusedIndex]) {
-        e.preventDefault?.();
-        focusableItems[st.focusedIndex].click?.();
-      }
-    };
-    document.addEventListener('pointerdown', onDocPointerDown, true);
-    document.addEventListener('keydown', onDocKeyDown, true);
-    activeDisposers.add(() => {
-      try {
-        document.removeEventListener('pointerdown', onDocPointerDown, true);
-        document.removeEventListener('keydown', onDocKeyDown, true);
-      } catch { }
-      globalPickerListenersBound = false;
-    });
-  }
-
-  function updateMenuFocusHighlight(items, activeIdx) {
-    items.forEach((node, idx) => {
-      if (idx === activeIdx) node.classList?.add?.('is-focused');
-      else node.classList?.remove?.('is-focused');
-    });
-  }
-
-  function openComposerQuotaFromModelMenu(rec) {
-    closeActiveModelPicker(false);
-    try {
-      const csbQuota = el('csb-group-quota');
-      if (csbQuota && typeof csbQuota.click === 'function' && !csbQuota.hidden) {
-        csbQuota.click();
-        return true;
-      }
-      const panelQuota = el('panel-quota');
-      if (panelQuota && !panelQuota.hidden && panelQuota.style?.display !== 'none') {
-        showPanel('none');
-      } else if (typeof togglePanel === 'function') {
-        togglePanel('quota');
-      }
-      return true;
-    } catch { return false; }
-  }
-
-  function resolveCurrentSelectionForPicker(rec, menu) {
-    const parsed = parseTriggerTextAndEffort(rec.trigger);
-    if (rec.pendingSelection && rec.pendingSelection.label === parsed.label) {
-      return rec.pendingSelection;
-    }
-    const baseModels = Array.isArray(menu?.baseModels) ? menu.baseModels : [];
-    const orch = menu?.orchestrator || null;
-
-    if (parsed.isOrchestrator && orch?.hasOrchestrator) {
-      const hit = (orch.presets || []).find(p =>
-        p.label.toLowerCase() === parsed.label.toLowerCase()
-        || p.targetLabel.toLowerCase() === parsed.label.replace(/^orchestrator\s*[（(]?|[)）]$/gi, '').trim().toLowerCase()
-      ) || orch.presets?.[0] || null;
-      return {
-        isOrchestrator: true,
-        productKey: 'orchestrator',
-        productLabel: hit ? hit.label : (parsed.label || 'Orchestrator'),
-        effort: null,
-        isFixedEffort: true,
-        supportedEfforts: [],
-        variant: hit,
-        modelId: hit?.modelId || null,
-        route: resolveComposerRouteContext(rec.composer, rec.trigger)
-      };
-    }
-
-    const lowLabel = parsed.label.toLowerCase();
-    const lowProd = parsed.productLabel.toLowerCase();
-    let matchedBase = baseModels.find(m =>
-      m.productLabel.toLowerCase() === lowProd
-      || m.variants.some(v => v.label.toLowerCase() === lowLabel)
-    ) || null;
-    if (!matchedBase && lowProd) {
-      const mpCore = getMpCore();
-      const normProd = typeof mpCore.normalizeModelLookupName === 'function' ? mpCore.normalizeModelLookupName(lowProd) : lowProd;
-      matchedBase = baseModels.find(m =>
-        typeof mpCore.normalizeModelLookupName === 'function'
-          ? mpCore.normalizeModelLookupName(m.productLabel) === normProd
-          : m.productLabel.toLowerCase().includes(lowProd)
-      ) || null;
-    }
-    if (!matchedBase) matchedBase = baseModels[0] || null;
-
-    const chosenEffort = parsed.effort || matchedBase?.defaultEffort || matchedBase?.fixedEffortLabel || null;
-    const matchedVariant = matchedBase
-      ? (matchedBase.variants.find(v => chosenEffort && v.effort && v.effort.toLowerCase() === chosenEffort.toLowerCase()) || matchedBase.variants[0] || null)
-      : null;
-
-    return {
-      isOrchestrator: false,
-      productKey: matchedBase?.productKey || null,
-      productLabel: matchedBase?.productLabel || parsed.productLabel || t('modelPicker.unknownModel'),
-      effort: matchedVariant?.effort || chosenEffort || null,
-      isFixedEffort: matchedBase ? Boolean(matchedBase.isFixedEffort) : true,
-      supportedEfforts: matchedBase?.supportedEfforts || [],
-      variant: matchedVariant,
-      modelId: matchedVariant?.modelId || null,
-      route: resolveComposerRouteContext(rec.composer, rec.trigger)
-    };
-  }
-
-  async function applyModelOrEffortSelection(rec, targetRes) {
-    if (!rec || !targetRes || !targetRes.ok || !targetRes.variant) return { ok: false, reason: targetRes?.reason || 'invalid' };
-    const dispatchRes = await dispatchHostModelSwitch(rec, targetRes.variant, targetRes.productLabel);
-    if (!dispatchRes.ok) {
-      if (dispatchRes.reason === 'native_option_not_found') {
-        rec.nativeStructureMismatch = true;
-        fallbackPickerToNative(rec);
-      }
-      return dispatchRes;
-    }
-
-    rec.pendingSelection = {
-      ...targetRes,
-      label: targetRes.variant.label
-    };
-    if (targetRes.fallbackApplied) {
-      rec.fallbackNotice = {
-        highWarning: Boolean(targetRes.highFallbackWarning),
-        fromEffort: targetRes.fallbackFrom,
-        toEffort: targetRes.fallbackTo || targetRes.effort || '',
-        text: targetRes.highFallbackWarning
-          ? t('modelPicker.fallbackHighWarn', { from: targetRes.fallbackFrom || '', to: targetRes.fallbackTo || targetRes.effort || '' })
-          : t('modelPicker.fallbackNormal', { to: targetRes.fallbackTo || targetRes.effort || '' })
-      };
-    } else {
-      rec.fallbackNotice = null;
-    }
-
-    updatePickerButtonsUi(rec);
-    closeActiveModelPicker(false);
-    return {
-      ok: true,
-      modelId: targetRes.variant.modelId,
-      effort: targetRes.effort || null,
-      fallbackApplied: Boolean(targetRes.fallbackApplied),
-      highFallbackWarning: Boolean(targetRes.highFallbackWarning),
-      route: resolveComposerRouteContext(rec.composer, rec.trigger)
-    };
-  }
-
-  function renderModelMenuContents(rec) {
-    const menuEl = rec.modelMenuEl;
-    if (!menuEl) return;
-    const menu = getActiveGroupedMenu();
-    if (!menu || !menu.baseModels?.length) return;
-    const curSel = resolveCurrentSelectionForPicker(rec, menu);
-    menuEl.replaceChildren?.();
-
-    const hdr = document.createElement('div');
-    hdr.className = 'ag-mp-hdr';
-    const hdrTitle = document.createElement('span');
-    hdrTitle.textContent = rec.submenuOpen ? t('modelPicker.orchestratorTitle') : t('modelPicker.title');
-    hdr.appendChild(hdrTitle);
-    const hdrNote = document.createElement('span');
-    hdrNote.textContent = rec.submenuOpen ? t('modelPicker.orchestratorSubHint') : t('modelPicker.subtitle');
-    hdr.appendChild(hdrNote);
-    menuEl.appendChild(hdr);
-
-    if (rec.submenuOpen && menu.orchestrator?.hasOrchestrator) {
-      const backBtn = document.createElement('button');
-      backBtn.type = 'button';
-      backBtn.className = 'ag-mp-item';
-      backBtn.setAttribute('data-selectable', 'true');
-      backBtn.setAttribute('role', 'option');
-      backBtn.textContent = `‹ ${t('modelPicker.backToModels')}`;
-      backBtn.addEventListener('click', (e) => {
-        e.stopPropagation?.();
-        rec.submenuOpen = false;
-        rec.focusedIndex = -1;
-        renderModelMenuContents(rec);
-      });
-      menuEl.appendChild(backBtn);
-
-      if (menu.orchestrator.supportsIndependentRoles) {
-        // 仅当宿主真实暴露独立 Planner / Executor 配置时提供双角色选择
-        const addRoleSection = (titleKey, list, roleKind) => {
-          if (!Array.isArray(list) || !list.length) return;
-          const subT = document.createElement('div');
-          subT.className = 'ag-mp-sub-group-title';
-          subT.textContent = t(titleKey);
-          menuEl.appendChild(subT);
-          for (const item of list) {
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'ag-mp-item';
-            btn.setAttribute('role', 'option');
-            btn.setAttribute('data-role-kind', roleKind);
-            btn.setAttribute('data-model-id', item.modelId);
-            if (item.unavailable) {
-              btn.setAttribute('aria-disabled', 'true');
-              btn.title = item.unavailabilityReason || t('modelPicker.unavailable');
-            } else {
-              btn.setAttribute('data-selectable', 'true');
-              btn.addEventListener('click', (e) => {
-                e.stopPropagation?.();
-                void applyModelOrEffortSelection(rec, {
-                  ok: true,
-                  isOrchestrator: true,
-                  productKey: 'orchestrator',
-                  productLabel: item.label,
-                  variant: item,
-                  modelId: item.modelId,
-                  effort: null,
-                  isFixedEffort: true
-                });
-              });
-            }
-            const lbl = document.createElement('span');
-            lbl.textContent = item.targetLabel || item.label;
-            btn.appendChild(lbl);
-            if (item.unavailable) {
-              const meta = document.createElement('span');
-              meta.className = 'ag-mp-item-meta';
-              meta.textContent = t('modelPicker.unavailable');
-              btn.appendChild(meta);
-            }
-            menuEl.appendChild(btn);
-          }
-        };
-        addRoleSection('modelPicker.plannerSection', menu.orchestrator.planners, 'planner');
-        addRoleSection('modelPicker.executorSection', menu.orchestrator.executors, 'executor');
-      } else {
-        for (const preset of (menu.orchestrator.presets || [])) {
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = 'ag-mp-item';
-          btn.setAttribute('role', 'option');
-          btn.setAttribute('data-model-id', preset.modelId);
-          const isActive = curSel.isOrchestrator && (curSel.modelId === preset.modelId || curSel.productLabel === preset.label);
-          btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
-          if (preset.unavailable) {
-            btn.setAttribute('aria-disabled', 'true');
-            btn.title = preset.unavailabilityReason || t('modelPicker.unavailable');
-          } else {
-            btn.setAttribute('data-selectable', 'true');
-            btn.addEventListener('click', (e) => {
-              e.stopPropagation?.();
-              void applyModelOrEffortSelection(rec, {
-                ok: true,
-                isOrchestrator: true,
-                productKey: 'orchestrator',
-                productLabel: preset.label,
-                variant: preset,
-                modelId: preset.modelId,
-                effort: null,
-                isFixedEffort: true
-              });
-            });
-          }
-          const lbl = document.createElement('span');
-          lbl.textContent = preset.label;
-          btn.appendChild(lbl);
-          const meta = document.createElement('span');
-          meta.className = 'ag-mp-item-meta';
-          meta.textContent = preset.unavailable ? t('modelPicker.unavailable') : (isActive ? '✓' : '');
-          btn.appendChild(meta);
-          menuEl.appendChild(btn);
-        }
-      }
-      return;
-    }
-
-    // 主模型列表：每个基础模型只出现一次
-    for (const m of menu.baseModels) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'ag-mp-item';
-      btn.setAttribute('role', 'option');
-      btn.setAttribute('data-product-key', m.productKey);
-      const isSelected = !curSel.isOrchestrator && curSel.productKey === m.productKey;
-      btn.setAttribute('aria-selected', isSelected ? 'true' : 'false');
-      if (m.unavailable) {
-        btn.setAttribute('aria-disabled', 'true');
-        btn.title = m.unavailabilityReason || t('modelPicker.unavailable');
-      } else {
-        btn.setAttribute('data-selectable', 'true');
-        btn.addEventListener('click', (e) => {
-          e.stopPropagation?.();
-          const targetRes = getMpCore().resolveTargetModelAndEffort(
-            menu,
-            m.productKey,
-            curSel.effort,
-            { defaultOverrideModelConfig: state.defaultOverrideModelConfig || null }
-          );
-          void applyModelOrEffortSelection(rec, targetRes);
-        });
-      }
-      const lbl = document.createElement('span');
-      lbl.textContent = m.productLabel;
-      btn.appendChild(lbl);
-      const meta = document.createElement('span');
-      meta.className = 'ag-mp-item-meta';
-      if (m.unavailable) {
-        meta.textContent = t('modelPicker.unavailable');
-      } else if (isSelected) {
-        meta.textContent = '✓';
-      } else if (m.isFixedEffort && m.fixedEffortLabel) {
-        meta.textContent = m.fixedEffortLabel;
-      }
-      btn.appendChild(meta);
-      menuEl.appendChild(btn);
-    }
-
-    // Orchestrator 单一合并入口
-    if (menu.orchestrator?.hasOrchestrator) {
-      const div1 = document.createElement('div');
-      div1.className = 'ag-mp-divider';
-      menuEl.appendChild(div1);
-
-      const orchBtn = document.createElement('button');
-      orchBtn.type = 'button';
-      orchBtn.className = 'ag-mp-item';
-      orchBtn.setAttribute('role', 'option');
-      orchBtn.setAttribute('data-item-role', 'orchestrator-entry');
-      orchBtn.setAttribute('aria-selected', curSel.isOrchestrator ? 'true' : 'false');
-      if (menu.orchestrator.allUnavailable) {
-        orchBtn.setAttribute('aria-disabled', 'true');
-      } else {
-        orchBtn.setAttribute('data-selectable', 'true');
-        orchBtn.addEventListener('click', (e) => {
-          e.stopPropagation?.();
-          rec.submenuOpen = true;
-          rec.focusedIndex = -1;
-          renderModelMenuContents(rec);
-        });
-      }
-      const oLbl = document.createElement('span');
-      oLbl.textContent = t('modelPicker.orchestratorEntry');
-      orchBtn.appendChild(oLbl);
-      const oArrow = document.createElement('span');
-      oArrow.className = 'ag-mp-item-meta';
-      oArrow.textContent = curSel.isOrchestrator ? '✓ ›' : '›';
-      orchBtn.appendChild(oArrow);
-      menuEl.appendChild(orchBtn);
-    }
-
-    // 「查看用量」复用输入框已有用量入口
-    const div2 = document.createElement('div');
-    div2.className = 'ag-mp-divider';
-    menuEl.appendChild(div2);
-
-    const quotaBtn = document.createElement('button');
-    quotaBtn.type = 'button';
-    quotaBtn.className = 'ag-mp-item';
-    quotaBtn.setAttribute('role', 'option');
-    quotaBtn.setAttribute('data-item-role', 'view-usage');
-    quotaBtn.setAttribute('data-selectable', 'true');
-    quotaBtn.textContent = t('modelPicker.viewUsage');
-    quotaBtn.addEventListener('click', (e) => {
-      e.stopPropagation?.();
-      openComposerQuotaFromModelMenu(rec);
-    });
-    menuEl.appendChild(quotaBtn);
-  }
-
-  function renderEffortMenuContents(rec) {
-    const menuEl = rec.effortMenuEl;
-    if (!menuEl) return;
-    const menu = getActiveGroupedMenu();
-    if (!menu) return;
-    const curSel = resolveCurrentSelectionForPicker(rec, menu);
-    menuEl.replaceChildren?.();
-    if (curSel.isFixedEffort || !curSel.supportedEfforts?.length || curSel.isOrchestrator) return;
-
-    const targetModel = menu.baseModels.find(m => m.productKey === curSel.productKey);
-    if (!targetModel) return;
-
-    const hdr = document.createElement('div');
-    hdr.className = 'ag-mp-hdr';
-    const title = document.createElement('span');
-    title.textContent = t('modelPicker.effortTitle');
-    hdr.appendChild(title);
-    menuEl.appendChild(hdr);
-
-    for (const ef of targetModel.supportedEfforts) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'ag-mp-item';
-      btn.setAttribute('role', 'option');
-      btn.setAttribute('data-effort', ef);
-      btn.setAttribute('data-selectable', 'true');
-      const active = Boolean(curSel.effort && curSel.effort.toLowerCase() === ef.toLowerCase());
-      btn.setAttribute('aria-selected', active ? 'true' : 'false');
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation?.();
-        const res = getMpCore().resolveTargetModelAndEffort(menu, targetModel.productKey, ef, {
-          defaultOverrideModelConfig: state.defaultOverrideModelConfig || null
-        });
-        void applyModelOrEffortSelection(rec, res);
-      });
-      const lbl = document.createElement('span');
-      lbl.textContent = ef;
-      btn.appendChild(lbl);
-      const chk = document.createElement('span');
-      chk.className = 'ag-mp-item-meta';
-      chk.textContent = active ? '✓' : '';
-      btn.appendChild(chk);
-      menuEl.appendChild(btn);
-    }
-  }
-
-  function updatePickerButtonsUi(rec) {
-    const menu = getActiveGroupedMenu();
-    if (!menu || !rec) return;
-    const curSel = resolveCurrentSelectionForPicker(rec, menu);
-    if (rec.modelLblEl) rec.modelLblEl.textContent = curSel.productLabel || t('modelPicker.unknownModel');
-
-    if (rec.effortBtn) {
-      if (curSel.isOrchestrator) {
-        rec.effortBtn.hidden = true;
-        rec.effortBtn.disabled = true;
-        rec.effortBtn.setAttribute('data-readonly', 'true');
-        rec.effortBtn.setAttribute('aria-disabled', 'true');
-      } else if (!curSel.effort && (!curSel.supportedEfforts || curSel.supportedEfforts.length === 0)) {
-        rec.effortBtn.hidden = true;
-        rec.effortBtn.disabled = true;
-      } else {
-        rec.effortBtn.hidden = false;
-        const readOnly = Boolean(curSel.isFixedEffort || (curSel.supportedEfforts?.length || 0) <= 1);
-        rec.effortBtn.disabled = readOnly;
-        rec.effortBtn.setAttribute('data-readonly', readOnly ? 'true' : 'false');
-        rec.effortBtn.setAttribute('aria-disabled', readOnly ? 'true' : 'false');
-        rec.effortBtn.setAttribute('tabindex', readOnly ? '-1' : '0');
-        rec.effortLblEl.textContent = curSel.effort || curSel.supportedEfforts?.[0] || '';
-        if (rec.effortChevronEl) rec.effortChevronEl.hidden = readOnly;
-      }
-    }
-
-    if (rec.fallbackPillEl) {
-      if (rec.fallbackNotice?.text) {
-        rec.fallbackPillEl.hidden = false;
-        rec.fallbackPillEl.textContent = rec.fallbackNotice.text;
-        rec.fallbackPillEl.setAttribute('data-level', rec.fallbackNotice.highWarning ? 'high' : 'normal');
-      } else {
-        rec.fallbackPillEl.hidden = true;
-        rec.fallbackPillEl.textContent = '';
-      }
-    }
-  }
-
-  function fallbackPickerToNative(rec) {
-    if (!rec) return;
-    if (activeOpenPickerState === rec) closeActiveModelPicker(false);
-    try { rec.trigger?.classList?.remove?.('ag-mp-native-hidden'); } catch { }
-    try { rec.wrap?.remove?.(); } catch { }
-    try { rec.modelMenuEl?.remove?.(); } catch { }
-    try { rec.effortMenuEl?.remove?.(); } catch { }
-    if (rec.composer) modelPickerWeakState.delete(rec.composer);
-    mountedPickerRecords.delete(rec);
-  }
-
-  function mountModelPickerForComposer(composer, trigger) {
-    if (!composer || !trigger || !trigger.parentElement) return null;
-    if (typeof document === 'undefined' || typeof document.createElement !== 'function') return null;
-
-    let rec = modelPickerWeakState.get(composer);
-    if (rec && rec.trigger === trigger && rec.wrap?.isConnected !== false) {
-      updatePickerButtonsUi(rec);
-      return rec;
-    }
-    if (rec) fallbackPickerToNative(rec);
-
-    ensureModelPickerStyles();
-    bindGlobalPickerListeners();
-
-    const wrap = document.createElement('div');
-    wrap.className = 'ag-mp-wrap';
-    wrap.setAttribute('data-ag-model-picker', 'true');
-
-    const modelBtn = document.createElement('button');
-    modelBtn.type = 'button';
-    modelBtn.className = 'ag-mp-btn ag-mp-model-btn';
-    modelBtn.setAttribute('aria-haspopup', 'listbox');
-    modelBtn.setAttribute('aria-expanded', 'false');
-    const modelLbl = document.createElement('span');
-    modelLbl.className = 'ag-mp-model-lbl';
-    modelBtn.appendChild(modelLbl);
-    const modelChev = document.createElement('span');
-    modelChev.className = 'ag-mp-chevron';
-    modelChev.textContent = '▾';
-    modelBtn.appendChild(modelChev);
-
-    const effortBtn = document.createElement('button');
-    effortBtn.type = 'button';
-    effortBtn.className = 'ag-mp-btn ag-mp-effort-btn';
-    effortBtn.setAttribute('aria-haspopup', 'listbox');
-    effortBtn.setAttribute('aria-expanded', 'false');
-    const effortLbl = document.createElement('span');
-    effortLbl.className = 'ag-mp-model-lbl';
-    effortBtn.appendChild(effortLbl);
-    const effortChev = document.createElement('span');
-    effortChev.className = 'ag-mp-chevron';
-    effortChev.textContent = '▾';
-    effortBtn.appendChild(effortChev);
-
-    const fallbackPill = document.createElement('span');
-    fallbackPill.className = 'ag-mp-fallback-pill';
-    fallbackPill.hidden = true;
-
-    const modelMenuEl = document.createElement('div');
-    modelMenuEl.className = 'ag-mp-popover ag-mp-model-menu';
-    modelMenuEl.setAttribute('role', 'listbox');
-    modelMenuEl.hidden = true;
-
-    const effortMenuEl = document.createElement('div');
-    effortMenuEl.className = 'ag-mp-popover ag-mp-effort-menu';
-    effortMenuEl.setAttribute('role', 'listbox');
-    effortMenuEl.hidden = true;
-
-    wrap.appendChild(modelBtn);
-    wrap.appendChild(effortBtn);
-    wrap.appendChild(fallbackPill);
-    document.body?.appendChild?.(modelMenuEl);
-    document.body?.appendChild?.(effortMenuEl);
-
-    rec = {
-      composer,
-      trigger,
-      wrap,
-      modelBtn,
-      modelLblEl: modelLbl,
-      effortBtn,
-      effortLblEl: effortLbl,
-      effortChevronEl: effortChev,
-      fallbackPillEl: fallbackPill,
-      modelMenuEl,
-      effortMenuEl,
-      openMode: null,
-      submenuOpen: false,
-      focusedIndex: -1,
-      fallbackNotice: null,
-      pendingSelection: null,
-      nativeStructureMismatch: false
-    };
-
-    modelBtn.addEventListener('click', (e) => {
-      e.stopPropagation?.();
-      if (activeOpenPickerState === rec && rec.openMode === 'model') {
-        closeActiveModelPicker(false);
-        return;
-      }
-      closeActiveModelPicker(false);
-      rec.openMode = 'model';
-      rec.submenuOpen = false;
-      rec.focusedIndex = -1;
-      activeOpenPickerState = rec;
-      renderModelMenuContents(rec);
-      rec.modelMenuEl.hidden = false;
-      rec.modelBtn.setAttribute('aria-expanded', 'true');
-      positionPickerPopover(rec.modelBtn, rec.modelMenuEl);
-    });
-
-    effortBtn.addEventListener('click', (e) => {
-      e.stopPropagation?.();
-      if (rec.effortBtn.disabled || rec.effortBtn.getAttribute('data-readonly') === 'true') return;
-      if (activeOpenPickerState === rec && rec.openMode === 'effort') {
-        closeActiveModelPicker(false);
-        return;
-      }
-      closeActiveModelPicker(false);
-      rec.openMode = 'effort';
-      rec.focusedIndex = -1;
-      activeOpenPickerState = rec;
-      renderEffortMenuContents(rec);
-      rec.effortMenuEl.hidden = false;
-      rec.effortBtn.setAttribute('aria-expanded', 'true');
-      positionPickerPopover(rec.effortBtn, rec.effortMenuEl);
-    });
-
-    // 保留原按钮在 DOM 中的真实尺寸 (>=1px) 与绑定以供现有选择器追踪与安全回退
-    trigger.classList?.add?.('ag-mp-native-hidden');
-    if (typeof trigger.after === 'function') {
-      trigger.after(wrap);
-    } else if (typeof trigger.parentElement.insertBefore === 'function') {
-      trigger.parentElement.insertBefore(wrap, trigger.nextSibling || null);
-    } else {
-      trigger.parentElement.appendChild?.(wrap);
-    }
-
-    modelPickerWeakState.set(composer, rec);
-    mountedPickerRecords.add(rec);
-    updatePickerButtonsUi(rec);
-    return rec;
-  }
-
-  function syncModelPickers() {
-    try {
-      if (state.disposed) return [];
-      const menu = getActiveGroupedMenu();
-      const marketplaceActive = typeof isHostMarketplaceActive === 'function' ? isHostMarketplaceActive() : false;
-      if (!simplifiedModelPickerEnabled || marketplaceActive || !menu || !menu.baseModels?.length) {
-        for (const rec of Array.from(mountedPickerRecords)) fallbackPickerToNative(rec);
-        return [];
-      }
-      if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return [];
-
-      const composers = Array.from(document.querySelectorAll('.surface-composer') || []);
-      const validComposers = new Set();
-      const results = [];
-
-      for (const comp of composers) {
-        if (!comp || comp.closest?.('#ag-context-meter, [role="dialog"], .settings-modal-container')) continue;
-        const trigger = comp.querySelector?.('[data-testid="model-selector-trigger"]');
-        if (!trigger || !trigger.parentElement) continue;
-        const existingRec = modelPickerWeakState.get(comp);
-        if (existingRec?.nativeStructureMismatch) continue;
-        validComposers.add(comp);
-        const rec = mountModelPickerForComposer(comp, trigger);
-        if (rec) results.push(rec);
-      }
-
-      for (const rec of Array.from(mountedPickerRecords)) {
-        if (!validComposers.has(rec.composer) || rec.trigger?.isConnected === false) {
-          fallbackPickerToNative(rec);
-        }
-      }
-      return results;
-    } catch {
-      return [];
-    }
-  }
-
-  function disposeModelPickers() {
-    closeActiveModelPicker(false);
-    for (const rec of Array.from(mountedPickerRecords)) {
-      fallbackPickerToNative(rec);
-    }
-    try { document.getElementById(MODEL_PICKER_STYLE_ID)?.remove?.(); } catch { }
-  }
-// =========================================================================
   // 下一句预测控制器 (Phase 6 · 默认关闭、8 项拦截门禁、跨会话/草稿隔离、Tab 仅填不发)
   // =========================================================================
 
@@ -53808,6 +54229,4483 @@ function initSessionCockpitGrid() {
     dismissNextPromptSuggestion(true);
     nextPromptState.attemptedTurnKeys.clear();
     try { document.getElementById(NEXT_PROMPT_STYLE_ID)?.remove?.(); } catch { }
+  }
+/**
+ * Context Meter 原生设置页 UI 模块（整合用户原生设置 UI 与全部真实配置分组 · Shadow DOM 安全）
+ */
+const {
+  buildNativeSettingsPageCss,
+  buildNativeSettingsPageHtml,
+  initContextSettingsUI,
+  renderContextSettingsUI
+} = (function () {
+  'use strict';
+
+  function byId(root, id) {
+    if (!root || !id) return null;
+    if (typeof root.getElementById === 'function') {
+      const hit = root.getElementById(id);
+      if (hit) return hit;
+    }
+    if (typeof root.querySelector === 'function') {
+      return root.querySelector('#' + id);
+    }
+    return null;
+  }
+
+  function showToast(root, message) {
+    var toastEl = byId(root, 'ag-ns-toast');
+    if (!toastEl || !message) return;
+    toastEl.textContent = String(message);
+    toastEl.hidden = false;
+    if (toastEl._agNsTimer) {
+      clearTimeout(toastEl._agNsTimer);
+    }
+    toastEl._agNsTimer = setTimeout(function () {
+      toastEl.hidden = true;
+    }, 2400);
+  }
+
+  function buildNativeSettingsPageCss() {
+    return `
+/* =========================================================
+ * Context Meter 原生设置页样式（遵循用户 UI 源码与中性宿主变量）
+ * ========================================================= */
+:host {
+  display: block !important;
+  position: relative;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  scrollbar-gutter: stable;
+  background: transparent;
+  color: var(--foreground, #ececef);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+:host([hidden]) {
+  display: none !important;
+}
+
+:host,
+:host([data-theme="dark"]),
+:host([data-panel-tone="dark"]) {
+  --ag-ns-bg-content: var(--background, #1C1C1C);
+  --ag-ns-bg-card: var(--card, #222222);
+  --ag-ns-bg-inset: var(--muted, #191919);
+  --ag-ns-bg-seg-track: var(--secondary, #141414);
+  --ag-ns-bg-seg-active: var(--card, #2E2E2E);
+  --ag-ns-bg-btn: var(--secondary, #262626);
+  --ag-ns-bg-btn-hover: var(--accent, #303030);
+  --ag-ns-bg-input: var(--input, #151515);
+  --ag-ns-switch-off: rgba(255, 255, 255, 0.20);
+  --ag-ns-switch-off-border: rgba(255, 255, 255, 0.14);
+  --ag-ns-switch-knob: #FFFFFF;
+  --ag-ns-border-card: var(--border, #2E2E2E);
+  --ag-ns-border-divider: var(--border, #2A2A2A);
+  --ag-ns-border-control: var(--border, #383838);
+  --ag-ns-text-primary: var(--foreground, #F4F4F4);
+  --ag-ns-text-secondary: var(--secondary-foreground, #D4D4D4);
+  --ag-ns-text-muted: var(--muted-foreground, #8E8E8E);
+  --ag-ns-seg-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --ag-ns-accent: var(--ag-host-accent, #7748CF);
+  --ag-ns-accent-soft: #a78bfa;
+  --ag-ns-accent-ring: rgba(167, 139, 250, 0.25);
+  --ag-ns-accent-selected-bg: rgba(167, 139, 250, 0.14);
+  --ag-ns-dd-menu-bg: #1e1e24;
+  --ag-ns-dd-menu-border: rgba(255, 255, 255, 0.14);
+  --ag-ns-dd-menu-shadow: 0 16px 40px rgba(0, 0, 0, 0.65), 0 4px 12px rgba(0, 0, 0, 0.4);
+  --ag-ns-dd-item-hover: rgba(255, 255, 255, 0.08);
+  --ag-ns-cand-checked-bg: rgba(168, 85, 247, 0.14);
+  --ag-ns-cand-checked-border: rgba(192, 132, 252, 0.50);
+  --ag-ns-danger: #EF4444;
+  --ag-ns-ok: #10B981;
+  --ag-ns-warn: #F59E0B;
+}
+
+:host([data-theme="light"]),
+:host([data-panel-tone="light"]) {
+  --ag-ns-bg-content: var(--background, #FFFFFF);
+  --ag-ns-bg-card: var(--card, #FAFAFA);
+  --ag-ns-bg-inset: var(--muted, #F3F3F3);
+  --ag-ns-bg-seg-track: var(--secondary, #EFEFEF);
+  --ag-ns-bg-seg-active: var(--background, #FFFFFF);
+  --ag-ns-bg-btn: var(--background, #FFFFFF);
+  --ag-ns-bg-btn-hover: var(--muted, #F3F3F3);
+  --ag-ns-bg-input: var(--background, #FFFFFF);
+  --ag-ns-switch-off: #D1D1D1;
+  --ag-ns-switch-off-border: #C4C4C4;
+  --ag-ns-switch-knob: #FFFFFF;
+  --ag-ns-border-card: var(--border, #E5E5E5);
+  --ag-ns-border-divider: var(--border, #ECECEC);
+  --ag-ns-border-control: var(--border, #D4D4D4);
+  --ag-ns-text-primary: var(--foreground, #141414);
+  --ag-ns-text-secondary: var(--secondary-foreground, #303030);
+  --ag-ns-text-muted: var(--muted-foreground, #6A6A6A);
+  --ag-ns-seg-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.04);
+  --ag-ns-accent: var(--ag-host-accent, #7748CF);
+  --ag-ns-accent-soft: #7748CF;
+  --ag-ns-accent-ring: rgba(119, 72, 207, 0.20);
+  --ag-ns-accent-selected-bg: rgba(119, 72, 207, 0.10);
+  --ag-ns-dd-menu-bg: #FFFFFF;
+  --ag-ns-dd-menu-border: rgba(0, 0, 0, 0.12);
+  --ag-ns-dd-menu-shadow: 0 12px 32px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.08);
+  --ag-ns-dd-item-hover: rgba(0, 0, 0, 0.05);
+  --ag-ns-cand-checked-bg: #FAF5FF;
+  --ag-ns-cand-checked-border: #C084FC;
+  --ag-ns-danger: #DC2626;
+  --ag-ns-ok: #059669;
+  --ag-ns-warn: #D97706;
+}
+
+:host::-webkit-scrollbar {
+  width: 8px;
+}
+
+:host::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:host::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.28);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+:host::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.45);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.ag-ns-page,
+.ag-ns-page *,
+.ag-ns-page *::before,
+.ag-ns-page *::after {
+  box-sizing: border-box;
+}
+
+.ag-ns-page {
+  position: relative;
+  width: 100%;
+  max-width: 720px;
+  margin: 0;
+  padding: 28px 32px 60px;
+  color: var(--ag-ns-text-primary);
+  background: transparent;
+  font-family: inherit;
+}
+
+.ag-ns-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 0 0 22px;
+  padding-right: 42px;
+}
+
+.ag-ns-title-wrap {
+  min-width: 0;
+  flex: 1 1 220px;
+}
+
+.ag-ns-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.015em;
+  color: var(--ag-ns-text-primary);
+}
+
+.ag-ns-subtitle {
+  margin: 5px 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ag-ns-text-muted);
+}
+
+.ag-ns-header-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ag-ns-group {
+  position: relative;
+  margin: 0 0 22px;
+}
+
+.ag-ns-group.is-dropdown-open {
+  z-index: 60;
+}
+
+.ag-ns-group-title {
+  margin: 0 0 8px 2px;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--ag-ns-text-muted);
+}
+
+.ag-ns-card {
+  position: relative;
+  border-radius: 10px;
+  border: 1px solid var(--ag-ns-border-card);
+  background: var(--ag-ns-bg-card);
+  overflow: visible;
+}
+
+.ag-ns-card.is-dropdown-open {
+  z-index: 60;
+}
+
+.ag-ns-row:first-child {
+  border-top: none;
+  border-top-left-radius: 9px;
+  border-top-right-radius: 9px;
+}
+
+.ag-ns-row:last-child,
+.ag-ns-collapse-body:last-child {
+  border-bottom-left-radius: 9px;
+  border-bottom-right-radius: 9px;
+}
+
+.ag-ns-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 16px;
+  border-top: 1px solid var(--ag-ns-border-divider);
+}
+
+.ag-ns-row-stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.ag-ns-row-text {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.ag-ns-row-title {
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1.38;
+  color: var(--ag-ns-text-primary);
+}
+
+.ag-ns-inline-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ag-ns-row-desc {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ag-ns-text-muted);
+  word-break: break-word;
+}
+
+.ag-ns-row-desc.is-error {
+  color: var(--ag-ns-danger);
+}
+
+.ag-ns-row-desc.is-ok {
+  color: var(--ag-ns-ok);
+}
+
+.ag-ns-control {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ag-ns-control-pair {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ag-ns-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  display: block;
+}
+
+.ag-ns-chevron {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  display: block;
+  transition: transform 140ms ease;
+}
+
+.ag-ns-btn[aria-expanded="true"] .ag-ns-chevron {
+  transform: rotate(180deg);
+}
+
+.ag-ns-seg {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 2px;
+  gap: 2px;
+  border-radius: 8px;
+  border: 1px solid var(--ag-ns-border-control);
+  background: var(--ag-ns-bg-seg-track);
+}
+
+.ag-ns-seg-btn {
+  border: none;
+  background: transparent;
+  color: var(--ag-ns-text-muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ag-ns-seg-btn:hover {
+  color: var(--ag-ns-text-primary);
+}
+
+.ag-ns-seg-btn.is-active {
+  background: var(--ag-ns-bg-seg-active);
+  color: var(--ag-ns-text-primary);
+  box-shadow: var(--ag-ns-seg-shadow);
+}
+
+.ag-ns-switch-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ag-ns-switch-state {
+  font-size: 11.5px;
+  color: var(--ag-ns-text-muted);
+  white-space: nowrap;
+}
+
+.ag-ns-switch-state[data-tone="busy"] {
+  color: var(--ag-ns-accent);
+}
+
+.ag-ns-switch-state[data-tone="error"] {
+  color: var(--ag-ns-danger);
+}
+
+/* 对齐 Antigravity 原生开关视觉语义并实时绑定宿主 --ag-host-accent */
+.ag-ns-switch {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid var(--ag-ns-switch-off-border);
+  background: var(--ag-ns-switch-off);
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: background-color 160ms ease, border-color 160ms ease, opacity 140ms ease;
+}
+
+.ag-ns-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--ag-ns-switch-knob);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+  transform: translateX(0);
+  transition: transform 160ms cubic-bezier(0.22, 1.2, 0.36, 1);
+}
+
+.ag-ns-switch.is-on,
+.ag-ns-switch[aria-checked="true"] {
+  background: var(--ag-ns-accent);
+  border-color: transparent;
+}
+
+.ag-ns-switch.is-on::after,
+.ag-ns-switch[aria-checked="true"]::after {
+  transform: translateX(16px);
+  background: #ffffff;
+}
+
+.ag-ns-switch:disabled,
+.ag-ns-switch[aria-busy="true"] {
+  opacity: 0.62;
+  cursor: wait;
+}
+
+.ag-ns-btn,
+.ag-ns-select,
+.ag-ns-input {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--ag-ns-border-control);
+  background: var(--ag-ns-bg-btn);
+  color: var(--ag-ns-text-primary);
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1;
+  outline: none;
+}
+
+.ag-ns-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.ag-ns-btn[hidden] {
+  display: none !important;
+}
+
+.ag-ns-btn:hover {
+  background: var(--ag-ns-bg-btn-hover);
+}
+
+.ag-ns-btn.is-primary {
+  background: var(--ag-ns-accent);
+  border-color: var(--ag-ns-accent);
+  color: #ffffff;
+}
+
+.ag-ns-btn.is-primary:hover {
+  filter: brightness(1.08);
+}
+
+.ag-ns-btn:disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+}
+
+.ag-ns-btn-danger:hover {
+  color: var(--ag-ns-danger);
+  border-color: var(--ag-ns-danger);
+}
+
+.ag-ns-select {
+  cursor: pointer;
+  padding-right: 22px;
+}
+
+.ag-ns-select.is-enhanced {
+  display: none !important;
+}
+
+/* 原生设置页统一自定义下拉组件（对齐设计语言参考图） */
+.ag-ns-dd-wrap {
+  position: relative;
+  display: inline-block;
+  min-width: 148px;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.ag-ns-dd-wrap[data-dd-key="autoSwitchTarget"] {
+  min-width: 210px;
+}
+
+.ag-ns-dd-wrap[data-dd-key="autoSwitchMetric"] {
+  min-width: 168px;
+}
+
+.ag-ns-dd-wrap[data-dd-key="planTier"] {
+  min-width: 176px;
+}
+
+.ag-ns-dd-wrap[data-dd-key="billingRegion"] {
+  min-width: 152px;
+}
+
+.ag-ns-dd-wrap[data-dd-key="displayCurrency"] {
+  min-width: 96px;
+}
+
+.ag-ns-dd-wrap.is-open {
+  z-index: 200;
+}
+
+.ag-ns-dd-trigger {
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 10px 5px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--ag-ns-border-control);
+  background: var(--ag-ns-bg-input);
+  color: var(--ag-ns-text-primary);
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+  transition: background-color 150ms cubic-bezier(0.16, 1, 0.3, 1), border-color 150ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.ag-ns-dd-trigger:hover {
+  background: var(--ag-ns-bg-btn-hover);
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+:host([data-theme="light"]) .ag-ns-dd-trigger:hover,
+:host([data-panel-tone="light"]) .ag-ns-dd-trigger:hover {
+  border-color: rgba(0, 0, 0, 0.24);
+}
+
+.ag-ns-dd-trigger:focus-visible,
+.ag-ns-dd-wrap.is-open .ag-ns-dd-trigger {
+  border-color: var(--ag-ns-accent-soft);
+  box-shadow: 0 0 0 2px var(--ag-ns-accent-ring);
+  background: var(--ag-ns-bg-btn);
+}
+
+.ag-ns-dd-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+  color: var(--ag-ns-text-primary);
+}
+
+.ag-ns-dd-arrow {
+  width: 12px;
+  height: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: var(--ag-ns-text-muted);
+  transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1), color 150ms ease;
+}
+
+.ag-ns-dd-wrap.is-open .ag-ns-dd-arrow {
+  transform: rotate(180deg);
+  color: var(--ag-ns-text-primary);
+}
+
+.ag-ns-dd-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  min-width: 100%;
+  max-width: min(320px, calc(100vw - 48px));
+  max-height: 260px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--ag-ns-dd-menu-bg);
+  border: 1px solid var(--ag-ns-dd-menu-border);
+  border-radius: 10px;
+  box-shadow: var(--ag-ns-dd-menu-shadow);
+  padding: 4px;
+  z-index: 210;
+  opacity: 0;
+  transform: translateY(-4px) scale(0.98);
+  transform-origin: top center;
+  pointer-events: none;
+  transition: opacity 150ms cubic-bezier(0.16, 1, 0.3, 1), transform 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.ag-ns-dd-wrap.align-right .ag-ns-dd-menu {
+  left: auto;
+  right: 0;
+}
+
+.ag-ns-dd-wrap.open-up .ag-ns-dd-menu {
+  top: auto;
+  bottom: calc(100% + 5px);
+  transform-origin: bottom center;
+  transform: translateY(4px) scale(0.98);
+}
+
+.ag-ns-dd-wrap.is-open .ag-ns-dd-menu {
+  display: block;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.ag-ns-dd-menu::-webkit-scrollbar {
+  width: 5px;
+}
+
+.ag-ns-dd-menu::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.32);
+  border-radius: 999px;
+}
+
+.ag-ns-dd-search-wrap {
+  position: sticky;
+  top: -4px;
+  margin: -4px -4px 4px -4px;
+  padding: 6px;
+  background: var(--ag-ns-dd-menu-bg);
+  border-bottom: 1px solid var(--ag-ns-border-divider);
+  z-index: 2;
+}
+
+.ag-ns-dd-search-input {
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--ag-ns-border-control);
+  background: var(--ag-ns-bg-input);
+  color: var(--ag-ns-text-primary);
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.ag-ns-dd-search-input:focus {
+  border-color: var(--ag-ns-accent-soft);
+}
+
+.ag-ns-dd-group {
+  padding: 6px 9px 3px;
+  margin-top: 3px;
+  border-top: 1px solid var(--ag-ns-border-divider);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ag-ns-text-muted);
+  user-select: none;
+}
+
+.ag-ns-dd-group:first-child {
+  margin-top: 0;
+  border-top: none;
+}
+
+.ag-ns-dd-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--ag-ns-text-secondary);
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.ag-ns-dd-item:hover,
+.ag-ns-dd-item.is-focus {
+  background: var(--ag-ns-dd-item-hover);
+  color: var(--ag-ns-text-primary);
+}
+
+.ag-ns-dd-item.is-selected {
+  background: var(--ag-ns-accent-selected-bg);
+  color: var(--ag-ns-accent-soft);
+  font-weight: 600;
+}
+
+.ag-ns-dd-item-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ag-ns-dd-check {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ag-ns-accent-soft);
+  opacity: 0;
+}
+
+.ag-ns-dd-item.is-selected .ag-ns-dd-check {
+  opacity: 1;
+}
+
+.ag-ns-dd-empty {
+  padding: 10px 8px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--ag-ns-text-muted);
+}
+
+.ag-ns-input {
+  width: 210px;
+  background: var(--ag-ns-bg-input);
+  color: var(--ag-ns-text-primary);
+}
+
+.ag-ns-input-sm {
+  width: 82px;
+}
+
+.ag-ns-input::placeholder {
+  color: var(--ag-ns-text-muted);
+}
+
+.ag-ns-input:focus,
+.ag-ns-select:focus,
+.ag-ns-btn:focus-visible,
+.ag-ns-switch:focus-visible,
+.ag-ns-seg-btn:focus-visible {
+  outline: 2px solid var(--ag-ns-accent);
+  outline-offset: 2px;
+}
+
+.ag-ns-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid var(--ag-ns-border-control);
+  background: var(--ag-ns-bg-seg-track);
+  color: var(--ag-ns-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ag-ns-pill.is-accent,
+.ag-ns-pill[data-stage="active"],
+.ag-ns-pill[data-stage="latest"] {
+  color: var(--ag-ns-ok);
+  border-color: rgba(16, 185, 129, 0.35);
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.ag-ns-pill[data-stage="downloaded"] {
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.35);
+  background: rgba(56, 189, 248, 0.14);
+}
+
+.ag-ns-pill.is-warn,
+.ag-ns-pill[data-stage="pending_restart"],
+.ag-ns-pill[data-stage="available"] {
+  color: var(--ag-ns-warn);
+  border-color: rgba(245, 158, 11, 0.38);
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.ag-ns-pill.is-danger,
+.ag-ns-pill[data-stage="error"] {
+  color: var(--ag-ns-danger);
+  border-color: rgba(239, 68, 68, 0.38);
+  background: rgba(239, 68, 68, 0.14);
+}
+
+.ag-ns-pill.is-info {
+  color: var(--ag-ns-accent);
+  border-color: rgba(119, 72, 207, 0.38);
+  background: rgba(119, 72, 207, 0.14);
+}
+
+.ag-ns-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ag-ns-kv {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--ag-ns-bg-inset);
+  border: 1px solid var(--ag-ns-border-divider);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ag-ns-k {
+  font-size: 11px;
+  color: var(--ag-ns-text-muted);
+}
+
+.ag-ns-v {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ag-ns-text-primary);
+  word-break: break-word;
+}
+
+.ag-ns-cand-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ag-ns-cand-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 11px 5px 7px;
+  border-radius: 8px;
+  border: 1px solid var(--ag-ns-border-control);
+  background: var(--ag-ns-bg-inset);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ag-ns-text-primary);
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.ag-ns-cand-chip:hover {
+  border-color: var(--ag-ns-cand-checked-border);
+}
+
+.ag-ns-cand-chip.is-checked,
+.ag-ns-cand-chip:has(input[type="checkbox"]:checked) {
+  background: var(--ag-ns-cand-checked-bg);
+  border-color: var(--ag-ns-cand-checked-border);
+}
+
+.ag-ns-cand-chip input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 30px;
+  height: 17px;
+  min-width: 30px;
+  min-height: 17px;
+  margin: 0;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--ag-ns-switch-off-border);
+  background: var(--ag-ns-switch-off);
+  flex: 0 0 auto;
+  cursor: pointer;
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+
+.ag-ns-cand-chip input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--ag-ns-switch-knob);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+  transform: translateX(0);
+  transition: transform 160ms cubic-bezier(0.22, 1.2, 0.36, 1);
+}
+
+.ag-ns-cand-chip input[type="checkbox"]:checked {
+  background: var(--ag-ns-accent);
+  border-color: transparent;
+}
+
+.ag-ns-cand-chip input[type="checkbox"]:checked::after {
+  transform: translateX(13px);
+  background: #ffffff;
+}
+
+.ag-ns-cand-chip input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--ag-ns-accent-soft);
+  outline-offset: 2px;
+}
+
+.ag-ns-collapse-body {
+  padding: 12px 16px 14px;
+  border-top: 1px solid var(--ag-ns-border-divider);
+  background: var(--ag-ns-bg-inset);
+}
+
+.ag-ns-collapse-body[hidden] {
+  display: none;
+}
+
+.ag-ns-color-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.ag-ns-color-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--ag-ns-border-divider);
+  background: var(--ag-ns-bg-card);
+  cursor: pointer;
+}
+
+.ag-ns-color-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ag-ns-color-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ag-ns-text-primary);
+}
+
+.ag-ns-color-hex {
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: var(--ag-ns-text-muted);
+}
+
+.ag-ns-color-input {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--ag-ns-border-control);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.ag-ns-color-actions {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.ag-ns-note-box {
+  padding: 8px 11px;
+  border-radius: 8px;
+  background: var(--ag-ns-bg-inset);
+  border: 1px solid var(--ag-ns-border-divider);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ag-ns-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ag-ns-note-box[hidden] {
+  display: none;
+}
+
+.ag-ns-note-box.is-error {
+  border-color: rgba(239, 68, 68, 0.35);
+  color: var(--ag-ns-danger);
+}
+
+.ag-ns-note-box.is-ok {
+  border-color: rgba(16, 185, 129, 0.35);
+  color: var(--ag-ns-ok);
+}
+
+.ag-ns-toast {
+  position: sticky;
+  bottom: 16px;
+  margin: 14px auto 0;
+  width: fit-content;
+  max-width: 90%;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--ag-ns-border-control);
+  background: var(--ag-ns-bg-card);
+  color: var(--ag-ns-text-primary);
+  font-size: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.36);
+  z-index: 5;
+}
+
+.ag-ns-toast[hidden] {
+  display: none;
+}
+
+.ag-ns-btn.is-busy .ag-ns-icon {
+  animation: ag-ns-spin 800ms linear infinite;
+}
+
+@keyframes ag-ns-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-ns-switch,
+  .ag-ns-switch::after,
+  .ag-ns-chevron,
+  .ag-ns-btn.is-busy .ag-ns-icon {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .ag-ns-page {
+    padding: 20px 16px 44px;
+  }
+
+  .ag-ns-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .ag-ns-control {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .ag-ns-input {
+    width: 100%;
+    max-width: 260px;
+  }
+
+  .ag-ns-color-grid,
+  .ag-ns-grid-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 440px) {
+  .ag-ns-color-grid,
+  .ag-ns-grid-2 {
+    grid-template-columns: 1fr;
+  }
+}
+`;
+  }
+
+  function buildNativeSettingsPageHtml() {
+    return `
+<section id="ag-ns-root" class="ag-ns-page" aria-label="Context Meter 设置">
+  <header class="ag-ns-header">
+    <div class="ag-ns-title-wrap">
+      <h1 id="ag-ns-title" class="ag-ns-title">Context Meter</h1>
+      <p id="ag-ns-subtitle" class="ag-ns-subtitle" data-i18n="hostSettings.subtitle">上下文统计、界面偏好、免 TUN 代理与本地数据配置</p>
+    </div>
+    <div class="ag-ns-header-links">
+      <button id="ag-hs-btn-open-accounts" class="ag-ns-btn" type="button" data-ag-ns-action="openAccountsTab" data-i18n="tab.accounts">账号与共享池</button>
+      <button id="ag-hs-btn-open-quota" class="ag-ns-btn" type="button" data-ag-ns-action="openQuotaBoard" data-i18n="hostSettings.btn.quota">模型额度</button>
+      <button id="ag-hs-btn-open-tokens" class="ag-ns-btn" type="button" data-ag-ns-action="openTokensBoard" data-i18n="hostSettings.btn.tokens">Token 用量</button>
+    </div>
+  </header>
+
+  <!-- 1. 外观、停靠位置与顶栏偏好 -->
+  <div id="ag-ns-sec-appearance" class="ag-ns-group" data-section-id="ui-slim-prefs-card">
+    <h2 class="ag-ns-group-title" data-i18n="ns.group.appearance">外观、停靠位置与顶栏偏好</h2>
+    <div class="ag-ns-card">
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="ns.themeMode.title">插件主题外观</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.themeMode.desc">控制面板深浅配色模式，默认跟随宿主自动切换</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-seg" role="radiogroup" data-ag-ns-seg="themeMode">
+            <button type="button" class="ag-ns-seg-btn is-active" role="radio" aria-checked="true" data-val="auto" data-i18n="ns.themeMode.auto">跟随宿主</button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="light" data-i18n="ns.themeMode.light">浅色</button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="dark" data-i18n="ns.themeMode.dark">深色</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="ns.topbarMode.title">顶栏入口形态</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.topbarMode.desc">控制顶栏常驻状态入口的展示形式</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-seg" role="radiogroup" data-ag-ns-seg="topbarMode">
+            <button type="button" class="ag-ns-seg-btn is-active" role="radio" aria-checked="true" data-val="full" data-i18n="settings.topbarMode.full">完整显示</button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="compact" data-i18n="settings.topbarMode.compact">精简圆环</button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="hidden" data-i18n="settings.topbarMode.hidden">隐藏</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="ns.panelDockMode.title">面板显示位置</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.panelDockMode.desc">切换详情面板打开时的承载容器</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-seg" role="radiogroup" data-ag-ns-seg="panelDockMode">
+            <button type="button" class="ag-ns-seg-btn is-active" role="radio" aria-checked="true" data-val="popover" data-i18n="settings.panelDockMode.popover">顶栏浮层</button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="aux" data-i18n="settings.panelDockMode.aux">右侧辅助栏</button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="page" data-i18n="settings.panelDockMode.page">独立页面</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="settings.quotaBadgeMode.label">顶栏额度窗口</div>
+          <div class="ag-ns-row-desc" data-i18n="settings.quotaBadgeMode.desc">支持右键或 Alt 加点击切换</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-seg" role="radiogroup" data-ag-ns-seg="quotaWindowMode">
+            <button type="button" class="ag-ns-seg-btn is-active" role="radio" aria-checked="true" data-val="auto" data-i18n="settings.quotaBadgeMode.auto">自动最紧缩</button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="5h" data-i18n="settings.quotaBadgeMode.5h">5h 窗口</button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="weekly" data-i18n="settings.quotaBadgeMode.weekly">周额度</button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="both" data-i18n="settings.quotaBadgeMode.both">5h 与周双显</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="ns.autoHideTopbarOnDock.title">辅助栏与独立页展开时自动隐藏顶栏入口</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.autoHideTopbarOnDock.desc">展开停靠面板时自动收起顶栏冗余入口</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-switch-wrap">
+            <span class="ag-ns-switch-state" data-ag-ns-sw-status="autoHideTopbarOnDock" aria-live="polite"></span>
+            <button type="button" id="ag-ns-sw-autoHideTopbarOnDock" class="ag-ns-switch" role="switch" aria-checked="false" data-ag-ns-switch="autoHideTopbarOnDock"></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row ag-ns-row-stack">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="settings.quickActions.title">当前会话快捷操作条</div>
+          <div id="ag-ns-dock-feedback" class="ag-ns-row-desc" data-i18n="settings.quickActions.desc">一行完成打开、复制与跳转，同一入口不再重复</div>
+        </div>
+        <div class="ag-ns-control">
+          <button type="button" class="ag-ns-btn is-primary" data-ag-ns-action="openRight" data-i18n="settings.dock.openRightBtn">在右侧打开</button>
+          <button type="button" class="ag-ns-btn" data-ag-ns-action="openPage" data-i18n="settings.dock.fbPage">独立页面</button>
+          <button type="button" class="ag-ns-btn" data-ag-ns-action="copyUrl" data-i18n="settings.dock.fbCopyUrl">复制链接</button>
+          <button type="button" class="ag-ns-btn" data-ag-ns-action="openExternal" data-i18n="settings.dock.openExternalBtn">外部浏览器</button>
+        </div>
+      </div>
+
+      <!-- 折叠配色区 -->
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title ag-ns-inline-title">
+            <svg class="ag-ns-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M8 1.75a6.25 6.25 0 1 0 0 12.5h.75a1.5 1.5 0 0 0 1.06-2.56 1.5 1.5 0 0 1 1.06-2.56h1.38a2 2 0 0 0 2-2A5.38 5.38 0 0 0 8 1.75Z" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/>
+              <circle cx="5.25" cy="7.25" r=".85" fill="currentColor"/>
+              <circle cx="7.5" cy="4.85" r=".85" fill="currentColor"/>
+              <circle cx="10.5" cy="5.5" r=".85" fill="currentColor"/>
+            </svg>
+            <span data-i18n="ns.colors.title">指标与背景颜色自定义</span>
+          </div>
+          <div class="ag-ns-row-desc" data-i18n="ns.colors.desc">自定义面板背景、上下文圆环、速率与 Token 色值</div>
+        </div>
+        <div class="ag-ns-control">
+          <button type="button" id="ag-ns-toggle-colors" class="ag-ns-btn" aria-expanded="false" aria-controls="ag-ns-colors-body">
+            <span id="ag-ns-toggle-colors-label" data-i18n="ns.colors.expand">展开设置</span>
+            <svg class="ag-ns-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div id="ag-ns-colors-body" class="ag-ns-collapse-body" hidden>
+        <div class="ag-ns-color-grid">
+          <label class="ag-ns-color-item">
+            <span class="ag-ns-color-meta">
+              <span class="ag-ns-color-name" data-i18n="ns.colors.panelBg">面板背景</span>
+              <span class="ag-ns-color-hex" data-ag-ns-color-hex="panelBg">#181818</span>
+            </span>
+            <input type="color" class="ag-ns-color-input" data-ag-ns-color="panelBg" value="#181818" />
+          </label>
+          <label class="ag-ns-color-item">
+            <span class="ag-ns-color-meta">
+              <span class="ag-ns-color-name" data-i18n="settings.colors.ringUsed">圆环已用部分</span>
+              <span class="ag-ns-color-hex" data-ag-ns-color-hex="ringUsed">#E6E6EB</span>
+            </span>
+            <input type="color" class="ag-ns-color-input" data-ag-ns-color="ringUsed" value="#e6e6eb" />
+          </label>
+          <label class="ag-ns-color-item">
+            <span class="ag-ns-color-meta">
+              <span class="ag-ns-color-name" data-i18n="settings.colors.ringTrack">圆环轨道</span>
+              <span class="ag-ns-color-hex" data-ag-ns-color-hex="ringTrack">#52525B</span>
+            </span>
+            <input type="color" class="ag-ns-color-input" data-ag-ns-color="ringTrack" value="#52525b" />
+          </label>
+          <label class="ag-ns-color-item">
+            <span class="ag-ns-color-meta">
+              <span class="ag-ns-color-name" data-i18n="settings.colors.contextText">上下文用量文字</span>
+              <span class="ag-ns-color-hex" data-ag-ns-color-hex="contextText">#ECECEF</span>
+            </span>
+            <input type="color" class="ag-ns-color-input" data-ag-ns-color="contextText" value="#ececef" />
+          </label>
+          <label class="ag-ns-color-item">
+            <span class="ag-ns-color-meta">
+              <span class="ag-ns-color-name" data-i18n="settings.colors.speedText">输出速度</span>
+              <span class="ag-ns-color-hex" data-ag-ns-color-hex="speedText">#38BDF8</span>
+            </span>
+            <input type="color" class="ag-ns-color-input" data-ag-ns-color="speedText" value="#38bdf8" />
+          </label>
+          <label class="ag-ns-color-item">
+            <span class="ag-ns-color-meta">
+              <span class="ag-ns-color-name" data-i18n="settings.colors.tokenTotal">累计 token 用量</span>
+              <span class="ag-ns-color-hex" data-ag-ns-color-hex="tokenTotal">#C084FC</span>
+            </span>
+            <input type="color" class="ag-ns-color-input" data-ag-ns-color="tokenTotal" value="#c084fc" />
+          </label>
+          <label class="ag-ns-color-item">
+            <span class="ag-ns-color-meta">
+              <span class="ag-ns-color-name" data-i18n="settings.colors.tokenAccent">其他 token 指标</span>
+              <span class="ag-ns-color-hex" data-ag-ns-color-hex="tokenAccent">#A78BFA</span>
+            </span>
+            <input type="color" class="ag-ns-color-input" data-ag-ns-color="tokenAccent" value="#a78bfa" />
+          </label>
+        </div>
+        <div class="ag-ns-color-actions">
+          <button type="button" id="ag-ns-reset-colors" class="ag-ns-btn" data-i18n="settings.colors.resetAll">全部恢复跟随主题</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. 交互与显示偏好 -->
+  <div id="ag-ns-sec-interaction" class="ag-ns-group" data-section-id="ctx-prefs-group-display">
+    <h2 class="ag-ns-group-title" data-i18n="ns.group.interaction">交互与显示偏好</h2>
+    <div class="ag-ns-card">
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="settings.radial.orb.title">悬浮圆环</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.radialOrb.desc">窗口顶层可拖拽悬浮球，点击展开 360° 六瓣花环</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-switch-wrap">
+            <span class="ag-ns-switch-state" data-ag-ns-sw-status="radialOrb" aria-live="polite"></span>
+            <button type="button" id="ag-ns-sw-radialOrb" class="ag-ns-switch" role="switch" aria-checked="false" data-ag-ns-switch="radialOrb"></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="settings.radial.topbar.title">顶栏径向展开</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.radialTopbar.desc">点击顶栏上下文圆环原地收缩为正圆并向下展开 180° 扇形</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-switch-wrap">
+            <span class="ag-ns-switch-state" data-ag-ns-sw-status="radialTopbar" aria-live="polite"></span>
+            <button type="button" id="ag-ns-sw-radialTopbar" class="ag-ns-switch" role="switch" aria-checked="false" data-ag-ns-switch="radialTopbar"></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="settings.radial.bottombar.title">底栏径向展开</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.radialBottombar.desc">点击输入框下方上下文入口原地收缩为正圆并向上展开 180° 扇形</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-switch-wrap">
+            <span class="ag-ns-switch-state" data-ag-ns-sw-status="radialBottombar" aria-live="polite"></span>
+            <button type="button" id="ag-ns-sw-radialBottombar" class="ag-ns-switch" role="switch" aria-checked="false" data-ag-ns-switch="radialBottombar"></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="ns.showComposerBar.title">输入框下方显示底栏状态摘要</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.showComposerBar.desc">在输入框底部展示当前上下文、速率、缓存命中与额度摘要</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-switch-wrap">
+            <span class="ag-ns-switch-state" data-ag-ns-sw-status="showComposerBar" aria-live="polite"></span>
+            <button type="button" id="ag-ns-sw-showComposerBar" class="ag-ns-switch" role="switch" aria-checked="false" data-ag-ns-switch="showComposerBar"></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="settings.turnFooter.label">每轮回复尾部统计</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.turnFooter.desc">在助手回复操作栏末尾显示本轮模型、用量与耗时微标</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-switch-wrap">
+            <span class="ag-ns-switch-state" data-ag-ns-sw-status="showTurnFooter" aria-live="polite"></span>
+            <button type="button" id="ag-ns-sw-showTurnFooter" class="ag-ns-switch" role="switch" aria-checked="false" data-ag-ns-switch="showTurnFooter"></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="settings.nextPrompt.label">下一句预测建议</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.nextPrompt.desc">默认关闭 · 开启后每轮结束会调用当前账号模型并消耗额外额度，按 Tab 填入草稿</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-switch-wrap">
+            <span class="ag-ns-switch-state" data-ag-ns-sw-status="nextPromptEnabled" aria-live="polite"></span>
+            <button type="button" id="ag-ns-sw-nextPromptEnabled" class="ag-ns-switch" role="switch" aria-checked="false" data-ag-ns-switch="nextPromptEnabled"></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. 阈值自动切号 -->
+  <div id="ag-ns-sec-accounts" class="ag-ns-group" data-section-id="settings-accounts-card">
+    <h2 class="ag-ns-group-title" data-i18n="ns.group.accounts">多账号与阈值自动切号</h2>
+    <div class="ag-ns-card">
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="accounts.autoSwitchEnable">启用阈值自动切号，默认关闭</div>
+          <div id="ag-ns-autoswitch-note" class="ag-ns-row-desc" data-i18n="ns.autoSwitch.desc">达阈值后等待当前生成空闲且单窗口时切往备选账号</div>
+        </div>
+        <div class="ag-ns-control">
+          <span id="ag-ns-autoswitch-pill" class="ag-ns-pill" data-i18n="accounts.status.disabled">已关闭</span>
+          <button type="button" id="ag-ns-sw-autoSwitchEnabled" class="ag-ns-switch" role="switch" aria-checked="false" data-ag-ns-switch="autoSwitchEnabled"></button>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="accounts.quotaTargetLabel">监控额度</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.autoSwitchTarget.desc">仅从 Gemini 或 Claude / GPT 的 5 小时与周额度中选择具体监控项</div>
+        </div>
+        <div class="ag-ns-control">
+          <select id="ag-ns-sel-autoSwitchTarget" class="ag-ns-select" data-ag-ns-select="autoSwitchTarget">
+            <option id="ag-ns-opt-legacy-target" value="" disabled hidden data-i18n="accounts.target.legacyPlaceholder">旧规则待重选 · 请选择具体监控额度</option>
+            <optgroup label="Gemini" data-i18n-label="accounts.target.groupGemini">
+              <option value="shared_gemini_main:5h" data-i18n="accounts.target.gemini5h">Gemini 5 小时额度</option>
+              <option value="shared_gemini_main:7d" data-i18n="accounts.target.gemini7d">Gemini 周额度</option>
+            </optgroup>
+            <optgroup label="Claude / GPT" data-i18n-label="accounts.target.group3p">
+              <option value="shared_3p_pool:5h" data-i18n="accounts.target.claude5h">Claude / GPT 5 小时额度</option>
+              <option value="shared_3p_pool:7d" data-i18n="accounts.target.claude7d">Claude / GPT 周额度</option>
+            </optgroup>
+          </select>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="ns.autoSwitchRule.title">触发口径与阈值百分比</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.autoSwitchRule.desc">修改规则后请点击保存切号规则，再拨动总开关</div>
+        </div>
+        <div class="ag-ns-control ag-ns-control-pair">
+          <select id="ag-ns-sel-autoSwitchMetric" class="ag-ns-select" data-ag-ns-select="autoSwitchMetric">
+            <option value="remaining_pct" data-i18n="accounts.modeRemaining">剩余额度低于或等于</option>
+            <option value="used_pct" data-i18n="accounts.modeUsed">已用额度达到或超过</option>
+          </select>
+          <input id="ag-ns-inp-autoSwitchThreshold" class="ag-ns-input ag-ns-input-sm" type="number" min="1" max="95" value="10" data-ag-ns-input="autoSwitchThreshold" />
+        </div>
+      </div>
+
+      <div class="ag-ns-row ag-ns-row-stack">
+        <div id="ag-ns-autoswitch-live-summary" class="ag-ns-note-box"></div>
+      </div>
+
+      <div class="ag-ns-row ag-ns-row-stack">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="accounts.candidatesLabel">允许切入的候选账号：</div>
+          <div id="ag-ns-autoswitch-candidates" class="ag-ns-cand-list"></div>
+        </div>
+        <div class="ag-ns-control">
+          <button type="button" id="ag-ns-btn-save-autoswitch" class="ag-ns-btn is-primary" data-ag-ns-action="saveAutoSwitch" data-i18n="accounts.saveRule">保存切号规则</button>
+          <button type="button" class="ag-ns-btn" data-ag-ns-action="openAccountsTab" data-i18n="accountsTab.openPoolsBtn">打开账号与共享池</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. 客户端界面语言与品牌 -->
+  <div id="ag-ns-sec-i18n" class="ag-ns-group" data-section-id="client-brand-lang-card">
+    <h2 class="ag-ns-group-title" data-i18n="ns.group.i18n">客户端界面语言与品牌</h2>
+    <div class="ag-ns-card">
+      <div class="ag-ns-row ag-ns-row-stack">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <div class="ag-ns-row-text">
+            <div class="ag-ns-row-title" data-i18n="ns.clientLang.title">Antigravity 客户端界面语言</div>
+            <div id="ag-ns-i18n-desc" class="ag-ns-row-desc" data-i18n="settings.clientLang.detecting">正在检测桌面端汉化运行状态…</div>
+          </div>
+          <span id="ag-ns-i18n-badge" class="ag-ns-pill">English</span>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <div class="ag-ns-seg" role="radiogroup" data-ag-ns-seg="clientLanguage">
+            <button type="button" id="ag-ns-btn-client-zh" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="zh-CN">简体中文</button>
+            <button type="button" id="ag-ns-btn-client-en" class="ag-ns-seg-btn is-active" role="radio" aria-checked="true" data-val="en">English</button>
+          </div>
+          <button type="button" id="ag-ns-btn-apply-client-lang" class="ag-ns-btn is-primary" data-ag-ns-action="applyClientLang" data-i18n="settings.clientLang.applyRestart">应用并重启</button>
+        </div>
+        <div id="ag-ns-client-lang-feedback" class="ag-ns-note-box" hidden></div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="ns.brand.title">左上角品牌文字显示</div>
+          <div id="ag-ns-brand-desc" class="ag-ns-row-desc" data-i18n="ns.brand.desc">仅作用于宿主左上角品牌位，不影响插件面板语言</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-seg" role="radiogroup" data-ag-ns-seg="brandTitle">
+            <button type="button" class="ag-ns-seg-btn is-active" role="radio" aria-checked="true" data-val="english" data-i18n="enhance.brand.english">Antigravity</button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="hidden" data-i18n="enhance.brand.hidden">隐藏</button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="translated" data-i18n="enhance.brand.translated">反重力</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="ns.panelLang.title">插件面板语言</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.panelLang.desc">仅控制 Context Meter 面板与设置语言，不随宿主界面切换</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-seg" role="radiogroup" data-ag-ns-seg="panelLanguage">
+            <button type="button" class="ag-ns-seg-btn is-active" role="radio" aria-checked="true" data-val="zh-CN">简体中文</button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="zh-TW">繁體中文</button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="en">English</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 5. 压缩恢复与回答规则 -->
+  <div id="ag-ns-sec-enhance" class="ag-ns-group" data-section-id="rehydrate-hook-card">
+    <h2 class="ag-ns-group-title" data-i18n="ns.group.enhance">压缩恢复与回答规则</h2>
+    <div class="ag-ns-card">
+      <div class="ag-ns-row ag-ns-row-stack">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <div class="ag-ns-row-text">
+            <div class="ag-ns-row-title" data-i18n="rehydrate.card.title">改善 AGY 有损压缩</div>
+            <div class="ag-ns-row-desc" data-i18n="ns.rehydrate.desc">压缩后自动从本地记录把最初要求、最近原话与刚改文件补回给 AI</div>
+          </div>
+          <span id="ag-ns-rehydrate-badge" class="ag-ns-pill" data-i18n="settings.common.reading">读取中…</span>
+        </div>
+        <div class="ag-ns-grid-2">
+          <div class="ag-ns-kv">
+            <span class="ag-ns-k" data-i18n="rehydrate.stat.hook">当前状态</span>
+            <span id="ag-ns-rehydrate-hook" class="ag-ns-v">--</span>
+          </div>
+          <div class="ag-ns-kv">
+            <span class="ag-ns-k" data-i18n="rehydrate.stat.python">Python 运行环境</span>
+            <span id="ag-ns-rehydrate-python" class="ag-ns-v">--</span>
+          </div>
+        </div>
+        <div class="ag-ns-control">
+          <button type="button" id="ag-ns-btn-rehydrate-install-py" class="ag-ns-btn is-primary" hidden data-ag-ns-action="rehydrateInstallPython" data-i18n="rehydrate.btn.installPython">一键安装 Python 3.12</button>
+          <button type="button" id="ag-ns-btn-rehydrate-enable" class="ag-ns-btn is-primary" data-ag-ns-action="rehydrateEnable" data-i18n="rehydrate.btn.enable">开启</button>
+          <button type="button" id="ag-ns-btn-rehydrate-disable" class="ag-ns-btn" data-ag-ns-action="rehydrateDisable" data-i18n="rehydrate.btn.disable">停用</button>
+          <button type="button" id="ag-ns-btn-rehydrate-refresh" class="ag-ns-btn" data-ag-ns-action="rehydrateRefresh" data-i18n="models.btn.refreshStatus">刷新状态</button>
+        </div>
+      </div>
+
+      <div class="ag-ns-row ag-ns-row-stack">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <div class="ag-ns-row-text">
+            <div class="ag-ns-row-title" data-i18n="enhance.prompt.title">回答与工具使用规则</div>
+            <div id="ag-ns-enhance-desc" class="ag-ns-row-desc" data-i18n="ns.enhance.desc">调整语言服务提示模板档位并支持恢复官方默认</div>
+          </div>
+          <span id="ag-ns-enhance-badge" class="ag-ns-pill" data-i18n="settings.common.reading">读取中…</span>
+        </div>
+        <div class="ag-ns-control" style="justify-content:space-between;width:100%">
+          <div class="ag-ns-seg" role="radiogroup" data-ag-ns-seg="enhancePromptTier">
+            <button type="button" class="ag-ns-seg-btn is-active" role="radio" aria-checked="true" data-val="0">0 · <span data-i18n="enhance.tier.0.short">原版</span></button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="1">1 · <span data-i18n="enhance.tier.1.short">基础</span></button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="2">2 · <span data-i18n="enhance.tier.2.short">精简</span></button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="3">3 · <span data-i18n="enhance.tier.3.short">深度</span></button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="4">4 · <span data-i18n="enhance.tier.4.short">极简</span></button>
+          </div>
+          <div class="ag-ns-control">
+            <button type="button" class="ag-ns-btn is-primary" data-ag-ns-action="enhanceApply" data-i18n="enhance.btn.applyPrompt">应用提示词与标题设置</button>
+            <button type="button" class="ag-ns-btn ag-ns-btn-danger" data-ag-ns-action="enhanceRestoreAll" data-i18n="enhance.restoreAll.btn">全部恢复官方默认</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="enhance.titlePatch.label">自动生成简体中文会话标题</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.enhanceTitle.desc">等长替换会话命名提示词，支持随时恢复英文</div>
+        </div>
+        <div class="ag-ns-control">
+          <button type="button" id="ag-ns-sw-enhanceChineseTitle" class="ag-ns-switch" role="switch" aria-checked="false" data-ag-ns-switch="enhanceChineseTitle"></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 6. 免 TUN 代理与网络 -->
+  <div id="ag-ns-sec-proxy" class="ag-ns-group" data-section-id="proxy-notun-drawer">
+    <h2 class="ag-ns-group-title" data-i18n="ns.group.proxy">免 TUN 代理与网络</h2>
+    <div class="ag-ns-card">
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="ns.proxyEnabled.title">启用本地免 TUN 代理</div>
+          <div id="ag-ns-proxy-desc" class="ag-ns-row-desc" data-i18n="ns.proxyEnabled.desc">无需开启系统级虚拟网卡即可接管模型请求</div>
+        </div>
+        <div class="ag-ns-control">
+          <span id="ag-ns-proxy-badge" class="ag-ns-pill" data-i18n="settings.common.reading">读取中…</span>
+          <button type="button" id="ag-ns-sw-proxyEnabled" class="ag-ns-switch" role="switch" aria-checked="false" data-ag-ns-switch="proxyEnabled"></button>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="ns.proxyUrl.title">代理地址</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.proxyUrl.desc">填写本地 HTTP 或 SOCKS5 代理端口</div>
+        </div>
+        <div class="ag-ns-control ag-ns-control-pair">
+          <input type="text" id="ag-ns-input-proxyUrl" class="ag-ns-input" data-ag-ns-input="proxyUrl" placeholder="http://127.0.0.1:7897" autocomplete="off" spellcheck="false" />
+          <button type="button" id="ag-ns-btn-test-proxy" class="ag-ns-btn" data-ag-ns-action="testProxy" data-i18n="ns.proxy.test">测试连通性</button>
+          <button type="button" id="ag-ns-btn-apply-proxy" class="ag-ns-btn" data-ag-ns-action="applyProxy" data-i18n="ns.proxyUrl.apply">应用</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 7. 订阅与费用估算 -->
+  <div id="ag-ns-sec-billing" class="ag-ns-group" data-section-id="settings-billing-card">
+    <h2 class="ag-ns-group-title" data-i18n="ns.group.billing">订阅与费用估算</h2>
+    <div class="ag-ns-card">
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="ns.planTier.title">订阅档位</div>
+          <div id="ag-ns-billing-rate-desc" class="ag-ns-row-desc" data-i18n="ns.planTier.desc">用于计算月度额度与单次会话成本参考</div>
+        </div>
+        <div class="ag-ns-control">
+          <select id="ag-ns-sel-planTier" class="ag-ns-select" data-ag-ns-select="planTier">
+            <option value="auto" data-i18n="plan.tier.auto">✨ 自动检测</option>
+            <option value="free" data-i18n="plan.tier.free">免费版</option>
+            <option value="plus" data-i18n="plan.tier.plus">Google AI Plus</option>
+            <option value="pro" data-i18n="plan.tier.pro">Google AI Pro</option>
+            <option value="ultra_5x" data-i18n="plan.tier.ultra5x">Google AI Ultra 5x</option>
+            <option value="ultra_20x" data-i18n="plan.tier.ultra20x">Google AI Ultra 20x</option>
+            <option value="ultra" data-i18n="plan.tier.ultra">Google AI Ultra</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="ns.billingRegion.title">账单地区与显示货币</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.billingRegion.desc">按所选地区参考定价与汇率折算估算金额</div>
+        </div>
+        <div class="ag-ns-control ag-ns-control-pair">
+          <select id="ag-ns-sel-billingRegion" class="ag-ns-select" data-ag-ns-select="billingRegion">
+            <option value="未知" data-i18n="plan.region.unknown">未知</option>
+            <option value="US">US 美国</option>
+            <option value="JP">JP 日本</option>
+            <option value="HK">HK 中国香港</option>
+            <option value="TW">TW 中国台湾</option>
+            <option value="KR">KR 韩国</option>
+            <option value="SG">SG 新加坡</option>
+            <option value="GB">UK 英国</option>
+            <option value="EU">EU 欧洲</option>
+            <option value="TR">TR 土耳其</option>
+            <option value="IN">IN 印度</option>
+            <option value="BR">BR 巴西</option>
+            <option value="CN">CN 中国大陆</option>
+          </select>
+          <select id="ag-ns-sel-displayCurrency" class="ag-ns-select" data-ag-ns-select="displayCurrency">
+            <option value="USD">USD</option>
+            <option value="CNY">CNY</option>
+            <option value="HKD">HKD</option>
+            <option value="TWD">TWD</option>
+            <option value="JPY">JPY</option>
+            <option value="EUR">EUR</option>
+            <option value="GBP">GBP</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 8. 版本更新 -->
+  <div id="ag-ns-sec-update" class="ag-ns-group" data-section-id="settings-about-update-card">
+    <h2 class="ag-ns-group-title" data-i18n="ns.group.update">版本更新</h2>
+    <div class="ag-ns-card">
+      <div class="ag-ns-row ag-ns-row-stack">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <div class="ag-ns-row-text">
+            <div id="ag-hs-sec-version" class="ag-ns-row-title" data-i18n="hostSettings.sec.version">插件版本与运行状态</div>
+            <div id="ag-ns-update-meta" class="ag-ns-row-desc">Stable · --</div>
+          </div>
+          <span id="ag-hs-update-stage-pill" class="ag-ns-pill" data-stage="idle">未检查</span>
+        </div>
+        <div class="ag-ns-grid-2">
+          <div class="ag-ns-kv">
+            <span id="ag-hs-lbl-frontend" class="ag-ns-k" data-i18n="hostSettings.lbl.frontend">前端界面版本</span>
+            <span id="ag-hs-val-frontend" class="ag-ns-v">--</span>
+          </div>
+          <div class="ag-ns-kv">
+            <span id="ag-hs-lbl-backend" class="ag-ns-k" data-i18n="hostSettings.lbl.backend">后台采集版本</span>
+            <span id="ag-hs-val-backend" class="ag-ns-v">--</span>
+          </div>
+          <div class="ag-ns-kv">
+            <span id="ag-hs-lbl-bridge" class="ag-ns-k" data-i18n="hostSettings.lbl.bridge">通信通道</span>
+            <span id="ag-hs-val-bridge" class="ag-ns-v">--</span>
+          </div>
+          <div class="ag-ns-kv">
+            <span id="ag-hs-lbl-target" class="ag-ns-k" data-i18n="hostSettings.lbl.target">目标版本</span>
+            <span id="ag-hs-val-target" class="ag-ns-v">--</span>
+          </div>
+        </div>
+        <div id="ag-hs-update-detail" class="ag-ns-note-box"></div>
+        <div class="ag-ns-control">
+          <button type="button" id="ag-hs-btn-check-update" class="ag-ns-btn is-primary" data-ag-ns-action="checkUpdate" data-i18n="hostSettings.btn.check">检查更新</button>
+          <button type="button" id="ag-hs-btn-apply-update" class="ag-ns-btn is-primary" hidden data-ag-ns-action="applyUpdate" data-i18n="update.applyNow">立即下载更新</button>
+          <button type="button" id="ag-hs-btn-restart-host" class="ag-ns-btn is-primary" hidden data-ag-ns-action="restartHost" data-i18n="update.restartBtn">重启客户端生效</button>
+          <button type="button" id="ag-hs-btn-verify-runtime" class="ag-ns-btn" data-ag-ns-action="verifyRuntime" data-i18n="hostSettings.btn.verify">校验运行态</button>
+          <button type="button" id="ag-hs-btn-release-page" class="ag-ns-btn" data-ag-ns-action="openReleasePage" data-i18n="update.viewRelease">查看更新日志</button>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="ns.autoCheckUpdate.title">启动时自动检查更新但不自动安装</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.autoCheckUpdate.desc">发现新版本时仅在界面内提示</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-switch-wrap">
+            <span class="ag-ns-switch-state" data-ag-ns-sw-status="autoCheckUpdate" aria-live="polite"></span>
+            <button type="button" id="ag-ns-sw-autoCheckUpdate" class="ag-ns-switch" role="switch" aria-checked="false" data-ag-ns-switch="autoCheckUpdate"></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="hostSettings.beta.label">接收预发布测试版本</div>
+          <div class="ag-ns-row-desc" data-i18n="hostSettings.beta.desc">开启后检查更新可获取 Beta 通道版本</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-switch-wrap">
+            <span class="ag-ns-switch-state" data-ag-ns-sw-status="betaChannel" aria-live="polite"></span>
+            <button type="button" id="ag-ns-sw-betaChannel" class="ag-ns-switch" role="switch" aria-checked="false" data-ag-ns-switch="betaChannel"></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 9. 本地数据与诊断 -->
+  <div id="ag-ns-sec-data" class="ag-ns-group" data-section-id="settings-diag-card">
+    <h2 class="ag-ns-group-title" data-i18n="ns.group.data">本地数据与诊断</h2>
+    <div class="ag-ns-card">
+      <div class="ag-ns-row ag-ns-row-stack">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <div class="ag-ns-row-text">
+            <div id="ag-hs-sec-diag" class="ag-ns-row-title" data-i18n="hostSettings.sec.diag">诊断日志与状态导出</div>
+            <div class="ag-ns-row-desc" data-i18n="ns.exportDiag.desc">用于排查采集异常或备份当前运行态信息</div>
+          </div>
+          <div class="ag-ns-control">
+            <button type="button" id="ag-hs-btn-copy-diag" class="ag-ns-btn" data-ag-ns-action="copyDiag" data-i18n="hostSettings.btn.copyDiag">复制诊断信息</button>
+            <button type="button" id="ag-ns-btn-export-diag" class="ag-ns-btn" data-ag-ns-action="exportDiag" data-i18n="ns.exportDiag.btn">导出诊断包</button>
+          </div>
+        </div>
+        <div id="ag-hs-diag-summary" class="ag-ns-note-box"></div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="ns.clearCache.title">清理本地统计缓存</div>
+          <div id="ag-ns-cache-size-desc" class="ag-ns-row-desc">当前占用 0 KB · 清理不影响原有配置项</div>
+        </div>
+        <div class="ag-ns-control">
+          <button type="button" id="ag-ns-btn-clear-cache" class="ag-ns-btn ag-ns-btn-danger" data-ag-ns-action="clearCache" data-i18n="ns.clearCache.btn">清理缓存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shadow DOM 内联轻提示 -->
+  <div id="ag-ns-toast" class="ag-ns-toast" role="status" aria-live="polite" hidden></div>
+</section>
+`.trim();
+  }
+
+  function closeAllNativeDropdowns(container, exceptWrap) {
+    if (!container || typeof container.querySelectorAll !== 'function') return;
+    var openWraps = container.querySelectorAll('.ag-ns-dd-wrap.is-open');
+    for (var i = 0; i < openWraps.length; i++) {
+      var w = openWraps[i];
+      if (w === exceptWrap) continue;
+      w.classList?.remove?.('is-open', 'open-up', 'align-right');
+      var trig = w.querySelector ? w.querySelector('.ag-ns-dd-trigger') : null;
+      if (trig) trig.setAttribute?.('aria-expanded', 'false');
+    }
+    var raised = container.querySelectorAll('.ag-ns-card.is-dropdown-open, .ag-ns-group.is-dropdown-open');
+    for (var j = 0; j < raised.length; j++) {
+      if (exceptWrap && raised[j].contains && raised[j].contains(exceptWrap)) continue;
+      raised[j].classList?.remove?.('is-dropdown-open');
+    }
+  }
+
+  function collectNativeSelectEntries(sel) {
+    var entries = [];
+    if (!sel) return entries;
+    var pushOpt = function (o) {
+      if (!o || o.hidden || o.disabled) return;
+      entries.push({
+        value: String(o.value ?? ''),
+        label: String(o.textContent || o.text || o.value || '').trim()
+      });
+    };
+    var kids = sel.children ? Array.from(sel.children) : [];
+    if (kids.length > 0) {
+      for (var i = 0; i < kids.length; i++) {
+        var child = kids[i];
+        var tag = String(child?.tagName || '').toUpperCase();
+        if (tag === 'OPTGROUP') {
+          var subKids = child.children ? Array.from(child.children) : [];
+          var visibleSub = [];
+          for (var s = 0; s < subKids.length; s++) {
+            if (subKids[s] && !subKids[s].hidden && !subKids[s].disabled) {
+              visibleSub.push(subKids[s]);
+            }
+          }
+          if (visibleSub.length > 0) {
+            var gLabel = String(child.getAttribute?.('label') || child.label || '').trim();
+            if (gLabel) entries.push({ isGroup: true, label: gLabel });
+            for (var v = 0; v < visibleSub.length; v++) pushOpt(visibleSub[v]);
+          }
+        } else if (tag === 'OPTION') {
+          pushOpt(child);
+        }
+      }
+    }
+    if (entries.length === 0 && sel.options) {
+      var allOpts = Array.from(sel.options);
+      for (var a = 0; a < allOpts.length; a++) pushOpt(allOpts[a]);
+    }
+    return entries;
+  }
+
+  function resolveNativeSelectLabel(sel) {
+    if (!sel) return '';
+    var curVal = String(sel.value ?? '');
+    var opts = sel.options ? Array.from(sel.options) : [];
+    for (var i = 0; i < opts.length; i++) {
+      if (String(opts[i].value ?? '') === curVal) {
+        return String(opts[i].textContent || opts[i].text || curVal).trim();
+      }
+    }
+    var entries = collectNativeSelectEntries(sel);
+    for (var j = 0; j < entries.length; j++) {
+      if (!entries[j].isGroup) return entries[j].label;
+    }
+    return curVal;
+  }
+
+  function enhanceNativeSelect(container, sel) {
+    if (!container || !sel || sel._agNsDdCtrl) return sel?._agNsDdCtrl || null;
+    var doc = container.ownerDocument || (typeof document !== 'undefined' ? document : null);
+    if (!doc || typeof doc.createElement !== 'function' || !sel.parentNode) return null;
+
+    var key = sel.getAttribute?.('data-ag-ns-select') || sel.id || '';
+    sel.classList?.add?.('is-enhanced');
+    sel.setAttribute?.('aria-hidden', 'true');
+    sel.setAttribute?.('tabindex', '-1');
+
+    var wrap = doc.createElement('div');
+    wrap.className = 'ag-ns-dd-wrap';
+    wrap.setAttribute('data-dd-key', key);
+    if (sel.id) wrap.setAttribute('data-dd-for', sel.id);
+
+    var trigger = doc.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'ag-ns-dd-trigger';
+    if (sel.id) trigger.id = sel.id + '-trigger';
+    trigger.setAttribute('role', 'combobox');
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    if (sel.id) trigger.setAttribute('aria-controls', sel.id + '-menu');
+
+    var labelEl = doc.createElement('span');
+    labelEl.className = 'ag-ns-dd-label';
+
+    var arrowEl = doc.createElement('span');
+    arrowEl.className = 'ag-ns-dd-arrow';
+    arrowEl.setAttribute('aria-hidden', 'true');
+    arrowEl.innerHTML = '<svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4.25 6 7.75l3.5-3.5"/></svg>';
+
+    trigger.appendChild(labelEl);
+    trigger.appendChild(arrowEl);
+
+    var menu = doc.createElement('div');
+    menu.className = 'ag-ns-dd-menu';
+    menu.setAttribute('role', 'listbox');
+    if (sel.id) menu.id = sel.id + '-menu';
+
+    wrap.appendChild(trigger);
+    wrap.appendChild(menu);
+    sel.parentNode.insertBefore(wrap, sel.nextSibling);
+
+    var focusIdx = -1;
+    var visibleOpts = [];
+
+    function focusTriggerNoScroll() {
+      if (typeof trigger.focus !== 'function') return;
+      try {
+        trigger.focus({ preventScroll: true });
+      } catch {
+        trigger.focus();
+      }
+    }
+
+    function getUiLangHint() {
+      var activeSeg = container.querySelector ? container.querySelector('[data-ag-ns-seg="panelLanguage"] .ag-ns-seg-btn.is-active') : null;
+      return activeSeg?.getAttribute?.('data-val') || 'zh-CN';
+    }
+
+    function closeMenu(restoreFocus) {
+      wrap.classList?.remove?.('is-open', 'open-up', 'align-right');
+      trigger.setAttribute('aria-expanded', 'false');
+      var card = wrap.closest ? wrap.closest('.ag-ns-card') : null;
+      var group = wrap.closest ? wrap.closest('.ag-ns-group') : null;
+      if (card) card.classList?.remove?.('is-dropdown-open');
+      if (group) group.classList?.remove?.('is-dropdown-open');
+      focusIdx = -1;
+      if (restoreFocus) focusTriggerNoScroll();
+    }
+
+    function selectEntry(entry) {
+      if (!entry) return;
+      var changed = String(sel.value ?? '') !== String(entry.value ?? '');
+      sel.value = entry.value;
+      syncLabel();
+      closeMenu(true);
+      if (changed) {
+        if (typeof Event !== 'undefined') {
+          sel.dispatchEvent?.(new Event('change', { bubbles: true }));
+        } else {
+          sel.dispatchEvent?.({ type: 'change', target: sel });
+        }
+      }
+    }
+
+    function setKeyboardFocus(nextIdx) {
+      var itemEls = menu.querySelectorAll ? menu.querySelectorAll('.ag-ns-dd-item') : [];
+      if (!itemEls.length) return;
+      focusIdx = Math.max(0, Math.min(nextIdx, itemEls.length - 1));
+      for (var i = 0; i < itemEls.length; i++) {
+        itemEls[i].classList?.toggle?.('is-focus', i === focusIdx);
+      }
+    }
+
+    function renderMenuItems(filterKw) {
+      var listBox = menu.querySelector ? menu.querySelector('.ag-ns-dd-list') : null;
+      if (!listBox) return;
+      if (typeof listBox.replaceChildren === 'function') listBox.replaceChildren();
+      else listBox.innerHTML = '';
+
+      var kw = String(filterKw || '').trim().toLowerCase();
+      var allEntries = collectNativeSelectEntries(sel);
+      var curVal = String(sel.value ?? '');
+      var filtered = [];
+      var pendingGroup = null;
+      visibleOpts = [];
+
+      for (var i = 0; i < allEntries.length; i++) {
+        var entry = allEntries[i];
+        if (entry.isGroup) {
+          pendingGroup = entry;
+          continue;
+        }
+        var hit = !kw || entry.label.toLowerCase().indexOf(kw) >= 0 || entry.value.toLowerCase().indexOf(kw) >= 0;
+        if (hit) {
+          if (pendingGroup) {
+            filtered.push(pendingGroup);
+            pendingGroup = null;
+          }
+          filtered.push(entry);
+          visibleOpts.push(entry);
+        }
+      }
+
+      if (visibleOpts.length === 0) {
+        var lang = getUiLangHint();
+        var emptyDiv = doc.createElement('div');
+        emptyDiv.className = 'ag-ns-dd-empty';
+        emptyDiv.textContent = lang === 'en' ? 'No matching options' : (lang === 'zh-TW' ? '無符合項目' : '无匹配选项');
+        listBox.appendChild(emptyDiv);
+        focusIdx = -1;
+        return;
+      }
+
+      var optCursor = 0;
+      for (var j = 0; j < filtered.length; j++) {
+        var it = filtered[j];
+        if (it.isGroup) {
+          var gEl = doc.createElement('div');
+          gEl.className = 'ag-ns-dd-group';
+          gEl.setAttribute('role', 'presentation');
+          gEl.textContent = it.label;
+          listBox.appendChild(gEl);
+          continue;
+        }
+        (function (optEntry, optIdx) {
+          var isSel = optEntry.value === curVal;
+          var itemEl = doc.createElement('div');
+          itemEl.className = 'ag-ns-dd-item' + (isSel ? ' is-selected' : '');
+          itemEl.setAttribute('role', 'option');
+          itemEl.setAttribute('aria-selected', isSel ? 'true' : 'false');
+          itemEl.setAttribute('data-value', optEntry.value);
+          itemEl.setAttribute('data-index', String(optIdx));
+          itemEl.title = optEntry.label;
+
+          var txt = doc.createElement('span');
+          txt.className = 'ag-ns-dd-item-text';
+          txt.textContent = optEntry.label;
+
+          var chk = doc.createElement('span');
+          chk.className = 'ag-ns-dd-check';
+          chk.setAttribute('aria-hidden', 'true');
+          chk.innerHTML = '<svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.2 6.3 4.9 9l4.9-5.8"/></svg>';
+
+          itemEl.appendChild(txt);
+          itemEl.appendChild(chk);
+          itemEl.addEventListener('click', function (ev) {
+            ev?.stopPropagation?.();
+            selectEntry(optEntry);
+          });
+          listBox.appendChild(itemEl);
+          if (isSel) focusIdx = optIdx;
+        })(it, optCursor++);
+      }
+    }
+
+    function buildMenu() {
+      if (typeof menu.replaceChildren === 'function') menu.replaceChildren();
+      else menu.innerHTML = '';
+
+      var allEntries = collectNativeSelectEntries(sel);
+      var optionCount = 0;
+      for (var i = 0; i < allEntries.length; i++) {
+        if (!allEntries[i].isGroup) optionCount++;
+      }
+
+      var searchInput = null;
+      if (optionCount > 8) {
+        var lang = getUiLangHint();
+        var sWrap = doc.createElement('div');
+        sWrap.className = 'ag-ns-dd-search-wrap';
+        searchInput = doc.createElement('input');
+        searchInput.type = 'text';
+        searchInput.className = 'ag-ns-dd-search-input';
+        searchInput.placeholder = lang === 'en' ? 'Search...' : (lang === 'zh-TW' ? '搜尋…' : '搜索…');
+        searchInput.addEventListener('click', function (ev) { ev?.stopPropagation?.(); });
+        searchInput.addEventListener('input', function (ev) {
+          renderMenuItems(ev.target ? ev.target.value : '');
+        });
+        searchInput.addEventListener('keydown', handleOpenKeydown);
+        sWrap.appendChild(searchInput);
+        menu.appendChild(sWrap);
+      }
+
+      var listBox = doc.createElement('div');
+      listBox.className = 'ag-ns-dd-list';
+      menu.appendChild(listBox);
+
+      renderMenuItems('');
+      return searchInput;
+    }
+
+    function openMenu() {
+      closeAllNativeDropdowns(container, wrap);
+      var searchInput = buildMenu();
+
+      try {
+        var rect = trigger.getBoundingClientRect ? trigger.getBoundingClientRect() : null;
+        var rootHost = container.getRootNode ? container.getRootNode().host : null;
+        var hostRect = rootHost && rootHost.getBoundingClientRect ? rootHost.getBoundingClientRect() : null;
+        var viewBottom = hostRect && hostRect.height > 0 ? Math.min(hostRect.bottom, (typeof window !== 'undefined' ? window.innerHeight : 900)) : (typeof window !== 'undefined' ? window.innerHeight : 900);
+        var viewTop = hostRect && hostRect.height > 0 ? Math.max(hostRect.top, 0) : 0;
+        var viewRight = hostRect && hostRect.width > 0 ? hostRect.right : (typeof window !== 'undefined' ? window.innerWidth : 1200);
+        if (rect && rect.height > 0) {
+          var spaceBelow = viewBottom - rect.bottom;
+          var spaceAbove = rect.top - viewTop;
+          if (spaceBelow < 240 && spaceAbove > spaceBelow) {
+            wrap.classList?.add?.('open-up');
+          } else {
+            wrap.classList?.remove?.('open-up');
+          }
+          if (rect.left + Math.max(rect.width, 200) > viewRight - 10) {
+            wrap.classList?.add?.('align-right');
+          } else {
+            wrap.classList?.remove?.('align-right');
+          }
+        }
+      } catch {
+        wrap.classList?.remove?.('open-up', 'align-right');
+      }
+
+      var card = wrap.closest ? wrap.closest('.ag-ns-card') : null;
+      var group = wrap.closest ? wrap.closest('.ag-ns-group') : null;
+      if (card) card.classList?.add?.('is-dropdown-open');
+      if (group) group.classList?.add?.('is-dropdown-open');
+
+      wrap.classList?.add?.('is-open');
+      trigger.setAttribute('aria-expanded', 'true');
+
+      if (searchInput && typeof searchInput.focus === 'function') {
+        try { searchInput.focus({ preventScroll: true }); } catch { searchInput.focus(); }
+      }
+    }
+
+    function handleOpenKeydown(ev) {
+      if (!wrap.classList?.contains?.('is-open')) return;
+      if (ev.key === 'ArrowDown') {
+        ev.preventDefault?.();
+        setKeyboardFocus(focusIdx < 0 ? 0 : focusIdx + 1);
+      } else if (ev.key === 'ArrowUp') {
+        ev.preventDefault?.();
+        setKeyboardFocus(focusIdx <= 0 ? 0 : focusIdx - 1);
+      } else if (ev.key === 'Enter') {
+        ev.preventDefault?.();
+        if (focusIdx >= 0 && visibleOpts[focusIdx]) {
+          selectEntry(visibleOpts[focusIdx]);
+        } else if (visibleOpts.length === 1) {
+          selectEntry(visibleOpts[0]);
+        }
+      } else if (ev.key === 'Escape') {
+        ev.preventDefault?.();
+        closeMenu(true);
+      }
+    }
+
+    trigger.addEventListener('click', function (ev) {
+      ev?.stopPropagation?.();
+      if (wrap.classList?.contains?.('is-open')) closeMenu(false);
+      else openMenu();
+    });
+
+    trigger.addEventListener('keydown', function (ev) {
+      var isOpen = Boolean(wrap.classList?.contains?.('is-open'));
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault?.();
+        if (isOpen && ev.key === 'Enter') handleOpenKeydown(ev);
+        else if (isOpen) closeMenu(false);
+        else openMenu();
+      } else if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+        ev.preventDefault?.();
+        if (!isOpen) openMenu();
+        else handleOpenKeydown(ev);
+      } else if (ev.key === 'Escape' && isOpen) {
+        ev.preventDefault?.();
+        closeMenu(true);
+      }
+    });
+
+    function syncLabel() {
+      var txt = resolveNativeSelectLabel(sel);
+      if (labelEl.textContent !== txt) labelEl.textContent = txt;
+      trigger.title = txt;
+      if (wrap.classList?.contains?.('is-open')) {
+        renderMenuItems('');
+      }
+    }
+
+    syncLabel();
+    var ctrl = { wrap: wrap, trigger: trigger, menu: menu, sync: syncLabel, close: closeMenu, open: openMenu };
+    sel._agNsDdCtrl = ctrl;
+    return ctrl;
+  }
+
+  function syncAllNativeSelectDropdowns(container) {
+    if (!container || typeof container.querySelectorAll !== 'function') return;
+    var selects = container.querySelectorAll('[data-ag-ns-select]');
+    for (var i = 0; i < selects.length; i++) {
+      var ctrl = selects[i]._agNsDdCtrl || enhanceNativeSelect(container, selects[i]);
+      if (ctrl && typeof ctrl.sync === 'function') ctrl.sync();
+    }
+  }
+
+  function initContextSettingsUI(root, callbacks) {
+    var container = byId(root, 'ag-ns-root');
+    if (!container || container.dataset?.agNsBound === '1') {
+      return;
+    }
+    if (container.dataset) container.dataset.agNsBound = '1';
+
+    var cbs = callbacks || {};
+
+    var segGroups = container.querySelectorAll ? container.querySelectorAll('[data-ag-ns-seg]') : [];
+    for (var i = 0; i < segGroups.length; i++) {
+      (function (group) {
+        var key = group.getAttribute('data-ag-ns-seg');
+        group.addEventListener('click', function (e) {
+          var btn = e.target && e.target.closest ? e.target.closest('.ag-ns-seg-btn') : null;
+          if (!btn || !group.contains(btn) || btn.disabled) return;
+          var val = btn.getAttribute('data-val');
+          if (typeof cbs.onChange === 'function') {
+            cbs.onChange(key, val, { sourceEl: btn });
+          }
+        });
+      })(segGroups[i]);
+    }
+
+    var switches = container.querySelectorAll ? container.querySelectorAll('[data-ag-ns-switch]') : [];
+    for (var j = 0; j < switches.length; j++) {
+      (function (sw) {
+        var key = sw.getAttribute('data-ag-ns-switch');
+        sw.addEventListener('click', function () {
+          if (sw.disabled || sw.getAttribute('aria-busy') === 'true') return;
+          var nextVal = sw.getAttribute('aria-checked') !== 'true';
+          if (typeof cbs.onChange === 'function') {
+            cbs.onChange(key, nextVal, { sourceEl: sw });
+          }
+        });
+      })(switches[j]);
+    }
+
+    var selects = container.querySelectorAll ? container.querySelectorAll('[data-ag-ns-select]') : [];
+    for (var k = 0; k < selects.length; k++) {
+      (function (sel) {
+        var key = sel.getAttribute('data-ag-ns-select');
+        enhanceNativeSelect(container, sel);
+        sel.addEventListener('change', function () {
+          if (sel._agNsDdCtrl && typeof sel._agNsDdCtrl.sync === 'function') {
+            sel._agNsDdCtrl.sync();
+          }
+          if (typeof cbs.onChange === 'function') {
+            cbs.onChange(key, sel.value, { sourceEl: sel });
+          }
+        });
+      })(selects[k]);
+    }
+
+    container.addEventListener('click', function (e) {
+      if (!e.target?.closest?.('.ag-ns-dd-wrap')) {
+        closeAllNativeDropdowns(container, null);
+      }
+    });
+
+    var ownerDoc = container.ownerDocument || (typeof document !== 'undefined' ? document : null);
+    if (ownerDoc && typeof ownerDoc.addEventListener === 'function') {
+      ownerDoc._agNsActiveContainer = container;
+      if (!ownerDoc._agNsDdOutsideBound) {
+        ownerDoc._agNsDdOutsideBound = true;
+        ownerDoc.addEventListener('click', function (e) {
+          var activeBox = ownerDoc._agNsActiveContainer;
+          if (!activeBox || !activeBox.isConnected) return;
+          var path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+          for (var p = 0; p < path.length; p++) {
+            if (path[p]?.classList?.contains?.('ag-ns-dd-wrap')) return;
+          }
+          closeAllNativeDropdowns(activeBox, null);
+        });
+      }
+    }
+
+    var inputs = container.querySelectorAll ? container.querySelectorAll('[data-ag-ns-input]') : [];
+    for (var inpIdx = 0; inpIdx < inputs.length; inpIdx++) {
+      (function (inp) {
+        var key = inp.getAttribute('data-ag-ns-input');
+        inp.addEventListener('input', function () {
+          if (typeof cbs.onChange === 'function') {
+            cbs.onChange(key, inp.value, { sourceEl: inp, eventType: 'input' });
+          }
+        });
+      })(inputs[inpIdx]);
+    }
+
+    var candWrap = byId(root, 'ag-ns-autoswitch-candidates');
+    if (candWrap) {
+      candWrap.addEventListener('change', function (e) {
+        var chk = e.target;
+        if (!chk || chk.type !== 'checkbox') return;
+        var chip = chk.closest ? chk.closest('.ag-ns-cand-chip') : chk.parentNode;
+        if (chip && chip.classList) chip.classList.toggle('is-checked', Boolean(chk.checked));
+        var checkedEmails = [];
+        var allChks = candWrap.querySelectorAll ? candWrap.querySelectorAll('input[type="checkbox"]') : [];
+        for (var ci = 0; ci < allChks.length; ci++) {
+          if (allChks[ci].checked && allChks[ci].value) {
+            checkedEmails.push(allChks[ci].value);
+          }
+        }
+        if (typeof cbs.onChange === 'function') {
+          cbs.onChange('autoSwitchCandidates', checkedEmails, { sourceEl: chk });
+        }
+      });
+    }
+
+    var toggleColorsBtn = byId(root, 'ag-ns-toggle-colors');
+    var toggleColorsLabel = byId(root, 'ag-ns-toggle-colors-label');
+    var colorsBody = byId(root, 'ag-ns-colors-body');
+    if (toggleColorsBtn && colorsBody) {
+      toggleColorsBtn.addEventListener('click', function () {
+        var nextOpen = colorsBody.hidden;
+        colorsBody.hidden = !nextOpen;
+        toggleColorsBtn.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+        if (toggleColorsLabel) {
+          var expandTxt = toggleColorsBtn.getAttribute('data-label-expand') || '展开设置';
+          var collapseTxt = toggleColorsBtn.getAttribute('data-label-collapse') || '收起设置';
+          toggleColorsLabel.textContent = nextOpen ? collapseTxt : expandTxt;
+        }
+      });
+    }
+
+    var colorInputs = container.querySelectorAll ? container.querySelectorAll('[data-ag-ns-color]') : [];
+    for (var m = 0; m < colorInputs.length; m++) {
+      (function (input) {
+        var colorKey = input.getAttribute('data-ag-ns-color');
+        input.addEventListener('input', function () {
+          var hexUpper = String(input.value || '').toUpperCase();
+          var hexLabel = container.querySelector ? container.querySelector('[data-ag-ns-color-hex="' + colorKey + '"]') : null;
+          if (hexLabel) {
+            hexLabel.textContent = hexUpper;
+          }
+          if (typeof cbs.onColorChange === 'function') {
+            cbs.onColorChange(colorKey, input.value);
+          }
+        });
+      })(colorInputs[m]);
+    }
+
+    var resetColorsBtn = byId(root, 'ag-ns-reset-colors');
+    if (resetColorsBtn) {
+      resetColorsBtn.addEventListener('click', function () {
+        if (typeof cbs.onResetColors === 'function') {
+          cbs.onResetColors();
+        }
+      });
+    }
+
+    var actionBtns = container.querySelectorAll ? container.querySelectorAll('[data-ag-ns-action]') : [];
+    for (var n = 0; n < actionBtns.length; n++) {
+      (function (btn) {
+        var actionName = btn.getAttribute('data-ag-ns-action');
+        btn.addEventListener('click', function () {
+          var payload = null;
+          if (actionName === 'applyProxy' || actionName === 'testProxy') {
+            var proxyInput = byId(root, 'ag-ns-input-proxyUrl');
+            payload = { proxyUrl: proxyInput ? String(proxyInput.value || '').trim() : '' };
+          }
+          if (typeof cbs.onAction === 'function') {
+            cbs.onAction(actionName, payload);
+          }
+        });
+      })(actionBtns[n]);
+    }
+  }
+
+  function renderContextSettingsUI(root, data) {
+    var container = byId(root, 'ag-ns-root');
+    if (!container || !data) return;
+
+    var settings = data.settings || {};
+    var colors = data.colors || {};
+    var status = data.status || {};
+    var swFbMap = status.switchFeedback || {};
+
+    var segGroups = container.querySelectorAll ? container.querySelectorAll('[data-ag-ns-seg]') : [];
+    for (var i = 0; i < segGroups.length; i++) {
+      var group = segGroups[i];
+      var segKey = group.getAttribute('data-ag-ns-seg');
+      var curVal = settings[segKey] !== undefined ? String(settings[segKey]) : '';
+      var btns = group.querySelectorAll ? group.querySelectorAll('.ag-ns-seg-btn') : [];
+      for (var b = 0; b < btns.length; b++) {
+        var isActive = btns[b].getAttribute('data-val') === curVal;
+        btns[b].classList?.toggle?.('is-active', isActive);
+        btns[b].setAttribute?.('aria-checked', isActive ? 'true' : 'false');
+      }
+    }
+
+    var switches = container.querySelectorAll ? container.querySelectorAll('[data-ag-ns-switch]') : [];
+    for (var j = 0; j < switches.length; j++) {
+      var sw = switches[j];
+      var swKey = sw.getAttribute('data-ag-ns-switch');
+      var fb = swFbMap[swKey] || null;
+      var isOn = Boolean(settings[swKey]);
+      var isBusy = Boolean(fb && fb.busy);
+      sw.classList?.toggle?.('is-on', isOn);
+      sw.setAttribute?.('aria-checked', isOn ? 'true' : 'false');
+      sw.disabled = Boolean(isBusy || (fb && fb.disabled));
+      if (isBusy) sw.setAttribute?.('aria-busy', 'true');
+      else sw.removeAttribute?.('aria-busy');
+
+      var stEl = container.querySelector ? container.querySelector('[data-ag-ns-sw-status="' + swKey + '"]') : null;
+      if (stEl) {
+        if (fb && fb.text) {
+          stEl.textContent = String(fb.text);
+          stEl.setAttribute('data-tone', fb.tone || 'idle');
+        } else {
+          stEl.textContent = '';
+          stEl.setAttribute('data-tone', 'idle');
+        }
+      }
+    }
+
+    var selects = container.querySelectorAll ? container.querySelectorAll('[data-ag-ns-select]') : [];
+    for (var k = 0; k < selects.length; k++) {
+      var sel = selects[k];
+      var selKey = sel.getAttribute('data-ag-ns-select');
+      if (selKey === 'autoSwitchTarget') {
+        var legacyOpt = byId(root, 'ag-ns-opt-legacy-target');
+        if (legacyOpt) {
+          var isLegacy = !settings.autoSwitchTarget;
+          legacyOpt.hidden = !isLegacy;
+        }
+      }
+      if (settings[selKey] !== undefined && sel.value !== String(settings[selKey]) && root.activeElement !== sel) {
+        sel.value = String(settings[selKey]);
+      }
+    }
+    syncAllNativeSelectDropdowns(container);
+
+    var proxyInput = byId(root, 'ag-ns-input-proxyUrl');
+    if (proxyInput && typeof settings.proxyUrl === 'string' && root.activeElement !== proxyInput) {
+      if (proxyInput.value !== settings.proxyUrl) proxyInput.value = settings.proxyUrl;
+    }
+
+    var thInput = byId(root, 'ag-ns-inp-autoSwitchThreshold');
+    if (thInput && settings.autoSwitchThreshold !== undefined && root.activeElement !== thInput) {
+      var thStr = String(settings.autoSwitchThreshold);
+      if (thInput.value !== thStr) thInput.value = thStr;
+    }
+
+    var colorKeys = ['panelBg', 'ringUsed', 'ringTrack', 'contextText', 'speedText', 'tokenTotal', 'tokenAccent'];
+    for (var c = 0; c < colorKeys.length; c++) {
+      var ck = colorKeys[c];
+      if (!colors[ck]) continue;
+      var colorInput = container.querySelector ? container.querySelector('[data-ag-ns-color="' + ck + '"]') : null;
+      var colorHex = container.querySelector ? container.querySelector('[data-ag-ns-color-hex="' + ck + '"]') : null;
+      if (colorInput && String(colorInput.value || '').toLowerCase() !== String(colors[ck]).toLowerCase()) {
+        colorInput.value = colors[ck];
+      }
+      if (colorHex) {
+        colorHex.textContent = String(colors[ck]).toUpperCase();
+      }
+    }
+
+    // 候选账号列表增量渲染，避免打断当前滚动与焦点
+    var candWrap = byId(root, 'ag-ns-autoswitch-candidates');
+    if (candWrap && Array.isArray(status.autoSwitchCandidates)) {
+      var candSig = JSON.stringify(status.autoSwitchCandidates);
+      if (candWrap.getAttribute('data-cand-sig') !== candSig) {
+        candWrap.setAttribute('data-cand-sig', candSig);
+        if (typeof candWrap.replaceChildren === 'function') {
+          candWrap.replaceChildren();
+        } else {
+          candWrap.innerHTML = '';
+        }
+        var doc = container.ownerDocument || (typeof document !== 'undefined' ? document : null);
+        if (status.autoSwitchCandidates.length === 0 && doc) {
+          var emptySpan = doc.createElement('span');
+          emptySpan.className = 'ag-ns-row-desc';
+          emptySpan.textContent = status.autoSwitchEmptyCandidatesText || '暂无可切入的备选账号';
+          candWrap.appendChild(emptySpan);
+        } else if (doc) {
+          for (var ci = 0; ci < status.autoSwitchCandidates.length; ci++) {
+            var item = status.autoSwitchCandidates[ci];
+            var lbl = doc.createElement('label');
+            lbl.className = 'ag-ns-cand-chip' + (item.selected ? ' is-checked' : '');
+            var chk = doc.createElement('input');
+            chk.type = 'checkbox';
+            chk.value = item.email;
+            chk.checked = Boolean(item.selected);
+            var span = doc.createElement('span');
+            span.textContent = item.label || item.maskedEmail || item.email;
+            lbl.appendChild(chk);
+            lbl.appendChild(span);
+            candWrap.appendChild(lbl);
+          }
+        }
+      }
+    }
+
+    var asPill = byId(root, 'ag-ns-autoswitch-pill');
+    if (asPill && status.autoSwitchLabel) {
+      asPill.textContent = status.autoSwitchLabel;
+      asPill.className = 'ag-ns-pill ' + (status.autoSwitchToneClass || '');
+    }
+    var asNote = byId(root, 'ag-ns-autoswitch-note');
+    if (asNote && status.autoSwitchNote !== undefined) {
+      asNote.textContent = status.autoSwitchNote || '';
+      asNote.classList?.toggle?.('is-error', status.autoSwitchNoteTone === 'error');
+    }
+    var asLiveSummary = byId(root, 'ag-ns-autoswitch-live-summary');
+    if (asLiveSummary) {
+      if (status.autoSwitchLiveSummary) {
+        asLiveSummary.hidden = false;
+        asLiveSummary.textContent = status.autoSwitchLiveSummary;
+        asLiveSummary.className = 'ag-ns-note-box ' + (status.autoSwitchLiveSummaryTone === 'warn' ? 'is-error' : '');
+      } else {
+        asLiveSummary.hidden = true;
+      }
+    }
+
+    var i18nBadge = byId(root, 'ag-ns-i18n-badge');
+    if (i18nBadge && status.clientLangBadgeText) {
+      i18nBadge.textContent = status.clientLangBadgeText;
+      i18nBadge.className = 'ag-ns-pill ' + (status.clientLangBadgeClass || '');
+    }
+    var i18nDesc = byId(root, 'ag-ns-i18n-desc');
+    if (i18nDesc && status.clientLangDescText) {
+      i18nDesc.textContent = status.clientLangDescText;
+    }
+    var applyClientLangBtn = byId(root, 'ag-ns-btn-apply-client-lang');
+    if (applyClientLangBtn) {
+      applyClientLangBtn.disabled = Boolean(status.clientLangBusy);
+      if (status.clientLangBtnText) applyClientLangBtn.textContent = status.clientLangBtnText;
+    }
+    var clientLangFb = byId(root, 'ag-ns-client-lang-feedback');
+    if (clientLangFb) {
+      if (status.clientLangFeedback) {
+        clientLangFb.hidden = false;
+        clientLangFb.textContent = status.clientLangFeedback;
+        clientLangFb.className = 'ag-ns-note-box ' + (status.clientLangFeedbackOk === false ? 'is-error' : (status.clientLangFeedbackOk === true ? 'is-ok' : ''));
+      } else {
+        clientLangFb.hidden = true;
+      }
+    }
+
+    var rehydrateBadge = byId(root, 'ag-ns-rehydrate-badge');
+    if (rehydrateBadge && status.rehydrateBadgeText) {
+      rehydrateBadge.textContent = status.rehydrateBadgeText;
+      rehydrateBadge.className = 'ag-ns-pill ' + (status.rehydrateBadgeClass || '');
+    }
+    var rehydrateHookEl = byId(root, 'ag-ns-rehydrate-hook');
+    if (rehydrateHookEl && status.rehydrateHookText !== undefined) rehydrateHookEl.textContent = status.rehydrateHookText;
+    var rehydratePyEl = byId(root, 'ag-ns-rehydrate-python');
+    if (rehydratePyEl && status.rehydratePythonText !== undefined) rehydratePyEl.textContent = status.rehydratePythonText;
+    var btnRehydratePy = byId(root, 'ag-ns-btn-rehydrate-install-py');
+    if (btnRehydratePy) btnRehydratePy.hidden = !status.rehydrateShowInstallPy;
+    var btnRehydrateEn = byId(root, 'ag-ns-btn-rehydrate-enable');
+    var btnRehydrateDis = byId(root, 'ag-ns-btn-rehydrate-disable');
+    if (btnRehydrateEn) btnRehydrateEn.disabled = Boolean(status.rehydrateBusy || status.rehydrateDisableEnable);
+    if (btnRehydrateDis) btnRehydrateDis.disabled = Boolean(status.rehydrateBusy || status.rehydrateDisableDisable);
+
+    var enhBadge = byId(root, 'ag-ns-enhance-badge');
+    if (enhBadge && status.enhanceBadgeText) {
+      enhBadge.textContent = status.enhanceBadgeText;
+      enhBadge.className = 'ag-ns-pill ' + (status.enhanceBadgeClass || '');
+    }
+
+    var proxyBadge = byId(root, 'ag-ns-proxy-badge');
+    if (proxyBadge) {
+      proxyBadge.textContent = status.proxyBadgeText || (settings.proxyEnabled ? '已启用' : '未启用');
+      proxyBadge.className = 'ag-ns-pill ' + (status.proxyBadgeClass || (settings.proxyEnabled ? 'is-accent' : ''));
+    }
+    var proxyDesc = byId(root, 'ag-ns-proxy-desc');
+    if (proxyDesc && status.proxyDescText) {
+      proxyDesc.textContent = status.proxyDescText;
+    }
+
+    var rateDesc = byId(root, 'ag-ns-billing-rate-desc');
+    if (rateDesc && status.billingHint) {
+      rateDesc.textContent = status.billingHint;
+    }
+
+    var updateMeta = byId(root, 'ag-ns-update-meta');
+    if (updateMeta) {
+      var channelText = settings.betaChannel ? 'Beta' : 'Stable';
+      var versionText = status.version || '--';
+      updateMeta.textContent = channelText + ' · ' + versionText;
+    }
+
+    var checkUpdateBtn = byId(root, 'ag-hs-btn-check-update');
+    if (checkUpdateBtn) {
+      var busy = Boolean(status.checkingUpdate);
+      checkUpdateBtn.disabled = busy;
+      checkUpdateBtn.classList?.toggle?.('is-busy', busy);
+    }
+
+    var cacheDesc = byId(root, 'ag-ns-cache-size-desc');
+    if (cacheDesc && status.cacheDescText) {
+      cacheDesc.textContent = status.cacheDescText;
+    }
+
+    if (data.toastMessage) {
+      showToast(root, data.toastMessage);
+    }
+  }
+
+  return {
+    buildNativeSettingsPageCss,
+    buildNativeSettingsPageHtml,
+    initContextSettingsUI,
+    renderContextSettingsUI
+  };
+})();
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    buildNativeSettingsPageCss,
+    buildNativeSettingsPageHtml,
+    initContextSettingsUI,
+    renderContextSettingsUI
+  };
+}
+/**
+ * 宿主原生设置弹窗融合模块
+ * 负责在 Antigravity 原生设置弹窗左侧导航栏紧贴 Browser 项下方单实例挂载 Context Meter 独立设置页，
+ * 由受高度约束的单一纵向滚动容器承载原生风格设置 UI，并在切换回宿主原生页时无损还原原生面板.
+ * 第三方开源归属声明统一见根目录 THIRD_PARTY_NOTICES.md.
+ * @param {Object} deps
+ * @returns {Object}
+ */
+function createHostSettingsController(deps = {}) {
+  const {
+    t = (k) => k,
+    getSnapshot = () => ({}),
+    getNativeSettingsSnapshot = null,
+    onNativeSettingChange = null,
+    onNativeColorChange = null,
+    onNativeResetColors = null,
+    onNativeAction = null,
+    syncThemeTarget = null,
+    onCheckUpdate = () => { },
+    onApplyUpdate = () => { },
+    onRestartHost = () => { },
+    onVerifyRuntime = () => { },
+    onOpenPluginPanel = () => { },
+    onOpenReleasePage = () => { },
+    onCopyDiagnostics = null,
+    onHostPageActivated = null,
+    onHostPageDeactivated = null,
+    applyStaticTranslations = null
+  } = deps;
+
+  const NAV_ID = 'ag-cm-host-settings-nav';
+  const NAV_WRAPPER_ATTR = 'data-ag-hs-nav-wrapper';
+  const PAGE_ID = 'ag-cm-host-settings-page';
+  const STYLE_ID = 'ag-cm-host-settings-styles';
+  const HIDDEN_ATTR = 'data-ag-hs-hidden';
+  const controllerToken = typeof Symbol === 'function' ? Symbol('ag-cm-host-settings-ctrl') : `ag_hs_${Date.now()}_${Math.random()}`;
+
+  let disposed = false;
+  let observer = null;
+  let scanTimer = null;
+  let activeModal = null;
+  let activeSidebar = null;
+  let activeNavList = null;
+  let activeSplitRow = null;
+  let activeContentPane = null;
+  let navItemEl = null;
+  let navButtonEl = null;
+  let pageEl = null;
+  let pageShadow = null;
+  let hostSelected = false;
+  let savedHiddenNodes = [];
+  let savedPageScrollTop = 0;
+  let savedNativePaneScrollTop = 0;
+  let lastMountDiagnostic = 'not_mounted';
+  let activeEnsureTimer = null;
+  let activeLateEnsureTimer = null;
+  let pendingOpenTimer = null;
+  let pendingOpenSeq = 0;
+  const boundNavContainers = typeof WeakSet === 'function' ? new WeakSet() : null;
+
+  function setHiddenSafe(node, hidden, origDisplay = '') {
+    if (!node) return;
+    node.hidden = Boolean(hidden);
+    if (!node.style) return;
+    if (hidden) {
+      if (typeof node.style.setProperty === 'function') {
+        node.style.setProperty('display', 'none', 'important');
+      } else {
+        node.style.display = 'none';
+      }
+    } else if (typeof node.style.removeProperty === 'function') {
+      node.style.removeProperty('display');
+      if (origDisplay) node.style.display = origDisplay;
+    } else {
+      node.style.display = origDisplay || '';
+    }
+  }
+
+  function ensureStyles() {
+    if (typeof document === 'undefined' || !document.head) return;
+    if (document.getElementById(STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = `
+      #${NAV_ID} {
+        display: flex !important;
+        align-items: center !important;
+        gap: 8px !important;
+        width: 100% !important;
+        text-align: left !important;
+        cursor: pointer !important;
+      }
+      #${NAV_ID} > svg,
+      #${NAV_ID} > .ag-hs-nav-label {
+        pointer-events: none !important;
+      }
+      #${NAV_ID}[data-active="true"] {
+        background: var(--sidebar-secondary, var(--vscode-list-activeSelectionBackground, rgba(119, 72, 207, 0.18))) !important;
+        color: var(--vscode-list-activeSelectionForeground, var(--foreground, #f8fafc)) !important;
+        font-weight: 600 !important;
+      }
+      [data-ag-hs-custom-active="true"] button[id^="settings-nav-item-"],
+      [data-ag-hs-custom-active="true"] button[data-testid^="settings-nav-item-"],
+      [data-ag-hs-custom-active="true"] [role="tab"]:not(#${NAV_ID}),
+      [data-ag-hs-custom-active="true"] [data-ag-hs-muted="true"] {
+        opacity: 0.72;
+        background: transparent !important;
+        background-color: transparent !important;
+        box-shadow: none !important;
+      }
+      [data-ag-cm-host-open="true"] [data-ag-cm-split-row="true"] {
+        min-height: 0 !important;
+      }
+      [data-ag-cm-host-open="true"] [data-ag-cm-right-pane="true"] {
+        min-height: 0 !important;
+        overflow: hidden !important;
+      }
+      [data-ag-cm-host-open="true"] [data-ag-cm-right-pane="true"] > :not(#${PAGE_ID}):not(button):not([data-testid*="close"]):not([aria-label*="Close" i]):not([aria-label*="关闭"]):not([aria-label*="關閉"]) {
+        display: none !important;
+      }
+      #${PAGE_ID}[hidden] {
+        display: none !important;
+      }
+      #${PAGE_ID} {
+        display: none;
+        position: relative;
+        box-sizing: border-box;
+        width: 100%;
+        height: 100%;
+        max-height: 100%;
+        min-width: 0;
+        min-height: 0;
+        flex: 1 1 0%;
+        overflow-y: auto;
+        overflow-x: hidden;
+        scrollbar-gutter: stable;
+        padding: 0;
+        margin: 0;
+        background: transparent;
+        color: var(--foreground, #ececef);
+        font-family: inherit;
+        -webkit-font-smoothing: antialiased;
+      }
+      [data-ag-cm-host-open="true"] #${PAGE_ID}:not([hidden]) {
+        display: block !important;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function isPluginOwnedNode(node) {
+    if (!node) return false;
+    if (
+      node.id === 'ag-context-meter' ||
+      node.id === 'ag-context-meter-radial-host' ||
+      node.id === 'ag-context-meter-modal-host' ||
+      node.id === NAV_ID ||
+      node.id === PAGE_ID ||
+      node.getAttribute?.(NAV_WRAPPER_ATTR) === 'true'
+    ) return true;
+    return Boolean(
+      typeof node.closest === 'function' &&
+      node.closest(`#ag-context-meter, #ag-context-meter-radial-host, #ag-context-meter-modal-host, #${NAV_ID}, #${PAGE_ID}, [${NAV_WRAPPER_ATTR}="true"]`)
+    );
+  }
+
+  function isHostNavTestId(node) {
+    if (!node) return false;
+    const id = String(node.id || '');
+    const tid = String(node.getAttribute?.('data-testid') || '');
+    return id.startsWith('settings-nav-item-') || tid.startsWith('settings-nav-item-');
+  }
+
+  function getNavButtons(container) {
+    if (!container) return [];
+    if (typeof container.querySelectorAll === 'function') {
+      const explicit = Array.from(container.querySelectorAll('button[id^="settings-nav-item-"], button[data-testid^="settings-nav-item-"]') || [])
+        .filter((b) => b && b.id !== NAV_ID && !isPluginOwnedNode(b));
+      if (explicit.length > 0) return explicit;
+      const fallback = Array.from(container.querySelectorAll('button, [role="tab"]') || [])
+        .filter((b) => b && b.id !== NAV_ID && !isPluginOwnedNode(b));
+      return fallback;
+    }
+    return Array.from(container.children || []).filter((b) => b && b.id !== NAV_ID && !isPluginOwnedNode(b));
+  }
+
+  function resolveNavRowInList(navList, btn) {
+    if (!btn) return null;
+    if (!navList) return btn;
+    let cur = btn;
+    let depth = 0;
+    while (cur && cur.parentElement && depth < 6) {
+      if (cur.parentElement === navList) return cur;
+      cur = cur.parentElement;
+      depth += 1;
+    }
+    return btn;
+  }
+
+  function isProtectedNativeNode(node) {
+    if (!node) return true;
+    if (node.id === PAGE_ID || node.tagName === 'STYLE' || isPluginOwnedNode(node)) return true;
+    if (node.tagName === 'BUTTON') return true;
+    const testId = String(node.getAttribute?.('data-testid') || '');
+    const ariaLbl = String(node.getAttribute?.('aria-label') || '');
+    const cls = String(node.className || '');
+    if (/close/i.test(testId) || /close|关闭|關閉/i.test(ariaLbl)) return true;
+    if (/\bclose\b/i.test(cls) && !node.children?.length) return true;
+    return false;
+  }
+
+  function findBrowserAnchorButton(navList, explicitBrowserBtn = null) {
+    if (explicitBrowserBtn) {
+      if (!navList || explicitBrowserBtn.parentElement === navList || navList.contains?.(explicitBrowserBtn)) {
+        return explicitBrowserBtn;
+      }
+    }
+    const items = getNavButtons(navList);
+    return (
+      items.find((b) => b.id === 'settings-nav-item-Browser' || b.getAttribute?.('data-testid') === 'settings-nav-item-Browser') ||
+      items.find((b) => /browser|浏览器|瀏覽器/i.test(String(b.textContent || b.id || b.getAttribute?.('data-testid') || ''))) ||
+      items[items.length - 1] ||
+      null
+    );
+  }
+
+  function findRealSidebarAndGroup() {
+    if (typeof document === 'undefined' || typeof document.querySelector !== 'function') return null;
+    const sidebar = document.querySelector('[data-testid="settings-sidebar"]');
+    if (!sidebar || isPluginOwnedNode(sidebar)) return null;
+    const listRoot = sidebar.firstElementChild || sidebar;
+    const groups = Array.from(listRoot?.children || []).filter((ch) => ch && !isPluginOwnedNode(ch));
+    let targetGroup = null;
+    let browserBtn = sidebar.querySelector?.('#settings-nav-item-Browser, [data-testid="settings-nav-item-Browser"]') || null;
+    if (browserBtn) {
+      let cur = browserBtn.parentElement;
+      let hop = 0;
+      while (cur && hop < 4) {
+        if (groups.includes(cur)) {
+          targetGroup = cur;
+          break;
+        }
+        cur = cur.parentElement;
+        hop += 1;
+      }
+    }
+    if (!targetGroup) {
+      targetGroup = groups.find((grp) => {
+        const btns = getNavButtons(grp);
+        return btns.some((b) => (
+          b.id === 'settings-nav-item-Browser' ||
+          b.id === 'settings-nav-item-General' ||
+          b.getAttribute?.('data-testid') === 'settings-nav-item-Browser' ||
+          b.getAttribute?.('data-testid') === 'settings-nav-item-General' ||
+          /general|browser|通用|应用|浏览器|瀏覽器/i.test(String(b.textContent || b.id || b.getAttribute?.('data-testid') || ''))
+        ));
+      }) || groups.find((grp) => getNavButtons(grp).length > 0) || null;
+    }
+    const navList = targetGroup || listRoot || sidebar;
+    if (!browserBtn) browserBtn = findBrowserAnchorButton(navList, null);
+    const splitRow = sidebar.closest?.('.relative.flex.w-full.h-full') || sidebar.parentElement || null;
+    let rightPane = null;
+    if (splitRow) {
+      const sibs = Array.from(splitRow.children || []).filter((child) => (
+        child &&
+        child !== sidebar &&
+        !child.contains?.(sidebar) &&
+        !isProtectedNativeNode(child)
+      ));
+      rightPane = sibs.find((child) => (
+        child.getAttribute?.('data-settings-content-pane') === 'true'
+        || Boolean(child.querySelector?.('[data-settings-content-pane="true"]'))
+      )) || sibs.find((child) => {
+        const cls = String(child.className || '');
+        if (/\bw-px\b|\bw-\[1px\]|\bdivider\b/i.test(cls) && !(child.children && child.children.length)) return false;
+        const childCount = child.children ? child.children.length : 0;
+        return /\bflex-1\b|\boverflow-y-auto\b|\boverflow-hidden\b/.test(cls) || childCount > 0 || String(child.textContent || '').trim().length > 0;
+      }) || sibs[0] || null;
+      if (rightPane && rightPane.getAttribute?.('data-settings-content-pane') !== 'true') {
+        const innerExplicit = rightPane.querySelector?.('[data-settings-content-pane="true"]');
+        if (innerExplicit && !innerExplicit.contains?.(sidebar)) rightPane = innerExplicit;
+      }
+    }
+    const modal = splitRow?.closest?.('.settings-modal-container, [role="dialog"]') || splitRow?.parentElement || splitRow || sidebar;
+    if (!rightPane) {
+      rightPane = findContentPane(modal, sidebar);
+    }
+    if (!navList || !rightPane) return null;
+    return { modal, sidebar, navList, splitRow, anchorBtn: browserBtn, contentPane: rightPane };
+  }
+
+  function findContentPane(modal, navListOrSidebar) {
+    if (!modal || !navListOrSidebar) return null;
+    if (typeof modal.querySelector === 'function') {
+      const explicitPane = modal.querySelector('[data-settings-content-pane="true"], .settings-content-pane');
+      if (explicitPane && !explicitPane.contains?.(navListOrSidebar) && explicitPane !== navListOrSidebar) {
+        return explicitPane;
+      }
+    }
+    const sidebarHost = (typeof navListOrSidebar.closest === 'function' ? navListOrSidebar.closest('[data-testid="settings-sidebar"]') : null) || navListOrSidebar;
+    let cursor = sidebarHost;
+    while (cursor && cursor !== modal) {
+      const parent = cursor.parentElement;
+      if (!parent) break;
+      const children = Array.from(parent.children || []).filter(Boolean);
+      const siblings = children.filter((child) => (
+        child !== cursor &&
+        !child.contains?.(sidebarHost) &&
+        !isProtectedNativeNode(child)
+      ));
+      const candidate = siblings.find((child) => {
+        if (child.getAttribute?.('data-testid') === 'settings-sidebar') return false;
+        const textLen = String(child.textContent || '').trim().length;
+        const childCount = child.children ? child.children.length : 0;
+        const role = typeof child.getAttribute === 'function' ? child.getAttribute('role') : '';
+        return role === 'tabpanel' || childCount > 0 || textLen > 0;
+      }) || siblings[0] || null;
+      if (candidate) return candidate;
+      cursor = parent;
+    }
+    return null;
+  }
+
+  function findHostSettingsTargets() {
+    if (typeof document === 'undefined') {
+      lastMountDiagnostic = 'no_document';
+      return null;
+    }
+    const realTarget = findRealSidebarAndGroup();
+    if (realTarget) {
+      lastMountDiagnostic = 'matched_settings_sidebar_splitrow';
+      return realTarget;
+    }
+
+    const candidates = [];
+    if (typeof document.querySelectorAll === 'function') {
+      const found = Array.from(document.querySelectorAll('.settings-modal-container, [role="dialog"]') || []);
+      for (const n of found) {
+        if (n && !isPluginOwnedNode(n) && !candidates.includes(n)) candidates.push(n);
+      }
+    }
+    const browserById = typeof document.querySelector === 'function'
+      ? document.querySelector('#settings-nav-item-Browser, [data-testid="settings-nav-item-Browser"]')
+      : (typeof document.getElementById === 'function' ? document.getElementById('settings-nav-item-Browser') : null);
+    if (browserById && !isPluginOwnedNode(browserById)) {
+      const modalFromBrowser = browserById.closest?.('.settings-modal-container, [role="dialog"]') || browserById.parentElement?.parentElement || null;
+      if (modalFromBrowser && !candidates.includes(modalFromBrowser)) candidates.unshift(modalFromBrowser);
+    }
+
+    for (const modal of candidates) {
+      const browserBtn = modal.querySelector?.('#settings-nav-item-Browser, [data-testid="settings-nav-item-Browser"]') || (browserById && (modal.contains?.(browserById) || browserById.parentElement?.parentElement === modal) ? browserById : null);
+      const navBtns = getNavButtons(modal);
+      if (!browserBtn && navBtns.length === 0) continue;
+      let navList = null;
+      if (browserBtn) {
+        const directParent = browserBtn.parentElement;
+        const grandParent = directParent?.parentElement;
+        if (grandParent && getNavButtons(grandParent).length > getNavButtons(directParent).length) {
+          navList = grandParent;
+        } else {
+          navList = directParent;
+        }
+      } else {
+        const sampleBtn = navBtns.find((b) => /general|browser|account|浏览器|通用/i.test(String(b.textContent || b.id || b.getAttribute?.('data-testid') || ''))) || navBtns[0];
+        const directParent = sampleBtn?.parentElement;
+        const grandParent = directParent?.parentElement;
+        navList = (grandParent && getNavButtons(grandParent).length > getNavButtons(directParent).length)
+          ? grandParent
+          : directParent;
+      }
+      if (!navList) continue;
+      const anchorBtn = findBrowserAnchorButton(navList, browserBtn);
+      const contentPane = findContentPane(modal, navList);
+      if (!contentPane) continue;
+      lastMountDiagnostic = 'matched_settings_modal_container';
+      return { modal, sidebar: null, navList, splitRow: contentPane.parentElement || null, anchorBtn, contentPane };
+    }
+    lastMountDiagnostic = candidates.length > 0 ? 'host_settings_structure_unrecognized' : 'host_settings_modal_not_open';
+    return null;
+  }
+
+  function restoreHiddenNativeNodes() {
+    if (activeContentPane && activeContentPane.children) {
+      for (const child of Array.from(activeContentPane.children)) {
+        if (!child || child.id === PAGE_ID) continue;
+        if (child.getAttribute?.(HIDDEN_ATTR) !== 'true') continue;
+        const saved = savedHiddenNodes.find((item) => item.node === child);
+        child.removeAttribute?.(HIDDEN_ATTR);
+        setHiddenSafe(child, Boolean(saved?.origHidden), saved?.origDisplay || '');
+      }
+    }
+    for (const entry of savedHiddenNodes) {
+      try {
+        if (entry?.node?.getAttribute?.(HIDDEN_ATTR) === 'true') {
+          entry.node.removeAttribute?.(HIDDEN_ATTR);
+          setHiddenSafe(entry.node, Boolean(entry.origHidden), entry.origDisplay || '');
+        }
+      } catch { }
+    }
+    savedHiddenNodes = [];
+  }
+
+  function hideNativeContentNodes() {
+    if (!activeContentPane) return;
+    for (const child of Array.from(activeContentPane.children || [])) {
+      if (isProtectedNativeNode(child)) continue;
+      if (child.getAttribute?.(HIDDEN_ATTR) === 'true') {
+        if (!child.hidden) setHiddenSafe(child, true);
+        continue;
+      }
+      const origDisplay = child.style?.getPropertyValue?.('display') || child.style?.display || '';
+      const origHidden = Boolean(child.hidden);
+      savedHiddenNodes.push({ node: child, origDisplay, origHidden });
+      child.setAttribute?.(HIDDEN_ATTR, 'true');
+      setHiddenSafe(child, true);
+    }
+  }
+
+  function clearNavBtnActiveClasses(btn) {
+    if (!btn?.classList) return;
+    btn.classList.remove('active', 'is-active', 'selected', 'bg-accent', 'bg-ide-input-background', 'bg-sidebar-secondary');
+  }
+
+  function syncNavHighlightState(active, opts = {}) {
+    const { clickedNativeBtn = null } = opts;
+    if (navButtonEl) {
+      navButtonEl.setAttribute('data-active', active ? 'true' : 'false');
+      navButtonEl.setAttribute('aria-selected', active ? 'true' : 'false');
+      if (!active) clearNavBtnActiveClasses(navButtonEl);
+    }
+    const navScope = activeSidebar || activeModal || activeNavList;
+    if (navScope) {
+      if (active) navScope.setAttribute?.('data-ag-hs-custom-active', 'true');
+      else navScope.removeAttribute?.('data-ag-hs-custom-active');
+    }
+    if (!navScope) return;
+    for (const btn of getNavButtons(navScope)) {
+      if (!btn || btn === navButtonEl) continue;
+      if (active) {
+        btn.setAttribute?.('data-ag-hs-muted', 'true');
+        const wasSel = btn.getAttribute?.('aria-selected') === 'true'
+          || btn.getAttribute?.('data-active') === 'true'
+          || btn.classList?.contains?.('active')
+          || btn.classList?.contains?.('bg-accent')
+          || btn.classList?.contains?.('bg-sidebar-secondary');
+        if (wasSel) {
+          btn.setAttribute('data-ag-hs-prev-selected', 'true');
+          btn.setAttribute('aria-selected', 'false');
+          if (btn.hasAttribute?.('data-active')) btn.setAttribute('data-active', 'false');
+        }
+      } else {
+        btn.removeAttribute?.('data-ag-hs-muted');
+        const hadPrev = btn.getAttribute?.('data-ag-hs-prev-selected') === 'true';
+        if (hadPrev) {
+          btn.removeAttribute('data-ag-hs-prev-selected');
+          if (!clickedNativeBtn) {
+            btn.setAttribute('aria-selected', 'true');
+            if (btn.hasAttribute?.('data-active')) btn.setAttribute('data-active', 'true');
+          }
+        }
+      }
+    }
+  }
+
+  function getActiveUiRoot() {
+    return pageShadow || pageEl;
+  }
+
+  function syncThemeToPageHost() {
+    if (!pageEl) return;
+    if (typeof syncThemeTarget === 'function') {
+      try { syncThemeTarget(pageEl); } catch { }
+    }
+  }
+
+  function scrollToSection(sectionId) {
+    if (!sectionId || !pageEl) return false;
+    const uiRoot = getActiveUiRoot();
+    let target = findElInPage(sectionId);
+    if (!target && uiRoot && typeof uiRoot.querySelector === 'function') {
+      target = uiRoot.querySelector(`[data-section-id="${sectionId}"]`);
+    }
+    if (!target) return false;
+    try {
+      if (sectionId === 'ag-ns-colors-body' || sectionId === 'colors') {
+        const colorsBody = findElInPage('ag-ns-colors-body');
+        const colorsBtn = findElInPage('ag-ns-toggle-colors');
+        if (colorsBody && colorsBody.hidden) {
+          colorsBody.hidden = false;
+          colorsBtn?.setAttribute?.('aria-expanded', 'true');
+        }
+      }
+      if (typeof pageEl.getBoundingClientRect === 'function' && typeof target.getBoundingClientRect === 'function') {
+        const pRect = pageEl.getBoundingClientRect();
+        const tRect = target.getBoundingClientRect();
+        if (pRect && tRect && pRect.height > 0) {
+          const nextTop = Math.max(0, Math.round((pageEl.scrollTop || 0) + (tRect.top - pRect.top) - 18));
+          pageEl.scrollTop = nextTop;
+          savedPageScrollTop = nextTop;
+          return true;
+        }
+      }
+    } catch { }
+    return true;
+  }
+
+  function clearPendingOpenWaiter() {
+    pendingOpenSeq += 1;
+    if (pendingOpenTimer) {
+      clearTimeout(pendingOpenTimer);
+      pendingOpenTimer = null;
+    }
+  }
+
+  function verifyHostPagePresented() {
+    if (disposed || !hostSelected) return false;
+    if (!activeModal || activeModal.isConnected === false) return false;
+    if (!activeContentPane || activeContentPane.isConnected === false) return false;
+    if (!pageEl || pageEl.isConnected === false || pageEl.hidden) return false;
+    if (typeof activeContentPane.contains === 'function' && !activeContentPane.contains(pageEl)) return false;
+    if (navButtonEl?.getAttribute?.('data-active') !== 'true') return false;
+    if (!findElInPage('ag-ns-root')) return false;
+    const unhiddenNative = Array.from(activeContentPane.children || []).some((child) => (
+      child && !isProtectedNativeNode(child) && child.getAttribute?.(HIDDEN_ATTR) !== 'true' && !child.hidden
+    ));
+    if (unhiddenNative) return false;
+    return true;
+  }
+
+  function deactivateHostPage(opts = {}) {
+    clearPendingOpenWaiter();
+    if (activeEnsureTimer) {
+      clearTimeout(activeEnsureTimer);
+      activeEnsureTimer = null;
+    }
+    if (activeLateEnsureTimer) {
+      clearTimeout(activeLateEnsureTimer);
+      activeLateEnsureTimer = null;
+    }
+    if (pageEl && typeof pageEl.scrollTop === 'number') {
+      savedPageScrollTop = pageEl.scrollTop;
+    }
+    hostSelected = false;
+    activeModal?.removeAttribute?.('data-ag-cm-host-open');
+    activeSplitRow?.removeAttribute?.('data-ag-cm-host-open');
+    activeContentPane?.removeAttribute?.('data-ag-cm-host-open');
+    if (pageEl) {
+      setHiddenSafe(pageEl, true);
+    }
+    restoreHiddenNativeNodes();
+    if (activeContentPane && typeof activeContentPane.scrollTop === 'number' && savedNativePaneScrollTop > 0) {
+      activeContentPane.scrollTop = savedNativePaneScrollTop;
+    }
+    syncNavHighlightState(false, { clickedNativeBtn: opts?.clickedNativeBtn || null });
+    try { onHostPageDeactivated?.(); } catch { }
+  }
+
+  function applyHostPageActivePresentation() {
+    if (!hostSelected || disposed || !activeContentPane) return;
+    if (!pageEl) createPageElement();
+    if (pageEl.parentElement !== activeContentPane) {
+      activeContentPane.appendChild(pageEl);
+    }
+    activeModal?.setAttribute?.('data-ag-cm-host-open', 'true');
+    activeSplitRow?.setAttribute?.('data-ag-cm-split-row', 'true');
+    activeContentPane?.setAttribute?.('data-ag-cm-right-pane', 'true');
+    activeContentPane?.setAttribute?.('data-ag-cm-host-open', 'true');
+    // 防止宿主右栏此前存在滚动偏移导致右上角原生关闭按钮或独立页首屏被顶出视口
+    if (typeof activeContentPane.scrollTop === 'number' && activeContentPane.scrollTop !== 0) {
+      savedNativePaneScrollTop = activeContentPane.scrollTop;
+      activeContentPane.scrollTop = 0;
+    }
+    hideNativeContentNodes();
+    setHiddenSafe(pageEl, false);
+    if (savedPageScrollTop > 0 && typeof pageEl.scrollTop === 'number' && pageEl.scrollTop !== savedPageScrollTop) {
+      pageEl.scrollTop = savedPageScrollTop;
+    }
+    syncThemeToPageHost();
+    syncNavHighlightState(true);
+    renderPage();
+  }
+
+  function activateHostPage(opts = {}) {
+    clearPendingOpenWaiter();
+    const freshTargets = findHostSettingsTargets();
+    if (freshTargets) {
+      const targetChanged = freshTargets.modal !== activeModal
+        || freshTargets.sidebar !== activeSidebar
+        || freshTargets.navList !== activeNavList
+        || freshTargets.contentPane !== activeContentPane
+        || activeContentPane?.isConnected === false;
+      if (targetChanged) {
+        activeModal = freshTargets.modal;
+        activeSidebar = freshTargets.sidebar || null;
+        activeNavList = freshTargets.navList;
+        activeSplitRow = freshTargets.splitRow || null;
+        activeContentPane = freshTargets.contentPane;
+        bindNavSwitchHandler(activeModal);
+        bindNavSwitchHandler(activeSidebar || activeNavList);
+      }
+    }
+    if (!activeModal || !activeContentPane) return false;
+    ensureStyles();
+    hostSelected = true;
+    applyHostPageActivePresentation();
+    if (opts && opts.section) {
+      scrollToSection(opts.section);
+    } else if (pageEl && savedPageScrollTop > 0 && typeof pageEl.scrollTop === 'number') {
+      pageEl.scrollTop = savedPageScrollTop;
+    }
+    if (typeof Promise === 'function') {
+      Promise.resolve().then(() => {
+        if (!disposed && hostSelected) {
+          syncModalMount();
+          applyHostPageActivePresentation();
+        }
+      });
+    }
+    if (activeEnsureTimer) clearTimeout(activeEnsureTimer);
+    activeEnsureTimer = setTimeout(() => {
+      activeEnsureTimer = null;
+      if (!disposed && hostSelected) {
+        syncModalMount();
+        applyHostPageActivePresentation();
+      }
+    }, 35);
+    if (activeLateEnsureTimer) clearTimeout(activeLateEnsureTimer);
+    activeLateEnsureTimer = setTimeout(() => {
+      activeLateEnsureTimer = null;
+      if (!disposed && hostSelected) {
+        syncModalMount();
+        applyHostPageActivePresentation();
+      }
+    }, 120);
+    try { onHostPageActivated?.({ section: opts?.section || null }); } catch { }
+    return verifyHostPagePresented();
+  }
+
+  function bindNavButtonEvents(btn) {
+    if (!btn || btn.__agHsCtrlToken === controllerToken) return btn;
+    btn.__agHsCtrlToken = controllerToken;
+    btn.addEventListener?.('click', (e) => {
+      if (disposed) return;
+      e?.stopPropagation?.();
+      e?.preventDefault?.();
+      activateHostPage();
+    });
+    btn.addEventListener?.('keydown', (e) => {
+      if (disposed) return;
+      const key = e?.key;
+      if (key === 'Enter' || key === ' ' || key === 'Spacebar') {
+        e?.stopPropagation?.();
+        e?.preventDefault?.();
+        activateHostPage();
+      }
+    });
+    return btn;
+  }
+
+  function createNavButton(anchorBtn) {
+    const btn = document.createElement('button');
+    btn.id = NAV_ID;
+    btn.type = 'button';
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-selected', 'false');
+    btn.setAttribute('data-active', 'false');
+    const baseClass = String(anchorBtn?.className || '')
+      .replace(/\bbg-sidebar-secondary\b|\bbg-ide-input-background\b|\bbg-accent\b|\bis-active\b|\bactive\b|\bselected\b|\btext-foreground\b/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    btn.className = baseClass ? `${baseClass} ag-cm-host-nav-item` : 'ag-cm-host-nav-item';
+    btn.innerHTML = `
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="pointer-events:none;flex-shrink:0">
+        <circle cx="8" cy="8" r="6"></circle>
+        <path d="M8 8l3-2.5"></path>
+      </svg>
+      <span class="ag-hs-nav-label" style="pointer-events:none">Context Meter</span>
+    `;
+    return bindNavButtonEvents(btn);
+  }
+
+  function findElInPage(id) {
+    if (!id) return null;
+    if (pageShadow) {
+      if (typeof pageShadow.getElementById === 'function') {
+        const hit = pageShadow.getElementById(id);
+        if (hit) return hit;
+      }
+      if (typeof pageShadow.querySelector === 'function') {
+        const hit = pageShadow.querySelector(`#${id}`);
+        if (hit) return hit;
+      }
+    }
+    if (!pageEl) return null;
+    if (typeof pageEl.querySelector === 'function') {
+      const hit = pageEl.querySelector(`#${id}`);
+      if (hit) return hit;
+    }
+    const queue = Array.from(pageEl.children || []);
+    while (queue.length) {
+      const cur = queue.shift();
+      if (!cur) continue;
+      if (cur.id === id) return cur;
+      if (cur.children && cur.children.length) queue.push(...Array.from(cur.children));
+    }
+    return null;
+  }
+
+  function createPageElement() {
+    const wrap = document.createElement('section');
+    wrap.id = PAGE_ID;
+    wrap.setAttribute('aria-label', 'Context Meter 设置');
+    wrap.tabIndex = 0;
+    wrap.hidden = true;
+    wrap.scrollTop = 0;
+    wrap.addEventListener?.('scroll', () => {
+      if (hostSelected && typeof wrap.scrollTop === 'number') {
+        savedPageScrollTop = wrap.scrollTop;
+      }
+    }, { passive: true });
+    pageShadow = typeof wrap.attachShadow === 'function' ? wrap.attachShadow({ mode: 'open' }) : null;
+    const uiTarget = pageShadow || wrap;
+
+    const cssText = typeof buildNativeSettingsPageCss === 'function'
+      ? buildNativeSettingsPageCss()
+      : ':host { display: block; width: 100%; height: 100%; overflow-y: auto; }';
+    const htmlText = typeof buildNativeSettingsPageHtml === 'function'
+      ? buildNativeSettingsPageHtml()
+      : '<section id="ag-ns-root" class="ag-ns-page"><h1>Context Meter</h1></section>';
+
+    const styleEl = document.createElement('style');
+    styleEl.id = 'ag-cm-hs-workspace-style';
+    styleEl.textContent = cssText;
+
+    if (pageShadow) {
+      const containerWrap = document.createElement('div');
+      containerWrap.innerHTML = htmlText;
+      pageShadow.appendChild(styleEl);
+      const kids = Array.from(containerWrap.children || []);
+      if (kids.length > 0) {
+        for (const kid of kids) pageShadow.appendChild(kid);
+      } else {
+        pageShadow.appendChild(containerWrap);
+      }
+    } else {
+      wrap.innerHTML = htmlText;
+    }
+    pageEl = wrap;
+
+    if (typeof initContextSettingsUI === 'function') {
+      initContextSettingsUI(uiTarget, {
+        onChange: (key, value, meta) => {
+          if (typeof onNativeSettingChange === 'function') {
+            onNativeSettingChange(key, value, meta);
+          }
+        },
+        onColorChange: (colorKey, hex) => {
+          if (typeof onNativeColorChange === 'function') {
+            onNativeColorChange(colorKey, hex);
+          }
+        },
+        onResetColors: () => {
+          if (typeof onNativeResetColors === 'function') {
+            onNativeResetColors();
+          }
+        },
+        onAction: (actionName, payload) => {
+          if (typeof onNativeAction === 'function') {
+            onNativeAction(actionName, payload);
+            return;
+          }
+          if (actionName === 'checkUpdate') void onCheckUpdate('host-settings');
+          else if (actionName === 'applyUpdate') void onApplyUpdate('host-settings');
+          else if (actionName === 'restartHost') void onRestartHost();
+          else if (actionName === 'verifyRuntime') void onVerifyRuntime();
+          else if (actionName === 'openReleasePage') void onOpenReleasePage();
+          else if (actionName === 'openAccountsTab') void onOpenPluginPanel('accounts');
+          else if (actionName === 'openQuotaBoard') void onOpenPluginPanel('quota');
+          else if (actionName === 'openTokensBoard') void onOpenPluginPanel('tokens');
+          else if (actionName === 'copyDiag' && typeof onCopyDiagnostics === 'function') void onCopyDiagnostics();
+        }
+      });
+    }
+
+    return wrap;
+  }
+
+  function renderPage() {
+    if (!pageEl || disposed) return;
+    if (typeof applyStaticTranslations === 'function') {
+      try { applyStaticTranslations(getActiveUiRoot()); } catch { }
+    }
+    const snap = getSnapshot() || {};
+    const upd = snap.strictUpdateState || { stage: 'idle' };
+    const stage = upd.stage || 'idle';
+    const frontendVer = snap.rendererDisplayVersion || snap.rendererVersion || '--';
+    const backendVer = snap.backendDisplayVersion || snap.backendVersion || t('hostSettings.notDetected');
+    const sourceLabel = snap.backendSource || t('hostSettings.sourceUnknown');
+    const pidLabel = snap.backendPid ? `PID ${snap.backendPid}` : '';
+    const targetVer = upd.targetVersion ? (snap.formatVersion ? snap.formatVersion(upd.targetVersion) : upd.targetVersion) : frontendVer;
+
+    const setText = (id, text) => {
+      const n = findElInPage(id);
+      if (n) n.textContent = String(text ?? '');
+    };
+
+    if (typeof getNativeSettingsSnapshot === 'function' && typeof renderContextSettingsUI === 'function') {
+      const nativeData = getNativeSettingsSnapshot();
+      if (nativeData) {
+        renderContextSettingsUI(getActiveUiRoot(), nativeData);
+      }
+    }
+
+    setText('ag-ns-subtitle', t('hostSettings.subtitle'));
+    setText('ag-hs-btn-open-accounts', t('tab.accounts'));
+    setText('ag-hs-btn-open-quota', t('hostSettings.btn.quota'));
+    setText('ag-hs-btn-open-tokens', t('hostSettings.btn.tokens'));
+    setText('ag-hs-sec-version', t('hostSettings.sec.version'));
+    setText('ag-hs-lbl-frontend', t('hostSettings.lbl.frontend'));
+    setText('ag-hs-lbl-backend', t('hostSettings.lbl.backend'));
+    setText('ag-hs-lbl-bridge', t('hostSettings.lbl.bridge'));
+    setText('ag-hs-lbl-target', t('hostSettings.lbl.target'));
+    setText('ag-hs-sec-diag', t('hostSettings.sec.diag'));
+    setText('ag-hs-btn-copy-diag', t('hostSettings.btn.copyDiag'));
+    setText('ag-hs-btn-verify-runtime', t('hostSettings.btn.verify'));
+    setText('ag-hs-btn-release-page', t('update.viewRelease'));
+
+    setText('ag-hs-val-frontend', frontendVer);
+    setText('ag-hs-val-backend', `${backendVer}${pidLabel ? ` · ${pidLabel}` : ''}`);
+    setText('ag-hs-val-bridge', `${sourceLabel}${snap.backendMismatch ? ` · ${t('hostSettings.versionMismatchShort')}` : ''}`);
+    setText('ag-hs-val-target', targetVer);
+
+    const stagePill = findElInPage('ag-hs-update-stage-pill');
+    const stageKeyMap = {
+      idle: 'hostSettings.stage.idle',
+      latest: 'hostSettings.stage.latest',
+      checking: 'hostSettings.stage.checking',
+      available: 'hostSettings.stage.available',
+      downloading: 'hostSettings.stage.downloading',
+      downloaded: 'hostSettings.stage.downloaded',
+      pending_restart: 'hostSettings.stage.pendingRestart',
+      active: 'hostSettings.stage.active',
+      error: 'hostSettings.stage.error',
+      unavailable: 'hostSettings.stage.unavailable'
+    };
+    if (stagePill) {
+      stagePill.setAttribute('data-stage', stage);
+      stagePill.textContent = t(stageKeyMap[stage] || 'hostSettings.stage.idle');
+    }
+
+    let detailText = '';
+    if (stage === 'unavailable') detailText = t('update.unavailableBody');
+    else if (stage === 'checking') detailText = t('update.connecting');
+    else if (stage === 'available') detailText = t('update.foundBody', { ver: targetVer, notes: snap.releaseNotes || t('update.defaultNotes') });
+    else if (stage === 'downloading') detailText = t('update.downloading');
+    else if (stage === 'downloaded') detailText = t('update.doneLiveSynced', { ver: targetVer });
+    else if (stage === 'pending_restart') {
+      detailText = snap.hostSupportsRestart
+        ? t('update.doneDisk', { ver: targetVer })
+        : `${t('update.doneDisk', { ver: targetVer })} ${t('client.restart.hostNotSupported')}`;
+    } else if (stage === 'active') detailText = t('update.doneHotFull', { ver: targetVer });
+    else if (stage === 'error') detailText = t('update.failStatus', { err: snap.errorText || t('msg.unknownErr') });
+    else if (stage === 'latest') detailText = t('update.latestBody', { ver: frontendVer });
+    else detailText = t('hostSettings.stage.idleHint');
+    setText('ag-hs-update-detail', detailText);
+
+    const btnCheck = findElInPage('ag-hs-btn-check-update');
+    if (btnCheck) {
+      btnCheck.disabled = stage === 'checking' || stage === 'downloading';
+      btnCheck.textContent = stage === 'checking' ? t('update.checkingTitle') : t('hostSettings.btn.check');
+    }
+    const btnApply = findElInPage('ag-hs-btn-apply-update');
+    if (btnApply) {
+      const showApply = stage === 'available' || (stage === 'error' && Boolean(snap.hasCachedRelease));
+      btnApply.hidden = !showApply;
+      if (btnApply.style) btnApply.style.display = showApply ? 'inline-flex' : 'none';
+      btnApply.disabled = stage === 'downloading';
+      btnApply.textContent = stage === 'error' ? t('update.btnRetry') : t('update.applyNow');
+    }
+    const btnRestart = findElInPage('ag-hs-btn-restart-host');
+    if (btnRestart) {
+      const showRestart = stage === 'pending_restart' && Boolean(snap.hostSupportsRestart);
+      btnRestart.hidden = !showRestart;
+      if (btnRestart.style) btnRestart.style.display = showRestart ? 'inline-flex' : 'none';
+      btnRestart.textContent = t('update.restartBtn');
+    }
+
+    const diagLines = [
+      `${t('hostSettings.diag.route')}: ${snap.activeRoute || '--'}`,
+      `${t('hostSettings.diag.latency')}: ${Number.isFinite(snap.lastQuotaDurationMs) ? `${snap.lastQuotaDurationMs} ms` : '--'}`,
+      `${t('hostSettings.diag.mismatch')}: ${snap.backendMismatch ? t('hostSettings.diag.yes') : t('hostSettings.diag.no')}`,
+      snap.diagError ? `${t('hostSettings.diag.lastErr')}: ${snap.diagError}` : ''
+    ].filter(Boolean);
+    setText('ag-hs-diag-summary', diagLines.join(' · '));
+
+    const toggleColorsBtn = findElInPage('ag-ns-toggle-colors');
+    const toggleColorsLabel = findElInPage('ag-ns-toggle-colors-label');
+    const colorsBody = findElInPage('ag-ns-colors-body');
+    if (toggleColorsBtn) {
+      toggleColorsBtn.setAttribute('data-label-expand', t('ns.colors.expand'));
+      toggleColorsBtn.setAttribute('data-label-collapse', t('ns.colors.collapse'));
+      if (toggleColorsLabel && colorsBody) {
+        toggleColorsLabel.textContent = colorsBody.hidden ? t('ns.colors.expand') : t('ns.colors.collapse');
+      }
+    }
+  }
+
+  function bindNavSwitchHandler(container) {
+    if (!container) return;
+    if (boundNavContainers) {
+      if (boundNavContainers.has(container)) return;
+      boundNavContainers.add(container);
+    } else if (container.__agHsBound) {
+      return;
+    } else {
+      container.__agHsBound = true;
+    }
+    const onNativeNavClick = (ev) => {
+      if (disposed) return;
+      const target = ev?.target;
+      const hitBtn = typeof target?.closest === 'function'
+        ? target.closest('button, [role="tab"]')
+        : target;
+      if (!hitBtn || hitBtn.id === NAV_ID || isPluginOwnedNode(hitBtn)) return;
+      const navScope = activeSidebar || activeNavList;
+      const isNavBtn = (navScope && (navScope.contains?.(hitBtn) || Array.from(navScope.children || []).includes(hitBtn)))
+        || isHostNavTestId(hitBtn);
+      if (isNavBtn && hostSelected) {
+        deactivateHostPage({ clickedNativeBtn: hitBtn });
+      }
+    };
+    container.addEventListener?.('click', onNativeNavClick, true);
+  }
+
+  function removeDuplicateNavNodes(keepBtn, keepItem, navList) {
+    if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {
+      const allNavs = Array.from(document.querySelectorAll(`#${NAV_ID}`) || []);
+      for (const n of allNavs) {
+        if (n !== keepBtn) {
+          const wrap = n.parentElement?.getAttribute?.(NAV_WRAPPER_ATTR) === 'true' ? n.parentElement : null;
+          try { (wrap && wrap !== keepItem ? wrap : n).remove?.(); } catch { }
+        }
+      }
+      const allWraps = Array.from(document.querySelectorAll(`[${NAV_WRAPPER_ATTR}="true"]`) || []);
+      for (const w of allWraps) {
+        if (w !== keepItem) {
+          try { w.remove?.(); } catch { }
+        }
+      }
+    }
+    if (navList && navList.children) {
+      for (const child of Array.from(navList.children)) {
+        if (!child || child === keepItem || child === keepBtn) continue;
+        if (child.id === NAV_ID || child.getAttribute?.(NAV_WRAPPER_ATTR) === 'true') {
+          try { child.remove?.(); } catch { }
+        }
+      }
+    }
+  }
+
+  function syncModalMount() {
+    if (disposed) return false;
+    const targets = findHostSettingsTargets();
+    if (!targets) {
+      if (activeModal && activeModal.isConnected === false) {
+        deactivateHostPage();
+        savedPageScrollTop = 0;
+        savedNativePaneScrollTop = 0;
+        activeModal = null;
+        activeSidebar = null;
+        activeNavList = null;
+        activeSplitRow = null;
+        activeContentPane = null;
+        navItemEl = null;
+        navButtonEl = null;
+      }
+      return false;
+    }
+
+    const { modal, sidebar, navList, splitRow, anchorBtn, contentPane } = targets;
+    const modalChanged = modal !== activeModal
+      || sidebar !== activeSidebar
+      || navList !== activeNavList
+      || contentPane !== activeContentPane
+      || activeContentPane?.isConnected === false;
+    if (modalChanged) {
+      if (activeModal && activeModal !== modal) {
+        deactivateHostPage();
+        savedPageScrollTop = 0;
+        savedNativePaneScrollTop = 0;
+      }
+      activeModal = modal;
+      activeSidebar = sidebar || null;
+      activeNavList = navList;
+      activeSplitRow = splitRow || null;
+      activeContentPane = contentPane;
+      bindNavSwitchHandler(activeModal);
+      bindNavSwitchHandler(activeSidebar || navList);
+    }
+
+    ensureStyles();
+
+    const anchorRow = resolveNavRowInList(navList, anchorBtn);
+    const useRowWrapper = Boolean(anchorBtn && anchorRow && anchorRow !== anchorBtn);
+
+    let existingBtn = null;
+    if (typeof navList.querySelector === 'function') {
+      existingBtn = navList.querySelector(`#${NAV_ID}`) || null;
+    }
+    if (!existingBtn && navList.children) {
+      for (const ch of Array.from(navList.children)) {
+        if (!ch) continue;
+        if (ch.id === NAV_ID) { existingBtn = ch; break; }
+        const nested = typeof ch.querySelector === 'function'
+          ? ch.querySelector(`#${NAV_ID}`)
+          : Array.from(ch.children || []).find((sub) => sub && sub.id === NAV_ID);
+        if (nested) { existingBtn = nested; break; }
+      }
+    }
+
+    if (existingBtn && existingBtn.__agHsCtrlToken === controllerToken) {
+      navButtonEl = existingBtn;
+    } else {
+      if (existingBtn && existingBtn.__agHsCtrlToken !== controllerToken) {
+        const oldWrap = existingBtn.parentElement?.getAttribute?.(NAV_WRAPPER_ATTR) === 'true'
+          ? existingBtn.parentElement
+          : null;
+        try { (oldWrap || existingBtn).remove?.(); } catch { }
+      }
+      if (!navButtonEl || navButtonEl.__agHsCtrlToken !== controllerToken) {
+        navButtonEl = createNavButton(anchorBtn);
+      }
+    }
+    bindNavButtonEvents(navButtonEl);
+
+    if (useRowWrapper) {
+      if (
+        !navItemEl ||
+        navItemEl === navButtonEl ||
+        navItemEl.getAttribute?.(NAV_WRAPPER_ATTR) !== 'true'
+      ) {
+        const existingWrap = navButtonEl.parentElement?.getAttribute?.(NAV_WRAPPER_ATTR) === 'true'
+          ? navButtonEl.parentElement
+          : null;
+        navItemEl = existingWrap || document.createElement('div');
+        navItemEl.setAttribute?.(NAV_WRAPPER_ATTR, 'true');
+      }
+      const rowCls = String(anchorRow?.className || 'relative group/nav-item mx-2').trim();
+      if (navItemEl.className !== rowCls) navItemEl.className = rowCls;
+      if (navButtonEl.parentElement !== navItemEl) {
+        navItemEl.appendChild(navButtonEl);
+      }
+    } else {
+      if (navItemEl && navItemEl !== navButtonEl && navItemEl.getAttribute?.(NAV_WRAPPER_ATTR) === 'true') {
+        try { navItemEl.remove?.(); } catch { }
+      }
+      navItemEl = navButtonEl;
+    }
+
+    removeDuplicateNavNodes(navButtonEl, navItemEl, navList);
+
+    if (anchorRow && typeof anchorRow.after === 'function') {
+      if (anchorRow.nextElementSibling !== navItemEl || navItemEl.parentElement !== navList) {
+        anchorRow.after(navItemEl);
+      }
+    } else if (navItemEl.parentElement !== navList) {
+      navList.appendChild(navItemEl);
+    }
+
+    if (!pageEl) createPageElement();
+    if (pageEl.parentElement !== contentPane) {
+      contentPane.appendChild(pageEl);
+    }
+    setHiddenSafe(pageEl, !hostSelected);
+    if (hostSelected) {
+      applyHostPageActivePresentation();
+    } else {
+      syncNavHighlightState(false, { clickedNativeBtn: true });
+    }
+    return true;
+  }
+
+  function findNativeSettingsTriggerButton() {
+    if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return null;
+    const explicit = Array.from(document.querySelectorAll('button[data-testid*="settings" i], button[aria-label*="Settings" i], button[aria-label*="设置" i], button[aria-label*="設定" i]') || []);
+    const hitExplicit = explicit.find((btn) => btn && !isPluginOwnedNode(btn));
+    if (hitExplicit) return hitExplicit;
+    const allButtons = Array.from(document.querySelectorAll('button') || []);
+    return allButtons.find((btn) => {
+      if (!btn || isPluginOwnedNode(btn)) return false;
+      const label = String(btn.textContent || btn.getAttribute?.('aria-label') || '').trim();
+      return /^(Settings|设置|設定)$/i.test(label);
+    }) || null;
+  }
+
+  function openHostSettingsPage(opts = {}) {
+    if (disposed) return { ok: false, mode: 'fallback', reason: 'controller_disposed' };
+    clearPendingOpenWaiter();
+    if (syncModalMount()) {
+      const ok = activateHostPage(opts);
+      if (ok && verifyHostPagePresented()) {
+        return { ok: true, mode: 'host', reason: lastMountDiagnostic };
+      }
+      return { ok: false, mode: 'fallback', reason: 'host_page_presentation_failed' };
+    }
+    if (opts.autoOpenHost !== false) {
+      const nativeTrigger = findNativeSettingsTriggerButton();
+      if (nativeTrigger && typeof nativeTrigger.click === 'function') {
+        try { nativeTrigger.click(); } catch { }
+        if (syncModalMount()) {
+          const ok = activateHostPage(opts);
+          if (ok && verifyHostPagePresented()) {
+            return { ok: true, mode: 'host', reason: lastMountDiagnostic };
+          }
+          return { ok: false, mode: 'fallback', reason: 'host_page_presentation_failed' };
+        }
+        if (typeof opts.onResolved === 'function') {
+          const mySeq = ++pendingOpenSeq;
+          const startedAt = Date.now();
+          const pollWait = () => {
+            if (disposed || mySeq !== pendingOpenSeq) return;
+            if (syncModalMount()) {
+              const ok = activateHostPage(opts);
+              if (ok && verifyHostPagePresented()) {
+                clearPendingOpenWaiter();
+                opts.onResolved({ ok: true, mode: 'host', reason: lastMountDiagnostic });
+                return;
+              }
+            }
+            if (Date.now() - startedAt >= 650) {
+              clearPendingOpenWaiter();
+              opts.onResolved({ ok: false, mode: 'fallback', reason: lastMountDiagnostic || 'host_settings_modal_timeout' });
+              return;
+            }
+            pendingOpenTimer = setTimeout(pollWait, 25);
+          };
+          pendingOpenTimer = setTimeout(pollWait, 20);
+          return { ok: false, pending: true, mode: 'host_opening', reason: 'awaiting_host_modal_mount' };
+        }
+      }
+    }
+    return { ok: false, mode: 'fallback', reason: lastMountDiagnostic || 'host_settings_unavailable' };
+  }
+
+  function scheduleSync() {
+    if (disposed || scanTimer) return;
+    scanTimer = setTimeout(() => {
+      scanTimer = null;
+      syncModalMount();
+    }, 50);
+  }
+
+  function start(opts = {}) {
+    if (disposed) return;
+    syncModalMount();
+    if (opts.watchDom === true && typeof MutationObserver === 'function' && typeof document !== 'undefined') {
+      const rootTarget = document.body || document.documentElement;
+      if (rootTarget && !observer) {
+        observer = new MutationObserver((mutations) => {
+          if (disposed) return;
+          let shouldSchedule = false;
+          for (const m of mutations || []) {
+            if (isPluginOwnedNode(m?.target)) continue;
+            const changedNodes = [
+              ...Array.from(m?.addedNodes || []),
+              ...Array.from(m?.removedNodes || [])
+            ];
+            if (changedNodes.length > 0 && changedNodes.every((n) => isPluginOwnedNode(n))) {
+              continue;
+            }
+            if (hostSelected && activeContentPane && (m?.target === activeContentPane || activeContentPane.contains?.(m?.target))) {
+              hideNativeContentNodes();
+            }
+            shouldSchedule = true;
+          }
+          if (shouldSchedule) scheduleSync();
+        });
+        try {
+          observer.observe(rootTarget, { childList: true, subtree: true });
+        } catch { }
+      }
+    }
+  }
+
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    clearPendingOpenWaiter();
+    if (scanTimer) {
+      clearTimeout(scanTimer);
+      scanTimer = null;
+    }
+    if (activeEnsureTimer) {
+      clearTimeout(activeEnsureTimer);
+      activeEnsureTimer = null;
+    }
+    if (activeLateEnsureTimer) {
+      clearTimeout(activeLateEnsureTimer);
+      activeLateEnsureTimer = null;
+    }
+    try { observer?.disconnect?.(); } catch { }
+    observer = null;
+    deactivateHostPage();
+    try { (navItemEl || navButtonEl)?.remove?.(); } catch { }
+    try { navButtonEl?.remove?.(); } catch { }
+    try { pageEl?.remove?.(); } catch { }
+    if (typeof document !== 'undefined') {
+      try { document.getElementById(STYLE_ID)?.remove?.(); } catch { }
+    }
+    navItemEl = null;
+    navButtonEl = null;
+    pageEl = null;
+    pageShadow = null;
+    activeModal = null;
+    activeSidebar = null;
+    activeNavList = null;
+    activeSplitRow = null;
+    activeContentPane = null;
+  }
+
+  function openColorsDrawer() {
+    const colorsBody = findElInPage('ag-ns-colors-body');
+    const colorsBtn = findElInPage('ag-ns-toggle-colors');
+    const colorsLbl = findElInPage('ag-ns-toggle-colors-label');
+    if (colorsBody) colorsBody.hidden = false;
+    if (colorsBtn) colorsBtn.setAttribute?.('aria-expanded', 'true');
+    if (colorsLbl) colorsLbl.textContent = t('ns.colors.collapse');
+  }
+
+  return {
+    start,
+    dispose,
+    syncModalMount,
+    scheduleSync,
+    renderPage,
+    activateHostPage,
+    deactivateHostPage,
+    openHostSettingsPage,
+    scrollToSection,
+    openColorsDrawer,
+    findElementById: findElInPage,
+    getPageRoot: () => pageShadow || pageEl || null,
+    getPageHost: () => pageEl || null,
+    syncThemeToPageHost,
+    isHostPageSelected: () => Boolean(hostSelected),
+    getLastMountDiagnostic: () => lastMountDiagnostic,
+    getStateForTest: () => ({
+      mounted: Boolean(activeModal && navButtonEl && (navItemEl?.parentElement === activeNavList || navButtonEl.parentElement === activeNavList)),
+      selected: hostSelected,
+      navId: navButtonEl?.id || null,
+      pageHidden: pageEl ? Boolean(pageEl.hidden) : true,
+      hasShadowRoot: Boolean(pageShadow),
+      nativeSettingsPageReady: Boolean(findElInPage('ag-ns-root')),
+      scrollTop: pageEl ? Number(pageEl.scrollTop || 0) : 0,
+      contentPaneId: activeContentPane?.id || activeContentPane?.getAttribute?.('data-testid') || null,
+      hiddenNativeCount: savedHiddenNodes.length,
+      navCountInDoc: typeof document?.querySelectorAll === 'function'
+        ? Array.from(document.querySelectorAll(`#${NAV_ID}`) || []).length
+        : (navButtonEl ? 1 : 0)
+    })
+  };
+}
+  let nsHostToastText = '';
+  let nsHostToastTimer = null;
+  let nsEnhanceRestoreArmed = false;
+  let nsEnhanceRestoreArmTimer = null;
+  function showNativeSettingsToast(msg) {
+    nsHostToastText = String(msg || '');
+    if (nsHostToastTimer) clearTimeout(nsHostToastTimer);
+    syncHostSettingsUi();
+    if (nsHostToastText) {
+      nsHostToastTimer = setTimeout(() => {
+        nsHostToastText = '';
+        nsHostToastTimer = null;
+        if (!state.disposed && hostSettingsCtrl?.isHostPageSelected?.()) syncHostSettingsUi();
+      }, 2400);
+    }
+  }
+  function resolveBillingRegionCodeForNs(ps) {
+    const raw = String(ps?.subscriptionCountry || ps?.subscriptionRegion || ps?.region || '').trim();
+    if (!raw || raw === '未知' || /^unknown$/i.test(raw)) return '未知';
+    const lead = raw.match(/^([A-Z]{2,3})\b/i);
+    const code = lead ? lead[1].toUpperCase() : raw.toUpperCase();
+    if (code === 'UK' || code === 'GB') return 'GB';
+    if (['US', 'JP', 'HK', 'TW', 'KR', 'SG', 'EU', 'TR', 'IN', 'BR', 'CN'].includes(code)) return code;
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    const matched = core?.findRegionPreset?.(raw);
+    if (matched?.id) return matched.id;
+    return '未知';
+  }
+  function estimateLocalCacheSizeKb() {
+    let totalBytes = 0;
+    try {
+      if (typeof localStorage !== 'undefined' && typeof localStorage.length === 'number') {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && /^(ag_token_history_cache|ag_usage_cache|ag_speed_cache|ag_timeline_cache)/i.test(k)) {
+            totalBytes += (localStorage.getItem(k) || '').length * 2;
+          }
+        }
+      }
+      totalBytes += (sessionSnapshotCache?.size || 0) * 1024;
+    } catch { }
+    return Math.max(0, Math.round(totalBytes / 1024));
+  }
+  if (typeof createHostSettingsController === 'function') {
+    hostSettingsCtrl = createHostSettingsController({
+      t,
+      getSnapshot: () => {
+        const strict = recomputeStrictUpdateState();
+        return {
+          strictUpdateState: strict,
+          rendererVersion: METER_RENDERER_VERSION,
+          rendererDisplayVersion: formatDisplayVersion(METER_RENDERER_VERSION),
+          backendVersion: backendStatus.backendVersion || null,
+          backendDisplayVersion: backendStatus.backendVersion ? formatDisplayVersion(backendStatus.backendVersion) : null,
+          backendSource: backendStatus.backendSource || null,
+          backendPid: backendStatus.backendPid || null,
+          backendMismatch: Boolean(backendStatus.backendVersionMismatch),
+          allowBetaUpdates: Boolean(allowBetaUpdates),
+          nextPromptEnabled: Boolean(nextPromptEnabled),
+          hostSupportsRestart: Boolean(hostSupportsRestart),
+          hasCachedRelease: Boolean(cachedLatestRelease),
+          releaseNotes: cachedLatestRelease?.releaseNotes || '',
+          errorText: strict.error || lastUpdateError || null,
+          activeRoute: state.route || null,
+          lastQuotaDurationMs: backendStatus.lastQuotaDurationMs,
+          diagError: backendStatus.lastError || quotaState.error || null,
+          formatVersion: formatDisplayVersion
+        };
+      },
+      getNativeSettingsSnapshot: () => {
+        const ov = accountsUiState.overview || { accounts: [], autoSwitch: {}, autoSwitchStatus: { state: 'disabled' } };
+        const dispAs = typeof resolveAutoSwitchDisplayState === 'function' ? resolveAutoSwitchDisplayState(ov) : { label: t('accounts.status.disabled'), key: 'disabled', hasDraft: false, blockedReasonText: '' };
+        const draftVals = (autoSwitchDraftDirty || accountsUiState.autoSwitchDraft?.dirty) ? accountsUiState.autoSwitchDraft?.values : null;
+        const asCfg = draftVals || ov.autoSwitch || {};
+        const selectedSet = new Set((Array.isArray(asCfg.candidates) ? asCfg.candidates : []).map(e => String(e || '').trim().toLowerCase()));
+        const nonActiveAccounts = (ov.accounts || []).filter(a => a && !a.isActive && a.email);
+        const autoSwitchCandidates = nonActiveAccounts.map(a => ({
+          email: a.email,
+          maskedEmail: a.maskedEmail || a.email,
+          label: `${a.maskedEmail || a.email}${a.authInvalid ? ` · ${t('accounts.reauthRequired')}` : ''}`,
+          selected: selectedSet.has(String(a.email).trim().toLowerCase())
+        }));
+
+        const ps = ANTIGRAVITY_TOKEN_DATA?.planStatus || {};
+        const emailKey = ps.email || 'default';
+        const storedPlan = typeof getStoredCustomPlanSnapshot === 'function' ? getStoredCustomPlanSnapshot(emailKey) : null;
+        const curPlanTier = ps.planTierOverride || storedPlan?.planTierOverride || 'auto';
+        const curBillingRegion = resolveBillingRegionCodeForNs(ps);
+        const curDisplayCurrency = (ps.currency === 'NTD' ? 'TWD' : ps.currency) || 'USD';
+        const billingHint = ps.actualPricePaid === 0 || ps.isZeroExtraCost
+          ? `${ps.tierLabel || ps.tierKey || 'Free'} · ${ps.currencySymbol || '$'}0`
+          : (ps.actualPricePaid != null
+            ? `${ps.tierLabel || ps.tierKey || 'Pro'} · ${ps.currencySymbol || '$'}${Number(ps.actualPricePaid).toFixed(2)} ${t('plan.summary.perMonth')}`
+            : t('ns.planTier.desc'));
+
+        const buildSwFb = (key, curBool, fallbackDisabled = false) => {
+          const item = prefToggleFeedbackMap.get(key);
+          if (item) return { ...item, disabled: Boolean(fallbackDisabled) };
+          return { busy: false, tone: 'idle', text: curBool ? t('prefs.stateOn') : t('prefs.stateOff'), disabled: Boolean(fallbackDisabled) };
+        };
+        const rh = currentRehydrateStatus;
+        const rhUnread = !rh || rh.supported === false;
+        const rhStatus = rh?.status || '';
+        const rhEnabled = Boolean(rh?.hookRegistered && rh?.hookEnabled);
+        const rhPyBlocked = Boolean(rh && rh.supported !== false && !rh.pythonReady);
+        const rhBadgeText = rhUnread ? t('rehydrate.status.unread') : (rhStatus === 'enabled' ? t('rehydrate.status.enabled') : (rhStatus === 'disabled' ? t('rehydrate.status.disabled') : (rhStatus === 'broken' ? t('rehydrate.status.broken') : t('rehydrate.status.notInstalled'))));
+        const rhBadgeClass = rhStatus === 'enabled' ? 'is-accent' : (rhStatus === 'broken' ? 'is-warn' : '');
+        const rhHookText = rhUnread ? t('rehydrate.status.unread') : (rh.hookRegistered ? (rh.hookEnabled ? t('rehydrate.state.hookEnabled') : t('rehydrate.state.hookDisabled')) : t('rehydrate.state.hookNone'));
+        const rhPythonText = rhUnread ? t('rehydrate.status.unread') : (rh.pythonReady ? t('rehydrate.state.pythonOk', { ver: rh.pythonVersion || '3.10+' }) : (rh.pythonVersion ? t('rehydrate.state.pythonOld', { ver: rh.pythonVersion }) : t('rehydrate.state.pythonMissing')));
+
+        const enhSummary = currentEnhanceStatus?.summary || currentEnhanceStatus;
+        const enhTierNum = [0, 1, 2, 3, 4].includes(Number(selectedEnhanceTier)) ? Number(selectedEnhanceTier) : (Number(enhSummary?.promptTier ?? 0));
+        const enhBadgeText = !currentEnhanceStatus
+          ? t('enhance.status.unread')
+          : (hasPendingLsReload ? t('enhance.status.pendingRestartLs') : ([0, 1, 2, 3, 4].includes(enhTierNum) ? t(`enhance.tier.${enhTierNum}.short`) : t('enhance.status.stock')));
+        const enhBadgeClass = (hasPendingLsReload || enhanceTierDirty || enhanceTitleDirty) ? 'is-warn' : (enhTierNum > 0 ? 'is-accent' : '');
+
+        const proxyInputElVal = inputProxyUrl ? String(inputProxyUrl.value ?? '') : '';
+        const strictUpd = recomputeStrictUpdateState();
+        const proxyDescLive = proxyTestResult && lastProxyTestState
+          ? (lastProxyTestState.pending ? t('settings.proxy.testingDetail') : (lastProxyTestState.res?.ok ? t('settings.proxy.resReachable') : (lastProxyTestState.res?.error || lastProxyTestState.thrownErr || (proxyStatusDesc?.textContent || ''))))
+          : (proxyStatusDesc?.textContent || t('ns.proxyEnabled.desc'));
+
+        return {
+          settings: {
+            themeMode: typeof currentThemeMode !== 'undefined' ? currentThemeMode : 'auto',
+            topbarMode,
+            panelDockMode,
+            quotaWindowMode: quotaBadgeWindowMode,
+            autoHideTopbarOnDock: Boolean(autoHideTopbarOnDockedPanel),
+            radialOrb: Boolean(!radialOrbHidden && radialOrbEnabled),
+            radialTopbar: Boolean(radialTopbarEnabled),
+            radialBottombar: Boolean(radialBottombarEnabled),
+            showComposerBar: Boolean(showComposerQuotaSummary),
+            showTurnFooter: Boolean(showTurnFooterStats),
+            nextPromptEnabled: Boolean(nextPromptEnabled),
+            autoSwitchEnabled: Boolean(asCfg.enabled),
+            autoSwitchTarget: encodeAutoSwitchTargetKey(asCfg.poolKey, asCfg.windowKey),
+            autoSwitchMetric: asCfg.metricMode || 'remaining_pct',
+            autoSwitchThreshold: Number.isFinite(Number(asCfg.thresholdPct)) ? Number(asCfg.thresholdPct) : 10,
+            clientLanguage: selectedClientLanguage || (currentChineseEnabled ? 'zh-CN' : 'en'),
+            brandTitle: selectedBrandTitle || currentBrandTitle || 'english',
+            panelLanguage: currentPanelLanguage,
+            enhancePromptTier: String(enhTierNum),
+            enhanceChineseTitle: Boolean(enhanceTitleDraft),
+            proxyEnabled: Boolean(currentProxyEnabled),
+            proxyUrl: proxyInputDirty ? proxyInputElVal : (savedProxyUrl || proxyInputElVal || ''),
+            planTier: curPlanTier,
+            billingRegion: curBillingRegion,
+            displayCurrency: curDisplayCurrency,
+            autoCheckUpdate: Boolean(autoCheckUpdate),
+            betaChannel: Boolean(allowBetaUpdates)
+          },
+          colors: {
+            panelBg: typeof getEffectiveSlotColor === 'function' ? getEffectiveSlotColor('panelBg') : '#181818',
+            ringUsed: typeof getEffectiveSlotColor === 'function' ? getEffectiveSlotColor('ringUsed') : '#e6e6eb',
+            ringTrack: typeof getEffectiveSlotColor === 'function' ? getEffectiveSlotColor('ringTrack') : '#52525b',
+            contextText: typeof getEffectiveSlotColor === 'function' ? getEffectiveSlotColor('contextText') : '#ececef',
+            speedText: typeof getEffectiveSlotColor === 'function' ? getEffectiveSlotColor('speedText') : '#38bdf8',
+            tokenTotal: typeof getEffectiveSlotColor === 'function' ? getEffectiveSlotColor('tokenTotal') : '#c084fc',
+            tokenAccent: typeof getEffectiveSlotColor === 'function' ? getEffectiveSlotColor('tokenAccent') : '#a78bfa'
+          },
+          status: {
+            switchFeedback: {
+              autoHideTopbarOnDock: buildSwFb('autoHideTopbarOnDockedPanel', autoHideTopbarOnDockedPanel),
+              radialOrb: buildSwFb('radialOrbEnabled', !radialOrbHidden && radialOrbEnabled),
+              radialTopbar: buildSwFb('radialTopbarEnabled', radialTopbarEnabled),
+              radialBottombar: buildSwFb('radialBottombarEnabled', radialBottombarEnabled),
+              showComposerBar: buildSwFb('showComposerQuotaSummary', showComposerQuotaSummary),
+              showTurnFooter: buildSwFb('showTurnFooterStats', showTurnFooterStats),
+              nextPromptEnabled: buildSwFb('nextPromptEnabled', nextPromptEnabled),
+              autoCheckUpdate: buildSwFb('autoCheckUpdate', autoCheckUpdate),
+              betaChannel: buildSwFb('allowBetaUpdates', allowBetaUpdates)
+            },
+            autoSwitchLabel: dispAs.label,
+            autoSwitchToneClass: dispAs.key === 'watching' ? 'is-accent' : ((dispAs.key === 'error' || dispAs.key === 'save_failed' || dispAs.key === 'unsaved' || dispAs.key === 'no_candidates' || dispAs.key === 'all_candidates_exhausted' || dispAs.key?.startsWith?.('blocked_')) ? 'is-warn' : ((dispAs.key === 'switching' || dispAs.key === 'waiting_idle' || dispAs.key === 'pending_debounce' || dispAs.key === 'restarting') ? 'is-info' : '')),
+            autoSwitchNote: accountsUiState.autoSwitchDraft?.saveErrorDetail || dispAs.blockedReasonText || (accountsUiState.feedbackTone === 'error' ? accountsUiState.feedback : '') || t('ns.autoSwitch.desc'),
+            autoSwitchNoteTone: (accountsUiState.autoSwitchDraft?.saveErrorDetail || accountsUiState.feedbackTone === 'error' || dispAs.key === 'blocked_legacy_rule') ? 'error' : 'idle',
+            autoSwitchLiveSummary: (typeof buildAutoSwitchRuleSummary === 'function' ? buildAutoSwitchRuleSummary(asCfg, ov).text : ''),
+            autoSwitchLiveSummaryTone: (typeof buildAutoSwitchRuleSummary === 'function' ? buildAutoSwitchRuleSummary(asCfg, ov).tone : 'idle'),
+            autoSwitchCandidates,
+            autoSwitchEmptyCandidatesText: t('ns.autoSwitch.emptyCands'),
+            clientLangBadgeText: chineseBadge?.textContent || (currentChineseEnabled ? '简体中文' : 'English'),
+            clientLangBadgeClass: currentChineseEnabled && !needsRestartAfterApply ? 'is-accent' : (needsRestartAfterApply ? 'is-warn' : ''),
+            clientLangDescText: chineseStatusDesc?.textContent || t('settings.clientLang.detecting'),
+            clientLangBusy: Boolean(isClientLangBusy),
+            clientLangBtnText: isClientLangBusy ? t('mod.zh.submitting') : t('settings.clientLang.applyRestart'),
+            clientLangFeedback: clientLangFeedbackState.text || '',
+            clientLangFeedbackOk: clientLangFeedbackState.ok,
+            rehydrateBadgeText: rhBadgeText,
+            rehydrateBadgeClass: rhBadgeClass,
+            rehydrateHookText: rhHookText,
+            rehydratePythonText: rhPythonText,
+            rehydrateShowInstallPy: rhPyBlocked,
+            rehydrateBusy: Boolean(isRehydrateBusy),
+            rehydrateDisableEnable: rhUnread || rhEnabled || rhPyBlocked || rh?.hooksFileValid === false,
+            rehydrateDisableDisable: rhUnread || !rhEnabled,
+            enhanceBadgeText: enhBadgeText,
+            enhanceBadgeClass: enhBadgeClass,
+            proxyBadgeText: proxyBadge?.textContent || (currentProxyEnabled ? t('mod.proxy.badgeOk') : t('mod.proxy.badgeOff')),
+            proxyBadgeClass: currentProxyEnabled ? 'is-accent' : '',
+            proxyDescText: proxyDescLive,
+            billingHint,
+            version: formatDisplayVersion(METER_RENDERER_VERSION),
+            checkingUpdate: strictUpd.stage === 'checking' || strictUpd.stage === 'downloading',
+            cacheDescText: t('ns.clearCache.desc', { kb: estimateLocalCacheSizeKb() })
+          },
+          toastMessage: nsHostToastText || ''
+        };
+      },
+      onNativeSettingChange: (key, value) => {
+        if (key === 'themeMode') {
+          if (['auto', 'light', 'dark'].includes(value)) {
+            currentThemeMode = value;
+            try { if (typeof localStorage !== 'undefined') localStorage.setItem('ag_theme_mode', value); } catch { }
+            if (typeof applyTheme === 'function') applyTheme();
+            void saveSettingsPayloadBridge?.({ themeMode: value });
+            syncHostSettingsUi();
+          }
+          return;
+        }
+        if (key === 'panelLanguage') {
+          if (['zh-CN', 'zh-TW', 'en'].includes(value)) {
+            void applyPanelLanguage(value, { persist: true });
+          }
+          return;
+        }
+        if (key === 'topbarMode') { setTopbarMode(value, { persist: true }); syncHostSettingsUi(); return; }
+        if (key === 'panelDockMode') { setPanelDockMode(value, { persist: true }); syncHostSettingsUi(); return; }
+        if (key === 'quotaWindowMode') { setQuotaBadgeWindowMode(value, { persist: true }); syncHostSettingsUi(); return; }
+        if (key === 'autoHideTopbarOnDock') {
+          const prev = autoHideTopbarOnDockedPanel;
+          void persistBooleanPreferenceToggle({
+            payloadKey: 'autoHideTopbarOnDockedPanel',
+            next: Boolean(value),
+            prev,
+            checkboxEl: el('chk-autohide-topbar-docked'),
+            statusId: '',
+            localStorageKey: 'ag_autohide_topbar_docked',
+            onApplyState: (val) => { setAutoHideTopbarOnDockedPanel(val, { persist: false }); },
+            onUiSync: () => { syncHostSettingsUi(); }
+          });
+          return;
+        }
+        if (key === 'radialOrb') {
+          const prev = !radialOrbHidden && radialOrbEnabled;
+          void persistBooleanPreferenceToggle({
+            payloadKey: 'radialOrbEnabled',
+            next: Boolean(value),
+            prev,
+            checkboxEl: el('chk-radial-orb-enabled'),
+            statusId: '',
+            onApplyState: (val) => { setRadialOrbHidden(!val, { persist: false }); },
+            onUiSync: () => { syncHostSettingsUi(); }
+          });
+          return;
+        }
+        if (key === 'radialTopbar') {
+          const prev = radialTopbarEnabled;
+          void persistBooleanPreferenceToggle({
+            payloadKey: 'radialTopbarEnabled',
+            next: Boolean(value),
+            prev,
+            checkboxEl: el('chk-radial-topbar-enabled'),
+            statusId: '',
+            onApplyState: (val) => { setRadialTopbarEnabled(val, { persist: false }); },
+            onUiSync: () => { syncHostSettingsUi(); }
+          });
+          return;
+        }
+        if (key === 'radialBottombar') {
+          const prev = radialBottombarEnabled;
+          void persistBooleanPreferenceToggle({
+            payloadKey: 'radialBottombarEnabled',
+            next: Boolean(value),
+            prev,
+            checkboxEl: el('chk-radial-bottombar-enabled'),
+            statusId: '',
+            onApplyState: (val) => { setRadialBottombarEnabled(val, { persist: false }); },
+            onUiSync: () => { syncHostSettingsUi(); }
+          });
+          return;
+        }
+        if (key === 'showComposerBar') { onShowComposerQuotaToggle({ target: { checked: Boolean(value) } }); return; }
+        if (key === 'showTurnFooter') { onShowTurnFooterToggle({ target: { checked: Boolean(value) } }); return; }
+        if (key === 'nextPromptEnabled') { void setNextPromptEnabledState(Boolean(value), { persist: true }); return; }
+        if (key === 'autoCheckUpdate') {
+          const prev = autoCheckUpdate;
+          void persistBooleanPreferenceToggle({
+            payloadKey: 'autoCheckUpdate',
+            next: Boolean(value),
+            prev,
+            checkboxEl: el('check-auto-update'),
+            statusId: '',
+            onApplyState: (val) => { autoCheckUpdate = val; },
+            onUiSync: () => { syncHostSettingsUi(); }
+          });
+          return;
+        }
+        if (key === 'betaChannel') { void setAllowBetaUpdatesState(Boolean(value), { persist: true }); return; }
+        if (key === 'autoSwitchEnabled') {
+          const hsRoot = hostSettingsCtrl?.getPageRoot?.();
+          const curDraft = {
+            ...(accountsUiState.autoSwitchDraft?.values || accountsUiState.overview?.autoSwitch || {}),
+            enabled: Boolean(value)
+          };
+          if (hsRoot && hsRoot.getElementById) {
+            const tSel = hsRoot.getElementById('ag-ns-sel-autoSwitchTarget');
+            const mSel = hsRoot.getElementById('ag-ns-sel-autoSwitchMetric');
+            const tInp = hsRoot.getElementById('ag-ns-inp-autoSwitchThreshold');
+            if (tSel && tSel.value) {
+              const dec = decodeAutoSwitchTargetKey(tSel.value, curDraft);
+              curDraft.poolKey = dec.poolKey;
+              curDraft.windowKey = dec.windowKey;
+            }
+            if (mSel) curDraft.metricMode = mSel.value;
+            if (tInp) curDraft.thresholdPct = Number(tInp.value);
+          }
+          const targetVal = encodeAutoSwitchTargetKey(curDraft.poolKey, curDraft.windowKey);
+          if (el('sel-auto-switch-target')) el('sel-auto-switch-target').value = targetVal;
+          if (el('sel-auto-switch-mode') && curDraft.metricMode) el('sel-auto-switch-mode').value = curDraft.metricMode;
+          if (el('inp-auto-switch-threshold') && Number.isFinite(Number(curDraft.thresholdPct))) el('inp-auto-switch-threshold').value = String(curDraft.thresholdPct);
+          void onAutoSwitchMasterToggle({ target: { checked: Boolean(value) } });
+          return;
+        }
+        if (['autoSwitchTarget', 'autoSwitchMetric', 'autoSwitchThreshold', 'autoSwitchCandidates'].includes(key)) {
+          const base = accountsUiState.autoSwitchDraft?.values || accountsUiState.overview?.autoSwitch || {};
+          const nextDraft = {
+            enabled: Boolean(base.enabled),
+            poolKey: base.poolKey || 'shared_gemini_main',
+            metricMode: base.metricMode || 'remaining_pct',
+            windowKey: base.windowKey || '5h',
+            thresholdPct: Number(base.thresholdPct ?? 10),
+            candidates: Array.isArray(base.candidates) ? [...base.candidates] : []
+          };
+          if (key === 'autoSwitchTarget') {
+            const dec = decodeAutoSwitchTargetKey(value, base);
+            nextDraft.poolKey = dec.poolKey;
+            nextDraft.windowKey = dec.windowKey;
+          } else if (key === 'autoSwitchMetric') nextDraft.metricMode = value;
+          else if (key === 'autoSwitchThreshold') nextDraft.thresholdPct = Number(value);
+          else if (key === 'autoSwitchCandidates') nextDraft.candidates = Array.isArray(value) ? value : [];
+          if (el('sel-auto-switch-target')) el('sel-auto-switch-target').value = encodeAutoSwitchTargetKey(nextDraft.poolKey, nextDraft.windowKey);
+          if (el('sel-auto-switch-mode')) el('sel-auto-switch-mode').value = nextDraft.metricMode;
+          if (el('inp-auto-switch-threshold') && Number.isFinite(nextDraft.thresholdPct)) el('inp-auto-switch-threshold').value = String(nextDraft.thresholdPct);
+          if (typeof enhancedDropdowns !== 'undefined' && enhancedDropdowns?.get) {
+            enhancedDropdowns.get('sel-auto-switch-target')?.refresh?.();
+            enhancedDropdowns.get('sel-auto-switch-mode')?.refresh?.();
+          }
+          autoSwitchDraftDirty = true;
+          accountsUiState.autoSwitchDraft.dirty = true;
+          accountsUiState.autoSwitchDraft.values = nextDraft;
+          accountsUiState.autoSwitchDraft.saveStatusKey = 'accounts.ruleUnsaved';
+          accountsUiState.autoSwitchDraft.saveErrorDetail = '';
+          accountsUiState.mutationSeq += 1;
+          renderAccountsOverviewSection();
+          return;
+        }
+        if (key === 'clientLanguage') {
+          selectedClientLanguage = value === 'zh-CN' ? 'zh-CN' : 'en';
+          clientLangExplicitlyPicked = true;
+          clientLangFeedbackState = { ok: null, text: '' };
+          syncClientLanguageButtons();
+          syncHostSettingsUi();
+          return;
+        }
+        if (key === 'brandTitle') {
+          selectedBrandTitle = value;
+          void applyBrandTitleSetting(value).then(() => {
+            showNativeSettingsToast(brandApplyFeedback?.textContent || t('enhance.brand.appliedName', { mode: getBrandDisplayValue(value) }));
+          });
+          return;
+        }
+        if (key === 'enhancePromptTier') {
+          const tier = Number(value);
+          if ([0, 1, 2, 3, 4].includes(tier)) {
+            selectedEnhanceTier = tier;
+            enhanceTierDirty = true;
+            renderEnhancePromptMatrix?.(tier);
+            renderEnhanceSectionUI();
+          }
+          return;
+        }
+        if (key === 'enhanceChineseTitle') {
+          enhanceTitleDraft = Boolean(value);
+          enhanceTitleDirty = true;
+          if (enhanceChineseTitleCheck) enhanceChineseTitleCheck.checked = enhanceTitleDraft;
+          renderEnhanceSectionUI();
+          return;
+        }
+        if (key === 'proxyEnabled') {
+          const hsRoot = hostSettingsCtrl?.getPageRoot?.();
+          const proxyInp = hsRoot?.getElementById?.('ag-ns-input-proxyUrl');
+          if (inputProxyUrl && proxyInp && String(proxyInp.value || '').trim()) {
+            inputProxyUrl.value = String(proxyInp.value).trim();
+          }
+          void applyProxyModuleUpdate(Boolean(value)).then(() => syncHostSettingsUi());
+          return;
+        }
+        if (key === 'proxyUrl') {
+          proxyInputDirty = true;
+          if (inputProxyUrl) inputProxyUrl.value = String(value || '');
+          return;
+        }
+        if (key === 'planTier') {
+          applyDirectPlanTierSelection(value || 'auto');
+          syncHostSettingsUi();
+          return;
+        }
+        if (key === 'billingRegion') {
+          const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+          const presets = core?.SUBSCRIPTION_REGIONS_PRESET || [];
+          const normCode = value === 'UK' ? 'GB' : String(value || '').trim().toUpperCase();
+          const matched = presets.find(p => p.id === normCode);
+          if (matched) {
+            applyDirectRegionSelection(matched);
+          } else {
+            const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+            const email = ps.email || 'default';
+            const prevCustom = getStoredCustomPlanSnapshot(email);
+            const cleanObj = { ...prevCustom, updatedAt: new Date().toISOString() };
+            delete cleanObj.subscriptionCountry;
+            delete cleanObj.subscriptionRegion;
+            delete cleanObj.region;
+            applyCustomPlanObjectLocally(cleanObj, email);
+            void persistSettingsToHost({ email, customPlan: cleanObj });
+          }
+          syncHostSettingsUi();
+          return;
+        }
+        if (key === 'displayCurrency') {
+          applyDirectCurrencySelection(value || 'USD');
+          syncHostSettingsUi();
+        }
+      },
+      onNativeColorChange: (colorKey, hex) => {
+        setCustomColor(colorKey, hex);
+      },
+      onNativeResetColors: () => {
+        resetCustomColors();
+        showNativeSettingsToast(t('settings.colors.resetAll'));
+      },
+      onNativeAction: (actionName, payload) => {
+        if (actionName === 'checkUpdate') void checkAppUpdate(true, 'host-settings');
+        else if (actionName === 'applyUpdate') void applyAppUpdate();
+        else if (actionName === 'restartHost') openClientRestartConfirmFlow();
+        else if (actionName === 'verifyRuntime') void verifyHotReloadAndRefreshQuota();
+        else if (actionName === 'openReleasePage') openGithubRepo(cachedLatestRelease?.tagName ? `/releases/tag/${cachedLatestRelease.tagName}` : '/releases');
+        else if (actionName === 'openAccountsTab') openPluginAccountsTab();
+        else if (actionName === 'openQuotaBoard') showPanel('quota');
+        else if (actionName === 'openTokensBoard') showPanel('tokens');
+        else if (actionName === 'openRight') void openDashboardInRightPanel();
+        else if (actionName === 'openPage') { setPanelDockMode('page', { persist: true }); syncHostSettingsUi(); }
+        else if (actionName === 'copyUrl') {
+          void resolvePreciseDashboardUrl().then(async (res) => {
+            if (res?.ok && res.url) {
+              await copyTextToClipboardSafe(res.url);
+              showNativeSettingsToast(res.url);
+            }
+          });
+        } else if (actionName === 'openExternal') {
+          void openStandaloneBrowserPage();
+        } else if (actionName === 'saveAutoSwitch') {
+          void (async () => {
+            if (autoSwitchSaving || accountsUiState.busy) return;
+            const draft = accountsUiState.autoSwitchDraft?.values || accountsUiState.overview?.autoSwitch || {};
+            const cfg = {
+              enabled: Boolean(draft.enabled),
+              poolKey: draft.poolKey || 'shared_gemini_main',
+              metricMode: draft.metricMode || 'remaining_pct',
+              windowKey: draft.windowKey || 'primary',
+              thresholdPct: Number(draft.thresholdPct ?? 10),
+              candidates: Array.isArray(draft.candidates) ? draft.candidates : []
+            };
+            if (!(cfg.thresholdPct >= 1 && cfg.thresholdPct <= 95)) {
+              accountsUiState.autoSwitchDraft.saveErrorDetail = t('accounts.ruleThreshold');
+              syncHostSettingsUi();
+              return;
+            }
+            const out = await performAccountAction('update_auto_switch', { config: cfg });
+            if (out?.ok) {
+              autoSwitchDraftDirty = false;
+              accountsUiState.autoSwitchDraft.dirty = false;
+              accountsUiState.autoSwitchDraft.values = null;
+              accountsUiState.autoSwitchDraft.saveErrorDetail = '';
+              showNativeSettingsToast(t('prefs.saved'));
+            } else {
+              accountsUiState.autoSwitchDraft.saveErrorDetail = out?.error || t('accounts.actionFail');
+            }
+            renderAccountsOverviewSection();
+          })();
+        } else if (actionName === 'applyClientLang') {
+          const targetLang = selectedClientLanguage || (currentChineseEnabled ? 'en' : 'zh-CN');
+          void setClientLanguageTarget(targetLang, { triggerRestartIfSupported: true });
+        } else if (actionName === 'rehydrateInstallPython') {
+          void runRehydrateAction('installPython', null, 'rehydrate.btn.installPythonBusy', 'rehydrate.btn.installPython', (res) => () => t(res?.alreadyInstalled ? 'rehydrate.result.pythonAlreadyReady' : 'rehydrate.result.pythonInstalled', { ver: res?.python?.version || '3.12' }));
+        } else if (actionName === 'rehydrateEnable') {
+          void runRehydrateAction('apply', null, 'rehydrate.btn.enableBusy', 'rehydrate.btn.enable', (res) => () => res?.changed === false ? t('rehydrate.result.alreadyEnabled') : t('rehydrate.result.enabled', { path: res?.status?.hooksJsonPath || '~/.gemini/config/hooks.json' }));
+        } else if (actionName === 'rehydrateDisable') {
+          void runRehydrateAction('disable', null, 'rehydrate.btn.disableBusy', 'rehydrate.btn.disable', () => () => t('rehydrate.result.disabled'));
+        } else if (actionName === 'rehydrateRefresh') {
+          void refreshRehydrateStatus();
+        } else if (actionName === 'enhanceApply') {
+          if (btnApplyEnhancePrompt) {
+            btnApplyEnhancePrompt.click();
+          } else {
+            void invokeEnhanceApi('apply', { promptTier: Number(selectedEnhanceTier), chineseTitle: Boolean(enhanceTitleDraft), restartLanguageServer: false }).then(() => refreshEnhanceStatus(true, { forceSyncDrafts: true }));
+          }
+          showNativeSettingsToast(t('enhance.btn.applyPromptBusy'));
+        } else if (actionName === 'enhanceRestoreAll') {
+          if (!nsEnhanceRestoreArmed) {
+            nsEnhanceRestoreArmed = true;
+            if (nsEnhanceRestoreArmTimer) clearTimeout(nsEnhanceRestoreArmTimer);
+            nsEnhanceRestoreArmTimer = setTimeout(() => { nsEnhanceRestoreArmed = false; }, 5000);
+            showNativeSettingsToast(t('enhance.confirm.go'));
+            return;
+          }
+          nsEnhanceRestoreArmed = false;
+          if (nsEnhanceRestoreArmTimer) { clearTimeout(nsEnhanceRestoreArmTimer); nsEnhanceRestoreArmTimer = null; }
+          void (async () => {
+            await invokeEnhanceApi('restore', {});
+            await invokeModulesApi('toggle', 'chinese', false, { language: 'en', brandTitle: 'english' });
+            await invokeUnlockApi('restore', {});
+            await invokeRehydrateApi('restore', {});
+            currentBrandTitle = 'english';
+            selectedBrandTitle = 'english';
+            await Promise.all([refreshEnhanceStatus(true, { forceSyncDrafts: true }), refreshModulesDisplay(), refreshUnlockStatus(), refreshRehydrateStatus()]);
+            showNativeSettingsToast(t('enhance.result.restoredDone'));
+          })();
+        } else if (actionName === 'testProxy') {
+          const urlVal = payload?.proxyUrl ?? inputProxyUrl?.value ?? '';
+          lastProxyTestState = { pending: true };
+          syncHostSettingsUi();
+          void invokeTestProxyApi(String(urlVal).trim()).then((res) => {
+            lastProxyTestState = { pending: false, res };
+            showNativeSettingsToast(res?.ok ? t('settings.proxy.resReachable') : (res?.error || t('settings.proxy.testFail', { err: '' })));
+          }).catch((e) => {
+            lastProxyTestState = { pending: false, thrownErr: e?.message || String(e || '') };
+            syncHostSettingsUi();
+          });
+        } else if (actionName === 'applyProxy') {
+          const urlVal = payload?.proxyUrl ?? inputProxyUrl?.value ?? '';
+          if (inputProxyUrl) inputProxyUrl.value = String(urlVal);
+          void applyProxyModuleUpdate(true).then(() => showNativeSettingsToast(t('prefs.saved')));
+        } else if (actionName === 'copyDiag') {
+          const strict = recomputeStrictUpdateState();
+          const diagPayload = JSON.stringify({
+            rendererVersion: METER_RENDERER_VERSION,
+            backendVersion: backendStatus.backendVersion,
+            backendSource: backendStatus.backendSource,
+            backendMismatch: backendStatus.backendVersionMismatch,
+            strictStage: strict.stage,
+            route: state.route || null,
+            lastQuotaDurationMs: backendStatus.lastQuotaDurationMs
+          }, null, 2);
+          void Promise.resolve(copyTextToClipboardSafe?.(diagPayload)).then(() => {
+            showNativeSettingsToast(t('ns.exportDiag.copied'));
+          });
+        } else if (actionName === 'exportDiag') {
+          const strict = recomputeStrictUpdateState();
+          const diagObj = {
+            exportedAt: new Date().toISOString(),
+            rendererVersion: METER_RENDERER_VERSION,
+            backendVersion: backendStatus.backendVersion,
+            backendSource: backendStatus.backendSource,
+            backendMismatch: backendStatus.backendVersionMismatch,
+            strictUpdateState: strict,
+            route: state.route || null,
+            lastQuotaDurationMs: backendStatus.lastQuotaDurationMs,
+            diagError: backendStatus.lastError || quotaState.error || null,
+            hostModalDiag: hostSettingsCtrl?.getLastMountDiagnostic?.() || null,
+            autoSwitchState: accountsUiState.overview?.autoSwitchStatus?.state || 'unknown'
+          };
+          const jsonText = JSON.stringify(diagObj, null, 2);
+          let downloaded = false;
+          try {
+            if (typeof Blob === 'function' && typeof URL?.createObjectURL === 'function' && typeof document?.createElement === 'function') {
+              const blob = new Blob([jsonText], { type: 'application/json' });
+              const href = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = href;
+              a.download = `context-meter-diagnostics-${Date.now()}.json`;
+              document.body?.appendChild?.(a);
+              a.click?.();
+              a.remove?.();
+              setTimeout(() => { try { URL.revokeObjectURL(href); } catch { } }, 1000);
+              downloaded = true;
+            }
+          } catch { }
+          void Promise.resolve(copyTextToClipboardSafe?.(jsonText)).then(() => {
+            showNativeSettingsToast(t(downloaded ? 'ns.exportDiag.done' : 'ns.exportDiag.copied'));
+          });
+        } else if (actionName === 'clearCache') {
+          let cleared = 0;
+          try {
+            cleared += sessionSnapshotCache?.size || 0;
+            sessionSnapshotCache?.clear?.();
+            if (typeof localStorage !== 'undefined' && typeof localStorage.length === 'number') {
+              const rmKeys = [];
+              for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k && /^(ag_token_history_cache|ag_usage_cache|ag_speed_cache|ag_timeline_cache)/i.test(k)) {
+                  rmKeys.push(k);
+                }
+              }
+              for (const k of rmKeys) {
+                localStorage.removeItem(k);
+                cleared += 1;
+              }
+            }
+          } catch { }
+          showNativeSettingsToast(t('ns.clearCache.done', { count: cleared }));
+        }
+      },
+      applyStaticTranslations: (root) => applyStaticPanelTranslations(root),
+      syncThemeTarget: (targetNode) => syncHostSettingsThemeAttrs(targetNode),
+      onHostPageActivated: ({ section } = {}) => {
+        renderSettingsFallbackBanner(false);
+        syncHostAccentCssVar?.();
+        syncHostSettingsThemeAttrs();
+        void refreshModulesDisplay();
+        if (typeof refreshAccountsOverview === 'function') void refreshAccountsOverview({ silent: true });
+        if (!currentUnlockStatus && !unlockStatusFetchError && typeof refreshUnlockStatus === 'function') {
+          void refreshUnlockStatus();
+        }
+        if (typeof refreshEnhanceStatus === 'function') void refreshEnhanceStatus();
+        if (typeof refreshRehydrateStatus === 'function') void refreshRehydrateStatus();
+        if (section) hostSettingsCtrl?.scrollToSection?.(section);
+      },
+      onCheckUpdate: (trigger) => checkAppUpdate(true, trigger || 'host-settings'),
+      onApplyUpdate: () => applyAppUpdate(),
+      onRestartHost: () => openClientRestartConfirmFlow(),
+      onVerifyRuntime: () => verifyHotReloadAndRefreshQuota(),
+      onOpenPluginPanel: (target) => {
+        if (target === 'accounts') {
+          openPluginAccountsTab();
+        } else if (target === 'settings') {
+          openContextSettings();
+        } else if (target === 'quota') {
+          showPanel('quota');
+        } else if (target === 'tokens') {
+          showPanel('tokens');
+        }
+      },
+      onOpenReleasePage: () => {
+        openGithubRepo(cachedLatestRelease?.tagName ? `/releases/tag/${cachedLatestRelease.tagName}` : '/releases');
+      },
+      onCopyDiagnostics: () => {
+        const strict = recomputeStrictUpdateState();
+        const payload = JSON.stringify({
+          rendererVersion: METER_RENDERER_VERSION,
+          backendVersion: backendStatus.backendVersion,
+          backendSource: backendStatus.backendSource,
+          backendMismatch: backendStatus.backendVersionMismatch,
+          strictStage: strict.stage,
+          route: state.route || null,
+          lastQuotaDurationMs: backendStatus.lastQuotaDurationMs
+        }, null, 2);
+        return copyTextToClipboardSafe?.(payload);
+      }
+    });
+    activeDisposers.add(() => hostSettingsCtrl?.dispose?.());
+    earlyDisposeHooks.push(() => hostSettingsCtrl?.dispose?.());
+    earlyDisposeHooks.push(() => { if (nsEnhanceRestoreArmTimer) { clearTimeout(nsEnhanceRestoreArmTimer); nsEnhanceRestoreArmTimer = null; } });
   }
 // =========================================================================
 // 模块 3A: 全景脉冲趋势增强 · 全会话压缩带 / 耗时叠加 / 事件标旗 / Hover Scrub 与三行摘要
@@ -63568,6 +68466,219 @@ function initCrossSessionInsightsControls() {
     syncModelListQuotaIndicators(view, nowMs);
     renderComposerQuotaSummary(view, nowMs);
     scheduleQuotaResetConfirmIfNeeded(view, nowMs);
+    renderAccountsTabPoolsSection(view, nowMs, { shouldAnimate, renderQuotaModelChips });
+  }
+
+  function renderAccountPoolWindowSummary(container, pool, opts = {}) {
+    if (!container) return;
+    const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
+    if (!pool || pool.noPermission) {
+      container.replaceChildren();
+      return;
+    }
+    const rawBuckets = Array.isArray(pool.buckets) ? pool.buckets.filter(Boolean) : [];
+    const seenWin = new Set();
+    const deduped = [];
+    for (const b of rawBuckets) {
+      const rawKey = String(b.windowKey || b.windowShort || b.bucketId || '').trim().toLowerCase();
+      const normWinKey = (rawKey === 'weekly' || rawKey === '7d') ? '7d' : (rawKey || String(deduped.length));
+      if (seenWin.has(normWinKey)) continue;
+      seenWin.add(normWinKey);
+      deduped.push({ bucket: b, normWinKey });
+    }
+    if (!deduped.length) {
+      container.replaceChildren();
+      return;
+    }
+    container.replaceChildren();
+    for (const { bucket: b, normWinKey } of deduped) {
+      const row = document.createElement('div');
+      row.className = 'ctx-pool-summary-row';
+      row.setAttribute('data-window-key', normWinKey);
+      const winEl = document.createElement('span');
+      winEl.className = 'ctx-pool-summary-win';
+      winEl.textContent = formatQuotaWindowTitle(b);
+
+      const valEl = document.createElement('span');
+      valEl.className = 'ctx-pool-summary-val';
+      const pctEl = document.createElement('span');
+      pctEl.className = 'ctx-pool-summary-pct';
+      const resolvedFrac = b.remainingFraction != null
+        ? Number(b.remainingFraction)
+        : (Number.isFinite(Number(b.remainingPct)) ? Number(b.remainingPct) / 100 : null);
+      if (b.percentText && b.percentText !== '未知') {
+        pctEl.textContent = b.percentText;
+      } else if (resolvedFrac != null && Number.isFinite(resolvedFrac)) {
+        pctEl.textContent = `${Math.round(resolvedFrac * 100)}%`;
+      } else {
+        pctEl.textContent = t('quota.time.unknown');
+      }
+      const resetEl = document.createElement('span');
+      resetEl.className = 'ctx-pool-summary-reset';
+      if (b.hasResetTime) {
+        const cdStr = b.countdownText
+          ? (b.isResetPassed ? b.countdownText : formatCountdownMsCompact((b.resetAtMs || 0) - nowMs))
+          : '';
+        resetEl.textContent = cdStr ? `${b.resetTimeText} · ${cdStr}` : String(b.resetTimeText || '');
+      } else if (b.resetText) {
+        resetEl.textContent = String(b.resetText);
+      } else {
+        resetEl.textContent = `${t('quota.time.reset')}: ${t('quota.time.unknown')}`;
+      }
+      valEl.appendChild(pctEl);
+      valEl.appendChild(resetEl);
+      row.appendChild(winEl);
+      row.appendChild(valEl);
+      container.appendChild(row);
+    }
+  }
+
+  function renderAccountsTabPoolsSection(view, nowMs = Date.now(), opts = {}) {
+    const sec = el('ctx-shared-pools-section');
+    if (!sec) return;
+    const ov = accountsUiState?.overview || {};
+    const activeEmailLabel = ov.activeAccountEmail
+      || (Array.isArray(ov.accounts) ? (ov.accounts.find(a => a?.isActive)?.maskedEmail || ov.accounts.find(a => a?.isActive)?.email) : '')
+      || ANTIGRAVITY_TOKEN_DATA.planStatus?.email
+      || '';
+    const acctTag = el('ctx-pools-account-tag');
+    if (acctTag) {
+      const activeAccObj = Array.isArray(ov.accounts) ? ov.accounts.find(a => a?.isActive) : null;
+      const dispEmail = activeAccObj?.maskedEmail || activeEmailLabel || t('quota.state.unknown');
+      setQuotaTextIfChanged(acctTag, dispEmail);
+    }
+    const updEl = el('ctx-pools-updated-at');
+    if (updEl) {
+      setQuotaTextIfChanged(updEl, formatQuotaDateTime(view.fetchedAtMs));
+    }
+
+    const banner = el('ctx-pools-banner');
+    const bannerTxt = el('ctx-pools-banner-text');
+    const hasNoPermPool = (view.pools || []).some(p => p && p.noPermission);
+    if (banner && bannerTxt) {
+      if (view.syncState === 'error' && view.lastError) {
+        setQuotaHiddenIfChanged(banner, false);
+        setQuotaAttrIfChanged(banner, 'data-tone', 'error');
+        setQuotaTextIfChanged(bannerTxt, t('quota.errorBanner', { reason: view.lastError }));
+      } else if (view.syncState === 'stale') {
+        setQuotaHiddenIfChanged(banner, false);
+        setQuotaAttrIfChanged(banner, 'data-tone', 'warn');
+        const staleReason = view.lastError
+          || (view.pools.some(p => p.isResetPassed && p.remainingFraction === 0) ? t('quota.resetPassReason') : t('quota.ageExpiredReason'));
+        setQuotaTextIfChanged(bannerTxt, t('quota.staleBanner', { reason: staleReason }));
+      } else if (!view.pools.length) {
+        setQuotaHiddenIfChanged(banner, false);
+        setQuotaAttrIfChanged(banner, 'data-tone', 'warn');
+        setQuotaTextIfChanged(bannerTxt, t('quota.pools.empty'));
+      } else if (hasNoPermPool) {
+        setQuotaHiddenIfChanged(banner, false);
+        setQuotaAttrIfChanged(banner, 'data-tone', 'warn');
+        setQuotaTextIfChanged(bannerTxt, t('accountsTab.noPermissionBanner'));
+      } else {
+        setQuotaHiddenIfChanged(banner, true);
+      }
+    }
+
+    const matchedPoolObj = (view.pools || []).find(p => p.poolKey === view.currentModel?.poolKey) || (view.pools || [])[0] || null;
+    const curModelEl = el('ctx-pools-cur-model');
+    const curPoolEl = el('ctx-pools-cur-pool');
+    const curStatusEl = el('ctx-pools-cur-status');
+    const curAlertEl = el('ctx-pools-cur-alert');
+    const curBucketsEl = el('ctx-pools-cur-buckets');
+    const curChipsEl = el('ctx-pools-cur-models-chips');
+
+    if (curModelEl) {
+      setQuotaTextIfChanged(curModelEl, view.currentModel?.productLabel || matchedPoolObj?.title || t('quota.current.unmatched'));
+    }
+    if (curPoolEl) {
+      setQuotaTextIfChanged(curPoolEl, matchedPoolObj?.title || '');
+    }
+    if (curStatusEl) {
+      const st = matchedPoolObj?.noPermission ? 'no_permission' : (matchedPoolObj?.status || view.activeStatus || 'unknown');
+      setQuotaClassIfChanged(curStatusEl, `key-pill ${getQuotaPillClass(st)}`);
+      const pctText = !matchedPoolObj?.noPermission && matchedPoolObj?.percentText && matchedPoolObj.percentText !== '未知'
+        ? ` · ${matchedPoolObj.percentText}`
+        : '';
+      setQuotaTextIfChanged(curStatusEl, `${getQuotaStatusLabelText(st)}${pctText}`);
+    }
+    if (curAlertEl) {
+      if (matchedPoolObj?.noPermission && (matchedPoolObj?.unavailabilityReason || view.currentModel?.unavailabilityReason)) {
+        setQuotaHiddenIfChanged(curAlertEl, false);
+        setQuotaAttrIfChanged(curAlertEl, 'data-kind', 'noperm');
+        setQuotaTextIfChanged(curAlertEl, matchedPoolObj.unavailabilityReason || view.currentModel.unavailabilityReason);
+      } else {
+        setQuotaHiddenIfChanged(curAlertEl, true);
+      }
+    }
+    if (curBucketsEl) {
+      renderAccountPoolWindowSummary(curBucketsEl, matchedPoolObj, { nowMs });
+    }
+    if (curChipsEl) {
+      setQuotaHiddenIfChanged(curChipsEl, true);
+    }
+
+    const othersHeadingEl = el('ctx-pools-others-heading');
+    const othersListEl = el('ctx-pools-others-list');
+    if (othersListEl) {
+      const hasMain = Boolean(matchedPoolObj);
+      if (othersHeadingEl) {
+        setQuotaTextIfChanged(othersHeadingEl, t(hasMain ? 'quota.pools.othersHeading' : 'quota.pools.heading'));
+      }
+      const otherPools = (view.pools || []).filter(p => p && (!matchedPoolObj || p.poolKey !== matchedPoolObj.poolKey));
+      if (!otherPools.length) {
+        othersListEl.replaceChildren();
+        if (!view.pools.length) {
+          const emptyEl = document.createElement('div');
+          emptyEl.className = 'quota-pools-empty-state';
+          if (emptyEl.style) emptyEl.style.cssText = 'font-size:11px;color:var(--ag-text-muted);padding:10px;text-align:center;border:1px dashed var(--ag-border-subcard);border-radius:7px';
+          emptyEl.textContent = t('quota.pools.empty');
+          othersListEl.appendChild(emptyEl);
+          setQuotaHiddenIfChanged(othersListEl, false);
+        } else {
+          setQuotaHiddenIfChanged(othersListEl, true);
+        }
+        return;
+      }
+
+      setQuotaHiddenIfChanged(othersListEl, false);
+      othersListEl.replaceChildren();
+      for (const pool of otherPools) {
+        const card = document.createElement('div');
+        card.className = 'quota-pool-card ctx-pool-summary-card';
+        card.setAttribute('data-pool-key', pool.poolKey);
+
+        const top = document.createElement('div');
+        top.className = 'quota-pool-top';
+        const titleEl = document.createElement('div');
+        titleEl.className = 'quota-pool-title';
+        titleEl.textContent = pool.title || pool.poolKey;
+        const tagsEl = document.createElement('div');
+        tagsEl.className = 'quota-pool-tags';
+        const stPill = document.createElement('span');
+        const pStatus = pool.noPermission ? 'no_permission' : (pool.status || 'unknown');
+        stPill.className = `key-pill quota-pool-status-pill ${getQuotaPillClass(pStatus)}`;
+        const pctStr = !pool.noPermission && pool.percentText && pool.percentText !== '未知' ? ` · ${pool.percentText}` : '';
+        stPill.textContent = `${getQuotaStatusLabelText(pStatus)}${pctStr}`;
+        tagsEl.appendChild(stPill);
+        top.appendChild(titleEl);
+        top.appendChild(tagsEl);
+        card.appendChild(top);
+
+        if (pool.noPermission && pool.unavailabilityReason) {
+          const reasonEl = document.createElement('div');
+          reasonEl.className = 'quota-pool-reason';
+          if (reasonEl.style) reasonEl.style.cssText = 'font-size:10.5px;color:var(--ag-text-muted);margin-bottom:4px';
+          reasonEl.textContent = pool.unavailabilityReason;
+          card.appendChild(reasonEl);
+        } else if (pool.buckets && pool.buckets.length) {
+          const summaryBox = document.createElement('div');
+          summaryBox.className = 'ctx-pool-summary-list';
+          renderAccountPoolWindowSummary(summaryBox, pool, { nowMs });
+          card.appendChild(summaryBox);
+        }
+        othersListEl.appendChild(card);
+      }
+    }
   }
 
   function scheduleQuotaResetConfirmIfNeeded(view, nowMs = Date.now()) {
@@ -63712,12 +68823,14 @@ function initCrossSessionInsightsControls() {
         } else {
           quotaAbortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
           const isGeneratingNow = hasActiveCompactionOrGeneration();
+          const hasDraftNow = Boolean(autoSwitchDraftDirty || accountsUiState.autoSwitchDraft?.dirty || hasUnsavedChatComposerDraft());
           const out = await callBackendWithPriority({
-            ipcCall: hasIpcGetQuota ? () => window.contextMeterAPI.getQuota({ force: Boolean(force), isGenerating: isGeneratingNow }) : null,
+            ipcCall: hasIpcGetQuota ? () => window.contextMeterAPI.getQuota({ force: Boolean(force), isGenerating: isGeneratingNow, hasUnsavedDraft: hasDraftNow }) : null,
             liveRoute: '/quota',
             liveBody: {
               force: Boolean(force),
               isGenerating: isGeneratingNow,
+              hasUnsavedDraft: hasDraftNow,
               origin: typeof window !== 'undefined' ? (window.location?.origin || undefined) : undefined
             },
             liveFetchOpts: { signal: quotaAbortController?.signal }
@@ -63731,12 +68844,32 @@ function initCrossSessionInsightsControls() {
           }
           if (resObj?.accountSyncResult) {
             const sr = resObj.accountSyncResult;
+            if (sr.overview) {
+              accountsUiState.overview = sr.overview;
+              renderAccountsOverviewSection();
+            }
             if (sr.action === 'restart_pending') {
+              autoSwitchWaitingIdle = false;
               accountsUiState.feedback = sr.switchResult?.message || '已触发自动切号，正在重启客户端';
               accountsUiState.feedbackTone = 'info';
             } else if (sr.action === 'switch_failed_halted') {
+              autoSwitchWaitingIdle = false;
               accountsUiState.feedback = sr.error || '自动切号失败，已停止自动切换';
               accountsUiState.feedbackTone = 'error';
+            } else if (sr.action === 'pending_debounce') {
+              autoSwitchWaitingIdle = false;
+              if (autoSwitchDebounceTimer) clearTimeout(autoSwitchDebounceTimer);
+              const waitMs = Math.max(1500, Math.min(35000, ((Number(sr.retryInSec) || 15) * 1000) + 500));
+              autoSwitchDebounceTimer = setTimeout(() => {
+                autoSwitchDebounceTimer = null;
+                if (!state.disposed && !quotaInFlightPromise) {
+                  void syncQuotaFromHost(true, { silent: true });
+                }
+              }, waitMs);
+            } else if (sr.action === 'waiting_idle' && sr.reason === 'generation_in_progress') {
+              autoSwitchWaitingIdle = true;
+            } else if (sr.action === 'switched' || sr.action === 'ok_above_threshold' || sr.action === 'noop' || sr.action === 'no_candidates' || sr.action === 'all_candidates_exhausted') {
+              autoSwitchWaitingIdle = false;
             }
           }
         }
@@ -63787,7 +68920,6 @@ function initCrossSessionInsightsControls() {
             );
             renderHeaderModelDropdown();
             syncContextModelSelectionFromState();
-            if (typeof syncModelPickers === 'function') syncModelPickers();
             if (!isContextSettingsView && activeContextTab === 'models') {
               renderModelSettingsTab();
             }
@@ -64203,23 +69335,315 @@ function initCrossSessionInsightsControls() {
     }
   });
 
+  const AUTO_SWITCH_VALID_TARGET_KEYS = new Set([
+    'shared_gemini_main:5h',
+    'shared_gemini_main:7d',
+    'shared_3p_pool:5h',
+    'shared_3p_pool:7d'
+  ]);
+
+  function encodeAutoSwitchTargetKey(poolKey, windowKey) {
+    const pk = String(poolKey || '').trim();
+    const wk = String(windowKey || '').trim().toLowerCase();
+    const key = `${pk}:${wk}`;
+    return AUTO_SWITCH_VALID_TARGET_KEYS.has(key) ? key : '';
+  }
+
+  function decodeAutoSwitchTargetKey(targetKey, fallbackCfg = null) {
+    const clean = String(targetKey || '').trim();
+    if (AUTO_SWITCH_VALID_TARGET_KEYS.has(clean)) {
+      const [poolKey, windowKey] = clean.split(':');
+      return { valid: true, targetKey: clean, poolKey, windowKey };
+    }
+    return {
+      valid: false,
+      targetKey: '',
+      poolKey: String(fallbackCfg?.poolKey || '').trim(),
+      windowKey: String(fallbackCfg?.windowKey || '').trim()
+    };
+  }
+
+  function formatAutoSwitchTargetLabel(poolKey, windowKey) {
+    const key = encodeAutoSwitchTargetKey(poolKey, windowKey);
+    if (key === 'shared_gemini_main:5h') return t('accounts.target.gemini5h');
+    if (key === 'shared_gemini_main:7d') return t('accounts.target.gemini7d');
+    if (key === 'shared_3p_pool:5h') return t('accounts.target.claude5h');
+    if (key === 'shared_3p_pool:7d') return t('accounts.target.claude7d');
+    return t('accounts.target.legacyPlaceholder');
+  }
+
+  function buildAutoSwitchRuleSummary(cfg = {}, ov = null) {
+    const targetKey = encodeAutoSwitchTargetKey(cfg?.poolKey, cfg?.windowKey);
+    if (!targetKey) {
+      return {
+        valid: false,
+        available: false,
+        targetKey: '',
+        text: t('accounts.liveMetricLegacy'),
+        shortText: t('accounts.target.legacyPlaceholder'),
+        tone: 'warn'
+      };
+    }
+    const targetLabel = formatAutoSwitchTargetLabel(cfg.poolKey, cfg.windowKey);
+    const thVal = Number.isFinite(Number(cfg?.thresholdPct)) ? Number(cfg.thresholdPct) : 10;
+    const isUsed = cfg?.metricMode === 'used_pct';
+    const isEn = currentPanelLanguage === 'en';
+    const condText = isUsed
+      ? (isEn ? `Used >= ${thVal}%` : `已用 ≥ ${thVal}%`)
+      : (isEn ? `Remaining <= ${thVal}%` : (currentPanelLanguage === 'zh-TW' ? `剩餘 ≤ ${thVal}%` : `剩余 ≤ ${thVal}%`));
+    const shortText = `${targetLabel} · ${condText}`;
+
+    // 从当前活跃账号的最新可信快照提取同池同周期的实时已用/剩余百分比
+    const activeEmail = String(ov?.activeAccountEmail || '').trim().toLowerCase();
+    const accts = Array.isArray(ov?.accounts) ? ov.accounts : [];
+    const activeAcc = accts.find(a => a?.isActive) || (activeEmail ? accts.find(a => String(a?.email || '').trim().toLowerCase() === activeEmail) : null);
+    let snap = null;
+    if (quotaState?.snapshot && (!activeEmail || !quotaState.email || String(quotaState.email).trim().toLowerCase() === activeEmail) && !quotaState.error) {
+      snap = quotaState.snapshot;
+    } else if (activeAcc?.quotaSnapshot && !activeAcc.lastQuotaError) {
+      snap = activeAcc.quotaSnapshot;
+    }
+    const pools = Array.isArray(snap?.pools) ? snap.pools : [];
+    const targetPool = pools.find(p => p && p.poolKey === cfg.poolKey && !p.noPermission && p.status !== 'no_permission') || null;
+    const buckets = Array.isArray(targetPool?.buckets) ? targetPool.buckets.filter(Boolean) : [];
+    const wk = String(cfg.windowKey || '').toLowerCase();
+    const bucket = buckets.find(b =>
+      String(b.windowShort || '').toLowerCase() === wk ||
+      String(b.windowKey || '').toLowerCase() === wk ||
+      (wk === '7d' && b.windowKey === 'weekly')
+    ) || null;
+    const frac = bucket && !bucket.isResetPassed && !bucket.resetPassed && bucket.remainingFraction != null && Number.isFinite(Number(bucket.remainingFraction))
+      ? Number(bucket.remainingFraction)
+      : null;
+    if (frac === null) {
+      return {
+        valid: true,
+        available: false,
+        targetKey,
+        text: t('accounts.liveMetricUnavailable', { target: targetLabel, cond: condText }),
+        shortText,
+        tone: 'warn'
+      };
+    }
+    const rem = Math.round(frac * 100);
+    const used = Math.round((1 - frac) * 100);
+    return {
+      valid: true,
+      available: true,
+      targetKey,
+      text: t('accounts.liveMetricSummary', { target: targetLabel, cond: condText, used, rem }),
+      shortText,
+      tone: 'ok'
+    };
+  }
+
+  let autoSwitchFloatingNoticeEl = null;
+  let autoSwitchFloatingNoticeTimer = null;
+  let autoSwitchLastNoticeState = { visible: false, text: '', tone: 'info', kind: null, noticeId: null };
+  const CONSUMED_AUTOSWITCH_NOTICE_STORAGE_KEY = 'ag_cm_consumed_autoswitch_notice_id';
+  const consumedAutoSwitchNoticeIdsMem = new Set();
+
+  function hasUnsavedChatComposerDraft() {
+    if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return false;
+    try {
+      const nodes = Array.from(document.querySelectorAll('[contenteditable="true"], textarea') || []);
+      for (const node of nodes) {
+        if (!node || node.disabled || node.readOnly) continue;
+        if (typeof isPluginOwnedNode === 'function' && isPluginOwnedNode(node)) continue;
+        if (typeof isSearchOrFilterTextbox === 'function' && isSearchOrFilterTextbox(node)) continue;
+        if (node.closest?.('#ag-context-meter, #ag-cm-host-settings-page, [role="dialog"]')) continue;
+        const rect = node.getBoundingClientRect?.();
+        if (rect && rect.width === 0 && rect.height === 0) continue;
+        const raw = typeof node.value === 'string' ? node.value : (node.innerText || node.textContent || '');
+        if (String(raw || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim().length > 0) {
+          return true;
+        }
+      }
+    } catch { }
+    return false;
+  }
+
+  function getLiveAutoSwitchGuardState() {
+    return {
+      isGenerating: Boolean(typeof hasActiveCompactionOrGeneration === 'function' && hasActiveCompactionOrGeneration()),
+      hasComposerDraft: hasUnsavedChatComposerDraft(),
+      hasRuleDraft: Boolean(autoSwitchDraftDirty || accountsUiState.autoSwitchDraft?.dirty)
+    };
+  }
+
+  function clearAutoSwitchFloatingNotice(reasonText = '') {
+    if (autoSwitchFloatingNoticeTimer) {
+      clearTimeout(autoSwitchFloatingNoticeTimer);
+      autoSwitchFloatingNoticeTimer = null;
+    }
+    if (reasonText) {
+      showAutoSwitchFloatingNotice(String(reasonText), 'warn', 3200, 'aborted', null);
+      return;
+    }
+    if (autoSwitchFloatingNoticeEl) {
+      autoSwitchFloatingNoticeEl.hidden = true;
+      autoSwitchFloatingNoticeEl.textContent = '';
+    }
+    autoSwitchLastNoticeState = { visible: false, text: '', tone: 'info', kind: null, noticeId: null };
+  }
+
+  function showAutoSwitchFloatingNotice(text, tone = 'info', durationMs = 4500, kind = 'info', noticeId = null) {
+    const clean = String(text || '').trim();
+    if (!clean) return;
+    if (autoSwitchFloatingNoticeTimer) {
+      clearTimeout(autoSwitchFloatingNoticeTimer);
+      autoSwitchFloatingNoticeTimer = null;
+    }
+    autoSwitchLastNoticeState = { visible: true, text: clean, tone, kind, noticeId };
+    try {
+      if (typeof document !== 'undefined' && document.body) {
+        if (!autoSwitchFloatingNoticeEl || !autoSwitchFloatingNoticeEl.isConnected) {
+          const box = document.createElement('div');
+          box.id = 'ag-cm-autoswitch-toast';
+          box.setAttribute('role', 'status');
+          box.setAttribute('aria-live', 'polite');
+          if (box.style) {
+            box.style.position = 'fixed';
+            box.style.right = '18px';
+            box.style.bottom = '18px';
+            box.style.zIndex = '2147483000';
+            box.style.maxWidth = '420px';
+            box.style.padding = '10px 14px';
+            box.style.borderRadius = '10px';
+            box.style.fontSize = '12px';
+            box.style.lineHeight = '1.45';
+            box.style.fontWeight = '500';
+            box.style.boxShadow = '0 10px 28px rgba(0, 0, 0, 0.36)';
+            box.style.pointerEvents = 'none';
+          }
+          document.body.appendChild(box);
+          autoSwitchFloatingNoticeEl = box;
+        }
+        autoSwitchFloatingNoticeEl.hidden = false;
+        autoSwitchFloatingNoticeEl.textContent = clean;
+        if (autoSwitchFloatingNoticeEl.style) {
+          const isOk = tone === 'success';
+          const isWarn = tone === 'warn' || tone === 'error';
+          autoSwitchFloatingNoticeEl.style.background = isOk ? '#12261e' : (isWarn ? '#2b1e12' : '#1f1b2e');
+          autoSwitchFloatingNoticeEl.style.color = '#f4f4f6';
+          autoSwitchFloatingNoticeEl.style.border = isOk
+            ? '1px solid rgba(16, 185, 129, 0.55)'
+            : (isWarn ? '1px solid rgba(245, 158, 11, 0.55)' : '1px solid rgba(119, 72, 207, 0.65)');
+        }
+      }
+    } catch { }
+    if (durationMs > 0) {
+      autoSwitchFloatingNoticeTimer = setTimeout(() => {
+        autoSwitchFloatingNoticeTimer = null;
+        clearAutoSwitchFloatingNotice();
+      }, durationMs);
+    }
+  }
+
+  function showAutoSwitchPreRestartNotice(meta = {}) {
+    const targetLabel = formatAutoSwitchTargetLabel(meta.poolKey, meta.windowKey);
+    const isUsed = meta.metricMode === 'used_pct';
+    const remDisp = Number.isFinite(Number(meta.displayRemPct))
+      ? Number(meta.displayRemPct)
+      : (Number.isFinite(Number(meta.currentRemPct)) ? Math.round(Number(meta.currentRemPct)) : '--');
+    const usedDisp = Number.isFinite(Number(meta.displayUsedPct))
+      ? Number(meta.displayUsedPct)
+      : (Number.isFinite(Number(meta.currentUsedPct)) ? Math.round(Number(meta.currentUsedPct)) : '--');
+    const metricStr = isUsed ? `已用 ${usedDisp}%` : `剩余 ${remDisp}%`;
+    const msg = t('accounts.preRestartNotice', {
+      target: targetLabel,
+      metric: metricStr,
+      threshold: meta.thresholdPct ?? '--',
+      email: meta.targetEmailMasked || '—'
+    });
+    accountsUiState.feedback = msg;
+    accountsUiState.feedbackTone = 'info';
+    showAutoSwitchFloatingNotice(msg, 'info', 8000, 'pre_restart', meta.noticeId || null);
+    return msg;
+  }
+
+  function maybeConsumeVerifiedAutoSwitchNotice(ov = null) {
+    const lr = ov?.autoSwitchStatus?.lastResult;
+    if (!lr || lr.trigger !== 'auto_switch' || lr.ok !== true || lr.verifiedEffective !== true) return false;
+    const explicitNoticeId = typeof lr.noticeId === 'string' ? lr.noticeId.trim() : '';
+    // 无 noticeId 的历史旧事件或后端已落盘确认消费的事件绝不再回放，仍保留在历史记录中查阅
+    if (!explicitNoticeId || lr.isLegacyNotice === true || lr.noticeConsumed === true || Boolean(lr.noticeConsumedAtMs)) {
+      if (explicitNoticeId) consumedAutoSwitchNoticeIdsMem.add(explicitNoticeId);
+      return false;
+    }
+    const persistedConsumed = Array.isArray(ov?.autoSwitchStatus?.consumedNoticeIds)
+      ? ov.autoSwitchStatus.consumedNoticeIds
+      : [];
+    if (persistedConsumed.includes(explicitNoticeId) || consumedAutoSwitchNoticeIdsMem.has(explicitNoticeId)) {
+      consumedAutoSwitchNoticeIdsMem.add(explicitNoticeId);
+      return false;
+    }
+    let storedId = '';
+    try {
+      if (typeof localStorage !== 'undefined') {
+        storedId = String(localStorage.getItem(CONSUMED_AUTOSWITCH_NOTICE_STORAGE_KEY) || '');
+      }
+    } catch { }
+    if (storedId === explicitNoticeId) {
+      consumedAutoSwitchNoticeIdsMem.add(explicitNoticeId);
+      return false;
+    }
+    consumedAutoSwitchNoticeIdsMem.add(explicitNoticeId);
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(CONSUMED_AUTOSWITCH_NOTICE_STORAGE_KEY, explicitNoticeId);
+      }
+    } catch { }
+    void callBackendWithPriority({
+      ipcCall: typeof window?.contextMeterAPI?.accountsAction === 'function'
+        ? () => window.contextMeterAPI.accountsAction({ action: 'ack_auto_switch_notice', noticeId: explicitNoticeId })
+        : null,
+      liveRoute: '/accounts-action',
+      liveBody: { action: 'ack_auto_switch_notice', noticeId: explicitNoticeId }
+    }).catch(() => { });
+    const masked = lr.targetEmailMasked || (lr.toEmail ? String(lr.toEmail).replace(/^([^@]{1,2})[^@]*(@.*)$/, '$1***$2') : '—');
+    const msg = t('accounts.verifiedAutoSwitchedNotice', { email: masked });
+    showAutoSwitchFloatingNotice(msg, 'success', 5500, 'verified_switched', explicitNoticeId);
+    return true;
+  }
+
   function readAutoSwitchFormValues() {
     const chk = el('chk-auto-switch-enabled');
-    const poolSel = el('sel-auto-switch-pool');
+    const targetSel = el('sel-auto-switch-target');
     const modeSel = el('sel-auto-switch-mode');
-    const winSel = el('sel-auto-switch-window');
     const thInp = el('inp-auto-switch-threshold');
-    const checkedCands = typeof shadow?.querySelectorAll === 'function'
-      ? Array.from(shadow.querySelectorAll('.auto-switch-cand-checkbox:checked') || []).map(n => n.value)
-      : Array.from(el('auto-switch-candidates-list')?.children || [])
+    const candWrap = el('auto-switch-candidates-list');
+    let checkedCands = [];
+    if (candWrap && typeof candWrap.querySelectorAll === 'function') {
+      checkedCands = Array.from(candWrap.querySelectorAll('.auto-switch-cand-checkbox:checked') || []).map(n => n.value);
+    } else if (candWrap) {
+      checkedCands = Array.from(candWrap.children || [])
         .map(lbl => lbl?.children?.find?.(c => c?.type === 'checkbox' || c?.className === 'auto-switch-cand-checkbox') || (lbl?.checked !== undefined ? lbl : null))
         .filter(box => box && box.checked)
         .map(box => box.value);
+    } else {
+      const roots = typeof getPluginSearchRoots === 'function' ? getPluginSearchRoots() : [shadow].filter(Boolean);
+      const seen = new Set();
+      for (const r of roots) {
+        if (typeof r?.querySelectorAll === 'function') {
+          for (const n of Array.from(r.querySelectorAll('.auto-switch-cand-checkbox:checked') || [])) {
+            if (n?.value && !seen.has(n.value)) {
+              seen.add(n.value);
+              checkedCands.push(n.value);
+            }
+          }
+        }
+      }
+    }
+    const fallbackCfg = accountsUiState.overview?.autoSwitch || { poolKey: 'shared_gemini_main', windowKey: '5h' };
+    const decoded = targetSel
+      ? decodeAutoSwitchTargetKey(targetSel.value, fallbackCfg)
+      : decodeAutoSwitchTargetKey(encodeAutoSwitchTargetKey(fallbackCfg.poolKey, fallbackCfg.windowKey), fallbackCfg);
     return {
       enabled: Boolean(chk?.checked),
-      poolKey: poolSel?.value || 'shared_gemini_main',
+      poolKey: decoded.poolKey || 'shared_gemini_main',
       metricMode: modeSel?.value || 'remaining_pct',
-      windowKey: winSel?.value || 'primary',
+      windowKey: decoded.windowKey || '5h',
       thresholdPct: thInp ? Number(thInp.value) : 10,
       candidates: checkedCands
     };
@@ -64228,18 +69652,140 @@ function initCrossSessionInsightsControls() {
   function isEditingAutoSwitchDraft() {
     if (autoSwitchDraftDirty || accountsUiState.autoSwitchDraft?.dirty) return true;
     try {
-      const ae = shadow?.activeElement;
-      if (!ae) return false;
       const body = el('auto-switch-config-body');
       const chk = el('chk-auto-switch-enabled');
-      return Boolean((body && body.contains?.(ae)) || ae === chk);
+      const roots = typeof getPluginSearchRoots === 'function' ? getPluginSearchRoots() : [shadow].filter(Boolean);
+      for (const r of roots) {
+        const ae = r?.activeElement;
+        if (ae && ((body && body.contains?.(ae)) || ae === chk)) return true;
+      }
+      return false;
     } catch {
       return false;
     }
   }
 
+  function clearTransientAutoSwitchStatusKey() {
+    const key = accountsUiState.autoSwitchDraft?.saveStatusKey;
+    if (key === 'accounts.toggleNeedCandidates'
+      || key === 'accounts.toggleNeedSaveDraft'
+      || key === 'accounts.toggleNeedValidTarget'
+      || key === 'accounts.ruleThreshold'
+      || key === 'prefs.toggleFailed') {
+      accountsUiState.autoSwitchDraft.saveStatusKey = '';
+      accountsUiState.autoSwitchDraft.saveErrorDetail = '';
+    }
+  }
+
   let autoSwitchDraftDirty = false;
   let autoSwitchSaving = false;
+  const AUTO_SWITCH_STATUS_KEYS = new Set([
+    'disabled', 'unsaved', 'saving', 'save_failed', 'watching', 'pending_debounce',
+    'waiting_idle', 'cooldown', 'switching', 'restarting', 'no_candidates',
+    'all_candidates_exhausted', 'blocked_untrusted_quota', 'blocked_missing_pool',
+    'blocked_missing_account', 'blocked_legacy_rule', 'error'
+  ]);
+
+  function resolveAutoSwitchBlockedReasonText(ov = {}) {
+    const stObj = ov.autoSwitchStatus || {};
+    const br = String(stObj.blockedReason || '').trim();
+    const bm = stObj.blockedMeta || {};
+    const poolName = bm.poolKey || ov.autoSwitch?.poolKey || '';
+    const activeAccEmail = ov.activeAccountEmail || bm.activeEmail || '';
+    if (br === 'legacy_rule_needs_migration' || stObj.state === 'blocked_legacy_rule') {
+      return t('accounts.blockedReason.legacy_rule');
+    }
+    if (br === 'target_pool_no_permission') {
+      return t('accounts.blockedReason.no_permission', { email: activeAccEmail || '—', pool: poolName });
+    }
+    if (br === 'target_pool_missing_in_snapshot' || br === 'target_pool_unavailable_or_no_permission') {
+      return t('accounts.blockedReason.missing_pool', { email: activeAccEmail || '—', pool: poolName });
+    }
+    if (br === 'target_window_unavailable') {
+      return t('accounts.blockedReason.missing_window', { email: activeAccEmail || '—', pool: poolName, window: bm.windowKey || ov.autoSwitch?.windowKey || '' });
+    }
+    if (br === 'target_window_reset_passed') {
+      return t('accounts.blockedReason.reset_passed', { pool: poolName, window: bm.windowKey || ov.autoSwitch?.windowKey || '' });
+    }
+    if (br === 'target_pool_missing_value') {
+      return t('accounts.blockedReason.missing_value', { email: activeAccEmail || '—', pool: poolName });
+    }
+    if (br === 'no_active_account_or_snapshot') {
+      return t('accounts.blockedReason.missing_active_account');
+    }
+    if (br === 'no_candidates_configured') {
+      return t('accounts.blockedReason.no_candidates');
+    }
+    if (br === 'all_candidates_insufficient_or_stale') {
+      return t('accounts.blockedReason.all_candidates_exhausted', { pool: poolName });
+    }
+    if (br === 'quota_state_account_mismatch') {
+      return t('accounts.blockedReason.account_mismatch');
+    }
+    if (br === 'quota_state_unverified_account') {
+      return t('accounts.blockedReason.unverified_account');
+    }
+    if (br === 'quota_state_untrusted_timestamp') {
+      return t('accounts.blockedReason.untrusted_timestamp');
+    }
+    if (br === 'rule_changed_during_eval' || br === 'rule_changed_before_commit') {
+      return t('accounts.blockedReason.rule_changed');
+    }
+    if (br.startsWith('quota_state_')) {
+      return t('accounts.blockedReason.untrusted_quota');
+    }
+    if (br === 'unsaved_draft_present') {
+      return t('accounts.blockedReason.unsaved_draft');
+    }
+    if (br === 'generation_in_progress') {
+      return t('accounts.blockedReason.waiting_idle');
+    }
+    if (br === 'multi_window_open') return t('accounts.blockedReason.multi_window_open');
+    if (br === 'live_mode_cannot_auto_restart') return t('accounts.blockedReason.live_mode_cannot_auto_restart');
+    if (br === 'client_restart_requires_idle_window') return t('accounts.blockedReason.restartWindow');
+    if (stObj.state === 'pending_debounce') return t('accounts.blockedReason.pending_debounce');
+    if (stObj.state === 'cooldown') return t('accounts.blockedReason.cooldown');
+    return '';
+  }
+
+  function resolveAutoSwitchDisplayState(ovOverride = null) {
+    const ov = ovOverride || accountsUiState.overview || { accounts: [], autoSwitch: {}, autoSwitchStatus: { state: 'disabled' } };
+    const lr = ov.autoSwitchStatus?.lastResult;
+    const isRestartPend = Boolean(lr?.restartPending);
+    const hasDraft = Boolean(autoSwitchDraftDirty || accountsUiState.autoSwitchDraft?.dirty);
+    const savedTargetValid = Boolean(encodeAutoSwitchTargetKey(ov.autoSwitch?.poolKey, ov.autoSwitch?.windowKey));
+    let sKey = isRestartPend ? 'restarting' : (ov.autoSwitchStatus?.state || (ov.autoSwitch?.enabled ? 'watching' : 'disabled'));
+    if (!hasDraft && ov.autoSwitch?.enabled && !savedTargetValid && !['error', 'switching', 'restarting'].includes(sKey)) {
+      sKey = 'blocked_legacy_rule';
+    }
+    if (autoSwitchSaving || accountsUiState.autoSwitchDraft?.saving) {
+      sKey = 'saving';
+    } else if (hasDraft && accountsUiState.autoSwitchDraft?.saveStatusKey === 'prefs.saveError') {
+      sKey = 'save_failed';
+    } else if (hasDraft) {
+      sKey = 'unsaved';
+    }
+    const label = AUTO_SWITCH_STATUS_KEYS.has(sKey) ? t(`accounts.status.${sKey}`) : sKey;
+    const isWarn = sKey === 'error' || sKey === 'save_failed' || sKey === 'unsaved' || sKey === 'no_candidates'
+      || sKey === 'all_candidates_exhausted' || sKey === 'blocked_missing_pool'
+      || sKey === 'blocked_missing_account' || sKey === 'blocked_untrusted_quota'
+      || sKey === 'blocked_legacy_rule';
+    const isInfo = sKey === 'saving' || sKey === 'restarting' || sKey === 'switching'
+      || sKey === 'waiting_idle' || sKey === 'pending_debounce';
+    const pillClass = `key-pill ${sKey === 'watching' ? 'pill-good' : (isWarn ? 'pill-warn' : (isInfo ? 'pill-info' : 'pill-muted'))}`;
+    const blockedReasonText = sKey === 'blocked_legacy_rule'
+      ? t('accounts.blockedReason.legacy_rule')
+      : resolveAutoSwitchBlockedReasonText(ov);
+    return {
+      key: sKey,
+      label,
+      pillClass,
+      hasDraft,
+      blockedReasonText,
+      lr
+    };
+  }
+
   function syncQuotaAccountsSummaryCard(ovOverride = null) {
     const ov = ovOverride || accountsUiState.overview || { accounts: [], autoSwitch: {}, autoSwitchStatus: { state: 'disabled' } };
     const pillEl = el('quota-entry-autoswitch-pill');
@@ -64255,30 +69801,19 @@ function initCrossSessionInsightsControls() {
         ? t('accounts.entryActiveLabel', { email: activeLabel, count: accts.length })
         : t('accounts.entryNoActive', { count: accts.length });
     }
-    const lr = ov.autoSwitchStatus?.lastResult;
-    const stKeys = new Set([
-      'disabled', 'watching', 'pending_debounce', 'waiting_idle', 'cooldown',
-      'switching', 'restarting', 'all_candidates_exhausted', 'blocked_untrusted_quota',
-      'blocked_missing_pool', 'blocked_missing_account', 'error'
-    ]);
-    const isRestartPend = Boolean(lr?.restartPending);
-    const sKey = isRestartPend ? 'restarting' : (ov.autoSwitchStatus?.state || (ov.autoSwitch?.enabled ? 'watching' : 'disabled'));
-    const statusText = stKeys.has(sKey) ? t(`accounts.status.${sKey}`) : sKey;
+    const disp = resolveAutoSwitchDisplayState(ov);
     if (pillEl) {
-      pillEl.textContent = statusText;
-      const isWarn = sKey === 'error' || sKey === 'all_candidates_exhausted'
-        || sKey === 'blocked_missing_pool' || sKey === 'blocked_missing_account' || sKey === 'blocked_untrusted_quota';
-      const isInfo = sKey === 'restarting' || sKey === 'switching' || sKey === 'waiting_idle' || sKey === 'pending_debounce';
-      pillEl.className = `key-pill ${sKey === 'watching' ? 'pill-good' : (isWarn ? 'pill-warn' : (isInfo ? 'pill-info' : 'pill-muted'))}`;
+      pillEl.textContent = disp.label;
+      pillEl.className = disp.pillClass;
     }
     if (ruleEl) {
-      const hasDraft = Boolean(autoSwitchDraftDirty || accountsUiState.autoSwitchDraft?.dirty);
-      const thVal = hasDraft
-        ? (accountsUiState.autoSwitchDraft?.values?.thresholdPct ?? ov.autoSwitch?.thresholdPct ?? 10)
-        : (ov.autoSwitch?.thresholdPct ?? 10);
-      ruleEl.textContent = hasDraft
+      const ruleCfg = disp.hasDraft
+        ? (accountsUiState.autoSwitchDraft?.values || ov.autoSwitch || {})
+        : (ov.autoSwitch || {});
+      const ruleSummary = buildAutoSwitchRuleSummary(ruleCfg, ov);
+      ruleEl.textContent = disp.hasDraft
         ? t('accounts.entryRuleUnsaved')
-        : t('accounts.entryRuleSummary', { state: statusText, threshold: thVal });
+        : `${disp.label} · ${ruleSummary.shortText}`;
     }
   }
 
@@ -64288,9 +69823,8 @@ function initCrossSessionInsightsControls() {
     accountsUiState.autoSwitchDraft.values = readAutoSwitchFormValues();
     accountsUiState.autoSwitchDraft.saveStatusKey = 'accounts.ruleUnsaved';
     accountsUiState.autoSwitchDraft.saveErrorDetail = '';
-    const status = el('auto-switch-save-status');
-    if (status) status.textContent = t('accounts.ruleUnsaved');
-    syncQuotaAccountsSummaryCard();
+    accountsUiState.mutationSeq += 1;
+    renderAccountsOverviewSection();
   }
 
   function renderAccountsOverviewSection() {
@@ -64316,11 +69850,11 @@ function initCrossSessionInsightsControls() {
     const isTw = currentPanelLanguage === 'zh-TW';
 
     // 1. 工具按钮显隐与反馈横幅
-    const toolsBtn = el('btn-acct-import-tools');
-    if (toolsBtn) {
-      toolsBtn.hidden = !(accountsUiState.toolsPreview?.available && (accountsUiState.toolsPreview.count || 0) > 0);
+    const hasTools = Boolean(accountsUiState.toolsPreview?.available && (accountsUiState.toolsPreview.count || 0) > 0);
+    for (const tid of ['btn-acct-import-tools', 'btn-tab-acct-import-tools']) {
+      const tBtn = el(tid);
+      if (tBtn) tBtn.hidden = !hasTools;
     }
-    const fbEl = el('quota-acct-feedback');
     const lr = ov.autoSwitchStatus?.lastResult;
     const rawLastErr = (lr?.ok === false && lr?.error) ? lr.error : ov.autoSwitchStatus?.lastError;
     const formatPersistedError = (raw) => {
@@ -64350,22 +69884,38 @@ function initCrossSessionInsightsControls() {
         displayTone = 'success';
       }
     }
-    if (fbEl) {
-      fbEl.hidden = !displayFeedback;
-      fbEl.textContent = displayFeedback;
-      fbEl.className = `quota-acct-feedback${displayTone === 'error' ? ' is-error' : (displayTone === 'success' ? ' is-success' : '')}`;
+    for (const fid of ['quota-acct-feedback', 'ctx-acct-feedback']) {
+      const fbEl = el(fid);
+      if (fbEl) {
+        fbEl.hidden = !displayFeedback;
+        fbEl.textContent = displayFeedback;
+        fbEl.className = `quota-acct-feedback${displayTone === 'error' ? ' is-error' : (displayTone === 'success' ? ' is-success' : '')}`;
+      }
     }
 
-    // 2. 账号清单
-    const listEl = el('quota-accounts-list');
-    if (listEl) {
+    // 2. 账号清单（设置工作区 #quota-accounts-list 与看板第四标签 #ctx-accounts-list 共用同一渲染器）
+    const accts = Array.isArray(ov.accounts) ? ov.accounts : [];
+    const loadErrText = accountsUiState.loadError
+      ? (typeof translateBackendText === 'function' ? translateBackendText(accountsUiState.loadError) : accountsUiState.loadError)
+      : '';
+    const activeSummaryEl = el('ctx-acct-active-summary');
+    if (activeSummaryEl) {
+      const activeAcc = accts.find(a => a?.isActive) || null;
+      const activeLabel = activeAcc?.maskedEmail || activeAcc?.email || ov.activeAccountEmail || '';
+      activeSummaryEl.textContent = (!accts.length && loadErrText)
+        ? t('accounts.loadErrorSummary', { reason: loadErrText })
+        : (activeLabel
+          ? t('accounts.entryActiveLabel', { email: activeLabel, count: accts.length })
+          : t('accounts.entryNoActive', { count: accts.length }));
+    }
+    const renderAccountsCardsIntoList = (listEl, { preferMasked = false } = {}) => {
+      if (!listEl) return;
       const prevScrollTop = Number(listEl.scrollTop || 0);
       listEl.replaceChildren();
-      const accts = Array.isArray(ov.accounts) ? ov.accounts : [];
       if (!accts.length) {
         const empty = document.createElement('div');
-        empty.className = 'quota-muted-note';
-        empty.textContent = t('accounts.empty');
+        empty.className = loadErrText ? 'quota-acct-error' : 'quota-muted-note';
+        empty.textContent = loadErrText ? t('accounts.loadErrorSummary', { reason: loadErrText }) : t('accounts.empty');
         listEl.appendChild(empty);
       } else {
         for (const acc of accts) {
@@ -64385,8 +69935,9 @@ function initCrossSessionInsightsControls() {
             return a.tierName || a.tierId || '';
           };
           const accTierLabel = resolveAccountTierLabel(acc);
-          left.textContent = `${acc.email}${accTierLabel ? ` · ${accTierLabel}` : ''}`;
-          left.title = acc.email;
+          const dispLabelEmail = preferMasked ? (acc.maskedEmail || acc.email) : acc.email;
+          left.textContent = `${dispLabelEmail}${accTierLabel ? ` · ${accTierLabel}` : ''}`;
+          left.title = dispLabelEmail;
           const right = document.createElement('div');
           right.className = 'quota-subsec-actions';
           if (acc.hasRefreshToken) {
@@ -64435,12 +69986,8 @@ function initCrossSessionInsightsControls() {
           for (const p of (acc.quotaSnapshot?.pools || [])) {
             if (!p || typeof p !== 'object') continue;
             const pName = CORE_POOL_NAMES[p.poolKey];
-            // 严禁使用 else 'Carbon' 兜底！只展示四大核心共享池，过滤掉历史快照中已残留的 shared_chat_* / shared_gemini-25-pro* 等非核心杂项池
             if (!pName) continue;
 
-            // Carbon 显示规则：
-            // 当 shared_gemini_carbon 具有真实可用权限（!p.noPermission 且有配额数据，即 Ultra 用户）时，必须正常显示 Carbon 额度；
-            // 当 p.noPermission === true（无权限，如 Free / Pro 用户）时，在多账号卡片摘要行中直接隐藏该无权限项，不显示 "Carbon: 无模型权限"，更不能把别的池显示成 Carbon。
             if (p.poolKey === 'shared_gemini_carbon') {
               if (p.noPermission) continue;
               const hasQuotaData = (Array.isArray(p.buckets) && p.buckets.some(b => b && b.remainingFraction !== null && b.remainingFraction !== undefined && Number.isFinite(Number(b.remainingFraction))))
@@ -64467,19 +70014,16 @@ function initCrossSessionInsightsControls() {
             };
 
             if (b5h && b7d) {
-              // 若同时存在 5h 与 7d 桶，格式明确显示为 "Hydrogen: 5h 0% / 7d 70%"、"Claude/3P: 5h 100% / 7d 87%"
               poolSummaries.push(`${pName}: 5h ${formatBucketPct(b5h)} / 7d ${formatBucketPct(b7d)}`);
             } else if (b5h) {
               const tag = b5h.windowShort || '5h';
               poolSummaries.push(`${pName}: ${tag} ${formatBucketPct(b5h)}`);
             } else if (b7d) {
-              // 若仅存在单一窗口桶（如 Argon 仅有 7d 桶，或 free-tier 仅有 7d 桶），明确带上窗口短标显示为 "Argon: 7d 70%"、"Hydrogen: 7d 100%"
               const tag = b7d.windowShort || '7d';
               poolSummaries.push(`${pName}: ${tag} ${formatBucketPct(b7d)}`);
             } else if (buckets.length === 1 && buckets[0]?.windowShort) {
               poolSummaries.push(`${pName}: ${buckets[0].windowShort} ${formatBucketPct(buckets[0])}`);
             } else {
-              // 仅在 bucket 无 windowShort 时回退 p.percentText
               const pVal = p.percentText && p.percentText !== '未知' ? p.percentText : t('accounts.poolUnknown');
               poolSummaries.push(`${pName}: ${pVal}`);
             }
@@ -64514,99 +70058,86 @@ function initCrossSessionInsightsControls() {
         const maxScroll = Math.max(0, (listEl.scrollHeight || 0) - (listEl.clientHeight || 0));
         listEl.scrollTop = maxScroll > 0 ? Math.min(prevScrollTop, maxScroll) : prevScrollTop;
       }
-    }
+    };
+    renderAccountsCardsIntoList(el('quota-accounts-list'), { preferMasked: false });
+    renderAccountsCardsIntoList(el('ctx-accounts-list'), { preferMasked: true });
 
-    // 3. 自动切号状态与控件回填（编辑时跳过输入项覆盖，防破坏草稿；账户增删时仍同步候选列表）
+    // 3. 自动切号状态与控件回填（客户端设置与看板第四标签完全共用同一状态源）
     const stPill = el('auto-switch-status-pill');
     const lastNote = el('auto-switch-last-note');
-    const stKeys = new Set([
-      'disabled', 'watching', 'pending_debounce', 'waiting_idle', 'cooldown',
-      'switching', 'restarting', 'all_candidates_exhausted', 'blocked_untrusted_quota',
-      'blocked_missing_pool', 'blocked_missing_account', 'error'
-    ]);
-    const blockedReasonText = (() => {
-      const stObj = ov.autoSwitchStatus || {};
-      const br = String(stObj.blockedReason || '').trim();
-      const bm = stObj.blockedMeta || {};
-      const poolName = bm.poolKey || ov.autoSwitch?.poolKey || '';
-      const activeAccEmail = ov.activeAccountEmail || bm.activeEmail || '';
-      if (br === 'target_pool_no_permission') {
-        return t('accounts.blockedReason.no_permission', { email: activeAccEmail || '—', pool: poolName });
-      }
-      if (br === 'target_pool_missing_in_snapshot' || br === 'target_pool_unavailable_or_no_permission') {
-        return t('accounts.blockedReason.missing_pool', { email: activeAccEmail || '—', pool: poolName });
-      }
-      if (br === 'target_window_unavailable') {
-        return t('accounts.blockedReason.missing_window', { email: activeAccEmail || '—', pool: poolName, window: bm.windowKey || ov.autoSwitch?.windowKey || '' });
-      }
-      if (br === 'target_pool_missing_value') {
-        return t('accounts.blockedReason.missing_value', { email: activeAccEmail || '—', pool: poolName });
-      }
-      if (br === 'no_active_account_or_snapshot') {
-        return t('accounts.blockedReason.missing_active_account');
-      }
-      if (br === 'all_candidates_insufficient_or_stale') {
-        return t('accounts.blockedReason.all_candidates_exhausted', { pool: poolName });
-      }
-      if (br.startsWith('quota_state_')) {
-        return t('accounts.blockedReason.untrusted_quota');
-      }
-      if (br === 'generation_in_progress') {
-        return t('accounts.blockedReason.waiting_idle');
-      }
-      if (br === 'multi_window_open') return t('accounts.blockedReason.multi_window_open');
-      if (br === 'live_mode_cannot_auto_restart') return t('accounts.blockedReason.live_mode_cannot_auto_restart');
-      if (br === 'client_restart_requires_idle_window') return t('accounts.blockedReason.restartWindow');
-      if (stObj.state === 'pending_debounce') return t('accounts.blockedReason.pending_debounce');
-      if (stObj.state === 'cooldown') {
-        return t('accounts.blockedReason.cooldown');
-      }
-      return '';
-    })();
+    const tabStPill = el('ctx-autoswitch-status-pill');
+    const tabReasonEl = el('ctx-autoswitch-reason');
+    const tabRuleEl = el('ctx-autoswitch-rule-summary');
+    const dispState = resolveAutoSwitchDisplayState(ov);
+    const blockedReasonText = dispState.blockedReasonText;
+
     if (stPill) {
-      const isRestartPend = Boolean(lr?.restartPending);
-      const sKey = isRestartPend ? 'restarting' : (ov.autoSwitchStatus?.state || (ov.autoSwitch?.enabled ? 'watching' : 'disabled'));
-      stPill.textContent = stKeys.has(sKey) ? t(`accounts.status.${sKey}`) : sKey;
-      const isWarn = sKey === 'error' || sKey === 'all_candidates_exhausted'
-        || sKey === 'blocked_missing_pool' || sKey === 'blocked_missing_account' || sKey === 'blocked_untrusted_quota';
-      const isInfo = sKey === 'restarting' || sKey === 'switching' || sKey === 'waiting_idle' || sKey === 'pending_debounce';
-      stPill.className = `key-pill ${sKey === 'watching' ? 'pill-good' : (isWarn ? 'pill-warn' : (isInfo ? 'pill-info' : 'pill-muted'))}`;
+      stPill.textContent = dispState.label;
+      stPill.className = dispState.pillClass;
     }
-    if (lastNote) {
-      if (rawLastErr) {
-        lastNote.textContent = formatPersistedError(rawLastErr);
-      } else if (lr?.ok === false && lr?.restartPending) {
-        lastNote.textContent = lr.message
-          ? (typeof translateBackendText === 'function' ? translateBackendText(lr.message) : lr.message)
-          : t('accounts.status.restarting');
-      } else if (lr?.ok === false) {
-        lastNote.textContent = formatPersistedError(t('accounts.actionFail'));
-      } else if (blockedReasonText) {
-        lastNote.textContent = blockedReasonText;
-      } else {
-        lastNote.textContent = lr?.toEmail ? t('accounts.lastSwitchedTo', { email: lr.toEmail }) : '';
-      }
+    if (tabStPill) {
+      tabStPill.textContent = dispState.label;
+      tabStPill.className = dispState.pillClass;
     }
+
+    let resolvedNote = '';
+    const draftStatusKey = accountsUiState.autoSwitchDraft?.saveStatusKey;
+    if (autoSwitchSaving || accountsUiState.autoSwitchDraft?.saving) {
+      resolvedNote = t('accounts.status.saving');
+    } else if (draftStatusKey === 'prefs.toggleFailed') {
+      resolvedNote = t('prefs.toggleFailed', { reason: accountsUiState.autoSwitchDraft.saveErrorDetail || t('accounts.actionFail') });
+    } else if (draftStatusKey === 'accounts.toggleNeedSaveDraft' || draftStatusKey === 'accounts.toggleNeedCandidates' || draftStatusKey === 'accounts.toggleNeedValidTarget' || draftStatusKey === 'accounts.ruleThreshold') {
+      resolvedNote = t(draftStatusKey);
+    } else if (accountsUiState.autoSwitchDraft?.dirty && draftStatusKey === 'prefs.saveError') {
+      resolvedNote = t('prefs.saveError', { reason: accountsUiState.autoSwitchDraft.saveErrorDetail || t('accounts.actionFail') });
+    } else if (rawLastErr) {
+      resolvedNote = formatPersistedError(rawLastErr);
+    } else if (lr?.ok === false && lr?.restartPending) {
+      resolvedNote = lr.message
+        ? (typeof translateBackendText === 'function' ? translateBackendText(lr.message) : lr.message)
+        : t('accounts.status.restarting');
+    } else if (lr?.ok === false) {
+      resolvedNote = formatPersistedError(t('accounts.actionFail'));
+    } else if (blockedReasonText) {
+      resolvedNote = blockedReasonText;
+    } else if (lr?.toEmail) {
+      resolvedNote = t('accounts.lastSwitchedTo', { email: lr.toEmail });
+    }
+
+    if (lastNote) lastNote.textContent = resolvedNote;
+    if (tabReasonEl) {
+      tabReasonEl.textContent = resolvedNote || (dispState.hasDraft ? t('accounts.entryRuleUnsaved') : '');
+    }
+    maybeConsumeVerifiedAutoSwitchNotice(ov);
 
     const editingDraft = isEditingAutoSwitchDraft();
     const draftValues = editingDraft ? (accountsUiState.autoSwitchDraft?.values || readAutoSwitchFormValues()) : null;
     const activeRuleCfg = editingDraft ? draftValues : (ov.autoSwitch || {});
+    const liveRuleSummary = buildAutoSwitchRuleSummary(activeRuleCfg, ov);
+    const liveSummaryEl = el('auto-switch-live-summary');
+    if (liveSummaryEl) {
+      liveSummaryEl.textContent = liveRuleSummary.text;
+    }
+    if (tabRuleEl) {
+      const candsLen = Array.isArray(activeRuleCfg?.candidates) ? activeRuleCfg.candidates.length : 0;
+      tabRuleEl.textContent = `${liveRuleSummary.text} · ${candsLen}`;
+    }
     if (!editingDraft) {
       const cfg = ov.autoSwitch || {};
       const chk = el('chk-auto-switch-enabled');
-      const poolSel = el('sel-auto-switch-pool');
+      const targetSel = el('sel-auto-switch-target');
+      const legacyOpt = el('opt-auto-switch-legacy-target');
       const modeSel = el('sel-auto-switch-mode');
-      const winSel = el('sel-auto-switch-window');
       const thInp = el('inp-auto-switch-threshold');
       if (chk) chk.checked = Boolean(cfg.enabled);
-      if (poolSel && cfg.poolKey) poolSel.value = cfg.poolKey;
+      const targetVal = encodeAutoSwitchTargetKey(cfg.poolKey, cfg.windowKey);
+      if (legacyOpt) legacyOpt.hidden = Boolean(targetVal);
+      if (targetSel) targetSel.value = targetVal;
       if (modeSel && cfg.metricMode) modeSel.value = cfg.metricMode;
-      if (winSel && cfg.windowKey) winSel.value = cfg.windowKey;
       if (thInp && cfg.thresholdPct != null) thInp.value = String(cfg.thresholdPct);
       if (typeof enhancedDropdowns !== 'undefined' && enhancedDropdowns?.get) {
-        enhancedDropdowns.get('sel-auto-switch-pool')?.refresh?.();
+        enhancedDropdowns.get('sel-auto-switch-target')?.refresh?.();
         enhancedDropdowns.get('sel-auto-switch-mode')?.refresh?.();
-        enhancedDropdowns.get('sel-auto-switch-window')?.refresh?.();
       }
     }
 
@@ -64644,10 +70175,16 @@ function initCrossSessionInsightsControls() {
     const saveStatusEl = el('auto-switch-save-status');
     if (saveStatusEl) {
       const draftState = accountsUiState.autoSwitchDraft || {};
-      if (draftState.dirty) {
-        saveStatusEl.textContent = t('accounts.ruleUnsaved');
+      if (draftState.saving || autoSwitchSaving) {
+        saveStatusEl.textContent = t('accounts.status.saving');
       } else if (draftState.saveStatusKey === 'prefs.saveError') {
         saveStatusEl.textContent = t('prefs.saveError', { reason: draftState.saveErrorDetail || t('accounts.actionFail') });
+      } else if (draftState.saveStatusKey === 'prefs.toggleFailed') {
+        saveStatusEl.textContent = t('prefs.toggleFailed', { reason: draftState.saveErrorDetail || t('accounts.actionFail') });
+      } else if (draftState.saveStatusKey === 'accounts.toggleNeedSaveDraft' || draftState.saveStatusKey === 'accounts.toggleNeedCandidates' || draftState.saveStatusKey === 'accounts.toggleNeedValidTarget' || draftState.saveStatusKey === 'accounts.ruleThreshold') {
+        saveStatusEl.textContent = t(draftState.saveStatusKey);
+      } else if (draftState.dirty) {
+        saveStatusEl.textContent = t('accounts.ruleUnsaved');
       } else if (draftState.saveStatusKey) {
         saveStatusEl.textContent = t(draftState.saveStatusKey);
       } else {
@@ -64742,10 +70279,12 @@ function initCrossSessionInsightsControls() {
     syncQuotaAccountsSummaryCard(ov);
     syncTokenAccountFilterOptions(ANTIGRAVITY_TOKEN_DATA.rawPayload);
     if (accountsUiState.removeModal?.open) renderAccountRemoveModal();
+    syncHostSettingsUi();
   }
 
   async function refreshAccountsOverview({ silent = true, refreshAllRemote = false } = {}) {
     if (state.disposed) return null;
+    const reqSeq = accountsUiState.mutationSeq;
     try {
       const hasIpc = typeof window !== 'undefined' && typeof window.contextMeterAPI?.getAccountsOverview === 'function';
       const hasLive = hasLiveHttpBridge() && hasLiveRouteCapability('/accounts-overview');
@@ -64758,17 +70297,24 @@ function initCrossSessionInsightsControls() {
           liveRoute: '/accounts-action',
           liveBody: { action: 'refresh_quota' }
         });
+        if (reqSeq !== accountsUiState.mutationSeq) {
+          return accountsUiState.overview;
+        }
         const out = res?.result || {};
         const data = out.overview || out;
         if (data?.accounts) accountsUiState.overview = data;
         if (out.ok === false) {
           const errRaw = out.error || out.message || t('accounts.actionFail');
+          accountsUiState.loadError = (!data?.accounts?.length) ? errRaw : null;
           accountsUiState.feedback = typeof translateBackendText === 'function' ? translateBackendText(errRaw) : errRaw;
           accountsUiState.feedbackTone = 'error';
-        } else if (out.ok === true && accountsUiState.feedbackTone === 'error') {
-          const msgRaw = out.message || t('accounts.actionDone');
-          accountsUiState.feedback = typeof translateBackendText === 'function' ? translateBackendText(msgRaw) : msgRaw;
-          accountsUiState.feedbackTone = 'success';
+        } else if (out.ok === true) {
+          accountsUiState.loadError = null;
+          if (accountsUiState.feedbackTone === 'error') {
+            const msgRaw = out.message || t('accounts.actionDone');
+            accountsUiState.feedback = typeof translateBackendText === 'function' ? translateBackendText(msgRaw) : msgRaw;
+            accountsUiState.feedbackTone = 'success';
+          }
         }
       } else {
         const res = await callBackendWithPriority({
@@ -64776,8 +70322,22 @@ function initCrossSessionInsightsControls() {
           liveRoute: '/accounts-overview',
           liveBody: {}
         });
+        if (reqSeq !== accountsUiState.mutationSeq) {
+          return accountsUiState.overview;
+        }
         const data = res?.result;
-        if (data?.ok) accountsUiState.overview = data;
+        if (data?.ok) {
+          accountsUiState.loadError = null;
+          accountsUiState.overview = data;
+          if (!autoSwitchDraftDirty) {
+            clearTransientAutoSwitchStatusKey();
+          }
+        } else if (data && data.ok === false) {
+          const errRaw = data.error || t('accounts.actionFail');
+          accountsUiState.loadError = errRaw;
+          accountsUiState.feedback = typeof translateBackendText === 'function' ? translateBackendText(errRaw) : errRaw;
+          accountsUiState.feedbackTone = 'error';
+        }
       }
       if (!accountsUiState.toolsPreview) {
         const prevRes = await callBackendWithPriority({
@@ -64787,14 +70347,20 @@ function initCrossSessionInsightsControls() {
           liveRoute: '/accounts-action',
           liveBody: { action: 'preview_tools' }
         }).catch(() => null);
-        if (prevRes?.result?.ok) accountsUiState.toolsPreview = prevRes.result;
+        if (reqSeq === accountsUiState.mutationSeq && prevRes?.result?.ok) {
+          accountsUiState.toolsPreview = prevRes.result;
+        }
       }
       renderAccountsOverviewSection();
       return accountsUiState.overview;
     } catch (e) {
-      if (!silent) {
-        accountsUiState.feedback = e.message;
-        accountsUiState.feedbackTone = 'error';
+      if (reqSeq === accountsUiState.mutationSeq) {
+        const errMsg = e?.message || t('accounts.actionFail');
+        accountsUiState.loadError = errMsg;
+        if (!silent || !accountsUiState.overview?.accounts?.length) {
+          accountsUiState.feedback = errMsg;
+          accountsUiState.feedbackTone = 'error';
+        }
         renderAccountsOverviewSection();
       }
       return null;
@@ -64918,6 +70484,7 @@ function initCrossSessionInsightsControls() {
   async function performAccountAction(action, extraPayload = {}) {
     if (accountsUiState.busy) return null;
     accountsUiState.busy = true;
+    accountsUiState.mutationSeq += 1;
     accountsUiState.feedback = t('accounts.actionBusy');
     accountsUiState.feedbackTone = 'info';
     renderAccountsOverviewSection();
@@ -64929,6 +70496,7 @@ function initCrossSessionInsightsControls() {
         liveRoute: '/accounts-action',
         liveBody: { action, ...extraPayload }
       });
+      accountsUiState.mutationSeq += 1;
       const out = res?.result || {};
       if (out.overview) accountsUiState.overview = out.overview;
       if (out.cancelled) {
@@ -64950,6 +70518,7 @@ function initCrossSessionInsightsControls() {
       }
       return out;
     } catch (e) {
+      accountsUiState.mutationSeq += 1;
       const errTxt = e.message || t('accounts.actionFail');
       accountsUiState.feedback = typeof translateBackendText === 'function' ? translateBackendText(errTxt) : errTxt;
       accountsUiState.feedbackTone = 'error';
@@ -64963,25 +70532,176 @@ function initCrossSessionInsightsControls() {
   el('btn-acct-import-current')?.addEventListener('click', () => void performAccountAction('import_current'));
   el('btn-acct-import-tools')?.addEventListener('click', () => void performAccountAction('import_tools'));
   el('btn-acct-oauth-add')?.addEventListener('click', () => void performAccountAction('oauth_login'));
-  el('btn-quota-open-accounts-settings')?.addEventListener('click', () => openContextSettings({ section: 'accounts' }));
+  el('btn-tab-acct-refresh')?.addEventListener('click', () => void refreshAccountsOverview({ silent: false, refreshAllRemote: true }));
+  el('btn-tab-acct-import-current')?.addEventListener('click', () => void performAccountAction('import_current'));
+  el('btn-tab-acct-import-tools')?.addEventListener('click', () => void performAccountAction('import_tools'));
+  el('btn-tab-acct-oauth-add')?.addEventListener('click', () => void performAccountAction('oauth_login'));
+  el('btn-ctx-open-autoswitch-rules')?.addEventListener('click', () => openContextSettings({ section: 'settings-accounts-card' }));
+  el('btn-ctx-pools-refresh')?.addEventListener('click', () => void syncQuotaFromHost(true, { manual: true }));
+  el('btn-ctx-pools-retry')?.addEventListener('click', () => void syncQuotaFromHost(true, { manual: true }));
+  el('btn-ctx-open-quota-board')?.addEventListener('click', () => showPanel('quota'));
+  el('btn-quota-open-accounts-settings')?.addEventListener('click', () => openPluginAccountsTab());
   el('btn-quota-entry-refresh-accts')?.addEventListener('click', () => void refreshAccountsOverview({ silent: false, refreshAllRemote: true }));
   el('btn-keepalive-stop')?.addEventListener('click', () => void performAccountAction('stop_keepalive', { reason: 'manual_button' }));
-  for (const id of ['chk-auto-switch-enabled', 'sel-auto-switch-pool', 'sel-auto-switch-mode', 'sel-auto-switch-window', 'inp-auto-switch-threshold']) {
+  async function onAutoSwitchMasterToggle(e) {
+    const chk = el('chk-auto-switch-enabled');
+    const ov = accountsUiState.overview || { autoSwitch: {} };
+    const lastConfirmedEnabled = Boolean(ov.autoSwitch?.enabled);
+    const nextEnabled = e?.target ? Boolean(e.target.checked) : (chk ? Boolean(chk.checked) : lastConfirmedEnabled);
+    const status = el('auto-switch-save-status');
+
+    // 防快速连点：正在写入或账号操作忙时直接回退到最后确认值并忽略并发请求
+    if (autoSwitchSaving || accountsUiState.busy || chk?.getAttribute?.('aria-busy') === 'true') {
+      if (chk) chk.checked = lastConfirmedEnabled;
+      return { ok: false, busy: true, enabled: lastConfirmedEnabled };
+    }
+
+    // 存在未保存草稿改动时，提示先保存规则，避免把未确认参数带入直启停
+    if (autoSwitchDraftDirty || accountsUiState.autoSwitchDraft?.dirty) {
+      if (chk) chk.checked = lastConfirmedEnabled;
+      const msg = t('accounts.toggleNeedSaveDraft');
+      accountsUiState.autoSwitchDraft.saveStatusKey = 'accounts.toggleNeedSaveDraft';
+      accountsUiState.autoSwitchDraft.saveErrorDetail = '';
+      accountsUiState.feedback = msg;
+      accountsUiState.feedbackTone = 'error';
+      renderAccountsOverviewSection();
+      return { ok: false, error: msg, enabled: lastConfirmedEnabled };
+    }
+
+    const baseCfg = ov.autoSwitch || {};
+    const formVals = readAutoSwitchFormValues();
+    const poolKey = formVals.poolKey || baseCfg.poolKey || 'shared_gemini_main';
+    const metricMode = formVals.metricMode || baseCfg.metricMode || 'remaining_pct';
+    const windowKey = formVals.windowKey || baseCfg.windowKey || '5h';
+    const thresholdPct = Number.isFinite(Number(formVals.thresholdPct))
+      ? Number(formVals.thresholdPct)
+      : Number(baseCfg.thresholdPct ?? 20);
+    const candidates = Array.isArray(formVals.candidates) && formVals.candidates.length
+      ? formVals.candidates
+      : (Array.isArray(baseCfg.candidates) ? baseCfg.candidates : []);
+
+    if (nextEnabled) {
+      if (!encodeAutoSwitchTargetKey(poolKey, windowKey)) {
+        if (chk) chk.checked = lastConfirmedEnabled;
+        const msg = t('accounts.toggleNeedValidTarget');
+        accountsUiState.autoSwitchDraft.saveStatusKey = 'accounts.toggleNeedValidTarget';
+        accountsUiState.autoSwitchDraft.saveErrorDetail = '';
+        accountsUiState.feedback = msg;
+        accountsUiState.feedbackTone = 'error';
+        renderAccountsOverviewSection();
+        return { ok: false, error: msg, enabled: lastConfirmedEnabled };
+      }
+      if (!(thresholdPct >= 1 && thresholdPct <= 95)) {
+        if (chk) chk.checked = lastConfirmedEnabled;
+        const msg = t('accounts.ruleThreshold');
+        accountsUiState.autoSwitchDraft.saveStatusKey = 'accounts.ruleThreshold';
+        accountsUiState.autoSwitchDraft.saveErrorDetail = '';
+        accountsUiState.feedback = msg;
+        accountsUiState.feedbackTone = 'error';
+        renderAccountsOverviewSection();
+        return { ok: false, error: msg, enabled: lastConfirmedEnabled };
+      }
+      if (!candidates.length) {
+        if (chk) chk.checked = lastConfirmedEnabled;
+        const msg = t('accounts.toggleNeedCandidates');
+        accountsUiState.autoSwitchDraft.saveStatusKey = 'accounts.toggleNeedCandidates';
+        accountsUiState.autoSwitchDraft.saveErrorDetail = '';
+        accountsUiState.feedback = msg;
+        accountsUiState.feedbackTone = 'error';
+        renderAccountsOverviewSection();
+        return { ok: false, error: msg, enabled: lastConfirmedEnabled };
+      }
+    }
+
+    autoSwitchSaving = true;
+    accountsUiState.autoSwitchDraft.saving = true;
+    accountsUiState.autoSwitchDraft.saveStatusKey = '';
+    accountsUiState.autoSwitchDraft.saveErrorDetail = '';
+    accountsUiState.mutationSeq += 1;
+    if (chk) {
+      chk.checked = nextEnabled;
+      chk.disabled = true;
+      chk.setAttribute?.('aria-busy', 'true');
+    }
+    const saveBtn = el('btn-save-auto-switch');
+    if (saveBtn) saveBtn.disabled = true;
+    renderAccountsOverviewSection();
+
+    let out = null;
+    try {
+      out = await performAccountAction('update_auto_switch', {
+        config: { enabled: nextEnabled, poolKey, metricMode, windowKey, thresholdPct, candidates }
+      });
+    } finally {
+      autoSwitchSaving = false;
+      accountsUiState.autoSwitchDraft.saving = false;
+      if (chk) {
+        chk.disabled = false;
+        chk.removeAttribute?.('aria-busy');
+      }
+      if (saveBtn) saveBtn.disabled = false;
+    }
+
+    if (!out?.ok) {
+      const reason = out?.error || t('accounts.actionFail');
+      if (chk) chk.checked = lastConfirmedEnabled;
+      accountsUiState.autoSwitchDraft.dirty = false;
+      autoSwitchDraftDirty = false;
+      accountsUiState.autoSwitchDraft.values = null;
+      accountsUiState.autoSwitchDraft.saveStatusKey = 'prefs.toggleFailed';
+      accountsUiState.autoSwitchDraft.saveErrorDetail = reason;
+      if (status) status.textContent = t('prefs.toggleFailed', { reason });
+      accountsUiState.feedback = t('prefs.toggleFailed', { reason });
+      accountsUiState.feedbackTone = 'error';
+      accountsUiState.mutationSeq += 1;
+      renderAccountsOverviewSection();
+      return { ok: false, error: reason, enabled: lastConfirmedEnabled };
+    }
+
+    if (out.overview) {
+      accountsUiState.overview = out.overview;
+    }
+    const confirmedEnabled = Boolean(out.overview?.autoSwitch?.enabled ?? out.autoSwitch?.enabled ?? nextEnabled);
+    if (chk) chk.checked = confirmedEnabled;
+    autoSwitchDraftDirty = false;
+    accountsUiState.autoSwitchDraft.dirty = false;
+    accountsUiState.autoSwitchDraft.values = null;
+    accountsUiState.autoSwitchDraft.saveStatusKey = confirmedEnabled ? 'accounts.ruleSavedOn' : 'accounts.ruleSavedOff';
+    accountsUiState.autoSwitchDraft.saveErrorDetail = '';
+    accountsUiState.mutationSeq += 1;
+    renderAccountsOverviewSection();
+    if (confirmedEnabled) void syncQuotaFromHost(true, { manual: false });
+    return { ok: true, enabled: confirmedEnabled, overview: accountsUiState.overview };
+  }
+
+  el('chk-auto-switch-enabled')?.addEventListener('change', (e) => { void onAutoSwitchMasterToggle(e); });
+  for (const id of ['sel-auto-switch-target', 'sel-auto-switch-mode', 'inp-auto-switch-threshold']) {
     el(id)?.addEventListener(id === 'inp-auto-switch-threshold' ? 'input' : 'change', markAutoSwitchDraftEdited);
   }
   el('btn-save-auto-switch')?.addEventListener('click', async () => {
     if (autoSwitchSaving || accountsUiState.busy) return;
     const { enabled, poolKey, metricMode, windowKey, thresholdPct, candidates } = readAutoSwitchFormValues();
     const status = el('auto-switch-save-status');
+    if (!encodeAutoSwitchTargetKey(poolKey, windowKey)) {
+      const msg = t('accounts.toggleNeedValidTarget');
+      accountsUiState.autoSwitchDraft.saveStatusKey = 'accounts.toggleNeedValidTarget';
+      accountsUiState.autoSwitchDraft.saveErrorDetail = '';
+      if (status) status.textContent = msg;
+      accountsUiState.feedback = msg;
+      accountsUiState.feedbackTone = 'error';
+      renderAccountsOverviewSection();
+      return;
+    }
     if (!(thresholdPct >= 1 && thresholdPct <= 95)) {
       if (status) status.textContent = t('accounts.ruleThreshold');
       return;
     }
     autoSwitchSaving = true;
     accountsUiState.autoSwitchDraft.saving = true;
+    accountsUiState.mutationSeq += 1;
     const button = el('btn-save-auto-switch');
     if (button) button.disabled = true;
-    if (status) status.textContent = t('accounts.actionBusy');
+    renderAccountsOverviewSection();
     const out = await performAccountAction('update_auto_switch', {
       config: { enabled, poolKey, metricMode, windowKey, thresholdPct, candidates }
     });
@@ -64991,18 +70711,24 @@ function initCrossSessionInsightsControls() {
     if (!out?.ok) {
       autoSwitchDraftDirty = true;
       accountsUiState.autoSwitchDraft.dirty = true;
+      accountsUiState.autoSwitchDraft.values = { enabled, poolKey, metricMode, windowKey, thresholdPct, candidates };
       accountsUiState.autoSwitchDraft.saveStatusKey = 'prefs.saveError';
       accountsUiState.autoSwitchDraft.saveErrorDetail = out?.error || t('accounts.actionFail');
-      if (status) status.textContent = t('prefs.saveError', { reason: accountsUiState.autoSwitchDraft.saveErrorDetail });
+      renderAccountsOverviewSection();
       return;
+    }
+    if (out.overview) {
+      accountsUiState.overview = out.overview;
     }
     autoSwitchDraftDirty = false;
     accountsUiState.autoSwitchDraft.dirty = false;
     accountsUiState.autoSwitchDraft.values = null;
-    accountsUiState.autoSwitchDraft.saveStatusKey = enabled ? 'accounts.ruleSavedOn' : 'accounts.ruleSavedOff';
+    const confirmedEnabled = Boolean(out.overview?.autoSwitch?.enabled ?? out.autoSwitch?.enabled ?? enabled);
+    accountsUiState.autoSwitchDraft.saveStatusKey = confirmedEnabled ? 'accounts.ruleSavedOn' : 'accounts.ruleSavedOff';
     accountsUiState.autoSwitchDraft.saveErrorDetail = '';
+    accountsUiState.mutationSeq += 1;
     renderAccountsOverviewSection();
-    if (enabled) void syncQuotaFromHost(true, { manual: false });
+    if (confirmedEnabled) void syncQuotaFromHost(true, { manual: false });
   });
   const btnQuotaBannerRestartInit = el('btn-quota-banner-restart');
   if (btnQuotaBannerRestartInit) {
@@ -65080,10 +70806,16 @@ function initCrossSessionInsightsControls() {
 
   let quotaTickCounter = 0;
   let hasTriggeredInitialQuotaSync = false;
+  let autoSwitchWaitingIdle = false;
+  let autoSwitchDebounceTimer = null;
   function tick() {
     if (state.disposed || (globalThis.__AGContextMeterActiveHost && globalThis.__AGContextMeterActiveHost !== host)) {
       earlyForceDispose();
       return;
+    }
+    if (autoSwitchWaitingIdle && !hasActiveCompactionOrGeneration() && !quotaInFlightPromise) {
+      autoSwitchWaitingIdle = false;
+      void syncQuotaFromHost(true, { silent: true });
     }
     if (!host.isConnected) {
       ensureHostDocked();
@@ -65241,6 +70973,11 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
         const rt = await window.contextMeterAPI.getRuntimeInfo();
         if (rt && rt.ok && rt.backendVersion) {
           backendStatus.ipcBackendVersion = String(rt.backendVersion);
+          if (!backendStatus.backendVersion) {
+            backendStatus.backendVersion = String(rt.backendVersion);
+            backendStatus.backendSource = 'electron-ipc';
+          }
+          backendStatus.backendVersionMismatch = Boolean(backendStatus.backendVersion && backendStatus.backendVersion !== METER_RENDERER_VERSION);
         }
       } catch { }
     }
@@ -65255,6 +70992,10 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
       }
     }
     const snap = await syncQuotaFromHost(true);
+    const strictUpdateState = recomputeStrictUpdateState();
+    pendingUpdateRestart = strictUpdateState.stage === 'pending_restart';
+    syncPopoverByStrictStage(strictUpdateState, { liveInjected: Boolean(lastApplyUpdateResult?.liveInjected) });
+    syncHostSettingsUi();
     return {
       rendererVersion: METER_RENDERER_VERSION,
       backendSource: backendStatus.backendSource,
@@ -65265,6 +71006,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
       hotReloadFallback: backendStatus.hotReloadFallback,
       backendVersionMismatch: backendStatus.backendVersionMismatch,
       pendingUpdateRestart,
+      strictUpdateState,
       quotaAttempted: Boolean(quotaState.lastFetchedAtMs),
       quotaOk: Boolean(snap && !quotaState.error),
       quotaActiveStatus: computeEffectiveQuotaView(Date.now()).activeStatus,
@@ -65299,6 +71041,16 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
       openPanel,
       activeContextTab,
       isContextSettingsView,
+      updatePopoverOpen: Boolean(el('update-popover')?.style?.display === 'block'),
+      updatePopoverTrigger: currentUpdateTrigger || 'ctx',
+      updateState: {
+        targetVersion: updateTargetVersion,
+        activatedTarget: updateActivatedTarget,
+        actionPhase: updateActionPhase,
+        checkResult: lastCheckUpdateResult,
+        applyResult: lastApplyUpdateResult,
+        lastError: lastUpdateError
+      },
       pinnedViewRoute: state.pinnedViewRoute || null,
       browsePoolKey: quotaState.browsePoolKey || null,
       scrollTops,
@@ -65319,6 +71071,22 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
 
   function applyInheritedHotReloadState(saved) {
     if (!saved || typeof saved !== 'object' || state.disposed) return;
+    if (saved.updateState && typeof saved.updateState === 'object') {
+      const us = saved.updateState;
+      if (us.targetVersion) updateTargetVersion = us.targetVersion;
+      updateActivatedTarget = Boolean(us.activatedTarget);
+      updateActionPhase = us.actionPhase === 'error' ? 'error' : 'idle';
+      if (us.checkResult) lastCheckUpdateResult = us.checkResult;
+      if (us.applyResult) lastApplyUpdateResult = us.applyResult;
+      if (us.lastError) lastUpdateError = us.lastError;
+      const strict = recomputeStrictUpdateState();
+      pendingUpdateRestart = strict.stage === 'pending_restart';
+      syncPopoverByStrictStage(strict, { liveInjected: Boolean(lastApplyUpdateResult?.liveInjected) });
+      syncHostSettingsUi();
+    }
+    if (saved.updatePopoverOpen && typeof showUpdatePopover === 'function') {
+      showUpdatePopover(saved.updatePopoverTrigger || 'ctx');
+    }
     const d = saved.drafts || {};
     if (d.proxyInputDirty) {
       if (inputProxyUrl && typeof d.proxyUrl === 'string') inputProxyUrl.value = d.proxyUrl;
@@ -65354,9 +71122,9 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
     if (saved.openPanel && saved.openPanel !== 'none') {
       showPanel(saved.openPanel);
       if (saved.openPanel === 'context' && saved.activeContextTab) {
-        switchContextTab(saved.activeContextTab);
+        switchContextTab(saved.activeContextTab === 'settings' ? 'accounts' : saved.activeContextTab);
       } else if (saved.openPanel === 'context' && saved.isContextSettingsView) {
-        switchContextTab('settings');
+        switchContextTab('accounts');
       }
     }
     if (Array.isArray(saved.openDrawers)) {
@@ -65384,7 +71152,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   }
 
   globalThis.__AGContextMeter = {
-    buildId: '2225b7bda13919de',
+    buildId: '6fa9255b969466ee',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;
@@ -65841,6 +71609,10 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
     switchTokenViewForTest: (v) => switchTokenView(v),
     toggle: (open) => toggle(open),
     setComposerStateForTest: (customState = {}) => {
+      if ('route' in customState) state.route = customState.route;
+      else if (customState.scan?.conversation) state.route = customState.scan.conversation;
+      if ('scan' in customState) state.scan = customState.scan;
+      if ('latest' in customState) state.latest = customState.latest;
       if (customState.allTurns) state.allTurns = customState.allTurns;
       if ('sessionTimeline' in customState) state.sessionTimeline = customState.sessionTimeline;
       if (customState.sessionCalls) {
@@ -65854,6 +71626,9 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
       if (customState.lastSpeedEval) {
         state.lastSpeedEval = customState.lastSpeedEval;
         state.speedOverrideForTest = customState.lastSpeedEval;
+      } else if ('scan' in customState || 'latest' in customState) {
+        state.speedOverrideForTest = null;
+        syncSpeedBadgeText();
       }
       if (customState.sessionStats) state.sessionStats = customState.sessionStats;
       renderComposerStatusBar();
@@ -65957,6 +71732,9 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
     closeRemoveAccountModalForTest: () => closeRemoveAccountModal(),
     setAccountsOverviewForTest: (overview) => {
       accountsUiState.overview = overview || null;
+      if (!autoSwitchDraftDirty) {
+        clearTransientAutoSwitchStatusKey();
+      }
       renderAccountsOverviewSection();
       return accountsUiState.overview;
     },
@@ -65970,6 +71748,23 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
       compareCount: el('quota-compare-list')?.children?.length || 0,
       autoSwitchStatus: el('auto-switch-status-pill')?.textContent || '',
       keepaliveStatus: el('keepalive-status-pill')?.textContent || ''
+    }),
+    getSettingsRouteStateForTest: () => ({
+      ...settingsRouteState,
+      hostState: hostSettingsCtrl?.getStateForTest?.() || null
+    }),
+    getAccountsTabStateForTest: () => ({
+      activeContextTab,
+      activeEmail: accountsUiState.overview?.activeAccountEmail || null,
+      autoSwitchEnabled: Boolean(accountsUiState.overview?.autoSwitch?.enabled),
+      autoSwitchStatus: accountsUiState.overview?.autoSwitchStatus || null,
+      draftDirty: Boolean(autoSwitchDraftDirty),
+      saving: Boolean(autoSwitchSaving),
+      mutationSeq: accountsUiState.mutationSeq,
+      tabAccountCount: el('ctx-accounts-list')?.children?.length || 0,
+      tabAutoSwitchStatus: el('ctx-autoswitch-status-pill')?.textContent || '',
+      tabMainPoolModel: el('ctx-pools-cur-model')?.textContent || '',
+      tabOtherPoolsCount: el('ctx-pools-others-list')?.children?.length || 0
     }),
     getConversationScopeStateForTest: () => ({
       layout: state.layout || parseConversationLayout(),
@@ -66246,52 +72041,36 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
     setAuxViewTabForTest: (tab, opts = {}) => setAuxViewTab(tab, opts),
     setAuxCollapsedForTest: (col, opts = {}) => setAuxCollapsed(col, opts),
     resizeAuxPanelForTest: (px, opts = {}) => applyAuxWidthPx(px, opts),
-    syncModelPickersForTest: () => (typeof syncModelPickers === 'function' ? syncModelPickers() : []),
-    getModelPickersStateForTest: () => {
-      const menu = typeof getActiveGroupedMenu === 'function' ? getActiveGroupedMenu() : null;
-      return Array.from(mountedPickerRecords || []).map(rec => {
-        const sel = typeof resolveCurrentSelectionForPicker === 'function' ? resolveCurrentSelectionForPicker(rec, menu) : null;
-        return {
-          route: sel?.route || resolveComposerRouteContext(rec.composer, rec.trigger),
-          productKey: sel?.productKey || null,
-          productLabel: sel?.productLabel || '',
-          effort: sel?.effort || null,
-          isFixedEffort: Boolean(sel?.isFixedEffort),
-          supportedEfforts: sel?.supportedEfforts || [],
-          isOrchestrator: Boolean(sel?.isOrchestrator),
-          openMode: rec.openMode,
-          submenuOpen: Boolean(rec.submenuOpen),
-          fallbackNotice: rec.fallbackNotice ? { ...rec.fallbackNotice } : null,
-          nativeHidden: Boolean(rec.trigger?.classList?.contains?.('ag-mp-native-hidden')),
-          effortBtnHidden: Boolean(rec.effortBtn?.hidden),
-          effortBtnReadOnly: rec.effortBtn?.getAttribute?.('data-readonly') === 'true',
-          modelBtnText: rec.modelLblEl?.textContent || '',
-          effortBtnText: rec.effortLblEl?.textContent || '',
-          modelMenuHidden: Boolean(rec.modelMenuEl?.hidden),
-          effortMenuHidden: Boolean(rec.effortMenuEl?.hidden),
-          modelBtn: rec.modelBtn,
-          effortBtn: rec.effortBtn,
-          modelMenuEl: rec.modelMenuEl,
-          effortMenuEl: rec.effortMenuEl,
-          composer: rec.composer,
-          trigger: rec.trigger
-        };
-      });
+    cleanupLegacyModelPickerForTest: () => cleanupLegacyModelPickerArtifacts(),
+    setNextPromptEnabledForTest: (enabled) => setNextPromptEnabledState(enabled === true, { persist: false }),
+    setAllowBetaUpdatesForTest: (enabled) => setAllowBetaUpdatesState(enabled === true, { persist: false }),
+    getStrictUpdateState: () => recomputeStrictUpdateState(),
+    getUpdateStateForTest: () => ({
+      ...recomputeStrictUpdateState(),
+      allowBetaUpdates: Boolean(allowBetaUpdates),
+      nextPromptEnabled: Boolean(nextPromptEnabled),
+      hasCachedRelease: Boolean(cachedLatestRelease)
+    }),
+    setBackendStatusForTest: (patch = {}) => {
+      if (patch && typeof patch === 'object') {
+        Object.assign(backendStatus, patch);
+        backendStatus.backendVersionMismatch = Boolean(
+          backendStatus.backendVersion &&
+          backendStatus.backendVersion !== METER_RENDERER_VERSION
+        );
+        if (!backendStatus.backendVersionMismatch && backendStatus.backendVersion === METER_RENDERER_VERSION) {
+          if (lastApplyUpdateResult?.liveInjected || (updateActivatedTarget && lastApplyUpdateResult?.diskInstalled !== false)) {
+            pendingUpdateRestart = false;
+          }
+        }
+      }
+      const strict = recomputeStrictUpdateState();
+      syncHostSettingsUi();
+      return strict;
     },
-    setSimplifiedModelPickerEnabledForTest: (enabled) => {
-      simplifiedModelPickerEnabled = Boolean(enabled);
-      const chk = el('chk-simplified-model-picker');
-      if (chk) chk.checked = simplifiedModelPickerEnabled;
-      if (typeof syncModelPickers === 'function') syncModelPickers();
-      return simplifiedModelPickerEnabled;
-    },
-    setNextPromptEnabledForTest: (enabled) => {
-      nextPromptEnabled = enabled === true;
-      const chk = el('chk-next-prompt-enabled');
-      if (chk) chk.checked = nextPromptEnabled;
-      if (!nextPromptEnabled && typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggestion(true);
-      return nextPromptEnabled;
-    },
+    getHostSettingsStateForTest: () => (hostSettingsCtrl ? hostSettingsCtrl.getStateForTest() : null),
+    syncHostSettingsForTest: () => (hostSettingsCtrl ? hostSettingsCtrl.syncModalMount() : false),
+    applyInheritedHotReloadStateForTest: (saved) => applyInheritedHotReloadState(saved),
     maybeRequestNextPromptForTest: (opts = {}) => (typeof maybeRequestNextPromptPrediction === 'function' ? maybeRequestNextPromptPrediction(opts) : Promise.resolve({ skipped: true })),
     acceptNextPromptForTest: (comp = null) => (typeof acceptNextPromptIntoComposer === 'function' ? acceptNextPromptIntoComposer(comp) : false),
     dismissNextPromptForTest: (invalidate = true) => (typeof dismissNextPromptSuggestion === 'function' ? dismissNextPromptSuggestion(invalidate) : undefined),
@@ -66305,8 +72084,15 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
       ghostHidden: Boolean(!nextPromptState?.ghostEl || nextPromptState.ghostEl.hidden),
       isComposing: Boolean(nextPromptState?.isComposing)
     }),
+    getLiveAutoSwitchGuardState,
+    showAutoSwitchPreRestartNotice,
+    clearAutoSwitchPreRestartNotice: clearAutoSwitchFloatingNotice,
+    getAutoSwitchNoticeStateForTest: () => ({ ...autoSwitchLastNoticeState }),
     isDisposedForTest: () => Boolean(state.disposed),
     dispose() {
+      clearAutoSwitchFloatingNotice();
+      try { autoSwitchFloatingNoticeEl?.remove?.(); } catch { }
+      autoSwitchFloatingNoticeEl = null;
       cancelClosePanelPicker();
       if (state.radialCloseTimer) { clearTimeout(state.radialCloseTimer); state.radialCloseTimer = null; }
       if (state.radialAlignTimer) { clearTimeout(state.radialAlignTimer); state.radialAlignTimer = null; }
@@ -66320,6 +72106,8 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
       saveDefaultFeedbackTimers.clear();
       earlyForceDispose();
       clearQuotaTimers();
+      if (autoSwitchDebounceTimer) { clearTimeout(autoSwitchDebounceTimer); autoSwitchDebounceTimer = null; }
+      if (nsHostToastTimer) { clearTimeout(nsHostToastTimer); nsHostToastTimer = null; }
       clearInterval(timer);
       sessionSnapshotCache.clear();
       state.lastRequestedModelByCascade?.clear?.();
@@ -66352,7 +72140,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
       try { document.getElementById('ag-wco-spacer')?.remove?.(); } catch { }
       try { document.getElementById('ag-topbar-host-fix')?.remove?.(); } catch { }
       turnFooterScopeState.clear();
-      if (typeof disposeModelPickers === 'function') disposeModelPickers();
+      cleanupLegacyModelPickerArtifacts();
       if (typeof disposeNextPrompt === 'function') disposeNextPrompt();
       disposeRadialTopLayer();
       composerSummary?.remove?.();
@@ -66366,7 +72154,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   syncAllViewPrefControlsUi();
   syncRadialOrbHiddenUi();
   if (el('chk-show-composer-quota')) el('chk-show-composer-quota').checked = showComposerQuotaSummary;
-  if (el('chk-simplified-model-picker')) el('chk-simplified-model-picker').checked = simplifiedModelPickerEnabled;
+  cleanupLegacyModelPickerArtifacts();
   if (el('chk-next-prompt-enabled')) el('chk-next-prompt-enabled').checked = nextPromptEnabled;
   if (el('chk-show-turn-footer-stats')) el('chk-show-turn-footer-stats').checked = showTurnFooterStats;
   if (typeof bindNextPromptComposerListeners === 'function') bindNextPromptComposerListeners();
@@ -66379,6 +72167,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   }
   renderComposerStatusBar();
   const onComposerResize = () => {
+    syncWindowControlsOverlay();
     syncComposerStatusBarWidth();
     if (typeof renderTurnFooterStats === 'function') renderTurnFooterStats();
   };
@@ -66397,6 +72186,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   if (typeof initAgentCollabHubControls === 'function') initAgentCollabHubControls();
   if (typeof initAuditWidgetsControls === 'function') initAuditWidgetsControls();
   if (typeof initCrossSessionInsightsControls === 'function') initCrossSessionInsightsControls();
+  hostSettingsCtrl?.start?.();
   if (inheritedHotReloadState) {
     applyInheritedHotReloadState(inheritedHotReloadState);
   }

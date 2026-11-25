@@ -38,3 +38,9 @@ Other commands:
 Translate visible text in `src/renderer/template.html` and the renderer JavaScript
 modules. Keep DOM IDs, selectors, event handlers and data structures intact.
 Build the renderer and run tests before installing the translated version.
+
+## Agent interaction guidelines
+
+- **Do not modify code unprompted**: The user edits code exclusively in their IDE. Do not edit files, refactor, or run build/install commands unless explicitly requested.
+- **Context-aware fast answers**: When a question involves project features or code logic, quickly read the relevant source code in the context to verify facts, then answer concisely in plain, direct language (白话). Avoid unnecessary deep searches or lengthy test runs.
+- **Pure conversational questions**: If a question does not involve code or project internals, answer immediately without inspecting files or running shell commands.

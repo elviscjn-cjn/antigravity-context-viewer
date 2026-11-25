@@ -163,7 +163,7 @@ function createDomNode(tagName, opts = {}) {
     },
     click() {
       for (const fn of (listeners.get('click') || [])) {
-        fn({ target: node, stopPropagation() {}, preventDefault() {} });
+        fn({ target: node, stopPropagation() { }, preventDefault() { } });
       }
     },
     focus() { node.focused = true; },
@@ -279,15 +279,29 @@ test('Phase 5 backend: groupedModels 去重、clientModelSorts 排序、固定�
   assert.equal(core.matchHostMenuOptionText('Gemini 4 Neon High', neon.variants[0], 'Gemini 4 Neon'), true);
 });
 
-test('Phase 5 UI: 分屏与 Side Chat 独立挂载、菜单拆分与回退提示、键盘导航与 Esc、窄窗、设置开关与退回原生', async () => {
+test('Phase 5 UI: 移除自定义模型选择器、清理旧版遗留隐藏状态并恢复唯一宿主原生入口', async () => {
   const source = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+  const tpl = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
+  const i18nSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'i18n.js'), 'utf8');
+
+  assert.equal(source.includes('syncModelPickers'), false, '渲染器包中不得再包含 syncModelPickers');
+  assert.equal(source.includes('ag-mp-model-menu'), false, '渲染器包中不得再注册自定义模型下拉菜单');
+  assert.equal(tpl.includes('chk-simplified-model-picker'), false, '设置模板不得再保留简化模型选择器开关');
+  assert.equal(i18nSrc.includes('modelPicker.title'), false, 'i18n 不得保留独占模型选择器词条');
+  assert.equal(tpl.includes('chk-next-prompt-enabled'), true, '下一句预测入口必须保持完整');
+
   const doc = createDomNode('HTML');
   const head = createDomNode('HEAD');
   const body = createDomNode('BODY');
   doc.appendChild(head);
   doc.appendChild(body);
 
-  // 构造两个独立会话区（主对话 + Side Chat），各自包含 .surface-composer 和原生 trigger
+  // 模拟旧版遗留样式与探测 class
+  const legacyStyle = createDomNode('STYLE');
+  legacyStyle.id = 'ag-model-picker-style';
+  head.appendChild(legacyStyle);
+  body.classList.add('ag-mp-native-probing');
+
   function makeComposer(routeId, initialTriggerText) {
     const view = createDomNode('DIV');
     view.setAttribute('data-testid', 'conversation-view');
@@ -296,14 +310,22 @@ test('Phase 5 UI: 分屏与 Side Chat 独立挂载、菜单拆分与回退提示
     comp.className = 'surface-composer';
     const trig = createDomNode('BUTTON');
     trig.setAttribute('data-testid', 'model-selector-trigger');
+    trig.classList.add('ag-mp-native-hidden');
     trig.textContent = initialTriggerText;
+    const legacyWrap = createDomNode('DIV');
+    legacyWrap.className = 'ag-mp-wrap';
+    legacyWrap.setAttribute('data-ag-model-picker', 'true');
     comp.appendChild(trig);
+    comp.appendChild(legacyWrap);
     view.appendChild(comp);
     body.appendChild(view);
-    return { view, comp, trig };
+    return { view, comp, trig, legacyWrap };
   }
-  const mainPane = makeComposer('11111111-1111-1111-1111-111111111111', 'Gemini 4 Neon Low');
+  const mainPane = makeComposer('11111111-1111-1111-1111-111111111111', 'Orchestrator (Neon)');
   const sidePane = makeComposer('22222222-2222-2222-2222-222222222222', 'GPT-OSS 120B (Medium)');
+  const legacyPopover = createDomNode('DIV');
+  legacyPopover.className = 'ag-mp-popover';
+  body.appendChild(legacyPopover);
 
   const elements = new Map();
   const shadow = {
@@ -323,16 +345,15 @@ test('Phase 5 UI: 分屏与 Side Chat 独立挂载、菜单拆分与回退提示
   host.attachShadow = () => shadow;
 
   const docListeners = new Map();
-  const storageMap = new Map();
-  const savedSettings = [];
-  const dispatchedSwitches = [];
+  const storageMap = new Map([['ag_simplified_model_picker', 'true']]);
   const timers = [];
 
   const sandbox = {
     location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' },
     localStorage: {
       getItem: k => storageMap.get(k) ?? null,
-      setItem: (k, v) => storageMap.set(k, String(v))
+      setItem: (k, v) => storageMap.set(k, String(v)),
+      removeItem: (k) => storageMap.delete(k)
     },
     document: {
       head,
@@ -356,14 +377,14 @@ test('Phase 5 UI: 分屏与 Side Chat 独立挂载、菜单拆分与回退提示
       innerWidth: 420,
       innerHeight: 720,
       __APP_CONFIG__: { csrfToken: 'test' },
-      __agTestModelSelectHook: async ({ route, variant, trigger }) => {
-        dispatchedSwitches.push({ route, modelId: variant.modelId, label: variant.label, effort: variant.effort || null });
-        trigger.textContent = variant.label;
-        return { ok: true };
-      },
       contextMeterAPI: {
-        scan: () => new Promise(() => {}),
-        saveSettings: async (p) => { savedSettings.push(p); return { ok: true }; },
+        scan: () => new Promise(() => { }),
+        getSettings: async () => ({
+          ok: true,
+          simplifiedModelPickerEnabled: true,
+          uiPreferences: { simplifiedModelPickerEnabled: true }
+        }),
+        saveSettings: async () => ({ ok: true }),
         getQuota: async () => ({ ok: false })
       }
     },
@@ -371,10 +392,10 @@ test('Phase 5 UI: 分屏与 Side Chat 独立挂载、菜单拆分与回退提示
     AbortController,
     Date,
     setTimeout: (fn) => { fn(); return 1; },
-    clearTimeout() {},
+    clearTimeout() { },
     setInterval(cb) { timers.push(cb); return 1; },
-    clearInterval() {},
-    fetch: () => new Promise(() => {})
+    clearInterval() { },
+    fetch: () => new Promise(() => { })
   };
   sandbox.document.createElement = ((origFirst) => (tag) => {
     if (origFirst) { origFirst = false; return host; }
@@ -386,95 +407,15 @@ test('Phase 5 UI: 分屏与 Side Chat 独立挂载、菜单拆分与回退提示
   const api = sandbox.__AGContextMeter;
 
   try {
-    const configs = buildRealisticConfigs();
-    api.setQuotaSnapshotForTest({
-      accountScopeKey: 'acct_p5',
-      fetchedAtMs: Date.now(),
-      userStatusRes: {
-        userStatus: {
-          email: 'tester@example.com',
-          cascadeModelConfigData: { clientModelConfigs: configs }
-        }
-      },
-      quotaSummaryRes: { groups: [] }
-    });
-    api.syncModelPickersForTest();
-
-    const states = api.getModelPickersStateForTest();
-    assert.equal(states.length, 2, '主会话与 Side Chat 两个输入框必须各自独立挂载选择器');
-    const stMain = states.find(s => s.route.startsWith('11111111'));
-    const stSide = states.find(s => s.route.startsWith('22222222'));
-    assert.ok(stMain && stSide);
-    assert.equal(stMain.modelBtnText, 'Gemini 4 Neon');
-    assert.equal(stMain.effortBtnText, 'Low');
-    assert.equal(stMain.effortBtnReadOnly, false);
-    assert.equal(stSide.modelBtnText, 'GPT-OSS 120B');
-    assert.equal(stSide.effortBtnReadOnly, true, '固定档位 GPT-OSS 120B 必须展示为只读');
-
-    // 1. 打开主面板菜单：每个基础模型仅出现 1 次 + Orchestrator 1 入口 + 查看用量
-    stMain.modelBtn.click();
-    assert.equal(stMain.modelMenuEl.hidden, false);
-    const items = stMain.modelMenuEl.querySelectorAll('.ag-mp-item');
-    const neonRows = items.filter(i => i.textContent.includes('Gemini 4 Neon'));
-    assert.equal(neonRows.length, 1, '基础模型 Gemini 4 Neon 必须在菜单里只出现 1 次');
-
-    // 2. 点击「查看用量」必须复用输入框已有用量入口（当底栏用量入口可见时直接点击；不可见时兜底展开 panel-quota）
-    let quotaClicked = 0;
-    const csbQuotaEl = shadow.getElementById('csb-group-quota');
-    csbQuotaEl.hidden = false;
-    csbQuotaEl.addEventListener('click', () => { quotaClicked++; });
-    const usageBtn = items.find(i => i.getAttribute('data-item-role') === 'view-usage');
-    assert.ok(usageBtn);
-    usageBtn.click();
-    assert.equal(quotaClicked, 1);
-
-    // 3. 切到仅支持 High 的 Gemini 4 Hydrogen -> 按宿主规则回退 High 并明确显示 highFallbackWarning
-    stMain.modelBtn.click();
-    const hydroItem = stMain.modelMenuEl.querySelectorAll('.ag-mp-item').find(i => i.textContent.includes('Gemini 4 Hydrogen'));
-    hydroItem.click();
     await new Promise(r => setImmediate(r));
-    const afterSwitchMain = api.getModelPickersStateForTest().find(s => s.route.startsWith('11111111'));
-    assert.equal(afterSwitchMain.modelBtnText, 'Gemini 4 Hydrogen');
-    assert.equal(afterSwitchMain.effortBtnText, 'High');
-    assert.ok(afterSwitchMain.fallbackNotice?.highWarning, '落到 High 时必须显式提示回退高档结果');
-    assert.equal(dispatchedSwitches[0].route, '11111111-1111-1111-1111-111111111111');
-    assert.equal(dispatchedSwitches[0].modelId, 'MODEL_PLACEHOLDER_M527_HIGH');
-
-    // 4. 在 Side Chat 输入框验证独立性 & 切入 Orchestrator 预设并隐藏虚假档位控件
-    stSide.modelBtn.click();
-    const orchEntry = stSide.modelMenuEl.querySelectorAll('.ag-mp-item').find(i => i.getAttribute('data-item-role') === 'orchestrator-entry');
-    assert.ok(orchEntry);
-    orchEntry.click();
-    const orchArgon = stSide.modelMenuEl.querySelectorAll('.ag-mp-item').find(i => i.textContent.includes('Orchestrator (Argon)'));
-    assert.ok(orchArgon);
-    orchArgon.click();
-    await new Promise(r => setImmediate(r));
-    const afterOrchSide = api.getModelPickersStateForTest().find(s => s.route.startsWith('22222222'));
-    assert.equal(afterOrchSide.isOrchestrator, true);
-    assert.equal(afterOrchSide.effortBtnHidden, true, 'Orchestrator 不得展示可调思考档位');
-    assert.equal(dispatchedSwitches[1].route, '22222222-2222-2222-2222-222222222222');
-
-    // 5. 键盘导航 + Esc 关闭并归还触发按钮焦点
-    afterSwitchMain.modelBtn.click();
-    sandbox.document.dispatchEvent({ type: 'keydown', key: 'ArrowDown', preventDefault() {}, stopPropagation() {} });
-    sandbox.document.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {}, stopPropagation() {} });
-    assert.equal(afterSwitchMain.modelMenuEl.hidden, true);
-    assert.equal(afterSwitchMain.modelBtn.focused, true);
-
-    // 6. 关闭开关应安全恢复原生触发器；结构不识别（移出 .surface-composer）也退回原生
-    api.setSimplifiedModelPickerEnabledForTest(false);
-    assert.equal(mainPane.trig.classList.contains('ag-mp-native-hidden'), false);
-    assert.equal(api.getModelPickersStateForTest().length, 0);
-
-    // 7. 后端设置往返持久化
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-mp-settings-'));
-    try {
-      assert.equal(getPluginSettings({ agDir: tmpDir }).simplifiedModelPickerEnabled, true);
-      savePluginSettings({ simplifiedModelPickerEnabled: false }, { agDir: tmpDir });
-      assert.equal(getPluginSettings({ agDir: tmpDir }).simplifiedModelPickerEnabled, false);
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
+    assert.equal(mainPane.trig.classList.contains('ag-mp-native-hidden'), false, '即使旧配置保存为开启，也必须撤销原生触发器隐藏');
+    assert.equal(sidePane.trig.classList.contains('ag-mp-native-hidden'), false);
+    assert.equal(head.querySelector('#ag-model-picker-style'), null, '旧版模型选择器样式必须清理');
+    assert.equal(body.classList.contains('ag-mp-native-probing'), false, '旧版探测 class 必须清理');
+    assert.equal(body.querySelectorAll('.ag-mp-wrap, .ag-mp-popover, [data-ag-model-picker="true"]').length, 0, '旧版自定义菜单节点必须全部移除');
+    assert.equal(storageMap.has('ag_simplified_model_picker'), false, '旧版 localStorage 键应被清理');
+    assert.equal(mainPane.comp.querySelectorAll('[data-testid="model-selector-trigger"]').length, 1, '每个输入框只保留唯一原生触发器');
+    assert.equal(api.getModelPickersStateForTest, undefined, '不再暴露自定义模型选择器状态接口');
   } finally {
     api.dispose();
   }

@@ -97,11 +97,11 @@ function resolveLiveBootChineseSnapshot(customAsarPath = null) {
       enabled: active,
       language: String(ch.language || (ch.enabled ? 'zh-CN' : 'en'))
     };
-  } catch {}
+  } catch { }
   liveBootChineseSnapshots.set(key, snap);
   return snap;
 }
-try { resolveLiveBootChineseSnapshot(); } catch {}
+try { resolveLiveBootChineseSnapshot(); } catch { }
 
 function buildLiveRuntimeModulesMeta(cfg, customAsarPath = null) {
   const diskProxy = cfg?.modules?.proxy || {};
@@ -197,7 +197,7 @@ function timingSafeTokenEqual(provided, expected) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
-function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShutdown = null, startedAt = LIVE_HOST_STARTED_AT }) {
+function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShutdown = null, startedAt = LIVE_HOST_STARTED_AT, _applyUpdateAsync = applyUpdateAsync }) {
   let activeApplyUpdateCount = 0;
   let deferredShutdownRequested = false;
   const resolveAllowedSet = () => {
@@ -575,7 +575,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
                 spawn('xdg-open', [dashboardUrl], { detached: true, stdio: 'ignore' }).unref();
               }
               openedExternal = true;
-            } catch {}
+            } catch { }
           }
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({
@@ -594,7 +594,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           activeApplyUpdateCount += 1;
           let result;
           try {
-            result = await applyUpdateAsync({
+            result = await _applyUpdateAsync({
               ...(request || {}),
               version: typeof request?.version === 'string' ? request.version : undefined,
               allowBetaUpdates: request?.allowBetaUpdates === true || request?.prerelease === true,
@@ -613,7 +613,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           if (((result && result.ok && result.shouldShutdownCallerLiveHost) || deferredShutdownRequested) && typeof onShutdown === 'function') {
             res.once('finish', () => {
               setTimeout(() => {
-                try { onShutdown(); } catch {}
+                try { onShutdown(); } catch { }
               }, 250);
             });
           }
@@ -629,7 +629,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           res.end(JSON.stringify({ ok: true, shuttingDown: true, pid: process.pid, version: PROJECT_VERSION }));
           if (typeof onShutdown === 'function') {
             setImmediate(() => {
-              try { onShutdown(); } catch {}
+              try { onShutdown(); } catch { }
             });
           }
           return;
@@ -682,25 +682,41 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           const { _raw, ...safeData } = resData || {};
           let accountSyncResult = null;
           try {
-            const { getSharedAccountsManager } = require('./meter-accounts');
+            const { getSharedAccountsManager, deriveTrustedAutoSwitchQuotaContext } = require('./meter-accounts');
             const mgr = getSharedAccountsManager({ origin: targetOrigin });
             const switchInFlight = Boolean(mgr.isSwitchInFlight?.());
-            const email = !switchInFlight
-              ? (resData?.email || _raw?.planStatus?.email || _raw?.userStatus?.email || _raw?.email || resData?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null)
+            const sourceEmail = !switchInFlight
+              ? (resData?.email || _raw?.planStatus?.email || _raw?.userStatus?.email || _raw?.email || resData?.planStatus?.email || null)
               : null;
-            if (!switchInFlight && email && resData?.snapshot) {
-              mgr.syncActiveHostQuotaSnapshot(resData, email);
-              const ov = mgr.getOverviewState();
-              if (ov.autoSwitch?.enabled && !resData.error) {
-                const requiresClientRestart = compareVersions(resolveLiveHostTargetVersion(), '2.34.0') >= 0;
-                accountSyncResult = await mgr.evaluateAutoSwitch({
-                  activeEmail: email,
-                  activeSnapshot: resData.snapshot,
-                  syncState: 'fresh',
-                  isGenerating: Boolean(request?.isGenerating),
-                  requiresClientRestart,
-                  blockedRestartReason: requiresClientRestart ? 'live_mode_cannot_auto_restart' : undefined
-                });
+            const activeDetectedEmail = !switchInFlight
+              ? (sourceEmail || (await mgr.detectCurrentActiveAccount())?.email || null)
+              : null;
+            const trustCtx = deriveTrustedAutoSwitchQuotaContext({
+              res: resData,
+              raw: _raw,
+              activeEmail: activeDetectedEmail
+            });
+            if (!switchInFlight && trustCtx.trusted && trustCtx.email && resData?.snapshot) {
+              mgr.syncActiveHostQuotaSnapshot(resData, trustCtx.email);
+            }
+            const ov = mgr.getOverviewState();
+            if (!switchInFlight && ov.autoSwitch?.enabled) {
+              const requiresClientRestart = compareVersions(resolveLiveHostTargetVersion(), '2.34.0') >= 0;
+              const evalSyncState = trustCtx.trusted
+                ? 'fresh'
+                : (trustCtx.syncState && trustCtx.syncState !== 'fresh' ? trustCtx.syncState : 'untrusted');
+              accountSyncResult = await mgr.evaluateAutoSwitch({
+                activeEmail: trustCtx.email || activeDetectedEmail,
+                activeSnapshot: resData?.snapshot || null,
+                syncState: evalSyncState,
+                allowLiveCandidateRefresh: true,
+                isGenerating: Boolean(request?.isGenerating),
+                hasUnsavedDraft: Boolean(request?.hasUnsavedDraft),
+                requiresClientRestart,
+                blockedRestartReason: requiresClientRestart ? 'live_mode_cannot_auto_restart' : undefined
+              });
+              if (accountSyncResult && typeof accountSyncResult === 'object') {
+                accountSyncResult.overview = mgr.getOverviewState();
               }
             }
           } catch { }
@@ -747,13 +763,22 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
         }
         if (req.url === '/predict-next-prompt') {
           const settings = getPluginSettings();
-          if (settings.nextPromptEnabled !== true && request?.allowWhenDisabled !== true) {
+          if (settings.nextPromptEnabled !== true) {
             res.setHeader('Content-Type', 'application/json');
             res.end(JSON.stringify({ ok: true, abstained: true, suggestion: '', reason: 'feature_disabled', requestCount: 0 }));
             return;
           }
           const { predictNextPromptAsync } = require('./meter-next-prompt');
-          const predRes = await predictNextPromptAsync(request || {}, {
+          const safeInput = {
+            cascadeId: typeof request?.cascadeId === 'string' ? request.cascadeId : undefined,
+            turnId: typeof request?.turnId === 'string' ? request.turnId : undefined,
+            language: typeof request?.language === 'string' ? request.language : undefined,
+            turns: Array.isArray(request?.turns) ? request.turns : [],
+            preferences: Array.isArray(request?.preferences) ? request.preferences : [],
+            verificationEvidence: typeof request?.verificationEvidence === 'string' ? request.verificationEvidence : undefined,
+            taskMarkdown: typeof request?.taskMarkdown === 'string' ? request.taskMarkdown : undefined
+          };
+          const predRes = await predictNextPromptAsync(safeInput, {
             origin: effectiveOrigin,
             model: typeof request?.model === 'string' && request.model.trim() ? request.model.trim() : undefined,
             allowGetModelResponseFallback: request?.allowGetModelResponseFallback === true
@@ -790,7 +815,7 @@ function parseInitialOriginsEnv() {
   const cliOriginsB64 = getCliArgValue('--origins-b64');
   let raw = String(process.env.AG_LIVE_ORIGINS || '').trim();
   if (!raw && cliOriginsB64) {
-    try { raw = Buffer.from(cliOriginsB64, 'base64').toString('utf8').trim(); } catch {}
+    try { raw = Buffer.from(cliOriginsB64, 'base64').toString('utf8').trim(); } catch { }
   }
   if (!raw) return [];
   try {
@@ -800,7 +825,7 @@ function parseInitialOriginsEnv() {
         ? Array.from(new Set(parsed.map(normalizeLoopbackOrigin).filter(Boolean)))
         : [];
     }
-  } catch {}
+  } catch { }
   return Array.from(new Set(raw.split(/[,;\s]+/).map(normalizeLoopbackOrigin).filter(Boolean)));
 }
 
@@ -908,7 +933,7 @@ async function startLiveHost() {
           const cur = JSON.parse(fs.readFileSync(candidateStamp, 'utf8'));
           if (cur && cur.pid === process.pid) fs.unlinkSync(candidateStamp);
         }
-      } catch {}
+      } catch { }
     }
     if (server) {
       try {

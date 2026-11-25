@@ -1330,7 +1330,8 @@ test('热加载 12：build-renderer 检测到 truncated for diff preview 时立�
     fs.writeFileSync(path.join(tmpRoot, 'package.json'), JSON.stringify({ name: 'antigravity-context-viewer', version: '0.8.7' }), 'utf8');
     for (const f of [
       'styles.css', 'template.html', 'colors.js', 'i18n.js', 'context-budget-engine.js',
-      'dropdown.js', 'dashboard-grid.js', 'trend-pulse.js', 'context-inspector.js',
+      'dropdown.js', 'dashboard-grid.js', 'next-prompt.js', 'context-settings-ui.js', 'host-settings.js',
+      'trend-pulse.js', 'context-inspector.js',
       'execution-trace.js', 'agent-collab-hub.js', 'audit-widgets.js', 'cross-session-insights.js', 'heatmap.js'
     ]) {
       fs.copyFileSync(path.join(__dirname, 'src', 'renderer', f), path.join(tmpSrc, f));

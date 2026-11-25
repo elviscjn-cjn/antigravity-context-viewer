@@ -72,9 +72,11 @@ function buildRenderer(options = {}) {
   const dropdown = readVerifiedRendererSource(effSrcDir, 'dropdown.js').trim();
   const heatmap = readVerifiedRendererSource(effSrcDir, 'heatmap.js').trim();
   const dashboardGrid = readVerifiedRendererSource(effSrcDir, 'dashboard-grid.js').trim();
-  const modelPicker = fs.existsSync(path.join(effSrcDir, 'model-picker.js')) ? readVerifiedRendererSource(effSrcDir, 'model-picker.js').trim() : '';
-  const nextPrompt = fs.existsSync(path.join(effSrcDir, 'next-prompt.js')) ? readVerifiedRendererSource(effSrcDir, 'next-prompt.js').trim() : '';
-  const hostSettings = fs.existsSync(path.join(effSrcDir, 'host-settings.js')) ? readVerifiedRendererSource(effSrcDir, 'host-settings.js').trim() : '';
+  const nextPrompt = readVerifiedRendererSource(effSrcDir, 'next-prompt.js').trim();
+  const contextSettingsUi = readVerifiedRendererSource(effSrcDir, 'context-settings-ui.js').trim();
+  const hostSettings = readVerifiedRendererSource(effSrcDir, 'host-settings.js').trim();
+  if (!contextSettingsUi) throw new Error('[构建中止] 必需渲染模块为空: ' + path.join(effSrcDir, 'context-settings-ui.js'));
+  if (!hostSettings) throw new Error('[构建中止] 必需渲染模块为空: ' + path.join(effSrcDir, 'host-settings.js'));
   const trendPulse = readVerifiedRendererSource(effSrcDir, 'trend-pulse.js').trim();
   const contextInspector = readVerifiedRendererSource(effSrcDir, 'context-inspector.js').trim();
   const executionTrace = readVerifiedRendererSource(effSrcDir, 'execution-trace.js').trim();
@@ -114,8 +116,8 @@ function buildRenderer(options = {}) {
     .replace('  /* @INSERT_COLORS_MODULE */', () => colors)
     .replace('  /* @INSERT_DROPDOWN_MODULE */', () => dropdown)
     .replace('  /* @INSERT_DASHBOARD_GRID_MODULE */', () => dashboardGrid)
-    .replace('  /* @INSERT_MODEL_PICKER_MODULE */', () => modelPicker)
     .replace('  /* @INSERT_NEXT_PROMPT_MODULE */', () => nextPrompt)
+    .replace('  /* @INSERT_CONTEXT_SETTINGS_UI_MODULE */', () => contextSettingsUi)
     .replace('  /* @INSERT_HOST_SETTINGS_MODULE */', () => hostSettings)
     .replace('  /* @INSERT_TREND_PULSE_MODULE */', () => trendPulse)
     .replace('  /* @INSERT_CONTEXT_INSPECTOR_MODULE */', () => contextInspector)
@@ -126,6 +128,9 @@ function buildRenderer(options = {}) {
     .replace('  /* @INSERT_HEATMAP_MODULE */', () => heatmap)
     .replace('__AG_ANTIGRAVITY_COLOR_SVG_DATA_URI__', () => antigravitySvgDataUri);
 
+  if (!output.includes('buildNativeSettingsPageHtml') || !output.includes('createHostSettingsController')) {
+    throw new Error('[构建中止] 生成的渲染产物缺少原生设置页核心符号，已拒绝写出残缺构建');
+  }
   const buildId = require('node:crypto').createHash('sha256').update(output).digest('hex').slice(0, 16);
   output = output.replace('__AG_RENDER_BUILD_ID__', buildId);
   fs.writeFileSync(effTargetFile, output, 'utf8');

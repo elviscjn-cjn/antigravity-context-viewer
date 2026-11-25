@@ -10875,7 +10875,6 @@
 
   /**
    * 评估桌面会话实时 4 态运行状态 (idle / running / slow / error) 与等待原因
-   * 规则灵感借鉴 antigravity-codex-theme (MIT, core/runtime/40-status-machine.js, commit 09b1f2ad)
    */
   function evaluateSessionRuntimeStatus(input = {}) {
     const isOffline = Boolean(input.isOffline);

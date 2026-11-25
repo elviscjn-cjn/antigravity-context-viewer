@@ -48,6 +48,11 @@ SOFTWARE.
    - 许可证：`MIT License`
    - 用途：`meter-accounts.js` 中 Google OAuth2 回环授权与 CloudCode 配额接口协议对齐参考
 
+2. **antigravity-codex-theme**
+   - 仓库：<https://github.com/nkjDSLcvanv/antigravity-codex-theme>
+   - 许可证：`MIT License`（`Copyright (c) 2026 Antigravity Codex Theme Contributors`）
+   - 用途：宿主原生设置弹窗右侧独立挂载与作用域显隐切换架构参考（本仓库自研 Shadow DOM 独立滚动页实现）
+
 ---
 
 ## 3. 技术方案参考、外部费率目录与社区致谢
