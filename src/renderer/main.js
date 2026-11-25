@@ -1261,6 +1261,10 @@
       '/rehydrate-disable': 'rehydrate',
       '/rehydrate-restore': 'rehydrate',
       '/rehydrate-install-python': 'rehydrate',
+      '/autoguard-status': 'autoguard',
+      '/autoguard-apply': 'autoguard',
+      '/autoguard-disable': 'autoguard',
+      '/autoguard-restore': 'autoguard',
       '/modules-status': 'modules',
       '/toggle-module': 'modules',
       '/test-proxy': 'modules',
@@ -1271,9 +1275,9 @@
     };
     const key = map[routePath];
     if (!key) return true;
-    if (key === 'rehydrate') {
+    if (key === 'rehydrate' || key === 'autoguard') {
       if (!caps || typeof caps !== 'object') return false;
-      return Array.isArray(caps) ? caps.includes('rehydrate') : caps.rehydrate === true;
+      return Array.isArray(caps) ? caps.includes(key) : caps[key] === true;
     }
     if (Array.isArray(caps)) return caps.includes(key);
     return caps[key] !== false;
@@ -2648,23 +2652,55 @@
     }
   }
 
+  function findActiveSurfaceComposer() {
+    try {
+      const candidates = Array.from(
+        document.querySelectorAll?.('.surface-composer, [id="antigravity.agentSidePanelInputBox"]') || []
+      );
+      let best = null;
+      let bestBottom = -1;
+      for (const cand of candidates) {
+        if (!cand || cand === document.body || cand === document.documentElement) continue;
+        if (cand.closest?.('header,[role="dialog"],#ag-context-meter')) continue;
+        if (cand.querySelector && !cand.querySelector('[contenteditable="true"],textarea')) continue;
+        const rect = cand.getBoundingClientRect?.();
+        if (rect && rect.width > 0 && rect.height === 0) continue;
+        const bottom = rect && Number.isFinite(rect.bottom) ? rect.bottom : 0;
+        if (!best || bottom >= bestBottom) {
+          best = cand;
+          bestBottom = bottom;
+        }
+      }
+      return best;
+    } catch {
+      return null;
+    }
+  }
+
   function findComposerControlsContainer() {
     try {
       if (typeof document?.querySelector !== 'function') return null;
+      const composerScope = findActiveSurfaceComposer();
+      const queryRoot = composerScope || document;
 
       // 1. 寻找核心控制按钮
       // A. 发送按钮
-      const sendBtn = document.querySelector(
+      const sendBtn = queryRoot.querySelector?.(
         'button[aria-label*="Send" i], button[aria-label*="发送"], [data-testid*="send" i], button.send-button, form button[type="submit"]'
-      );
+      ) || null;
 
       // B. 麦克风/语音按钮
-      const micBtn = document.querySelector(
+      const micBtn = queryRoot.querySelector?.(
         'button[aria-label*="mic" i], button[aria-label*="麦克风"], button[aria-label*="voice" i], [data-testid*="voice" i], button[aria-label*="Audio" i]'
-      );
+      ) || null;
 
       // C. 本地权限/运行模式按钮 (如"极速", "fast", "local", "permission", 包含盾牌图标的按钮)
-      const allButtons = Array.from(document.querySelectorAll('button') || []);
+      const allButtons = Array.from((queryRoot.querySelectorAll?.('button') || [])).filter(b => {
+        if (!b) return false;
+        if (b.getAttribute?.('data-ag-autoguard-fallback') === '1') return false;
+        if (b.closest?.('#ag-context-meter, #composer-status-bar, #ag-autoguard-fallback-menu')) return false;
+        return true;
+      });
       const permissionBtn = allButtons.find(b => {
         if (!b || b === sendBtn || b === micBtn) return false;
         const aria = (typeof b.getAttribute === 'function' ? (b.getAttribute('aria-label') || '') : '').toLowerCase();
@@ -3140,6 +3176,28 @@
     } catch { }
   }
 
+  function isSafeComposerHost(node) {
+    if (!node || node === document.body || node === document.documentElement) return false;
+    if (node.closest?.('header,[role="dialog"],#ag-context-meter')) return false;
+    if (node.getAttribute?.('data-testid') === 'conversation-view') return false;
+    const isExplicitComposer = Boolean(
+      node.tagName === 'FORM' ||
+      node.classList?.contains?.('surface-composer') ||
+      node.id === 'antigravity.agentSidePanelInputBox'
+    );
+    if (!isExplicitComposer) {
+      try {
+        const rect = node.getBoundingClientRect?.();
+        if (rect && Number.isFinite(rect.height) && rect.height > 460) return false;
+        const pStyle = typeof getComputedStyle === 'function' && node.parentElement ? getComputedStyle(node.parentElement) : null;
+        if (pStyle?.display?.includes('flex') && (!pStyle.flexDirection || pStyle.flexDirection.startsWith('row'))) {
+          return false;
+        }
+      } catch {}
+    }
+    return true;
+  }
+
   function ensureComposerStatusBarMounted(opts = {}) {
     try {
       const csbBar = el('composer-status-bar');
@@ -3161,23 +3219,33 @@
         const prevSibling = csbBar.previousElementSibling;
         if (
           prevSibling &&
-          (prevSibling.tagName === 'FORM' || Boolean(prevSibling.querySelector?.('[contenteditable="true"],textarea')))
+          isSafeComposerHost(prevSibling) &&
+          (prevSibling.tagName === 'FORM' ||
+            prevSibling.classList?.contains?.('surface-composer') ||
+            prevSibling.id === 'antigravity.agentSidePanelInputBox' ||
+            Boolean(prevSibling.querySelector?.('[contenteditable="true"],textarea')))
         ) {
           csbBar.hidden = false;
           return;
         }
       }
       csbBar.hidden = true;
-      const target = findComposerControlsContainer();
-      if (!target || !target.bar) return;
-
-      let composer = target.bar.closest('form');
+      let composer = findActiveSurfaceComposer();
       if (!composer) {
-        composer = target.bar;
-        while (composer && !composer.querySelector('[contenteditable="true"],textarea')) composer = composer.parentElement;
+        const target = findComposerControlsContainer();
+        if (!target || !target.bar) return;
+
+        composer =
+          target.bar.closest?.('form') ||
+          target.bar.closest?.('.surface-composer') ||
+          target.bar.closest?.('[id="antigravity.agentSidePanelInputBox"]') ||
+          null;
+        if (!composer) {
+          composer = target.bar;
+          while (composer && !composer.querySelector?.('[contenteditable="true"],textarea')) composer = composer.parentElement;
+        }
       }
-      if (!composer || composer === document.body || composer === document.documentElement ||
-          composer.closest?.('header,[role="dialog"],#ag-context-meter')) return;
+      if (!isSafeComposerHost(composer)) return;
       if (composer.nextElementSibling !== csbBar) composer.after(csbBar);
       csbBar.hidden = false;
     } catch (e) {
@@ -3946,6 +4014,7 @@
     }
     const marketplaceActive = isHostMarketplaceActive();
     ensureComposerStatusBarMounted({ marketplaceActive });
+    if (typeof syncComposerAutoGuardPicker === 'function') syncComposerAutoGuardPicker();
     hostSettingsCtrl?.syncModalMount?.();
     scheduleHostModelSync();
     checkHostDomCompactionSignals();
@@ -3977,8 +4046,9 @@
             const elNode = target.nodeType === 1 ? target : target.parentElement;
             if (!elNode) return false;
             if (elNode === host || (typeof host.contains === 'function' && host.contains(elNode))) return true;
-            if (elNode.id === 'ag-composer-status-bar' || elNode.id === 'ag-cm-host-settings-nav' || elNode.id === 'ag-cm-host-settings-page' || elNode.className === 'ag-cm-turn-footer') return true;
-            if (elNode.closest?.('#ag-context-meter, #ag-composer-status-bar, .ag-cm-turn-footer, #ag-cm-host-settings-nav, #ag-cm-host-settings-page')) return true;
+            if (elNode.id === 'ag-composer-status-bar' || elNode.id === 'ag-cm-host-settings-nav' || elNode.id === 'ag-cm-host-settings-page' || elNode.id === 'ag-autoguard-fallback-menu' || elNode.className === 'ag-cm-turn-footer') return true;
+            if (elNode.getAttribute?.('data-ag-autoguard-fallback') === '1' || elNode.getAttribute?.('data-testid') === 'permissions-preset-option-ag_auto_guard') return true;
+            if (elNode.closest?.('#ag-context-meter, #ag-composer-status-bar, #ag-autoguard-fallback-menu, [data-ag-autoguard-fallback="1"], .ag-cm-turn-footer, #ag-cm-host-settings-nav, #ag-cm-host-settings-page')) return true;
             if (isIdleConv && elNode.closest?.('[data-testid="conversation-view"]')) return true;
             return false;
           };
@@ -14140,6 +14210,36 @@
     }
   }
 
+  async function invokeAutoGuardApi(endpoint, payload = {}) {
+    const ipcMap = {
+      status: window.contextMeterAPI?.getAutoGuardStatus,
+      apply: window.contextMeterAPI?.applyAutoGuard,
+      disable: window.contextMeterAPI?.disableAutoGuard,
+      restore: window.contextMeterAPI?.restoreAutoGuard
+    };
+    const routeMap = {
+      status: '/autoguard-status',
+      apply: '/autoguard-apply',
+      disable: '/autoguard-disable',
+      restore: '/autoguard-restore'
+    };
+    const ipcFn = typeof ipcMap[endpoint] === 'function' ? () => ipcMap[endpoint](payload) : null;
+    const liveRoute = routeMap[endpoint] || '';
+    if ((!ipcFn && !hasLiveRouteCapability(liveRoute)) || !liveRoute) {
+      return { ok: false, errorKey: 'autoguard.result.noBridge', error: t('autoguard.result.noBridge'), unavailable: true };
+    }
+    try {
+      const out = await callBackendWithPriority({
+        ipcCall: ipcFn,
+        liveRoute,
+        liveBody: payload
+      });
+      return out.result || { ok: false, errorKey: 'autoguard.result.noBridge', error: t('autoguard.result.noBridge'), unavailable: true };
+    } catch (e) {
+      return { ok: false, error: e?.message || t('autoguard.result.noBridge') };
+    }
+  }
+
 
   async function invokeModulesApi(action, name, enable, opts = {}) {
     const ipcFn = (action === 'status' && typeof window.contextMeterAPI?.getModulesStatus === 'function')
@@ -16318,6 +16418,595 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
   let rehydrateRemoveArmed = false;
   let rehydrateRemoveArmTimer = null;
 
+  let currentAutoGuardStatus = null;
+  let isAutoGuardBusy = false;
+  let autoGuardStatusReqSeq = 0;
+  let agAutoGuardProgrammaticPresetSwitch = false;
+  let agAutoGuardSwitchTimer = null;
+  let agAutoGuardSyncScheduled = false;
+  let agAutoGuardNativeClickBound = false;
+
+  const AG_AUTOGUARD_STYLE_ID = 'ag-autoguard-host-styles';
+  const AG_AUTOGUARD_OPTION_TESTID = 'permissions-preset-option-ag_auto_guard';
+  const AG_AUTOGUARD_FALLBACK_TESTID = 'ag-autoguard-fallback-trigger';
+  const AG_AUTOGUARD_FALLBACK_MENU_ID = 'ag-autoguard-fallback-menu';
+
+  function ensureAutoGuardHostStyles() {
+    if (typeof document === 'undefined' || !document.head) return;
+    if (document.getElementById(AG_AUTOGUARD_STYLE_ID)) return;
+    const shieldMaskUrl = "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'/%3E%3C/svg%3E\")";
+    const style = document.createElement('style');
+    style.id = AG_AUTOGUARD_STYLE_ID;
+    style.textContent = [
+      '[data-testid="permissions-project-options"][data-ag-autoguard-ordered="1"] { display: flex !important; flex-direction: column !important; }',
+      '[data-testid="permissions-project-options"][data-ag-autoguard-ordered="1"] > * { order: 40; }',
+      '[data-testid="permissions-project-options"][data-ag-autoguard-ordered="1"] > :first-child:not([role="menuitem"]) { order: 0; }',
+      '[data-testid="permissions-project-options"][data-ag-autoguard-ordered="1"] > [data-testid="permissions-preset-option-default"] { order: 5; }',
+      '[data-testid="permissions-project-options"][data-ag-autoguard-ordered="1"] > [data-testid="permissions-preset-option-request_review"] { order: 10; }',
+      `[data-testid="permissions-project-options"][data-ag-autoguard-ordered="1"] > [data-testid="${AG_AUTOGUARD_OPTION_TESTID}"] { order: 20; }`,
+      '[data-testid="permissions-project-options"][data-ag-autoguard-ordered="1"] > [data-testid="permissions-preset-option-turbo"] { order: 30; }',
+      '[data-testid="permissions-project-options"][data-ag-autoguard-ordered="1"] > [data-testid="permissions-preset-option-turbo"] > :nth-child(3) { visibility: visible; }',
+      '[data-testid="permissions-project-options"][data-ag-autoguard-active="1"] > [data-testid="permissions-preset-option-turbo"] > :nth-child(3) { visibility: hidden !important; }',
+      'button[data-testid="permissions-selector-trigger"][data-ag-auto-guard="active"] > :first-child { display: none !important; }',
+      `button[data-testid="permissions-selector-trigger"][data-ag-auto-guard="active"]::before { content: ""; order: 0; display: inline-block; width: 16px; height: 16px; flex-shrink: 0; background-color: currentColor; -webkit-mask-image: ${shieldMaskUrl}; mask-image: ${shieldMaskUrl}; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; -webkit-mask-position: center; mask-position: center; -webkit-mask-size: contain; mask-size: contain; }`,
+      'button[data-testid="permissions-selector-trigger"][data-ag-auto-guard="active"] > span:not(.google-symbols):not([data-icon]) { display: none !important; }',
+      'button[data-testid="permissions-selector-trigger"][data-ag-auto-guard="active"]::after { content: attr(data-ag-auto-label); order: 1; font: inherit; color: inherit; letter-spacing: inherit; line-height: inherit; }',
+      'button[data-testid="permissions-selector-trigger"][data-ag-auto-guard="active"] > :last-child { order: 2; }',
+      '@container input-footer (max-width: 400px) { button[data-testid="permissions-selector-trigger"][data-ag-auto-guard="active"]::after { display: none !important; } }',
+      'button[data-ag-autoguard-fallback="1"] { order: -1; display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 6px; border-radius: 9999px; border: none; background: transparent; cursor: pointer; font-family: inherit; font-size: 0.875rem; font-weight: inherit; line-height: 1.25rem; white-space: nowrap; flex-shrink: 0; color: var(--secondary-foreground, inherit); opacity: 0.72; transition: background-color .15s ease, color .15s ease, opacity .15s ease; }',
+      'button[data-ag-autoguard-fallback="1"]:hover { background: var(--secondary, rgba(148,163,184,0.14)); opacity: 1; }',
+      'button[data-ag-autoguard-fallback="1"][data-ag-auto-guard="active"] { color: var(--secondary-foreground, var(--foreground, inherit)); opacity: 1; }',
+      `#${AG_AUTOGUARD_FALLBACK_MENU_ID} { position: fixed; z-index: 2147483640; min-width: 224px; padding: 6px; border-radius: 10px; border: 1px solid var(--border, rgba(148,163,184,0.22)); background: var(--popover, #18181b); color: var(--popover-foreground, inherit); box-shadow: 0 12px 32px rgba(0,0,0,0.42); display: flex; flex-direction: column; gap: 2px; font-family: inherit; }`,
+      `#${AG_AUTOGUARD_FALLBACK_MENU_ID} .ag-ag-fb-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; border: none; background: transparent; color: inherit; padding: 7px 10px; border-radius: 7px; cursor: pointer; text-align: left; font-family: inherit; font-size: 0.875rem; line-height: 1.25rem; }`,
+      `#${AG_AUTOGUARD_FALLBACK_MENU_ID} .ag-ag-fb-item:hover { background: var(--accent, rgba(148,163,184,0.14)); }`,
+      `#${AG_AUTOGUARD_FALLBACK_MENU_ID} .ag-ag-fb-item[data-selected="true"] { font-weight: 500; background: var(--accent, rgba(148,163,184,0.12)); }`
+    ].join('\n');
+    document.head.appendChild(style);
+  }
+
+  function isElementCurrentlySelectedPreset(optEl) {
+    if (!optEl) return false;
+    if (optEl.getAttribute?.('aria-checked') === 'true' || optEl.getAttribute?.('data-selected') === 'true') return true;
+    const cls = String(optEl.className || '');
+    if (/\bbg-accent\b|\bfont-medium\b|\bselected\b|\bactive\b/i.test(cls)) return true;
+    const kids = optEl.children || [];
+    if (kids.length >= 3) return true;
+    const text = String(optEl.innerHTML || '');
+    return text.includes('check') || text.includes('svg');
+  }
+
+  function createSvgShieldNode(size = 16) {
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const hasNs = typeof document.createElementNS === 'function';
+    if (!hasNs) {
+      const fb = document.createElement('span');
+      fb.className = 'shrink-0';
+      fb.setAttribute('data-ag-svg-fallback', 'shield');
+      return fb;
+    }
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.setAttribute('width', String(size));
+    svg.setAttribute('height', String(size));
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '1.8');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'shrink-0');
+    const p = document.createElementNS(svgNS, 'path');
+    p.setAttribute('d', 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z');
+    svg.appendChild(p);
+    return svg;
+  }
+
+  function createSvgChevronDownNode(size = 14) {
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const hasNs = typeof document.createElementNS === 'function';
+    if (!hasNs) {
+      const fb = document.createElement('span');
+      fb.className = 'shrink-0';
+      fb.setAttribute('data-ag-svg-fallback', 'chevron-down');
+      return fb;
+    }
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.setAttribute('width', String(size));
+    svg.setAttribute('height', String(size));
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'shrink-0 opacity-75');
+    const p = document.createElementNS(svgNS, 'path');
+    p.setAttribute('d', 'm6 9 6 6 6-6');
+    svg.appendChild(p);
+    return svg;
+  }
+
+  function createSvgCheckNode(size = 15) {
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const hasNs = typeof document.createElementNS === 'function';
+    if (!hasNs) {
+      const fb = document.createElement('span');
+      fb.className = 'shrink-0';
+      fb.textContent = '✓';
+      return fb;
+    }
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.setAttribute('width', String(size));
+    svg.setAttribute('height', String(size));
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'shrink-0');
+    const p = document.createElementNS(svgNS, 'path');
+    p.setAttribute('d', 'M20 6 9 17l-5-5');
+    svg.appendChild(p);
+    return svg;
+  }
+
+  function cloneCheckmarkBadgeFromSiblings(optionsBox) {
+    if (!optionsBox) return null;
+    const siblings = optionsBox.querySelectorAll?.('[role="menuitem"]') || [];
+    for (const sib of siblings) {
+      if (sib.getAttribute?.('data-testid') === AG_AUTOGUARD_OPTION_TESTID) continue;
+      if (sib.children && sib.children.length >= 3) {
+        return sib.children[2].cloneNode(true);
+      }
+    }
+    const wrap = document.createElement('span');
+    wrap.className = 'ml-auto shrink-0 flex items-center justify-center';
+    wrap.appendChild(createSvgCheckNode(15));
+    return wrap;
+  }
+
+  async function runAutoGuardPresetEnable(modeOverride = null) {
+    const mode = modeOverride || currentAutoGuardStatus?.mode || 'smart';
+    isAutoGuardBusy = true;
+    if (typeof syncHostSettingsUi === 'function') syncHostSettingsUi();
+    try {
+      const res = await invokeAutoGuardApi('apply', { mode });
+      if (res && res.ok && res.status) {
+        currentAutoGuardStatus = res.status;
+      } else {
+        await refreshAutoGuardStatus();
+      }
+      return res;
+    } finally {
+      isAutoGuardBusy = false;
+      syncComposerAutoGuardPicker();
+      if (typeof syncHostSettingsUi === 'function') syncHostSettingsUi();
+    }
+  }
+
+  async function runAutoGuardPresetDisable() {
+    isAutoGuardBusy = true;
+    if (typeof syncHostSettingsUi === 'function') syncHostSettingsUi();
+    try {
+      const res = await invokeAutoGuardApi('disable', {});
+      if (res && res.ok && res.status) {
+        currentAutoGuardStatus = res.status;
+      } else {
+        await refreshAutoGuardStatus();
+      }
+      return res;
+    } finally {
+      isAutoGuardBusy = false;
+      syncComposerAutoGuardPicker();
+      if (typeof syncHostSettingsUi === 'function') syncHostSettingsUi();
+    }
+  }
+
+  async function runAutoGuardPresetRemove() {
+    isAutoGuardBusy = true;
+    if (typeof syncHostSettingsUi === 'function') syncHostSettingsUi();
+    try {
+      const res = await invokeAutoGuardApi('restore', { force: true });
+      if (res && res.ok && res.status) {
+        currentAutoGuardStatus = res.status;
+      } else {
+        await refreshAutoGuardStatus();
+      }
+      return res;
+    } finally {
+      isAutoGuardBusy = false;
+      syncComposerAutoGuardPicker();
+      if (typeof syncHostSettingsUi === 'function') syncHostSettingsUi();
+    }
+  }
+
+  function closePermissionsPopoverCleanly(menuEl) {
+    try {
+      const ev = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true });
+      document.dispatchEvent(ev);
+      menuEl?.dispatchEvent?.(ev);
+    } catch {}
+  }
+
+  let agAutoGuardEscapeBound = false;
+
+  function closeAutoGuardFallbackMenu() {
+    if (typeof document === 'undefined') return;
+    try { document.getElementById(AG_AUTOGUARD_FALLBACK_MENU_ID)?.remove?.(); } catch {}
+  }
+
+  function openAutoGuardFallbackMenu(anchorBtn) {
+    if (typeof document === 'undefined' || !document.body) return;
+    const existing = document.getElementById(AG_AUTOGUARD_FALLBACK_MENU_ID);
+    if (existing) {
+      closeAutoGuardFallbackMenu();
+      return;
+    }
+
+    const menu = document.createElement('div');
+    menu.id = AG_AUTOGUARD_FALLBACK_MENU_ID;
+    menu.setAttribute('role', 'menu');
+    const rect = anchorBtn.getBoundingClientRect?.();
+    if (rect && Number.isFinite(rect.bottom) && Number.isFinite(rect.left)) {
+      const vh = typeof window !== 'undefined' ? (window.innerHeight || 800) : 800;
+      const vw = typeof window !== 'undefined' ? (window.innerWidth || 1200) : 1200;
+      menu.style.bottom = `${Math.max(8, vh - rect.top + 6)}px`;
+      menu.style.left = `${Math.max(8, Math.min(rect.left, vw - 240))}px`;
+    }
+
+    const isAutoGuardActive = Boolean(currentAutoGuardStatus?.status === 'enabled' || currentAutoGuardStatus?.enabled === true);
+    const activeMode = currentAutoGuardStatus?.mode || 'smart';
+
+    const items = [
+      { key: 'smart', label: `${t('autoguard.picker.triggerLabel')} · ${t('autoguard.mode.smart')}`, desc: t('autoguard.picker.desc.smart'), selected: isAutoGuardActive && activeMode === 'smart' },
+      { key: 'strict_auto', label: `${t('autoguard.picker.triggerLabel')} · ${t('autoguard.mode.strict_auto')}`, desc: t('autoguard.picker.desc.strict_auto'), selected: isAutoGuardActive && activeMode === 'strict_auto' },
+      { key: 'guard_only', label: `${t('autoguard.picker.triggerLabel')} · ${t('autoguard.mode.guard_only')}`, desc: t('autoguard.picker.desc.guard_only'), selected: isAutoGuardActive && activeMode === 'guard_only' },
+      { key: 'disable', label: `${t('autoguard.btn.disable')} ${t('autoguard.picker.triggerLabel')}`, desc: t('autoguard.result.disabled'), selected: !isAutoGuardActive }
+    ];
+
+    for (const item of items) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ag-ag-fb-item';
+      btn.setAttribute('role', 'menuitem');
+      btn.setAttribute('data-ag-fb-choice', item.key);
+      btn.setAttribute('data-selected', String(item.selected));
+      btn.setAttribute('title', item.desc);
+
+      const lblSpan = document.createElement('span');
+      lblSpan.textContent = item.label;
+      btn.appendChild(lblSpan);
+
+      if (item.selected) {
+        btn.appendChild(createSvgCheckNode(15));
+      }
+
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault?.();
+        ev.stopPropagation?.();
+        closeAutoGuardFallbackMenu();
+        if (item.key === 'disable') {
+          currentAutoGuardStatus = { ...(currentAutoGuardStatus || {}), status: 'disabled', enabled: false };
+          syncComposerAutoGuardPicker();
+          void runAutoGuardPresetDisable();
+        } else {
+          currentAutoGuardStatus = { ...(currentAutoGuardStatus || {}), status: 'enabled', enabled: true, mode: item.key };
+          syncComposerAutoGuardPicker();
+          void runAutoGuardPresetEnable(item.key);
+        }
+      });
+
+      menu.appendChild(btn);
+    }
+
+    document.body.appendChild(menu);
+  }
+
+  function buildFallbackAutoGuardPill(isActive, activeMode) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.setAttribute('data-testid', AG_AUTOGUARD_FALLBACK_TESTID);
+    btn.setAttribute('data-ag-autoguard-fallback', '1');
+    btn.setAttribute('aria-haspopup', 'menu');
+    btn.appendChild(createSvgShieldNode(14));
+
+    const labelSpan = document.createElement('span');
+    labelSpan.className = 'ag-ag-fb-label';
+    labelSpan.textContent = t('autoguard.picker.triggerLabel');
+    btn.appendChild(labelSpan);
+
+    btn.appendChild(createSvgChevronDownNode(14));
+
+    if (isActive) btn.setAttribute('data-ag-auto-guard', 'active');
+    btn.setAttribute('title', isActive ? `${t('autoguard.picker.title')} (${activeMode})` : t('autoguard.card.title'));
+
+    btn.addEventListener('click', (ev) => {
+      ev.preventDefault?.();
+      ev.stopPropagation?.();
+      openAutoGuardFallbackMenu(btn);
+    });
+    return btn;
+  }
+
+  function setAttrIfChanged(el, name, value) {
+    if (!el) return;
+    const next = String(value);
+    if (el.getAttribute?.(name) !== next) {
+      el.setAttribute(name, next);
+    }
+  }
+
+  function removeAttrIfPresent(el, name) {
+    if (!el) return;
+    const has = typeof el.hasAttribute === 'function'
+      ? el.hasAttribute(name)
+      : (el.getAttribute?.(name) !== null && el.getAttribute?.(name) !== undefined);
+    if (has) {
+      el.removeAttribute(name);
+    }
+  }
+
+  function setTextIfChanged(el, text) {
+    if (!el) return;
+    const next = String(text ?? '');
+    if (el.textContent !== next) {
+      el.textContent = next;
+    }
+  }
+
+  function syncFallbackAutoGuardPills(isAutoGuardActive, activeMode, nativeAutoOpt) {
+    const footers = Array.from(document.querySelectorAll?.('.agy-composer-footer') || []);
+    for (const footer of footers) {
+      if (!footer || footer.closest?.('#ag-context-meter, [role="dialog"]')) continue;
+      const hasNativeTrigger = Boolean(footer.querySelector?.('button[data-testid="permissions-selector-trigger"]'));
+      const existingFb = footer.querySelector?.(`[data-testid="${AG_AUTOGUARD_FALLBACK_TESTID}"]`);
+
+      if (hasNativeTrigger || nativeAutoOpt) {
+        if (existingFb) existingFb.remove();
+        continue;
+      }
+
+      const rightCluster = footer.querySelector?.(':scope > div.shrink-0') || footer.lastElementChild || footer;
+      if (!rightCluster) continue;
+
+      if (!existingFb) {
+        rightCluster.appendChild(buildFallbackAutoGuardPill(isAutoGuardActive, activeMode));
+      } else {
+        if (isAutoGuardActive) setAttrIfChanged(existingFb, 'data-ag-auto-guard', 'active');
+        else removeAttrIfPresent(existingFb, 'data-ag-auto-guard');
+        const lbl = existingFb.querySelector?.('.ag-ag-fb-label');
+        setTextIfChanged(lbl, t('autoguard.picker.triggerLabel'));
+        setAttrIfChanged(existingFb, 'title', isAutoGuardActive ? `${t('autoguard.picker.title')} (${activeMode})` : t('autoguard.card.title'));
+      }
+    }
+  }
+
+  function syncComposerAutoGuardPicker() {
+    if (state.disposed || typeof document === 'undefined') return;
+    ensureAutoGuardHostStyles();
+
+    const isAutoGuardActive = Boolean(currentAutoGuardStatus?.status === 'enabled' || currentAutoGuardStatus?.enabled === true);
+    const activeMode = currentAutoGuardStatus?.mode || 'smart';
+    const nativeAutoOpt = document.querySelector?.('[data-testid="permissions-preset-option-auto"]');
+    const nativeAutoSelected = Boolean(nativeAutoOpt && isElementCurrentlySelectedPreset(nativeAutoOpt));
+
+    const triggers = document.querySelectorAll?.('button[data-testid="permissions-selector-trigger"]') || [];
+    for (const trig of triggers) {
+      if (isAutoGuardActive && !nativeAutoSelected) {
+        setAttrIfChanged(trig, 'data-ag-auto-guard', 'active');
+        setAttrIfChanged(trig, 'data-ag-auto-label', t('autoguard.picker.triggerLabel'));
+      } else {
+        removeAttrIfPresent(trig, 'data-ag-auto-guard');
+        removeAttrIfPresent(trig, 'data-ag-auto-label');
+      }
+    }
+
+    syncFallbackAutoGuardPills(isAutoGuardActive, activeMode, nativeAutoOpt);
+
+    const menuEl = document.querySelector?.('[data-testid="permissions-menu"]');
+    const optionsBox = menuEl?.querySelector?.('[data-testid="permissions-project-options"]') || document.querySelector?.('[data-testid="permissions-project-options"]');
+    if (!optionsBox) return;
+
+    const existingOpt = optionsBox.querySelector?.(`[data-testid="${AG_AUTOGUARD_OPTION_TESTID}"]`);
+    if (nativeAutoOpt && !isAutoGuardActive) {
+      if (existingOpt && existingOpt.parentNode === optionsBox) existingOpt.remove();
+      removeAttrIfPresent(optionsBox, 'data-ag-autoguard-ordered');
+      removeAttrIfPresent(optionsBox, 'data-ag-autoguard-active');
+      return;
+    }
+
+    setAttrIfChanged(optionsBox, 'data-ag-autoguard-ordered', '1');
+    setAttrIfChanged(optionsBox, 'data-ag-autoguard-active', isAutoGuardActive ? '1' : '0');
+
+    const turboOpt = optionsBox.querySelector?.('[data-testid="permissions-preset-option-turbo"]');
+    const reviewOpt = optionsBox.querySelector?.('[data-testid="permissions-preset-option-request_review"]');
+    const templateBtn = turboOpt || reviewOpt;
+
+    let customBtn = existingOpt;
+    if (!customBtn) {
+      customBtn = document.createElement('button');
+      customBtn.type = 'button';
+      customBtn.setAttribute('role', 'menuitem');
+      customBtn.setAttribute('data-testid', AG_AUTOGUARD_OPTION_TESTID);
+      if (templateBtn && templateBtn.className) {
+        customBtn.className = templateBtn.className;
+      } else {
+        customBtn.className = 'w-full flex items-center gap-2 px-2 py-1.5 text-left rounded-md cursor-pointer hover:bg-accent';
+      }
+
+      const iconWrap = document.createElement('span');
+      iconWrap.setAttribute('data-icon', '');
+      iconWrap.className = templateBtn?.children?.[0]?.className || 'flex shrink-0 items-center justify-center';
+      iconWrap.appendChild(createSvgShieldNode(16));
+
+      const textCol = document.createElement('span');
+      textCol.className = templateBtn?.children?.[1]?.className || 'flex min-w-0 flex-col';
+      const titleSpan = document.createElement('span');
+      const tplTitleCls = templateBtn?.children?.[1]?.children?.[0]?.className || 'truncate';
+      titleSpan.className = `${tplTitleCls} ag-ag-title`;
+      const descSpan = document.createElement('span');
+      const tplDescCls = templateBtn?.children?.[1]?.children?.[1]?.className || 'truncate text-sm text-muted-foreground';
+      descSpan.className = `${tplDescCls} ag-ag-desc`;
+      textCol.appendChild(titleSpan);
+      textCol.appendChild(descSpan);
+
+      customBtn.appendChild(iconWrap);
+      customBtn.appendChild(textCol);
+
+      customBtn.addEventListener('click', (ev) => {
+        ev.preventDefault?.();
+        ev.stopPropagation?.();
+        const curOptionsBox = customBtn.closest?.('[data-testid="permissions-project-options"]');
+        const curMenu = customBtn.closest?.('[data-testid="permissions-menu"]') || document.querySelector?.('[data-testid="permissions-menu"]');
+        const siblingTurbo = curOptionsBox?.querySelector?.('[data-testid="permissions-preset-option-turbo"]');
+        const turboAlreadySelected = Boolean(siblingTurbo && isElementCurrentlySelectedPreset(siblingTurbo));
+
+        currentAutoGuardStatus = {
+          ...(currentAutoGuardStatus || {}),
+          status: 'enabled',
+          enabled: true,
+          mode: currentAutoGuardStatus?.mode || 'smart'
+        };
+        syncComposerAutoGuardPicker();
+        void runAutoGuardPresetEnable(currentAutoGuardStatus.mode);
+
+        if (siblingTurbo && !turboAlreadySelected) {
+          agAutoGuardProgrammaticPresetSwitch = true;
+          try {
+            siblingTurbo.click();
+          } catch {} finally {
+            Promise.resolve().then(() => { agAutoGuardProgrammaticPresetSwitch = false; });
+          }
+        } else {
+          closePermissionsPopoverCleanly(curMenu);
+        }
+      });
+
+      optionsBox.appendChild(customBtn);
+    }
+
+    const titleEl = customBtn.querySelector?.('.ag-ag-title');
+    const descEl = customBtn.querySelector?.('.ag-ag-desc');
+    setTextIfChanged(titleEl, t('autoguard.picker.title'));
+    setTextIfChanged(descEl, t(`autoguard.picker.desc.${activeMode}`));
+    setAttrIfChanged(customBtn, 'aria-checked', String(isAutoGuardActive));
+
+    const existingCheck = customBtn.children && customBtn.children.length >= 3 ? customBtn.children[2] : null;
+    if (isAutoGuardActive && !existingCheck) {
+      const checkBadge = cloneCheckmarkBadgeFromSiblings(optionsBox);
+      if (checkBadge) customBtn.appendChild(checkBadge);
+    } else if (!isAutoGuardActive && existingCheck) {
+      existingCheck.remove();
+    }
+  }
+
+  function scheduleComposerAutoGuardSync() {
+    if (state.disposed || agAutoGuardSyncScheduled) return;
+    agAutoGuardSyncScheduled = true;
+    const run = () => {
+      agAutoGuardSyncScheduled = false;
+      syncComposerAutoGuardPicker();
+    };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+    else Promise.resolve().then(run);
+  }
+
+  function onDocumentNativePresetClick(ev) {
+    const fbMenu = document.getElementById(AG_AUTOGUARD_FALLBACK_MENU_ID);
+    if (fbMenu) {
+      const inMenu = ev?.target?.closest?.(`#${AG_AUTOGUARD_FALLBACK_MENU_ID}`);
+      const inTrigger = ev?.target?.closest?.(`[data-testid="${AG_AUTOGUARD_FALLBACK_TESTID}"]`);
+      if (!inMenu && !inTrigger) closeAutoGuardFallbackMenu();
+    }
+    if (ev?.target?.closest?.('button[data-testid="permissions-selector-trigger"]')) {
+      scheduleComposerAutoGuardSync();
+    }
+    if (agAutoGuardProgrammaticPresetSwitch) return;
+    const targetBtn = ev?.target?.closest?.('[data-testid^="permissions-preset-option-"]');
+    if (!targetBtn) return;
+    const tid = targetBtn.getAttribute?.('data-testid') || '';
+    if (!tid || tid === AG_AUTOGUARD_OPTION_TESTID) return;
+    if (currentAutoGuardStatus?.status === 'enabled' || currentAutoGuardStatus?.enabled === true) {
+      currentAutoGuardStatus = { ...(currentAutoGuardStatus || {}), status: 'disabled', enabled: false };
+      syncComposerAutoGuardPicker();
+      void runAutoGuardPresetDisable();
+    }
+  }
+
+  function onDocumentFallbackEscapeKeydown(ev) {
+    if (ev?.key === 'Escape') closeAutoGuardFallbackMenu();
+  }
+
+  function initComposerAutoGuardIntegration() {
+    if (typeof document === 'undefined') return;
+    if (!agAutoGuardNativeClickBound) {
+      agAutoGuardNativeClickBound = true;
+      document.addEventListener('click', onDocumentNativePresetClick, true);
+    }
+    if (!agAutoGuardEscapeBound) {
+      agAutoGuardEscapeBound = true;
+      document.addEventListener('keydown', onDocumentFallbackEscapeKeydown, true);
+    }
+    syncComposerAutoGuardPicker();
+  }
+
+  function disposeComposerAutoGuardIntegration() {
+    if (agAutoGuardSwitchTimer) {
+      clearTimeout(agAutoGuardSwitchTimer);
+      agAutoGuardSwitchTimer = null;
+    }
+    agAutoGuardProgrammaticPresetSwitch = false;
+    closeAutoGuardFallbackMenu();
+    if (agAutoGuardNativeClickBound && typeof document !== 'undefined') {
+      try { document.removeEventListener('click', onDocumentNativePresetClick, true); } catch {}
+      agAutoGuardNativeClickBound = false;
+    }
+    if (agAutoGuardEscapeBound && typeof document !== 'undefined') {
+      try { document.removeEventListener('keydown', onDocumentFallbackEscapeKeydown, true); } catch {}
+      agAutoGuardEscapeBound = false;
+    }
+    if (typeof document !== 'undefined') {
+      try { document.getElementById(AG_AUTOGUARD_STYLE_ID)?.remove?.(); } catch {}
+      try {
+        for (const elNode of document.querySelectorAll?.(`[data-testid="${AG_AUTOGUARD_OPTION_TESTID}"], [data-testid="${AG_AUTOGUARD_FALLBACK_TESTID}"]`) || []) {
+          elNode.remove();
+        }
+        for (const trig of document.querySelectorAll?.('button[data-testid="permissions-selector-trigger"]') || []) {
+          trig.removeAttribute('data-ag-auto-guard');
+          trig.removeAttribute('data-ag-auto-label');
+        }
+        for (const box of document.querySelectorAll?.('[data-testid="permissions-project-options"]') || []) {
+          box.removeAttribute('data-ag-autoguard-ordered');
+          box.removeAttribute('data-ag-autoguard-active');
+        }
+      } catch {}
+    }
+  }
+
+  earlyDisposeHooks.push(disposeComposerAutoGuardIntegration);
+  activeDisposers.add(disposeComposerAutoGuardIntegration);
+
+  async function refreshAutoGuardStatus() {
+    const seq = ++autoGuardStatusReqSeq;
+    try {
+      const res = await invokeAutoGuardApi('status', {});
+      if (seq !== autoGuardStatusReqSeq) return currentAutoGuardStatus;
+      if (res && res.ok && res.data) {
+        currentAutoGuardStatus = res.data;
+      } else if (res && res.unavailable) {
+        currentAutoGuardStatus = { supported: false };
+      }
+      syncComposerAutoGuardPicker();
+      if (typeof syncHostSettingsUi === 'function') syncHostSettingsUi();
+      return currentAutoGuardStatus;
+    } catch {
+      return currentAutoGuardStatus;
+    }
+  }
+
   function copyUrlWithToast(targetUrl, showToastFn, fromFailedOpen = false) {
     let copied = false;
     try {
@@ -17074,6 +17763,10 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           const rawErr = stepErr?.message;
           failedResolvers.push(() => `${t('enhance.preset.itemRehydrate')}: ${translateBackendText(rawErr) || t('msg.restoreFail')}`);
         }
+        try {
+          await invokeAutoGuardApi('restore', {});
+          await refreshAutoGuardStatus();
+        } catch {}
       }
 
       if (needsHostRestart) needsRestartAfterApply = true;
@@ -20745,6 +21438,13 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         const rhHookText = rhUnread ? t('rehydrate.status.unread') : (rh.hookRegistered ? (rh.hookEnabled ? t('rehydrate.state.hookEnabled') : t('rehydrate.state.hookDisabled')) : t('rehydrate.state.hookNone'));
         const rhPythonText = rhUnread ? t('rehydrate.status.unread') : (rh.pythonReady ? t('rehydrate.state.pythonOk', { ver: rh.pythonVersion || '3.10+' }) : (rh.pythonVersion ? t('rehydrate.state.pythonOld', { ver: rh.pythonVersion }) : t('rehydrate.state.pythonMissing')));
 
+        const ag = currentAutoGuardStatus;
+        const agUnread = !ag || ag.supported === false;
+        const agStatus = ag?.status || '';
+        const agEnabled = Boolean(ag?.enabled || agStatus === 'enabled');
+        const agBadgeText = agUnread ? t('autoguard.status.unread') : (agStatus === 'enabled' ? t('autoguard.status.enabled') : (agStatus === 'disabled' ? t('autoguard.status.disabled') : (agStatus === 'broken' ? t('autoguard.status.broken') : t('autoguard.status.notInstalled'))));
+        const agBadgeClass = agStatus === 'enabled' ? 'is-accent' : (agStatus === 'broken' ? 'is-warn' : '');
+
         const enhSummary = currentEnhanceStatus?.summary || currentEnhanceStatus;
         const enhTierNum = [0, 1, 2, 3, 4].includes(Number(selectedEnhanceTier)) ? Number(selectedEnhanceTier) : (Number(enhSummary?.promptTier ?? 0));
         const enhBadgeText = !currentEnhanceStatus
@@ -20780,6 +21480,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
             panelLanguage: currentPanelLanguage,
             enhancePromptTier: String(enhTierNum),
             enhanceChineseTitle: Boolean(enhanceTitleDraft),
+            autoGuardMode: ag?.mode || 'smart',
             proxyEnabled: Boolean(currentProxyEnabled),
             proxyUrl: proxyInputDirty ? proxyInputElVal : (savedProxyUrl || proxyInputElVal || ''),
             planTier: curPlanTier,
@@ -20832,6 +21533,12 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
             rehydrateBusy: Boolean(isRehydrateBusy),
             rehydrateDisableEnable: rhUnread || rhEnabled || rhPyBlocked || rh?.hooksFileValid === false,
             rehydrateDisableDisable: rhUnread || !rhEnabled,
+            autoGuardBadgeText: agBadgeText,
+            autoGuardBadgeClass: agBadgeClass,
+            autoGuardBusy: Boolean(isAutoGuardBusy),
+            autoGuardDisableEnable: agUnread || agEnabled || ag?.hooksFileValid === false,
+            autoGuardDisableDisable: agUnread || !agEnabled,
+            autoGuardDisableRemove: agUnread || (!ag?.hookRegistered && !ag?.scriptInstalled),
             enhanceBadgeText: enhBadgeText,
             enhanceBadgeClass: enhBadgeClass,
             proxyBadgeText: proxyBadge?.textContent || (currentProxyEnabled ? t('mod.proxy.badgeOk') : t('mod.proxy.badgeOff')),
@@ -21025,6 +21732,15 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           renderEnhanceSectionUI();
           return;
         }
+        if (key === 'autoGuardMode') {
+          const nextMode = ['smart', 'strict_auto', 'guard_only'].includes(value) ? value : 'smart';
+          currentAutoGuardStatus = { ...(currentAutoGuardStatus || {}), mode: nextMode };
+          syncComposerAutoGuardPicker();
+          void runAutoGuardPresetEnable(nextMode).then((res) => {
+            showNativeSettingsToast(res?.ok ? t('autoguard.result.enabled') : (res?.error || t('msg.saveFail')));
+          });
+          return;
+        }
         if (key === 'proxyEnabled') {
           const hsRoot = hostSettingsCtrl?.getPageRoot?.();
           const proxyInp = hsRoot?.getElementById?.('ag-ns-input-proxyUrl');
@@ -21137,6 +21853,18 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           void runRehydrateAction('disable', null, 'rehydrate.btn.disableBusy', 'rehydrate.btn.disable', () => () => t('rehydrate.result.disabled'));
         } else if (actionName === 'rehydrateRefresh') {
           void refreshRehydrateStatus();
+        } else if (actionName === 'autoguardEnable') {
+          void runAutoGuardPresetEnable(currentAutoGuardStatus?.mode || 'smart').then((res) => {
+            showNativeSettingsToast(res?.ok ? t('autoguard.result.enabled') : (res?.error || t('msg.saveFail')));
+          });
+        } else if (actionName === 'autoguardDisable') {
+          void runAutoGuardPresetDisable().then((res) => {
+            showNativeSettingsToast(res?.ok ? t('autoguard.result.disabled') : (res?.error || t('msg.saveFail')));
+          });
+        } else if (actionName === 'autoguardRemove') {
+          void runAutoGuardPresetRemove().then((res) => {
+            showNativeSettingsToast(res?.ok ? t('autoguard.result.removed') : (res?.error || t('msg.saveFail')));
+          });
         } else if (actionName === 'enhanceApply') {
           if (btnApplyEnhancePrompt) {
             btnApplyEnhancePrompt.click();
@@ -21159,9 +21887,10 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
             await invokeModulesApi('toggle', 'chinese', false, { language: 'en', brandTitle: 'english' });
             await invokeUnlockApi('restore', {});
             await invokeRehydrateApi('restore', {});
+            await invokeAutoGuardApi('restore', {});
             currentBrandTitle = 'english';
             selectedBrandTitle = 'english';
-            await Promise.all([refreshEnhanceStatus(true, { forceSyncDrafts: true }), refreshModulesDisplay(), refreshUnlockStatus(), refreshRehydrateStatus()]);
+            await Promise.all([refreshEnhanceStatus(true, { forceSyncDrafts: true }), refreshModulesDisplay(), refreshUnlockStatus(), refreshRehydrateStatus(), refreshAutoGuardStatus()]);
             showNativeSettingsToast(t('enhance.result.restoredDone'));
           })();
         } else if (actionName === 'testProxy') {
@@ -21262,6 +21991,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         }
         if (typeof refreshEnhanceStatus === 'function') void refreshEnhanceStatus();
         if (typeof refreshRehydrateStatus === 'function') void refreshRehydrateStatus();
+        if (typeof refreshAutoGuardStatus === 'function') void refreshAutoGuardStatus();
         if (section) hostSettingsCtrl?.scrollToSection?.(section);
       },
       onCheckUpdate: (trigger) => checkAppUpdate(true, trigger || 'host-settings'),
@@ -31421,6 +32151,11 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
     getRehydrateStateForTest: () => ({
       currentRehydrateStatus: currentRehydrateStatus ? { ...currentRehydrateStatus } : null
     }),
+    refreshAutoGuardStatusForTest: () => refreshAutoGuardStatus(),
+    getAutoGuardStateForTest: () => ({
+      currentAutoGuardStatus: currentAutoGuardStatus ? { ...currentAutoGuardStatus } : null
+    }),
+    syncComposerAutoGuardForTest: () => syncComposerAutoGuardPicker(),
     getEnhanceStateForTest: () => ({
       currentBrandTitle,
       selectedEnhanceTier,
@@ -32299,6 +33034,8 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   } catch { }
   refreshRegionPresetSelectOptions();
   renderEnhanceSectionUI();
+  initComposerAutoGuardIntegration();
+  void refreshAutoGuardStatus();
   if (typeof initSessionCockpitGrid === 'function') initSessionCockpitGrid();
   if (typeof initTrendPulseControls === 'function') initTrendPulseControls();
   if (typeof initContextInspectorControls === 'function') initContextInspectorControls();

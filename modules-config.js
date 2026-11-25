@@ -98,6 +98,18 @@ const DEFAULT_CONFIG = {
       hadPreexistingScript: false,
       preexistingScriptBackupPath: null,
       lastUpdated: null
+    },
+    autoguard: {
+      enabled: false,
+      managed: false,
+      baselineCaptured: false,
+      mode: 'smart',
+      protectOutsideWorkspace: true,
+      hadPreexistingHook: false,
+      preexistingHook: null,
+      hadPreexistingScript: false,
+      preexistingScriptBackupPath: null,
+      lastUpdated: null
     }
   }
 };
@@ -222,7 +234,7 @@ function validateModulesSchema(parsed) {
   if (!isPlainObject(parsed)) return { ok: false, error: '配置文件根节点必须是 JSON 对象' };
   if (!isPlainObject(parsed.modules)) return { ok: false, error: '配置文件缺少有效的 modules 对象' };
   const mods = parsed.modules;
-  for (const key of ['meter', 'chinese', 'proxy', 'enhance', 'rehydrate']) {
+  for (const key of ['meter', 'chinese', 'proxy', 'enhance', 'rehydrate', 'autoguard']) {
     if (mods[key] !== undefined && !isPlainObject(mods[key])) {
       return { ok: false, error: `配置文件中 modules.${key} 字段格式非法` };
     }
@@ -230,6 +242,14 @@ function validateModulesSchema(parsed) {
   if (mods.rehydrate) {
     if (mods.rehydrate.enabled !== undefined && typeof mods.rehydrate.enabled !== 'boolean') {
       return { ok: false, error: '配置文件中 modules.rehydrate.enabled 必须为布尔值' };
+    }
+  }
+  if (mods.autoguard) {
+    if (mods.autoguard.enabled !== undefined && typeof mods.autoguard.enabled !== 'boolean') {
+      return { ok: false, error: '配置文件中 modules.autoguard.enabled 必须为布尔值' };
+    }
+    if (mods.autoguard.mode !== undefined && typeof mods.autoguard.mode !== 'string') {
+      return { ok: false, error: '配置文件中 modules.autoguard.mode 必须为字符串' };
     }
   }
   if (mods.proxy) {
@@ -310,6 +330,11 @@ function loadModulesConfig(options = {}) {
         {},
         DEFAULT_CONFIG.modules.rehydrate,
         parsed.modules.rehydrate || {}
+      );
+      current.modules.autoguard = Object.assign(
+        {},
+        DEFAULT_CONFIG.modules.autoguard,
+        parsed.modules.autoguard || {}
       );
       return current;
     } catch (e) {

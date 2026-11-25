@@ -1930,6 +1930,7 @@ const CLI_KNOWN_COMMANDS = new Set([
   'unlock-status', 'unlock', 'unlock-restore',
   'enhance-status', 'enhance', 'enhance-restore',
   'rehydrate-status', 'rehydrate:enable', 'rehydrate:disable', 'rehydrate:remove', 'rehydrate:install-python',
+  'autoguard-status', 'autoguard:enable', 'autoguard:disable', 'autoguard:remove',
   'modules', 'chinese:enable', 'chinese:disable',
   'proxy:enable', 'proxy:disable', 'proxy:set', 'proxy:test', 'proxy:launch', 'proxy:launcher',
   'usage', 'monitor', 'launch-cli', 'context-set', 'context-status',
@@ -1979,7 +1980,12 @@ function printUsage() {
   node cli.js rehydrate-status              检查「改善 AGY 有损压缩」与 Python 3.10+ 状态
   node cli.js rehydrate:enable              开启「改善 AGY 有损压缩」(写入 hooks.json)
   node cli.js rehydrate:disable             停用「改善 AGY 有损压缩」(保留脚本与其他配置)
-  node cli.js rehydrate:remove              卸载移除「改善 AGY 有损压缩」并清理脚本`);
+  node cli.js rehydrate:remove              卸载移除「改善 AGY 有损压缩」并清理脚本
+  node cli.js autoguard-status              检查「Auto 智能审批护栏 (Win10 可用)」状态
+  node cli.js autoguard:enable [--mode smart|strict_auto|guard_only]
+                                            开启 Auto 智能审批 PreToolUse Hook 与输入栏选项
+  node cli.js autoguard:disable             停用 Auto 智能审批 (保留脚本与其他配置)
+  node cli.js autoguard:remove              卸载移除 Auto 智能审批并清理 Hook 脚本`);
 }
 
 /**
@@ -2332,6 +2338,15 @@ async function main() {
       } catch (e) {
         console.log(`⚠️  CLI 适配还原异常: ${e.message}`);
       }
+      try {
+        const { restoreAutoGuard } = require('./meter-autoguard');
+        const gRes = restoreAutoGuard({});
+        if (gRes.ok && gRes.changed) {
+          console.log('✅ 已同步恢复 Auto 智能审批 Hook 配置！');
+        }
+      } catch (e) {
+        console.log(`⚠️  Auto Guard 还原异常: ${e.message}`);
+      }
     }
     console.log('📦 模块清理与运行时状态说明:');
     console.log(`   - 磁盘处理方式: ${res.inPlaceCleaned ? '原位手术刀精准解构（保留宿主第三方修改）' : '官方原版备份整包还原'}`);
@@ -2465,6 +2480,35 @@ async function main() {
     const res = await installPythonRuntimeAsync();
     if (!res.ok) throw new Error(res.error);
     console.log(`✅ Python 运行环境就绪: Python ${res.python?.version || '3.10+'} (${res.python?.executable || res.python?.command || ''})`);
+  } else if (cmd === 'autoguard-status') {
+    const { getAutoGuardStatus } = require('./meter-autoguard');
+    const st = getAutoGuardStatus();
+    if (args.includes('--json')) {
+      console.log(JSON.stringify(st, null, 2));
+    } else {
+      console.log('🛡️ Auto 智能审批护栏 (Win10 可用):');
+      console.log(`   - 状态: ${st.status} (模式: ${st.mode})`);
+      console.log(`   - Hook 注册: ${st.hookRegistered ? '已注册' : '未注册'}`);
+      console.log(`   - Hook 脚本: ${st.scriptInstalled ? '已部署' : '未部署'}`);
+      console.log(`   - Node 运行时: ${st.nodeReady ? `就绪 (${st.nodeVersion || '可用'})` : '未就绪'}`);
+    }
+  } else if (cmd === 'autoguard:enable') {
+    const { applyAutoGuard } = require('./meter-autoguard');
+    const modeIdx = args.indexOf('--mode');
+    const modeVal = modeIdx >= 0 ? args[modeIdx + 1] : undefined;
+    const res = applyAutoGuard(modeVal ? { mode: modeVal } : {});
+    if (!res.ok) throw new Error(res.error);
+    console.log(`✅ 已成功开启 Auto 智能审批护栏 (模式: ${res.status?.mode || 'smart'})！`);
+  } else if (cmd === 'autoguard:disable') {
+    const { disableAutoGuard } = require('./meter-autoguard');
+    const res = disableAutoGuard();
+    if (!res.ok) throw new Error(res.error);
+    console.log('⏸️ 已成功停用 Auto 智能审批护栏！');
+  } else if (cmd === 'autoguard:remove') {
+    const { restoreAutoGuard } = require('./meter-autoguard');
+    const res = restoreAutoGuard({ force: true });
+    if (!res.ok) throw new Error(res.error);
+    console.log('🗑️ 已成功卸载移除 Auto 智能审批护栏！');
   } else if (cmd === 'modules') {
     const { loadModulesConfig, detectAndMigrateLegacyConfigs } = require('./modules-config');
     const cfg = loadModulesConfig();
