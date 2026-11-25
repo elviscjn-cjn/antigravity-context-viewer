@@ -2294,7 +2294,7 @@ async function main() {
     }
   } else if (cmd === 'restore' || cmd === 'uninstall') {
     const restoreAll = args.includes('--all');
-    const res = await restore({ path: customPath, force: isForce, ...cdpOptions });
+    const res = await restore({ path: customPath, force: isForce, allowIntegrityOverride: isForceMacAsar, ...cdpOptions });
     // 卸载时同步移除登录自启，避免登录后拉起已不存在的 watch
     if (!customPath) {
       await stopWatchDaemon();

@@ -7,7 +7,7 @@ const http = require('http');
 const crypto = require('crypto');
 const { getStateDir, getAppDataDir, isIsolatedTestPath, builtinAsar, collectUnpackedPaths, loadAsarEngine } = require('./asar-engine');
 const { discoverAntigravityCdp, createCdpClient } = require('./local-api');
-const { inspectMacAsarIntegrity } = require('./macos-binary-utils');
+const { inspectMacAsarIntegrity, resignMacAppBundleIfNeeded, logMacBundleResignResult } = require('./macos-binary-utils');
 const { acquireFileLock } = require('./modules-config');
 const {
   TAGS,
@@ -205,6 +205,19 @@ async function restore(options = {}) {
     });
     const effectivePlatform = options._platform || process.platform;
     const allowMacOverride = Boolean(options.allowIntegrityOverride || process.argv.includes('--force-mac-asar'));
+    const finalizeMacBundleResign = () => {
+      const macResign = resignMacAppBundleIfNeeded(targetFile, macIntegrity, {
+        _platform: options._platform,
+        _existsSync: options._existsSync,
+        _execFileSync: options._execFileSync,
+        skipMacResign: options.skipMacResign,
+        codesignBin: options.codesignBin
+      });
+      if (macResign.attempted) {
+        logMacBundleResignResult(macResign, { silent: options.silent });
+      }
+      return macResign;
+    };
     const removeStaleResHelper = () => {
       try {
         const resHelper = path.join(path.dirname(targetFile), 'bin', 'cli-window-helper.exe');
@@ -236,14 +249,16 @@ async function restore(options = {}) {
         throw new Error('Restored file checksum mismatch');
       }
       removeStaleResHelper();
+      const macResign = finalizeMacBundleResign();
       await tryHotDispose();
       if (hasManifest) {
         try {
           info.restoredAt = new Date().toISOString();
+          if (macResign.attempted) info.macResign = macResign;
           fs.writeFileSync(manifestPath, JSON.stringify(info, null, 2));
         } catch {}
       }
-      return { restored: targetFile, fromBackup: validBackup };
+      return { restored: targetFile, fromBackup: validBackup, ...(macResign.attempted ? { macResign } : {}) };
     }
 
     // 若备份文件存在于磁盘但全部校验损坏（哈希不符），在未显式指定 --in-place 时拒绝盲目覆盖或跳过校验
@@ -395,14 +410,16 @@ async function restore(options = {}) {
 
             console.log('[Restore] 已通过原位解构精准移除插件挂载，并完整保留宿主现有修改与构建内容。');
             removeStaleResHelper();
+            const macResign = finalizeMacBundleResign();
             const hotDisposed = await tryHotDispose();
             if (hasManifest) {
               info.restoredAt = new Date().toISOString();
               info.inPlaceCleaned = true;
+              if (macResign.attempted) info.macResign = macResign;
               fs.writeFileSync(manifestPath, JSON.stringify(info, null, 2));
             }
             restoreCommitted = true;
-            return { restored: targetFile, inPlaceCleaned: true, hotDisposed };
+            return { restored: targetFile, inPlaceCleaned: true, hotDisposed, ...(macResign.attempted ? { macResign } : {}) };
           } catch (err) {
             if (!restoreCommitted && fs.existsSync(snapshotFile)) {
               try {
@@ -451,15 +468,17 @@ async function restore(options = {}) {
       throw new Error('Restored file checksum mismatch');
     }
 
+    const macResign = finalizeMacBundleResign();
     const hotDisposed = await tryHotDispose();
     if (hasManifest) {
       try {
         info.restoredAt = new Date().toISOString();
         info.inPlaceCleaned = false;
+        if (macResign.attempted) info.macResign = macResign;
         fs.writeFileSync(manifestPath, JSON.stringify(info, null, 2));
       } catch {}
     }
-    return { restored: targetFile, fromBackup: validBackup, inPlaceCleaned: false, hotDisposed };
+    return { restored: targetFile, fromBackup: validBackup, inPlaceCleaned: false, hotDisposed, ...(macResign.attempted ? { macResign } : {}) };
   } finally {
     fileLock.release();
   }

@@ -721,3 +721,132 @@ async function createWindow(url, storageManager, options) {
   assert.equal(process.exitCode, 1, '结构预检阻塞时 cmdCheck 不得返回 0');
   process.exitCode = prevExitCode;
 });
+
+test('macOS --force-mac-asar 安装与还原后按需自动 ad-hoc 重签并复验 .app Bundle', async (t) => {
+  const { resignMacAppBundleIfNeeded } = require('./macos-binary-utils');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-mac-resign-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const stateDir = path.join(tmpDir, 'state');
+  process.env.AG_METER_STATE_DIR = stateDir;
+  t.after(() => {
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const bundleDir = path.join(tmpDir, 'Antigravity.app');
+  const resDir = path.join(bundleDir, 'Contents', 'Resources');
+  fs.mkdirSync(resDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(bundleDir, 'Contents', 'Info.plist'),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>CFBundleExecutable</key><string>Antigravity</string>
+  <key>ElectronAsarIntegrity</key>
+  <dict><key>Resources/app.asar</key><dict><key>algorithm</key><string>SHA256</string><key>hash</key><string>deadbeef</string></dict></dict>
+</dict></plist>`,
+    'utf8'
+  );
+  const macAsarPath = path.join(resDir, 'app.asar');
+  const cleanAsar = await createMockAsar(tmpDir, '2.35.1', SAMPLE_V234_UTILS);
+  fs.copyFileSync(cleanAsar, macAsarPath);
+
+  // 1. 若包体签名当前已通过 verify，则绝不覆盖已有签名
+  const alreadyValidCalls = [];
+  const resAlreadyValid = resignMacAppBundleIfNeeded(
+    macAsarPath,
+    { isMacAppBundle: true, appBundlePath: bundleDir, signatureStatus: 'signed', teamIdentifier: 'EQHXZ8M8AV' },
+    {
+      _platform: 'darwin',
+      _execFileSync: (_bin, args) => {
+        alreadyValidCalls.push(args);
+        return 'valid on disk';
+      }
+    }
+  );
+  assert.equal(resAlreadyValid.attempted, false);
+  assert.equal(resAlreadyValid.ok, true);
+  assert.equal(resAlreadyValid.alreadyValid, true);
+  assert.equal(alreadyValidCalls.length, 1);
+  assert.equal(alreadyValidCalls[0][0], '--verify');
+
+  // 2. install({ allowIntegrityOverride: true }) 改写 app.asar 后，verify 失败 -> 保留 entitlements 重签 -> verify 通过
+  let bundleSignedValid = false;
+  const installCalls = [];
+  const installMockExec = (_bin, args) => {
+    installCalls.push(args);
+    if (args[0] === '-dv') {
+      return 'Signature=adhoc\nTeamIdentifier=not set\nSealed Resources version=2';
+    }
+    if (args[0] === '--verify') {
+      if (!bundleSignedValid) {
+        const err = new Error('a sealed resource is missing or invalid');
+        err.stderr = 'a sealed resource is missing or invalid';
+        throw err;
+      }
+      return 'valid on disk';
+    }
+    if (args[0] === '--force') {
+      bundleSignedValid = true;
+      return 'replacing existing signature';
+    }
+    return '';
+  };
+
+  const forcedManifest = await install({
+    path: macAsarPath,
+    stateDir,
+    pureMeterOnly: true,
+    _platform: 'darwin',
+    allowIntegrityOverride: true,
+    _execFileSync: installMockExec,
+    noHotInject: true,
+    silent: true
+  });
+  assert.equal(forcedManifest.macResign?.attempted, true);
+  assert.equal(forcedManifest.macResign?.ok, true);
+  assert.equal(forcedManifest.macResign?.verified, true);
+  assert.equal(forcedManifest.macResign?.signatureStatus, 'adhoc');
+  assert.ok(
+    installCalls.some(a => a[0] === '--force' && a.includes('--preserve-metadata=entitlements') && a.includes(bundleDir)),
+    '必须在改写 app.asar 后调用 codesign --force --sign - --preserve-metadata=entitlements'
+  );
+
+  // 3. restore 还原 app.asar 后同样自动校验并重签
+  bundleSignedValid = false;
+  const restoreCalls = [];
+  const restored = await restore({
+    path: macAsarPath,
+    _platform: 'darwin',
+    allowIntegrityOverride: true,
+    _execFileSync: (_bin, args) => {
+      restoreCalls.push(args);
+      return installMockExec(_bin, args);
+    },
+    silent: true
+  });
+  assert.equal(restored.macResign?.attempted, true);
+  assert.equal(restored.macResign?.ok, true);
+  assert.equal(restored.macResign?.verified, true);
+  assert.ok(
+    restoreCalls.some(a => a[0] === '--force' && a.includes('--preserve-metadata=entitlements') && a.includes(bundleDir)),
+    'restore 还原 app.asar 后同样应自动完成重签并复验'
+  );
+
+  // 4. codesign 失败时返回 ok: false 与可执行修复命令，不掩盖异常
+  const resFailed = resignMacAppBundleIfNeeded(
+    macAsarPath,
+    { isMacAppBundle: true, appBundlePath: bundleDir, signatureStatus: 'signed', teamIdentifier: 'EQHXZ8M8AV' },
+    {
+      _platform: 'darwin',
+      _execFileSync: (_bin, args) => {
+        if (args[0] === '--verify') throw new Error('sealed resource invalid');
+        throw new Error('permission denied');
+      }
+    }
+  );
+  assert.equal(resFailed.attempted, true);
+  assert.equal(resFailed.ok, false);
+  assert.match(resFailed.error, /permission denied/);
+  assert.match(resFailed.manualCmd, /codesign --force --sign - --preserve-metadata=entitlements/);
+});
