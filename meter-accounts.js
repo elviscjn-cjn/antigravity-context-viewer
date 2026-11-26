@@ -13,7 +13,68 @@ const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 const { URL } = require('url');
-const { execFileSync, spawnSync } = require('child_process');
+const { execFile, execFileSync, spawnSync } = require('child_process');
+
+/**
+ * 在纯 Node.js / 非 Electron 环境中通过系统默认浏览器安全打开外部链接（Issue #115）。
+ * 严禁拼接 shell 字符串，统一通过 execFile 传递字面 URL 参数，并等待启动器返回真实退出状态。
+ */
+function openUrlInSystemBrowser(targetUrl, options = {}) {
+  return new Promise((resolve, reject) => {
+    let parsed;
+    try {
+      parsed = new URL(String(targetUrl || '').trim());
+    } catch {
+      reject(new Error('无效的外部链接地址'));
+      return;
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      reject(new Error(`不允许打开非 HTTP(S) 协议链接: ${parsed.protocol}`));
+      return;
+    }
+    const safeUrl = parsed.toString();
+    const platform = options.platform || process.platform;
+    const execFileFn = typeof options._execFile === 'function' ? options._execFile : execFile;
+    const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 10000;
+
+    let cmd = '';
+    let cmdArgs = [];
+    let method = '';
+    const execOpts = { timeout: timeoutMs, windowsHide: true };
+
+    if (platform === 'darwin') {
+      cmd = fs.existsSync('/usr/bin/open') ? '/usr/bin/open' : 'open';
+      cmdArgs = [safeUrl];
+      method = 'macos_open';
+    } else if (platform === 'win32') {
+      // rundll32 直接接收字面 URL，规避 cmd.exe /c start 对 OAuth 查询串中 & 符号的截断风险
+      cmd = 'rundll32.exe';
+      cmdArgs = ['url.dll,FileProtocolHandler', safeUrl];
+      method = 'windows_rundll32';
+    } else {
+      cmd = 'xdg-open';
+      cmdArgs = [safeUrl];
+      method = 'linux_xdg_open';
+    }
+
+    try {
+      execFileFn(cmd, cmdArgs, execOpts, (err, stdout, stderr) => {
+        if (err) {
+          const detail = String(stderr || stdout || err.message || '').trim();
+          const wrapped = new Error(`系统浏览器启动失败 (${cmd}${err.code != null ? `, code=${err.code}` : ''}): ${detail || '未知错误'}`);
+          wrapped.code = err.code || 'OPEN_BROWSER_FAILED';
+          reject(wrapped);
+          return;
+        }
+        resolve({ ok: true, method, command: cmd, url: safeUrl });
+      });
+    } catch (syncErr) {
+      const wrapped = new Error(`系统浏览器调用异常 (${cmd}): ${syncErr?.message || syncErr}`);
+      wrapped.code = syncErr?.code || 'OPEN_BROWSER_FAILED';
+      reject(wrapped);
+    }
+  });
+}
 
 const { getStateDir, getAppDataDir } = require('./asar-engine');
 const { buildModelQuotaSnapshot, selectPrimaryQuotaBucket, getModelPoolKey, getSharedQuotaGroupKey } = require('./meter-core');
@@ -2365,20 +2426,71 @@ function createAccountsManager(options = {}) {
                 state: stateStr
               });
               const authUrl = `${OAUTH_AUTH_URL}?${params.toString()}`;
-              if (typeof openExternal === 'function') {
-                Promise.resolve(openExternal(authUrl)).catch(() => { });
-              } else {
-                try {
-                  const { shell } = require('electron');
-                  shell?.openExternal?.(authUrl);
-                } catch { }
-              }
+              curStage = 'open_browser';
+              const invokeBrowserOpen = () => {
+                if (typeof openExternal === 'function') {
+                  return Promise.resolve(openExternal(authUrl));
+                }
+                if (process.versions && process.versions.electron) {
+                  try {
+                    const { shell } = require('electron');
+                    if (shell && typeof shell.openExternal === 'function') {
+                      return Promise.resolve(shell.openExternal(authUrl));
+                    }
+                  } catch (e) {
+                    return Promise.reject(e);
+                  }
+                }
+                return openUrlInSystemBrowser(authUrl);
+              };
+              invokeBrowserOpen().then((openRes) => {
+                if (openRes && typeof openRes === 'object' && openRes.ok === false) {
+                  throw new Error(openRes.error || '默认浏览器返回打开失败');
+                }
+                if (!settled) {
+                  curStage = 'loopback_callback';
+                  try {
+                    const st = loadStore();
+                    recordDiag(st, {
+                      action: 'oauth_login',
+                      stage: 'open_browser',
+                      targetHost: 'accounts.google.com',
+                      proxySource: 'system_browser',
+                      proxyProtocol: 'https',
+                      proxyEndpoint: null,
+                      httpStatus: null,
+                      errorCode: null,
+                      ok: true,
+                      message: `已在默认浏览器打开 Google 授权页 (回调端口 ${boundPort})`
+                    });
+                    saveStore(st);
+                  } catch { }
+                }
+              }).catch((openErr) => {
+                if (!settled) {
+                  settled = true;
+                  clearTimeout(timer);
+                  try { server?.close(); } catch { }
+                  const msg = openErr?.message || String(openErr || '未知错误');
+                  reject(attachStageErrorMeta(
+                    new Error(`无法在默认浏览器中打开 Google 授权页: ${msg}`),
+                    'open_browser',
+                    'accounts.google.com',
+                    null,
+                    null
+                  ));
+                }
+              });
             });
           };
           tryNextPort();
         });
       } catch (e) {
-        return logFailAndReturn(e?.stage || curStage, e, { targetHost: '127.0.0.1', proxySource: 'loopback_direct' });
+        const isBrowserOpenStage = (e?.stage || curStage) === 'open_browser';
+        return logFailAndReturn(e?.stage || curStage, e, {
+          targetHost: isBrowserOpenStage ? 'accounts.google.com' : '127.0.0.1',
+          proxySource: isBrowserOpenStage ? 'system_browser' : 'loopback_direct'
+        });
       }
 
       const redirectUri = `http://127.0.0.1:${boundPort}`;
@@ -4283,7 +4395,17 @@ async function dispatchAccountsAction(mgr, payload = {}, options = {}) {
     case 'import_tools':
       return { ...mgr.importFromAntigravityTools(payload.emails || null), overview: mgr.getOverviewState() };
     case 'oauth_login':
-      return { ...(await mgr.startOAuthLogin()), overview: mgr.getOverviewState() };
+      return {
+        ...(await mgr.startOAuthLogin({
+          ...(typeof options.openExternal === 'function' ? { openExternal: options.openExternal } : {}),
+          ...(Number.isFinite(Number(payload.timeoutMs)) && Number(payload.timeoutMs) > 0
+            ? { timeoutMs: Number(payload.timeoutMs) }
+            : (Number.isFinite(Number(options.timeoutMs)) && Number(options.timeoutMs) > 0
+              ? { timeoutMs: Number(options.timeoutMs) }
+              : {}))
+        })),
+        overview: mgr.getOverviewState()
+      };
     case 'remove':
       return { ...mgr.removeAccount(payload.email), overview: mgr.getOverviewState() };
     case 'refresh_quota': {
@@ -4388,6 +4510,7 @@ module.exports = {
   createAccountsManager,
   getSharedAccountsManager,
   dispatchAccountsAction,
+  openUrlInSystemBrowser,
   fetchAccountQuotaViaCloudCode,
   fetchJsonWithProxy,
   CLOUDCODE_DAILY_URL,

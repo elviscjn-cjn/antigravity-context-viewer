@@ -214,3 +214,91 @@ test('autostart 9 (macOS EIO 竞态): bootout 后等待 launchd 卸载完成并�
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });
+
+test('Issue #119: macOS Dock 一键启动挂载入口 (.app) 生成、签名、状态查询、Dock 固定与移除闭环', () => {
+  const autostart = require('./autostart');
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-autostart-launcher-'));
+  try {
+    const fakeSourceApp = path.join(homeDir, 'FakeAntigravity.app');
+    fs.mkdirSync(path.join(fakeSourceApp, 'Contents', 'Resources'), { recursive: true });
+    fs.writeFileSync(path.join(fakeSourceApp, 'Contents', 'Resources', 'icon.icns'), Buffer.from('icns-mock'));
+
+    const fakeDockPlist = path.join(homeDir, 'com.apple.dock.plist');
+    const execLog = [];
+    const mockExec = (cmd, args) => {
+      execLog.push(`${cmd}:${args[0] || ''}`);
+      if (cmd === 'python3' || cmd === '/usr/bin/python3') {
+        const action = args[2];
+        const appPathArg = args[4];
+        if (action === 'check') {
+          const present = fs.existsSync(fakeDockPlist) && fs.readFileSync(fakeDockPlist, 'utf8').includes(appPathArg);
+          return JSON.stringify({ ok: true, present, index: present ? 0 : -1 });
+        }
+        if (action === 'add') {
+          const existed = fs.existsSync(fakeDockPlist) && fs.readFileSync(fakeDockPlist, 'utf8').includes(appPathArg);
+          fs.writeFileSync(fakeDockPlist, appPathArg, 'utf8');
+          return JSON.stringify({ ok: true, present: true, changed: !existed });
+        }
+        if (action === 'remove') {
+          const existed = fs.existsSync(fakeDockPlist) && fs.readFileSync(fakeDockPlist, 'utf8').includes(appPathArg);
+          if (existed) fs.unlinkSync(fakeDockPlist);
+          return JSON.stringify({ ok: true, present: false, changed: existed });
+        }
+      }
+      return '';
+    };
+
+    const res = autostart.installMacDockLauncher({
+      platform: 'darwin',
+      homeDir,
+      nodePath: '/opt/homebrew/bin/node',
+      scriptPath: '/opt/meter/cli.js',
+      port: 58321,
+      sourceAppPath: fakeSourceApp,
+      addToDock: true,
+      restartDock: false,
+      dockPlistPath: fakeDockPlist,
+      exec: mockExec
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.installed, true);
+    assert.equal(res.iconCopied, true);
+    assert.equal(res.signed, true);
+    assert.equal(res.addedToDock, true);
+    assert.equal(res.inDock, true);
+    assert.ok(fs.existsSync(res.plistPath));
+    assert.ok(fs.existsSync(res.execPath));
+
+    const plist = fs.readFileSync(res.plistPath, 'utf8');
+    assert.match(plist, /<key>LSUIElement<\/key>\s*<true\/>/);
+    assert.match(plist, /<string>launch-antigravity-meter<\/string>/);
+    const script = fs.readFileSync(res.execPath, 'utf8');
+    assert.match(script, /launcher:run/);
+    assert.match(script, /58321/);
+    assert.ok(execLog.some(x => x.startsWith('codesign:--force')));
+
+    const st = autostart.getMacDockLauncherStatus({
+      platform: 'darwin',
+      homeDir,
+      dockPlistPath: fakeDockPlist,
+      exec: mockExec
+    });
+    assert.equal(st.installed, true);
+    assert.equal(st.inDock, true);
+    assert.equal(st.iconPresent, true);
+
+    const rm = autostart.removeMacDockLauncher({
+      platform: 'darwin',
+      homeDir,
+      dockPlistPath: fakeDockPlist,
+      restartDock: false,
+      exec: mockExec
+    });
+    assert.equal(rm.ok, true);
+    assert.equal(rm.removed, true);
+    assert.equal(rm.dockRemoved, true);
+    assert.equal(fs.existsSync(res.appPath), false);
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});

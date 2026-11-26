@@ -420,6 +420,7 @@
 
   const shadow = host.attachShadow({ mode: 'open' });
   // 防止点击插件顶栏、额度/上下文/速度/用量入口或右栏面板时抢走宿主分屏窗格焦点并跳回左窗格（PR #79）
+  // 同时隔离插件非编辑区域的右键菜单事件，避免向上冒泡触发宿主全局 <Anb> Copy 菜单（Issue #107）
   const bindShadowFocusGuard = (rootNode) => {
     if (typeof rootNode?.addEventListener !== 'function') return;
     const EDITABLE_TARGET_SELECTOR = 'input, textarea, select, option, label, [contenteditable]';
@@ -435,6 +436,20 @@
     });
     rootNode.addEventListener('click', (e) => {
       e?.stopPropagation?.();
+    });
+    rootNode.addEventListener('contextmenu', (e) => {
+      const target = e?.target;
+      const targetEl = target && typeof target.closest === 'function' ? target : target?.parentElement;
+      const isEditable = Boolean(targetEl?.closest?.(EDITABLE_TARGET_SELECTOR));
+      let hasSelection = false;
+      try {
+        hasSelection = Boolean(String(window?.getSelection?.() || '').trim());
+      } catch { }
+      if (!isEditable && !hasSelection) {
+        e?.preventDefault?.();
+        e?.stopPropagation?.();
+        e?.stopImmediatePropagation?.();
+      }
     });
   };
   bindShadowFocusGuard(shadow);
@@ -38232,6 +38247,7 @@ let activeCnyTimerId = null;
   }
 
   el('badge-quota')?.addEventListener('click', e => {
+    if (e?.ctrlKey && !e?.metaKey) return;
     if (e?.altKey || e?.detail === 0) {
       e?.preventDefault?.();
       toggleQuota('badge-quota');
@@ -38320,11 +38336,79 @@ let activeCnyTimerId = null;
   el('close').addEventListener('click', () => showPanel('none'));
   el('close-tokens')?.addEventListener('click', () => showPanel('none'));
   el('close-quota')?.addEventListener('click', () => showPanel('none'));
-  el('badge-quota')?.addEventListener('contextmenu', e => {
-    e.preventDefault();
-    e.stopPropagation();
+
+  // Issue #107: 拦截额度圆环及插件顶栏入口的右键事件（含捕获阶段与直接绑定双保险），
+  // 彻底阻止事件触达宿主全局 Copy 菜单，同时对页面普通区域的右键菜单保持完全放行。
+  const handledContextMenuEvents = new WeakSet();
+  const suppressHostContextMenuEvent = (e) => {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
+    e?.stopImmediatePropagation?.();
+    try {
+      if (typeof window !== 'undefined' && typeof window.electronNative?.closeContextMenu === 'function') {
+        Promise.resolve(window.electronNative.closeContextMenu()).catch(() => { });
+      }
+    } catch { }
+  };
+  const handleQuotaRingContextMenu = (e, sourceId = 'badge-quota') => {
+    if (e && typeof e === 'object') {
+      if (handledContextMenuEvents.has(e)) return;
+      handledContextMenuEvents.add(e);
+    }
+    suppressHostContextMenuEvent(e);
+    closePanelPicker();
+    if (typeof closeAllCsbMiniCards === 'function') closeAllCsbMiniCards();
+    if (sourceId === 'csb-group-quota') {
+      const pQuota = el('panel-quota');
+      if (pQuota && !pQuota.hidden) showPanel('none');
+      else showPanel('quota');
+      return;
+    }
     toggleQuota('badge-quota');
-  });
+  };
+  const handleThemeBadgeContextMenu = (e) => {
+    if (e && typeof e === 'object') {
+      if (handledContextMenuEvents.has(e)) return;
+      handledContextMenuEvents.add(e);
+    }
+    suppressHostContextMenuEvent(e);
+    cycleTheme();
+  };
+  const onWindowContextMenuCapture = (e) => {
+    const path = typeof e?.composedPath === 'function' ? e.composedPath() : [e?.target];
+    if (!Array.isArray(path) || path.length === 0) return;
+    const badgeQuotaEl = el('badge-quota');
+    if (badgeQuotaEl && path.includes(badgeQuotaEl)) {
+      handleQuotaRingContextMenu(e, 'badge-quota');
+      return;
+    }
+    const csbQuotaEl = el('csb-group-quota');
+    if (csbQuotaEl && path.includes(csbQuotaEl)) {
+      handleQuotaRingContextMenu(e, 'csb-group-quota');
+      return;
+    }
+    for (const tid of ['badge', 'badge-tokens', 'badge-speed']) {
+      const btn = el(tid);
+      if (btn && path.includes(btn)) {
+        handleThemeBadgeContextMenu(e);
+        return;
+      }
+    }
+    // 普通页面区域完全放行，不调用 preventDefault/stopPropagation
+    if (!path.includes(host) && (!radialHost || !path.includes(radialHost))) {
+      return;
+    }
+    // 若点击落在 host 自身（如按钮间 2px 缝隙），同样阻断宿主 Copy 菜单
+    const firstEl = path[0];
+    if (firstEl === host) {
+      suppressHostContextMenuEvent(e);
+    }
+  };
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('contextmenu', onWindowContextMenuCapture, true);
+    activeDisposers.add(() => window.removeEventListener('contextmenu', onWindowContextMenuCapture, true));
+  }
+  el('badge-quota')?.addEventListener('contextmenu', e => handleQuotaRingContextMenu(e, 'badge-quota'));
 
   // 输入框紧凑状态条 (Composer Status Bar) 交互事件：四组全部恢复交互、点击首帧直达（二次点击关闭）与顶层居中悬停缩略卡
   const csbSpeedBtn = el('csb-group-speed');
@@ -38626,6 +38710,7 @@ let activeCnyTimerId = null;
         showPanel('quota');
       }
     });
+    csbQuotaBtn.addEventListener('contextmenu', e => handleQuotaRingContextMenu(e, 'csb-group-quota'));
   }
 
   // 全局收起监听
@@ -38701,9 +38786,9 @@ let activeCnyTimerId = null;
 
   el('theme-toggle')?.addEventListener('click', cycleTheme);
   el('theme-toggle-tokens')?.addEventListener('click', cycleTheme);
-  el('badge').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
-  el('badge-tokens').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
-  el('badge-speed')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
+  el('badge').addEventListener('contextmenu', e => handleThemeBadgeContextMenu(e));
+  el('badge-tokens').addEventListener('contextmenu', e => handleThemeBadgeContextMenu(e));
+  el('badge-speed')?.addEventListener('contextmenu', e => handleThemeBadgeContextMenu(e));
 
   // =========================================================================
   // 模块 3: 上下文面板分页、设置视图、模型产品偏好、重启验证与速度对比
@@ -71440,7 +71525,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   }
 
   globalThis.__AGContextMeter = {
-    buildId: '9954b1c6d2cdfd60',
+    buildId: 'edae049c2f1a7f19',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;

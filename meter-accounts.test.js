@@ -2244,3 +2244,115 @@ test('v0.9.2 自动切号四项额度全矩阵、精确浮点阈值与旧规则�
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('Issue #115: openUrlInSystemBrowser、startOAuthLogin 浏览器打开失败快速报错与 live-host /accounts-action oauth_login 透传', async () => {
+  // 1. openUrlInSystemBrowser 跨平台命令与错误处理
+  const calls = [];
+  const fakeExecOk = (cmd, args, opts, cb) => {
+    calls.push({ cmd, args });
+    cb(null, '', '');
+  };
+  const macRes = await accountsMod.openUrlInSystemBrowser('https://accounts.google.com/o/oauth2/v2/auth?a=1&b=2', {
+    platform: 'darwin',
+    _execFile: fakeExecOk
+  });
+  assert.equal(macRes.ok, true);
+  assert.equal(macRes.method, 'macos_open');
+  assert.match(calls[0].cmd, /open$/);
+  assert.equal(calls[0].args[0], 'https://accounts.google.com/o/oauth2/v2/auth?a=1&b=2');
+
+  const winRes = await accountsMod.openUrlInSystemBrowser('https://accounts.google.com/o/oauth2/v2/auth?a=1&b=2', {
+    platform: 'win32',
+    _execFile: fakeExecOk
+  });
+  assert.equal(winRes.ok, true);
+  assert.equal(winRes.method, 'windows_rundll32');
+  assert.equal(calls[1].cmd, 'rundll32.exe');
+  assert.equal(calls[1].args[1], 'https://accounts.google.com/o/oauth2/v2/auth?a=1&b=2');
+
+  await assert.rejects(
+    () => accountsMod.openUrlInSystemBrowser('file:///etc/passwd', { platform: 'darwin', _execFile: fakeExecOk }),
+    /不允许打开非 HTTP\(S\)/
+  );
+  await assert.rejects(
+    () => accountsMod.openUrlInSystemBrowser('https://accounts.google.com/', {
+      platform: 'darwin',
+      _execFile: (_cmd, _args, _opts, cb) => cb(Object.assign(new Error('spawn failed'), { code: 1 }), '', 'LSOpenURLsWithRole failed')
+    }),
+    /LSOpenURLsWithRole failed/
+  );
+
+  // 2. startOAuthLogin 打开浏览器失败时应立即返回 stage=open_browser，不得静默卡死至 120s 超时
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-acct-oauth-open-fail-'));
+  try {
+    const mgr = accountsMod.createAccountsManager({
+      stateDir: tmpDir,
+      credentialStore: makeMockCredStore(),
+      oauthConfig: { clientId: 'test-client.apps.googleusercontent.com', clientSecret: 'GOCSPX-test-secret' }
+    });
+    const t0 = Date.now();
+    const failRes = await accountsMod.dispatchAccountsAction(mgr, { action: 'oauth_login', timeoutMs: 30000 }, {
+      openExternal: async () => { throw new Error('Mock default browser unavailable'); }
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(failRes.ok, false);
+    assert.equal(failRes.stage, 'open_browser');
+    assert.match(failRes.error, /无法在默认浏览器中打开 Google 授权页.*Mock default browser unavailable/);
+    assert.ok(elapsed < 5000, `打开浏览器失败必须快速返回而非等待超时 (elapsed=${elapsed}ms)`);
+
+    // 3. 验证 live-host /accounts-action (action=oauth_login) 将 _openExternal 透传到 startOAuthLogin 并构造合法 Google 授权 URL
+    const { createLiveRequestHandler } = require('./live-host');
+    let openedAuthUrl = '';
+    const handler = createLiveRequestHandler({
+      api: { origin: 'https://127.0.0.1:59999', origins: ['https://127.0.0.1:59999'] },
+      secret: 'test-secret-115',
+      _openExternal: async (url) => {
+        openedAuthUrl = url;
+        // 返回失败以便快速结束本单测，同时验证 URL 已成功传递到 live-host 浏览器打开器
+        return { ok: false, error: 'probe_stop_after_url_capture' };
+      }
+    });
+    const liveSrv = http.createServer(handler);
+    await new Promise(r => liveSrv.listen(0, '127.0.0.1', r));
+    const livePort = liveSrv.address().port;
+    const prevEnvId = process.env.AG_OAUTH_CLIENT_ID;
+    const prevEnvSec = process.env.AG_OAUTH_CLIENT_SECRET;
+    process.env.AG_OAUTH_CLIENT_ID = 'test-livehost-client.apps.googleusercontent.com';
+    process.env.AG_OAUTH_CLIENT_SECRET = 'GOCSPX-test-livehost-secret';
+    try {
+      const resp = await new Promise((resolve, reject) => {
+        const payload = JSON.stringify({ action: 'oauth_login', timeoutMs: 5000 });
+        const req = http.request({
+          hostname: '127.0.0.1',
+          port: livePort,
+          path: '/accounts-action',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Origin': 'https://127.0.0.1:59999',
+            'X-AG-Context-Token': 'test-secret-115',
+            'Content-Length': Buffer.byteLength(payload)
+          }
+        }, res => {
+          let body = '';
+          res.on('data', c => body += c);
+          res.on('end', () => resolve({ status: res.statusCode, json: JSON.parse(body || '{}') }));
+        });
+        req.on('error', reject);
+        req.end(payload);
+      });
+      assert.equal(resp.status, 200);
+      assert.match(openedAuthUrl, /^https:\/\/accounts\.google\.com\/o\/oauth2\/(?:v2\/)?auth\?/);
+      assert.match(openedAuthUrl, /redirect_uri=http%3A%2F%2F127\.0\.0\.1%3A\d+/);
+      assert.equal(resp.json.ok, false);
+      assert.equal(resp.json.stage, 'open_browser');
+      assert.match(resp.json.error, /probe_stop_after_url_capture/);
+    } finally {
+      if (prevEnvId === undefined) delete process.env.AG_OAUTH_CLIENT_ID; else process.env.AG_OAUTH_CLIENT_ID = prevEnvId;
+      if (prevEnvSec === undefined) delete process.env.AG_OAUTH_CLIENT_SECRET; else process.env.AG_OAUTH_CLIENT_SECRET = prevEnvSec;
+      await new Promise(r => liveSrv.close(r));
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

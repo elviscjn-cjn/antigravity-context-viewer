@@ -11244,3 +11244,72 @@ test('01 批回归：对调标签顺序、唯一 speed-line-empty ID 与真实�
     hCold.api.dispose();
   }
 });
+
+test('Issue #107: 右键额度圆环在捕获与冒泡双层阻断宿主 Copy 菜单，仅打开额度面板，普通区域右键放行', () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  let closeContextMenuCalls = 0;
+  h.sandbox.window.electronNative = {
+    closeContextMenu: () => {
+      closeContextMenuCalls++;
+      return Promise.resolve();
+    }
+  };
+  try {
+    const quotaBtn = h.elements.get('badge-quota');
+    const panelQuota = h.elements.get('panel-quota');
+    assert.equal(panelQuota.hidden, true, '初始额度面板应关闭');
+
+    // 1. 模拟真实浏览器 window 捕获阶段右键点击 #badge-quota（含 composedPath）
+    const captureListeners = h.windowListeners?.get?.('contextmenu') || [];
+    let prevented = false;
+    let stopped = false;
+    let immStopped = false;
+    const realEv = {
+      target: h.host,
+      button: 2,
+      composedPath: () => [quotaBtn, h.shadow, h.host, h.sandbox.document.body, h.sandbox.window],
+      preventDefault: () => { prevented = true; },
+      stopPropagation: () => { stopped = true; },
+      stopImmediatePropagation: () => { immStopped = true; }
+    };
+    if (captureListeners.length > 0) {
+      for (const fn of captureListeners) fn(realEv);
+    } else {
+      quotaBtn.trigger('contextmenu', realEv);
+    }
+    assert.equal(prevented, true, '右键额度圆环必须 preventDefault');
+    assert.equal(stopped, true, '右键额度圆环必须 stopPropagation');
+    assert.equal(immStopped, true, '右键额度圆环必须 stopImmediatePropagation 阻断宿主监听');
+    assert.equal(panelQuota.hidden, false, '右键额度圆环必须打开额度面板');
+    assert.ok(closeContextMenuCalls >= 1, '应同步兜底调用 electronNative.closeContextMenu');
+
+    // 2. 同一事件即使再次到达直接监听也不得二次反关面板（去重保护）
+    quotaBtn.trigger('contextmenu', realEv);
+    assert.equal(panelQuota.hidden, false, '同一 contextmenu 事件经捕获+目标两层不得重复触发反关');
+
+    // 3. 普通页面区域（composedPath 不包含插件 host）右键必须完全放行
+    let normalPrevented = false;
+    let normalStopped = false;
+    const normalNode = { tagName: 'P', id: 'host-chat-msg' };
+    const normalEv = {
+      target: normalNode,
+      button: 2,
+      composedPath: () => [normalNode, h.sandbox.document.body, h.sandbox.window],
+      preventDefault: () => { normalPrevented = true; },
+      stopPropagation: () => { normalStopped = true; },
+      stopImmediatePropagation: () => { normalStopped = true; }
+    };
+    for (const fn of captureListeners) fn(normalEv);
+    assert.equal(normalPrevented, false, '普通区域右键不得被插件 preventDefault');
+    assert.equal(normalStopped, false, '普通区域右键不得被插件 stopPropagation');
+
+    // 4. macOS Ctrl+Click（次键单击）不得误触左键 5h/7d 切换
+    const beforeMode = api.getQuotaBadgeWindowModeForTest?.() || quotaBtn.getAttribute('data-window-mode');
+    quotaBtn.trigger('click', { ctrlKey: true, metaKey: false, button: 0, detail: 1 });
+    const afterMode = api.getQuotaBadgeWindowModeForTest?.() || quotaBtn.getAttribute('data-window-mode');
+    assert.equal(afterMode, beforeMode, 'Ctrl+Click 不得误触左键 5h/7d 轮换');
+  } finally {
+    api.dispose();
+  }
+});

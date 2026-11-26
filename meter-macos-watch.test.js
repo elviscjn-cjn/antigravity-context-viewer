@@ -1034,3 +1034,70 @@ test('已有常驻 watch 时显式执行 watch --relaunch --persistent：成功�
     }
   }
 });
+
+test('Issue #119: runMacDockLauncher 单击冷启动带 CDP、确保常驻 watch 并挂载，以及会话内保护', async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-dock-launcher-'));
+  try {
+  const macTarget = {
+    platform: 'darwin',
+    asarPath: '/Applications/Antigravity.app/Contents/Resources/app.asar',
+    appBundlePath: '/Applications/Antigravity.app',
+    execPath: '/Applications/Antigravity.app/Contents/MacOS/Antigravity'
+  };
+
+  // 1. 冷启动（退出后单击 Dock 启动器）：后台拉起 watch --persistent、带 CDP 启动宿主并完成挂载
+  {
+    const watchSpawns = [];
+    const hostLaunches = [];
+    let activated = 0;
+    let queryCount = 0;
+    const res = await cli.runMacDockLauncher(null, { port: 58321 }, {
+      stateDir,
+      mountWaitMs: 200,
+      mountPollMs: 50,
+      _hostTarget: macTarget,
+      _isHostRunning: async () => false,
+      _isPortFree: async () => true,
+      _spawnWatch: (exe, args) => {
+        watchSpawns.push({ exe, args });
+        return { pid: 99001, unref() {} };
+      },
+      _launchHost: async (target, port) => {
+        hostLaunches.push({ execPath: target.execPath, port });
+      },
+      _queryLiveWindow: async () => {
+        queryCount++;
+        if (queryCount === 1) return { running: false, pageFound: false };
+        return { running: true, pageFound: true, port: 58321, active: queryCount >= 3 };
+      },
+      _activateHost: () => { activated++; }
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.mode, 'launched_with_cdp');
+    assert.equal(res.port, 58321);
+    assert.equal(res.mounted, true);
+    assert.equal(res.watcherStarted, true);
+    assert.equal(hostLaunches.length, 1);
+    assert.equal(hostLaunches[0].execPath, '/Applications/Antigravity.app/Contents/MacOS/Antigravity');
+    assert.equal(hostLaunches[0].port, 58321);
+    assert.ok(watchSpawns.length === 1 && watchSpawns[0].args.includes('--persistent'));
+    assert.equal(activated, 1);
+  }
+
+  // 2. 在 Antigravity 内部会话中若宿主无 CDP，必须拒绝强杀宿主
+  {
+    const resInside = await cli.runMacDockLauncher(null, { port: 58321 }, {
+      stateDir,
+      ensureWatcher: false,
+      env: { ANTIGRAVITY_AGENT: '1' },
+      _hostTarget: macTarget,
+      _isHostRunning: async () => true,
+      _queryLiveWindow: async () => ({ running: true, cdpEnabled: false, pageFound: false })
+    });
+    assert.equal(resInside.ok, false);
+    assert.equal(resInside.reason, 'inside_antigravity_session');
+  }
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
+});

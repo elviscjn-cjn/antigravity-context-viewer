@@ -260,9 +260,14 @@ function timingSafeTokenEqual(provided, expected) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
-function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShutdown = null, startedAt = LIVE_HOST_STARTED_AT, _applyUpdateAsync = applyUpdateAsync }) {
+function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShutdown = null, startedAt = LIVE_HOST_STARTED_AT, _applyUpdateAsync = applyUpdateAsync, _openExternal = null }) {
   let activeApplyUpdateCount = 0;
   let deferredShutdownRequested = false;
+  const resolveOpenExternal = () => {
+    if (typeof _openExternal === 'function') return _openExternal;
+    const { openUrlInSystemBrowser } = require('./meter-accounts');
+    return (targetUrl) => openUrlInSystemBrowser(targetUrl);
+  };
   const resolveAllowedSet = () => {
     const set = new Set();
     const addAllowed = (raw) => {
@@ -664,18 +669,15 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
             ? `${baseUrl}/?sessionId=${encodeURIComponent(cleanSid)}&source=${encodeURIComponent(cleanSrc)}`
             : baseUrl;
           let openedExternal = false;
+          let openExternalError = null;
           if (shouldOpenExternal) {
             try {
-              const { spawn } = require('child_process');
-              if (process.platform === 'win32') {
-                spawn('cmd.exe', ['/c', 'start', '', dashboardUrl], { detached: true, stdio: 'ignore' }).unref();
-              } else if (process.platform === 'darwin') {
-                spawn('open', [dashboardUrl], { detached: true, stdio: 'ignore' }).unref();
-              } else {
-                spawn('xdg-open', [dashboardUrl], { detached: true, stdio: 'ignore' }).unref();
-              }
+              const opener = resolveOpenExternal();
+              await opener(dashboardUrl);
               openedExternal = true;
-            } catch { }
+            } catch (openErr) {
+              openExternalError = openErr?.message || String(openErr || '无法打开外部浏览器');
+            }
           }
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({
@@ -686,7 +688,8 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
             pid: srv?.pid || null,
             sessionId: cleanSid || null,
             source: cleanSrc,
-            openedExternal
+            openedExternal,
+            ...(openExternalError ? { openExternalError } : {})
           }));
           return;
         }
@@ -836,11 +839,13 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
         if (req.url === '/accounts-action') {
           const { getSharedAccountsManager, dispatchAccountsAction } = require('./meter-accounts');
           const targetOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
-          const mgr = getSharedAccountsManager({ origin: targetOrigin });
+          const openExternal = resolveOpenExternal();
+          const mgr = getSharedAccountsManager({ origin: targetOrigin, openExternal });
           const requiresClientRestart = compareVersions(resolveLiveHostTargetVersion(), '2.34.0') >= 0;
           const outRes = await dispatchAccountsAction(mgr, request || {}, {
             requiresClientRestart,
-            allowManualRestartPending: requiresClientRestart
+            allowManualRestartPending: requiresClientRestart,
+            openExternal
           });
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(outRes));

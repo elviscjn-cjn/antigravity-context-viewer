@@ -1836,6 +1836,204 @@ async function runWatchDaemon(options = {}) {
 }
 
 /**
+ * macOS Dock / Finder 单击启动并挂载入口 (Issue #119)：
+ * 1. 确保免改盘常驻守护 `watch --persistent` 存活（未运行则后台拉起）；
+ * 2. 若 Antigravity 已带 CDP 运行则前置激活并补挂；
+ * 3. 若 Antigravity 未运行则以干净环境变量直接 spawn 带 `--remote-debugging-port` 的官方二进制，等待窗口就绪后挂载并前置窗口；
+ * 4. 若 Antigravity 正以无 CDP 状态运行且允许接管（非会话内部触发），优雅退出后以 CDP 重开并挂载。
+ */
+async function runMacDockLauncher(customPath = null, cdpOptions = {}, options = {}) {
+  const stateDir = options.stateDir || getStateDir();
+  const target = resolveAntigravityHostTarget(customPath, options);
+  const queryFn = typeof options._queryLiveWindow === 'function' ? options._queryLiveWindow : queryLiveWindow;
+  const runLiveFn = typeof options._runLiveCommand === 'function' ? options._runLiveCommand : runLiveCommand;
+  const activateHost = () => {
+    if (typeof options._activateHost === 'function') {
+      try { options._activateHost(target); } catch { }
+      return;
+    }
+    if (target?.platform !== 'darwin' || process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test') return;
+    try {
+      const appRef = target.appBundlePath || 'Antigravity';
+      execFileSync('osascript', [
+        '-e', 'on run argv',
+        '-e', 'tell application (item 1 of argv) to activate',
+        '-e', 'end run',
+        '--',
+        appRef
+      ], { stdio: 'ignore', timeout: 5000 });
+    } catch { }
+  };
+
+  // 1. 确保 watch --persistent 常驻守护存活
+  let watchPid = readWatchPid(stateDir);
+  let watcherStarted = false;
+  let watcherRunning = Boolean(watchPid && isPidAliveForUser(watchPid));
+  if (!watcherRunning && options.ensureWatcher !== false) {
+    const staged = getStagedLiveRuntime({ stateDir });
+    const watchScript = options.watchScript
+      || (staged && compareVersions(staged.version, PROJECT_VERSION) > 0 ? path.join(staged.dir, 'cli.js') : __filename);
+    const watchArgs = [watchScript, 'watch', '--persistent', '--no-launch'];
+    if (cdpOptions.port) watchArgs.push('--port', String(cdpOptions.port));
+    if (customPath) watchArgs.push('--path', customPath);
+    const spawner = typeof options._spawnWatch === 'function' ? options._spawnWatch : spawn;
+    let stdioOpt = 'ignore';
+    let logFd = null;
+    try {
+      const logPath = path.join(os.homedir(), 'Library', 'Logs', 'antigravity-context-meter.log');
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+      logFd = fs.openSync(logPath, 'a');
+      stdioOpt = ['ignore', logFd, logFd];
+    } catch { }
+    try {
+      const child = spawner(process.execPath, watchArgs, {
+        detached: true,
+        stdio: stdioOpt,
+        windowsHide: true,
+        env: { ...process.env, AG_METER_STATE_DIR: stateDir }
+      });
+      child?.unref?.();
+      watcherStarted = true;
+      watchPid = child?.pid || readWatchPid(stateDir);
+      watcherRunning = Boolean(watchPid);
+    } finally {
+      if (logFd != null) {
+        try { fs.closeSync(logFd); } catch { }
+      }
+    }
+  }
+
+  // 2. 检测当前窗口状态
+  const initialLive = await queryFn(cdpOptions);
+  if (initialLive && initialLive.running && initialLive.pageFound) {
+    let mounted = Boolean(initialLive.active);
+    if (!mounted) {
+      try {
+        const rep = await runLiveFn(customPath, cdpOptions, { ...options, source: 'cli-launcher' });
+        mounted = Boolean(rep?.ok);
+      } catch { }
+    }
+    activateHost();
+    return {
+      ok: true,
+      mode: 'focused_existing_cdp',
+      port: initialLive.port || cdpOptions.port || null,
+      mounted,
+      watcherRunning,
+      watcherStarted,
+      watcherPid: watchPid || null,
+      hostPath: target?.execPath || null,
+      appBundlePath: target?.appBundlePath || null
+    };
+  }
+
+  const hostRunningWithoutCdp = Boolean(
+    (initialLive && initialLive.running && initialLive.cdpEnabled === false) ||
+    await isAntigravityHostRunning(customPath, { ...options, _hostTarget: target })
+  );
+
+  let mode = 'launched_with_cdp';
+  if (hostRunningWithoutCdp) {
+    if (isRunningInsideAntigravitySession(options.env || process.env)) {
+      return {
+        ok: false,
+        reason: 'inside_antigravity_session',
+        error: '当前位于 Antigravity 内部会话中，禁止自动重启宿主；请在外部终端执行或在 Dock 外部单击启动器。',
+        watcherRunning,
+        watcherPid: watchPid || null,
+        hostPath: target?.execPath || null
+      };
+    }
+    if (options.relaunch === false) {
+      const portHint = cdpOptions.port || DEFAULT_LAUNCH_CDP_PORT;
+      return {
+        ok: false,
+        reason: 'cdp_not_enabled',
+        error: 'Antigravity 正在运行但未开启 CDP 调试端口（已指定 --no-relaunch）。',
+        manualCmd: formatManualCdpLaunchCommand(target, portHint),
+        watcherRunning,
+        watcherPid: watchPid || null,
+        hostPath: target?.execPath || null
+      };
+    }
+    const quitOk = await quitAntigravityHostGracefully(target, customPath, options);
+    if (!quitOk) {
+      return {
+        ok: false,
+        reason: 'relaunch_quit_timeout',
+        error: '等待旧 Antigravity 窗口退出超时，请确认无未保存弹窗后重试。',
+        watcherRunning,
+        watcherPid: watchPid || null,
+        hostPath: target?.execPath || null
+      };
+    }
+    mode = 'relaunched_with_cdp';
+  }
+
+  // 3. 选择可用端口并以干净环境直接 spawn 官方 Antigravity 二进制
+  let port;
+  try {
+    port = await pickAvailableCdpPort(cdpOptions.port, { ...options, checkPortOccupied: Boolean(cdpOptions.port) });
+  } catch (err) {
+    return {
+      ok: false,
+      reason: err?.code === 'CDP_PORT_OCCUPIED' ? 'port_occupied' : 'port_pick_failed',
+      error: err?.message || String(err),
+      watcherRunning,
+      watcherPid: watchPid || null,
+      hostPath: target?.execPath || null
+    };
+  }
+
+  await launchAntigravityHostWithCdp(target, port, options);
+  const ready = await waitForLiveWindowReady({ ...cdpOptions, port }, options);
+  if (!ready) {
+    return {
+      ok: false,
+      reason: 'launch_timeout',
+      port,
+      error: `已拉起 Antigravity (--remote-debugging-port=${port})，但等待窗口就绪超时。`,
+      watcherRunning,
+      watcherPid: watchPid || null,
+      hostPath: target?.execPath || null
+    };
+  }
+
+  // 4. 确保挂载：先短等常驻 watch 自动注入，如尚未注入则立即主动补挂
+  let mounted = Boolean(ready.active);
+  const settleDeadline = Date.now() + (options.mountWaitMs ?? 2500);
+  while (!mounted && Date.now() < settleDeadline) {
+    await new Promise(r => setTimeout(r, options.mountPollMs ?? 300));
+    const snap = await queryFn({ ...cdpOptions, port });
+    if (snap && snap.running && snap.pageFound && snap.active) {
+      mounted = true;
+      break;
+    }
+  }
+  if (!mounted) {
+    try {
+      const rep = await runLiveFn(customPath, { ...cdpOptions, port }, { ...options, source: 'cli-launcher' });
+      mounted = Boolean(rep?.ok);
+    } catch { }
+  }
+
+  activateHost();
+  const finalWatchPid = readWatchPid(stateDir) || watchPid || null;
+  return {
+    ok: true,
+    mode,
+    port,
+    mounted,
+    watcherRunning: Boolean(finalWatchPid && (options._spawnWatch ? true : isPidAliveForUser(finalWatchPid))),
+    watcherStarted,
+    watcherPid: finalWatchPid,
+    hostPath: target?.execPath || null,
+    appBundlePath: target?.appBundlePath || null,
+    launchArg: `--remote-debugging-port=${port}`
+  };
+}
+
+/**
  * 停止正在运行的 watch 守护进程与 live-host 桥接进程 (node cli.js stop-watch)
  */
 async function stopWatchDaemon(options = {}) {
@@ -2155,12 +2353,13 @@ const CLI_BOOLEAN_FLAGS = new Set([
   '--force', '--all', '--cli', '--no-cli-sync', '--no-sync', '--previous', '--in-place', '--no-shortcut',
   '--today', '--week', '--month', '--json', '--compact', '--once', '--dry-run',
   '--clear', '--sync-cli-settings', '--no-open', '--relaunch', '--no-launch', '--persistent', '--force-mac-asar', '--disk-only',
-  '--check-only', '--beta', '--silent'
+  '--check-only', '--beta', '--silent', '--add-to-dock', '--keep-dock', '--no-relaunch'
 ]);
 
 const CLI_KNOWN_COMMANDS = new Set([
   'install', 'update', 'recover', 'live', 'watch', 'stop-watch', 'restore', 'uninstall',
   'autostart-status', 'autostart:enable', 'autostart:disable',
+  'launcher:install', 'launcher:status', 'launcher:remove', 'launcher:run',
   'install-cli', 'restore-cli', 'status-cli',
   'unlock-status', 'unlock', 'unlock-restore',
   'enhance-status', 'enhance', 'enhance-restore',
@@ -2196,6 +2395,9 @@ function printUsage() {
   node cli.js autostart-status              查看登录自启状态 · macOS LaunchAgent 与 Windows Run 键
   node cli.js autostart:enable [--port <port>]   写入登录自启项，登录后自动执行 watch 免改盘挂载
   node cli.js autostart:disable             移除登录自启项 · 不影响当前正在运行的 watch
+  node cli.js launcher:install [--port <port>] [--add-to-dock]  生成 macOS Dock/Finder 一键启动挂载入口 (.app)
+  node cli.js launcher:status [--json]      查看 macOS Dock 启动器安装与固定状态
+  node cli.js launcher:remove [--keep-dock] 移除 macOS Dock 启动器 (.app)
   node cli.js live [--port <port>] [--relaunch] [--no-launch]   免改盘 CDP 热挂载（未开启调试端口时支持自动拉起/重开）
   node cli.js update [--check-only] [--beta] [--json]          检查或下载免改盘更新，供 live / watch 加载
   node cli.js install [--path <app.asar>] [--force-mac-asar]    一键持久化安装并热注入当前运行窗口
@@ -2535,6 +2737,86 @@ async function main() {
         if (res.file) console.log(`   - 配置位置: ${res.file}`);
         if (res.command) console.log(`   - 命令: ${res.command}`);
       }
+    }
+  } else if (cmd === 'launcher:install' || cmd === 'launcher:status' || cmd === 'launcher:remove' || cmd === 'launcher:run') {
+    const {
+      getMacDockLauncherStatus,
+      installMacDockLauncher,
+      removeMacDockLauncher
+    } = require('./autostart');
+    const getFlagVal = (flag) => {
+      const idx = args.indexOf(flag);
+      return idx >= 0 && idx + 1 < args.length ? args[idx + 1] : undefined;
+    };
+    const wantJson = args.includes('--json');
+    const launcherOpts = {
+      port: cdpOptions.port,
+      asarPath: customPath || undefined,
+      outDir: getFlagVal('--out'),
+      name: getFlagVal('--name'),
+      version: PROJECT_VERSION
+    };
+    if (cmd === 'launcher:install') {
+      const hostTarget = resolveAntigravityHostTarget(customPath || null);
+      const res = installMacDockLauncher({
+        ...launcherOpts,
+        sourceAppPath: hostTarget?.appBundlePath || '/Applications/Antigravity.app',
+        addToDock: args.includes('--add-to-dock'),
+        noRelaunch: args.includes('--no-relaunch')
+      });
+      if (wantJson) {
+        console.log(JSON.stringify(res, null, 2));
+      } else if (!res.ok) {
+        console.error(`❌ macOS Dock 启动器安装失败: ${res.reason || res.error || '当前平台不支持'}`);
+        process.exitCode = 1;
+      } else {
+        console.log(`✅ 已生成 macOS 一键启动并挂载入口: ${res.appPath}`);
+        console.log(`   - 图标复制: ${res.iconCopied ? '已同步官方 Antigravity 图标' : '默认图标'}`);
+        console.log(`   - 本地签名: ${res.signed ? '已完成 ad-hoc 签名' : (res.signWarning ? `未签名 (${res.signWarning})` : '跳过')}`);
+        console.log(`   - Dock 固定状态: ${res.inDock ? (res.addedToDock ? '已自动固定到 Dock' : '已在 Dock 中') : '未固定（可拖入 Dock 或加 --add-to-dock）'}`);
+        if (res.dockError) console.warn(`   ⚠️ Dock 写入提示: ${res.dockError}`);
+        console.log('   - 说明: 全程零修改官方 /Applications/Antigravity.app，退出后单击此入口即可带 CDP 启动并自动挂载看板。');
+      }
+      if (!res.ok) process.exitCode = 1;
+    } else if (cmd === 'launcher:status') {
+      const res = getMacDockLauncherStatus(launcherOpts);
+      if (wantJson) {
+        console.log(JSON.stringify(res, null, 2));
+      } else if (!res.supported) {
+        console.log(`ℹ️ ${res.reason}`);
+      } else {
+        console.log(`🔎 macOS Dock 启动器状态: ${res.installed ? '已安装' : '未安装'}`);
+        console.log(`   - 应用路径: ${res.appPath}`);
+        console.log(`   - 已固定到 Dock: ${res.inDock ? '是' : '否'}`);
+      }
+    } else if (cmd === 'launcher:remove') {
+      const res = removeMacDockLauncher({
+        ...launcherOpts,
+        removeFromDock: !args.includes('--keep-dock')
+      });
+      if (wantJson) {
+        console.log(JSON.stringify(res, null, 2));
+      } else if (!res.ok) {
+        console.error(`❌ 移除失败: ${res.reason || res.error || '当前平台不支持'}`);
+        process.exitCode = 1;
+      } else if (!res.existed && !res.dockRemoved) {
+        console.log(`ℹ️ 未检测到已安装的启动器: ${res.appPath}`);
+      } else {
+        console.log(`✅ 已移除 macOS Dock 启动器: ${res.appPath}${res.dockRemoved ? '（并已从 Dock 移除）' : ''}`);
+      }
+      if (!res.ok) process.exitCode = 1;
+    } else if (cmd === 'launcher:run') {
+      const res = await runMacDockLauncher(customPath, cdpOptions, {
+        relaunch: !args.includes('--no-relaunch')
+      });
+      if (wantJson) {
+        console.log(JSON.stringify(res, null, 2));
+      } else if (res.ok) {
+        console.log(`✅ [${res.mode}] Antigravity 已启动/激活并挂载 (port=${res.port || 'existing'}, mounted=${res.mounted}, watchPid=${res.watcherPid || 'none'})`);
+      } else {
+        console.error(`❌ Dock 启动器运行失败 (${res.reason || 'error'}): ${res.error || '未知错误'}`);
+      }
+      if (!res.ok) process.exitCode = 1;
     }
   } else if (cmd === 'restore' || cmd === 'uninstall') {
     const restoreAll = args.includes('--all');
@@ -3203,6 +3485,7 @@ module.exports = {
   buildWin32DetachedBridgePowerShellScript,
   launchBridgeViaWin32Wmi,
   runWatchDaemon,
+  runMacDockLauncher,
   stopWatchDaemon,
   getWatchPidPath,
   getWatchMetaPath,
