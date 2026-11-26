@@ -773,3 +773,58 @@ test('Phase 7.3: 底栏开关解耦、#csb-group-status 直达与窄窗优先露
     api.dispose();
   }
 });
+
+test('Issue #124: 普通 [role="dialog"] 归档提示与确认弹窗不被误注入 Context Meter，真实设置弹窗仍正常挂载', async () => {
+  const h = createHostSettingsTestHarness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    await h.flush();
+
+    // 1. 归档通知气泡 [role="dialog"]（含标题行 × 关闭按钮与底部“撤销”按钮）
+    const toast = h.createMockNode('div');
+    toast.setAttribute('role', 'dialog');
+    const toastHeader = h.createMockNode('div');
+    const toastTitle = h.createMockNode('span');
+    toastTitle.textContent = 'Conversation Archived';
+    const closeBtn = h.createMockNode('button');
+    closeBtn.textContent = '×';
+    toastHeader.appendChild(toastTitle);
+    toastHeader.appendChild(closeBtn);
+    const toastBody = h.createMockNode('div');
+    toastBody.textContent = 'View archived in the sidebar.';
+    const undoBtn = h.createMockNode('button');
+    undoBtn.textContent = '撤销';
+    toastBody.appendChild(undoBtn);
+    toast.appendChild(toastHeader);
+    toast.appendChild(toastBody);
+    h.bodyNode.appendChild(toast);
+
+    // 2. 普通确认弹窗 [role="dialog"]（含“继续”与“取消”按钮）
+    const confirmDialog = h.createMockNode('div');
+    confirmDialog.setAttribute('role', 'dialog');
+    const confirmContent = h.createMockNode('div');
+    confirmContent.textContent = 'Confirm action?';
+    const confirmActions = h.createMockNode('div');
+    const continueBtn = h.createMockNode('button');
+    continueBtn.textContent = '继续';
+    const cancelBtn = h.createMockNode('button');
+    cancelBtn.textContent = '取消';
+    confirmActions.appendChild(continueBtn);
+    confirmActions.appendChild(cancelBtn);
+    confirmDialog.appendChild(confirmContent);
+    confirmDialog.appendChild(confirmActions);
+    h.bodyNode.appendChild(confirmDialog);
+
+    api.syncHostSettingsForTest();
+    assert.equal(h.docElements.get('ag-cm-host-settings-nav'), undefined, '普通 [role="dialog"] 不得挂载 Context Meter 导航项');
+    assert.equal(toastHeader.children.length, 2, '归档提示标题行不得被注入额外按钮');
+    assert.equal(confirmActions.children.length, 2, '确认弹窗按钮栏不得被注入额外按钮');
+
+    // 3. 打开真正的宿主设置弹窗后，Context Meter 仍能正常挂载到设置侧栏
+    h.mountHostSettingsModal();
+    api.syncHostSettingsForTest();
+    assert.ok(h.docElements.get('ag-cm-host-settings-nav'), '真实宿主设置弹窗必须正常挂载 Context Meter 导航项');
+  } finally {
+    api.dispose();
+  }
+});
