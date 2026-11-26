@@ -727,6 +727,7 @@
   var I18N_DATA = (root && (root.__AGY_I18N_DATA__ || root.__AGY_I18N_DICT__)) || { exact: {}, patterns: [] };
   var I18N_CONFIG = (root && root.__AGY_I18N_CONFIG__) || { enabled: true, language: 'zh-CN', brandTitle: 'english' };
   var i18nEnabled = I18N_CONFIG.enabled !== false && I18N_CONFIG.language !== 'en';
+  var i18nEpoch = 1;
   var translatedTextNodes = typeof Set !== 'undefined' ? new Set() : null;
   var translatedAttrEls = typeof Set !== 'undefined' ? new Set() : null;
   function getBrandTitleMode() {
@@ -1365,11 +1366,12 @@
     }
     if (!original) return;
 
-    if (node._agyOriginal === original && !node._agyIsBrandNode) return;
+    if (node._agyOriginal === original && node._agyEpoch === i18nEpoch && !node._agyIsBrandNode) return;
 
     var trimmed = original.trim();
     if (!trimmed) {
       node._agyOriginal = original;
+      node._agyEpoch = i18nEpoch;
       return;
     }
 
@@ -1390,6 +1392,7 @@
         node.nodeValue = bLead + brandMapped + bTrail;
       }
       node._agyOriginal = node.nodeValue;
+      node._agyEpoch = i18nEpoch;
       if (parent) {
         var isExactBrandItem = Boolean(
           (parent.getAttribute && (parent.getAttribute('data-agy-brand-item') === 'true' || parent.getAttribute('data-testid') === 'title-menu-bar-item')) ||
@@ -1407,6 +1410,7 @@
 
     if (!i18nEnabled) {
       node._agyOriginal = original;
+      node._agyEpoch = i18nEpoch;
       return;
     }
 
@@ -1414,6 +1418,7 @@
       recordTranslatedTextNode(node, original);
       node.nodeValue = original.replace('.', '。');
       node._agyOriginal = node.nodeValue;
+      node._agyEpoch = i18nEpoch;
       return;
     }
 
@@ -1432,8 +1437,10 @@
       recordTranslatedTextNode(node, original);
       node.nodeValue = leadingSpace + translated + trailingSpace;
       node._agyOriginal = node.nodeValue;
+      node._agyEpoch = i18nEpoch;
     } else {
       node._agyOriginal = original;
+      node._agyEpoch = i18nEpoch;
     }
   }
 
@@ -1509,15 +1516,17 @@
           var val = el.getAttribute(attr);
           if (val) {
             var markKey = MARK_ATTR + '_' + attr;
-            if (el[markKey] === val) continue;
+            if (el[markKey] === val && el[markKey + '_ep'] === i18nEpoch) continue;
 
             var trans = translateSingleUnit(val);
             if (trans !== null && trans !== val) {
               recordTranslatedAttr(el, attr, val);
               el.setAttribute(attr, trans);
               el[markKey] = trans;
+              el[markKey + '_ep'] = i18nEpoch;
             } else {
               el[markKey] = val;
+              el[markKey + '_ep'] = i18nEpoch;
             }
           }
         }
@@ -1722,6 +1731,7 @@
   function setI18nEnabled(nextEnabled, opts) {
     var wantOn = Boolean(nextEnabled);
     i18nEnabled = wantOn;
+    i18nEpoch++;
     var cfg = (root && root.__AGY_I18N_CONFIG__) || I18N_CONFIG;
     cfg.enabled = wantOn;
     cfg.language = wantOn ? 'zh-CN' : 'en';

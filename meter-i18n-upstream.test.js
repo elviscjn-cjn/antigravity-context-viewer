@@ -603,4 +603,11 @@ test('macOS watch 免改盘汉化: live-host 免 ASAR 门禁切换、/i18n-bundl
   assert.equal(workedTxt.nodeValue, 'Worked for 7m', '切回英文应恢复 Worked for 原文');
   assert.equal(ranVerbTxt.nodeValue, 'Ran', '切回英文应恢复 Ran 原文');
   assert.equal(analyzedLineTxt.nodeValue, 'Analyzed meter-renderer.js', '切回英文应恢复 Analyzed 原文');
+
+  // 4. 再次切回简体中文（含 epoch 递增验证）：不得因 _agyOriginal 缓存命中而被跳过
+  sandbox.window.__AGY_SET_ENABLED__(true, { brandTitle: 'english' });
+  assert.equal(sidebarTxt.nodeValue, '新建会话', '二次切回简体中文必须重新翻译侧边栏');
+  assert.equal(settingsTxt.nodeValue, '设置', '二次切回简体中文必须重新翻译设置按钮');
+  assert.equal(workedTxt.nodeValue, '已运行 7 分钟', '二次切回简体中文必须重新翻译工具步骤时长');
+  assert.equal(mdProseTxt.nodeValue, 'Plane Trajectory Planning (Table 3)', '二次切回简体中文仍不得污染英文正文');
 });

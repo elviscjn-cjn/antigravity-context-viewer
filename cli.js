@@ -2006,7 +2006,7 @@ const CLI_VALUE_FLAGS = new Set([
 const CLI_BOOLEAN_FLAGS = new Set([
   '--force', '--all', '--cli', '--no-cli-sync', '--no-sync', '--previous', '--in-place', '--no-shortcut',
   '--today', '--week', '--month', '--json', '--compact', '--once', '--dry-run',
-  '--clear', '--sync-cli-settings', '--no-open', '--relaunch', '--no-launch', '--force-mac-asar', '--disk-only',
+  '--clear', '--sync-cli-settings', '--no-open', '--relaunch', '--no-launch', '--persistent', '--force-mac-asar', '--disk-only',
   '--check-only', '--beta', '--silent'
 ]);
 

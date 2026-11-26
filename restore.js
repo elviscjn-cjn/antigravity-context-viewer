@@ -206,6 +206,8 @@ async function restore(options = {}) {
     const effectivePlatform = options._platform || process.platform;
     const allowMacOverride = Boolean(options.allowIntegrityOverride || process.argv.includes('--force-mac-asar'));
     const finalizeMacBundleResign = () => {
+      // 在 macOS 重签外层 .app 前必须先释放 Resources/app.asar.lock，避免把临时锁文件封入 CodeResources
+      fileLock.release();
       const macResign = resignMacAppBundleIfNeeded(targetFile, macIntegrity, {
         _platform: options._platform,
         _existsSync: options._existsSync,

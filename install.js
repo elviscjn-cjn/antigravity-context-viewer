@@ -1001,6 +1001,9 @@ async function install(options = {}) {
         manifest.helperSha256 = helperSha;
         manifest.verifiedAt = new Date().toISOString();
 
+        // 在 macOS 重签外层 .app 前必须先释放位于 Resources/ 内的 app.asar.lock，
+        // 否则 codesign 会把锁文件封进 CodeResources，随后 finally 删除锁文件导致签名校验立即失效。
+        fileLock.release();
         const macResign = resignMacAppBundleIfNeeded(installed, macIntegrity, {
           _platform: options._platform,
           _existsSync: options._existsSync,
