@@ -131,6 +131,9 @@
     isValidSpeedSample,
     resolveRequestRowSpeed,
     summarizeSessionSpeed,
+    normalizeSpeedDisplayMode,
+    resolveSpeedDisplayMetrics,
+    pickCallDisplayTps,
     computeMedian,
     summarizeSpeedByModel,
     parseSpeedDateRange,
@@ -169,6 +172,7 @@
   } = (globalThis.__AGContextMeterCore || {});
   const VALID_DOCK_POSITIONS = ['flow', 'compact', 'aux', 'page'];
   const VALID_QUOTA_WINDOW_MODES = ['auto', '5h', 'weekly', 'both'];
+  const VALID_SPEED_DISPLAY_MODES = ['stream', 'e2e'];
   const VALID_QUICK_MENU_STYLES = ['floating', 'topbar', 'bottombar', 'classic'];
   const RADIAL_STAGGER_MS = 34;
   const RADIAL_R_REST_360 = 56;
@@ -302,6 +306,12 @@
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_quota_badge_window_mode') : null;
       return VALID_QUOTA_WINDOW_MODES.includes(saved) ? saved : 'auto';
     } catch { return 'auto'; }
+  })();
+  let speedDisplayMode = (() => {
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_speed_display_mode') : null;
+      return VALID_SPEED_DISPLAY_MODES.includes(saved) ? saved : 'stream';
+    } catch { return 'stream'; }
   })();
   // 旧 4 选 1 单选仅作为迁移输入保留，运行期真实状态由 3 个独立布尔开关承载
   let legacyQuickMenuStyle = (() => {
@@ -4670,7 +4680,14 @@
     if (panelKey === 'speed') {
       const ev = state.lastSpeedEval;
       const avgSp = typeof getSessionAverageSpeed === 'function' ? getSessionAverageSpeed(ev) : null;
-      const sp = avgSp?.avgTps ?? ev?.streamSpeed ?? ev?.overallTps ?? state.latest?.speed?.streamingTps ?? state.latest?.speed?.tps ?? null;
+      const resolved = typeof resolveSpeedDisplayMetrics === 'function'
+        ? resolveSpeedDisplayMetrics(avgSp, ev, speedDisplayMode)
+        : null;
+      const sp = resolved?.sessionPrimaryTps
+        ?? resolved?.stepPrimaryTps
+        ?? (speedDisplayMode === 'e2e'
+          ? (avgSp?.avgOverallTps ?? avgSp?.avgTps ?? ev?.overallTps ?? ev?.streamSpeed ?? state.latest?.speed?.tps ?? state.latest?.speed?.streamingTps ?? null)
+          : (avgSp?.avgStreamTps ?? avgSp?.avgTps ?? ev?.streamSpeed ?? ev?.overallTps ?? state.latest?.speed?.streamingTps ?? state.latest?.speed?.tps ?? null));
       let text = '--/s';
       let pct = 0;
       if (sp != null && Number.isFinite(Number(sp)) && Number(sp) > 0) {
@@ -4751,8 +4768,10 @@
         mode = 'streaming';
         subKind = 'streaming';
         const rawTps = isStreamOverride
-          ? (ov.streamSpeed ?? ov.tps ?? 0)
-          : (spEval?.streamSpeed ?? spEval?.overallTps ?? state.liveSpeed?.emaTps ?? state.latest?.speed?.streamingTps ?? state.latest?.speed?.tps ?? 0);
+          ? (speedDisplayMode === 'e2e' ? (ov.overallTps ?? ov.tps ?? ov.streamSpeed ?? 0) : (ov.streamSpeed ?? ov.tps ?? 0))
+          : (speedDisplayMode === 'e2e'
+            ? (spEval?.overallTps ?? spEval?.streamSpeed ?? state.latest?.speed?.tps ?? state.liveSpeed?.emaTps ?? state.latest?.speed?.streamingTps ?? 0)
+            : (spEval?.streamSpeed ?? spEval?.overallTps ?? state.liveSpeed?.emaTps ?? state.latest?.speed?.streamingTps ?? state.latest?.speed?.tps ?? 0));
         const nTps = Number(rawTps);
         if (Number.isFinite(nTps) && nTps > 0) {
           const rounded = Math.round(nTps);
@@ -6020,6 +6039,11 @@
     const btn = e.target?.closest?.('[data-quota-window-mode]');
     const mode = btn?.getAttribute?.('data-quota-window-mode');
     if (mode) setQuotaBadgeWindowMode(mode, { persist: true });
+  });
+  el('speed-mode-segmented')?.addEventListener('click', e => {
+    const btn = e.target?.closest?.('[data-speed-display-mode]');
+    const mode = btn?.getAttribute?.('data-speed-display-mode');
+    if (mode) setSpeedDisplayMode(mode, { persist: true });
   });
   const onVersionBadgeActivate = () => {
     openContextSettings?.({ scrollToUpdate: true });
@@ -7937,12 +7961,27 @@
       stepsFromScan > 0 || maxCallStep > 0 || callsCount > 0 || state.sessionStats?.stepCount != null
     );
 
-    const speedCandidate = state.lastSpeedEval?.tps
-      ?? state.lastSpeedEval?.streamingTps
-      ?? state.liveSpeed?.tps
-      ?? state.latest?.speed?.tps
-      ?? state.speedOverrideForTest?.tps
-      ?? null;
+    const speedCandidate = speedDisplayMode === 'e2e'
+      ? (state.lastSpeedEval?.overallTps
+        ?? state.lastSpeedEval?.tps
+        ?? state.lastSpeedEval?.streamSpeed
+        ?? state.lastSpeedEval?.streamingTps
+        ?? state.liveSpeed?.tps
+        ?? state.latest?.speed?.tps
+        ?? state.latest?.speed?.streamingTps
+        ?? state.speedOverrideForTest?.overallTps
+        ?? state.speedOverrideForTest?.tps
+        ?? null)
+      : (state.lastSpeedEval?.tps
+        ?? state.lastSpeedEval?.streamSpeed
+        ?? state.lastSpeedEval?.streamingTps
+        ?? state.lastSpeedEval?.overallTps
+        ?? state.liveSpeed?.tps
+        ?? state.latest?.speed?.streamingTps
+        ?? state.latest?.speed?.tps
+        ?? state.speedOverrideForTest?.streamSpeed
+        ?? state.speedOverrideForTest?.tps
+        ?? null);
     const isPendingWait = Boolean(state.livePendingRequest && state.livePendingRequest.cascadeId === state.route);
     const isPendingQueued = Boolean(isPendingWait && state.livePendingRequest.stage === 'queued');
     const hasSpeedVal = speedCandidate !== null && speedCandidate !== undefined && Number.isFinite(Number(speedCandidate)) && Number(speedCandidate) >= 0;
@@ -8395,7 +8434,9 @@
         const scopeLabel = isTurnAggregate ? t('turnFooter.scopeTurn') : t('turnFooter.scopeReq');
         const hitStr = rawHitPct !== null ? `${rawHitPct}%` : '—';
         const mName = lastCall.attributedModelLabel || lastCall.modelLabel || lastCall.model || '';
-        const tpsNum = lastCall.streamingTps ?? lastCall.tps;
+        const tpsNum = typeof pickCallDisplayTps === 'function'
+          ? pickCallDisplayTps(lastCall, speedDisplayMode)
+          : (speedDisplayMode === 'e2e' ? (lastCall.tps ?? lastCall.streamingTps) : (lastCall.streamingTps ?? lastCall.tps));
         const tpsStr = (tpsNum != null && Number.isFinite(Number(tpsNum)) && Number(tpsNum) > 0) ? `${Number(tpsNum).toFixed(0)} tok/s` : '';
         const inCompact = hasCalcUsage ? `In ${formatReqCompactTokens(cs.totalInput)}` : 'In —';
         const outCompact = hasCalcUsage ? `Out ${formatReqCompactTokens(cs.output)}` : 'Out —';
@@ -8951,6 +8992,37 @@
     return quotaBadgeWindowMode;
   }
 
+  function syncSpeedDisplayModeUi() {
+    const seg = el('speed-mode-segmented');
+    if (seg) {
+      for (const btn of Array.from(seg.children || [])) {
+        const mode = btn.getAttribute?.('data-speed-display-mode');
+        const active = mode === speedDisplayMode;
+        btn.classList?.toggle?.('active', active);
+        btn.setAttribute?.('aria-pressed', active ? 'true' : 'false');
+      }
+    }
+  }
+
+  function setSpeedDisplayMode(mode, opts = {}) {
+    const next = typeof normalizeSpeedDisplayMode === 'function'
+      ? normalizeSpeedDisplayMode(mode)
+      : (mode === 'e2e' ? 'e2e' : 'stream');
+    speedDisplayMode = next;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_speed_display_mode', next);
+    } catch { }
+    syncSpeedDisplayModeUi();
+    if (typeof syncSpeedBadgeText === 'function') syncSpeedBadgeText();
+    if (typeof renderTurnFooterStats === 'function') renderTurnFooterStats();
+    if (typeof renderComposerStatusBar === 'function') renderComposerStatusBar();
+    if (typeof syncHostSettingsUi === 'function') syncHostSettingsUi();
+    if (opts.persist !== false && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({ speedDisplayMode: next });
+    }
+    return speedDisplayMode;
+  }
+
   function cycleQuotaBadgeWindowMode() {
     const idx = VALID_QUOTA_WINDOW_MODES.indexOf(quotaBadgeWindowMode);
     const next = VALID_QUOTA_WINDOW_MODES[(idx + 1) % VALID_QUOTA_WINDOW_MODES.length];
@@ -9179,12 +9251,27 @@
       const speedValEl = el('csb-card-speed-val');
       const speedTtftEl = el('csb-card-speed-ttft');
       const speedDurationEl = el('csb-card-speed-duration');
-      const speedCandidate = state.lastSpeedEval?.tps
-        ?? state.lastSpeedEval?.streamingTps
-        ?? state.liveSpeed?.tps
-        ?? state.latest?.speed?.tps
-        ?? state.speedOverrideForTest?.tps
-        ?? null;
+      const speedCandidate = speedDisplayMode === 'e2e'
+        ? (state.lastSpeedEval?.overallTps
+          ?? state.lastSpeedEval?.tps
+          ?? state.lastSpeedEval?.streamSpeed
+          ?? state.lastSpeedEval?.streamingTps
+          ?? state.liveSpeed?.tps
+          ?? state.latest?.speed?.tps
+          ?? state.latest?.speed?.streamingTps
+          ?? state.speedOverrideForTest?.overallTps
+          ?? state.speedOverrideForTest?.tps
+          ?? null)
+        : (state.lastSpeedEval?.tps
+          ?? state.lastSpeedEval?.streamSpeed
+          ?? state.lastSpeedEval?.streamingTps
+          ?? state.lastSpeedEval?.overallTps
+          ?? state.liveSpeed?.tps
+          ?? state.latest?.speed?.streamingTps
+          ?? state.latest?.speed?.tps
+          ?? state.speedOverrideForTest?.streamSpeed
+          ?? state.speedOverrideForTest?.tps
+          ?? null);
       const hasSpeedVal = speedCandidate !== null && speedCandidate !== undefined && Number.isFinite(Number(speedCandidate)) && Number(speedCandidate) >= 0;
       const remoteSpeedText = !hasSpeedVal && state.lastSpeedEval?.phase === 'remote_unavailable'
         ? (state.lastSpeedEval?.badge?.text || '远程对话')
@@ -19862,6 +19949,12 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         } else {
           syncQuotaWindowModeUi();
         }
+        const savedSpeedMode = settingsRes.speedDisplayMode || settingsRes.uiPreferences?.speedDisplayMode;
+        if (savedSpeedMode && VALID_SPEED_DISPLAY_MODES.includes(savedSpeedMode) && savedSpeedMode !== speedDisplayMode) {
+          setSpeedDisplayMode(savedSpeedMode, { persist: false });
+        } else {
+          syncSpeedDisplayModeUi();
+        }
         const savedQuickMenuStyle = settingsRes.quickMenuStyle || settingsRes.uiPreferences?.quickMenuStyle;
         const savedOrbPos = settingsRes.radialOrbPos !== undefined ? settingsRes.radialOrbPos : settingsRes.uiPreferences?.radialOrbPos;
         if (savedOrbPos && typeof savedOrbPos === 'object' && Number.isFinite(Number(savedOrbPos.x)) && Number.isFinite(Number(savedOrbPos.y))) {
@@ -20764,6 +20857,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
             topbarMode,
             panelDockMode,
             quotaWindowMode: quotaBadgeWindowMode,
+            speedDisplayMode,
             autoHideTopbarOnDock: Boolean(autoHideTopbarOnDockedPanel),
             radialOrb: Boolean(!radialOrbHidden && radialOrbEnabled),
             radialTopbar: Boolean(radialTopbarEnabled),
@@ -20865,6 +20959,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         if (key === 'topbarMode') { setTopbarMode(value, { persist: true }); syncHostSettingsUi(); return; }
         if (key === 'panelDockMode') { setPanelDockMode(value, { persist: true }); syncHostSettingsUi(); return; }
         if (key === 'quotaWindowMode') { setQuotaBadgeWindowMode(value, { persist: true }); syncHostSettingsUi(); return; }
+        if (key === 'speedDisplayMode') { setSpeedDisplayMode(value, { persist: true }); syncHostSettingsUi(); return; }
         if (key === 'autoHideTopbarOnDock') {
           const prev = autoHideTopbarOnDockedPanel;
           void persistBooleanPreferenceToggle({
@@ -21666,31 +21761,75 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     return summarizeSessionSpeed(calls, fb);
   }
 
+  function resolveSpeedMetricsForUi(evalRes, avgSp) {
+    if (typeof resolveSpeedDisplayMetrics === 'function') {
+      return resolveSpeedDisplayMetrics(avgSp, evalRes, speedDisplayMode);
+    }
+    const isE2e = speedDisplayMode === 'e2e';
+    const sPrimary = isE2e ? (avgSp?.avgOverallTps ?? avgSp?.avgTps ?? null) : (avgSp?.avgStreamTps ?? avgSp?.avgTps ?? avgSp?.avgOverallTps ?? null);
+    const sSecondary = isE2e ? (avgSp?.avgStreamTps ?? null) : (avgSp?.avgOverallTps ?? null);
+    const lPrimary = isE2e ? (evalRes?.overallTps ?? evalRes?.streamSpeed ?? null) : (evalRes?.streamSpeed ?? evalRes?.overallTps ?? null);
+    const lSecondary = isE2e ? (evalRes?.streamSpeed ?? null) : (evalRes?.overallTps ?? null);
+    return {
+      mode: isE2e ? 'e2e' : 'stream',
+      sessionPrimaryTps: sPrimary,
+      sessionSecondaryTps: sSecondary,
+      sessionPrimaryKind: isE2e ? (avgSp?.avgOverallTps != null ? 'e2e' : 'stream') : (avgSp?.avgStreamTps != null ? 'stream' : 'e2e'),
+      stepPrimaryTps: lPrimary,
+      stepSecondaryTps: lSecondary,
+      stepPrimaryKind: isE2e ? (evalRes?.overallTps != null ? 'e2e' : 'stream') : (evalRes?.streamSpeed != null ? 'stream' : 'e2e')
+    };
+  }
+
   function updateSpeedBadgeHoverTitle(evalRes, avgSp) {
     const speedBadge = el('badge-speed');
     if (!speedBadge) return;
     const sp = state.latest?.speed || null;
-    if (avgSp?.avgTps != null) {
+    const metrics = resolveSpeedMetricsForUi(evalRes, avgSp);
+    if (metrics.sessionPrimaryTps != null) {
       const latestStream = evalRes?.streamSpeed ?? sp?.streamingTps ?? null;
       const latestOverall = evalRes?.overallTps ?? sp?.tps ?? null;
-      const latestPrimary = latestStream ?? latestOverall;
+      const latestPrimary = metrics.stepPrimaryTps ?? latestStream ?? latestOverall;
+      const latestComplement = (metrics.stepPrimaryKind === 'e2e')
+        ? (latestStream != null && Math.abs(latestStream - latestPrimary) >= 0.5 ? t('badge.speedStreamingPart', { tps: latestStream }) : '')
+        : (latestOverall != null && Math.abs(latestOverall - latestPrimary) >= 0.5 ? t('badge.speedOverallPart', { tps: latestOverall }) : '');
       const latestPart = latestPrimary != null
         ? t('badge.speedLatestPart', {
-          tps: latestOverall ?? latestPrimary,
-          streaming: latestStream ? t('badge.speedStreamingPart', { tps: latestStream }) : '',
+          tps: latestPrimary,
+          streaming: latestComplement,
           duration: sp?.duration || evalRes?.durationFormatted || '—',
           ttft: sp?.ttft || evalRes?.ttftFormatted || '—',
           streamSec: sp?.streamingSec || '—',
           output: fmt(evalRes?.outputTokens ?? sp?.outputTokens ?? 0)
         })
         : '';
-      speedBadge.title = t('badge.speedTitleDetail', {
-        avgTps: avgSp.avgTps,
-        count: avgSp.count,
-        totalOut: fmt(avgSp.totalOutputTokens),
-        totalDur: avgSp.totalDurationSec ?? '—',
-        latestPart
-      });
+      const hasDiffSecondary = metrics.sessionSecondaryTps != null && Math.abs(metrics.sessionSecondaryTps - metrics.sessionPrimaryTps) >= 0.5;
+      if (metrics.sessionPrimaryKind === 'stream' && avgSp?.totalStreamingSec != null) {
+        const secondaryPart = hasDiffSecondary
+          ? t('session.speed.avgOverallPart', { overallTps: metrics.sessionSecondaryTps })
+          : '';
+        speedBadge.title = t('badge.speedTitleDetailStream', {
+          avgTps: metrics.sessionPrimaryTps,
+          secondaryPart,
+          count: avgSp.count,
+          streamOut: fmt(avgSp.totalStreamTokens > 0 ? avgSp.totalStreamTokens : avgSp.totalOutputTokens),
+          streamDur: avgSp.totalStreamingSec,
+          totalDur: avgSp.totalDurationSec ?? '—',
+          latestPart
+        });
+      } else {
+        const secondaryPart = hasDiffSecondary
+          ? t('session.speed.avgStreamPart', { streamTps: metrics.sessionSecondaryTps })
+          : '';
+        speedBadge.title = t('badge.speedTitleDetailE2e', {
+          avgTps: metrics.sessionPrimaryTps,
+          secondaryPart,
+          count: avgSp.count,
+          totalOut: fmt(avgSp.totalOutputTokens),
+          totalDur: avgSp.totalDurationSec ?? '—',
+          latestPart
+        });
+      }
     } else if (evalRes?.phase === 'waiting' || state.requestBusy) {
       speedBadge.title = t('badge.speedTitleWait');
     } else {
@@ -21731,6 +21870,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
 
     const isCompact = state.layoutMode === 'compact';
     const shortSampleText = t('session.speed.shortSampleBadge');
+    const speedMetrics = resolveSpeedMetricsForUi(evalRes, avgSp);
     if (evalRes.phase === 'queued') {
       bSpeed?.setAttribute?.('data-speed-phase', 'queued');
       if (waitSvgWrap) waitSvgWrap.hidden = true;
@@ -21768,15 +21908,12 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         if (evalRes.isSampleSparse) {
           speedAmount.textContent = shortSampleText;
           if (overflowSpeedVal) overflowSpeedVal.textContent = shortSampleText;
-        } else if (avgSp?.avgTps != null) {
-          speedAmount.textContent = isCompact ? `${avgSp.avgTps}` : `${avgSp.avgTps} tok/s`;
-          if (overflowSpeedVal) overflowSpeedVal.textContent = `${avgSp.avgTps} tok/s`;
-        } else if (evalRes.streamSpeed != null) {
-          speedAmount.textContent = isCompact ? `${evalRes.streamSpeed}` : `${evalRes.streamSpeed} tok/s`;
-          if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.streamSpeed} tok/s`;
-        } else if (evalRes.overallTps != null) {
-          speedAmount.textContent = isCompact ? `${evalRes.overallTps}` : `${evalRes.overallTps} tok/s`;
-          if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.overallTps} tok/s`;
+        } else if (speedMetrics.sessionPrimaryTps != null) {
+          speedAmount.textContent = isCompact ? `${speedMetrics.sessionPrimaryTps}` : `${speedMetrics.sessionPrimaryTps} tok/s`;
+          if (overflowSpeedVal) overflowSpeedVal.textContent = `${speedMetrics.sessionPrimaryTps} tok/s`;
+        } else if (speedMetrics.stepPrimaryTps != null) {
+          speedAmount.textContent = isCompact ? `${speedMetrics.stepPrimaryTps}` : `${speedMetrics.stepPrimaryTps} tok/s`;
+          if (overflowSpeedVal) overflowSpeedVal.textContent = `${speedMetrics.stepPrimaryTps} tok/s`;
         } else {
           speedAmount.textContent = isCompact ? '--' : '-- tok/s';
           if (overflowSpeedVal) overflowSpeedVal.textContent = '-- tok/s';
@@ -21786,7 +21923,9 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     }
 
     const spBadge = el('speed-badge');
+    const spAvgLabel = el('speed-avg-label');
     const spAvgVal = el('speed-avg-val');
+    const spValLabel = el('speed-val-label');
     const spVal = el('speed-val');
     const spDur = el('speed-duration');
     const spTtft = el('speed-ttft');
@@ -21796,6 +21935,17 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     const spBreakdownDet = el('speed-breakdown-details');
     const spBreakdownGrid = el('speed-breakdown-grid');
 
+    if (spAvgLabel) {
+      spAvgLabel.textContent = speedMetrics.mode === 'e2e'
+        ? t('session.speed.avgE2eRate')
+        : t('session.speed.avgStreamRate');
+    }
+    if (spValLabel) {
+      spValLabel.textContent = speedMetrics.mode === 'e2e'
+        ? t('session.speed.stepE2eRate')
+        : t('session.speed.stepStreamRate');
+    }
+
     const spMockTag = el('speed-mock-tag');
     if (spMockTag) {
       spMockTag.hidden = !(state.speedOverrideForTest && typeof state.speedOverrideForTest === 'object');
@@ -21803,18 +21953,33 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     }
     if (spBadge) applyElv91PillTone(spBadge, evalRes);
     if (spAvgVal) {
-      if (avgSp?.avgTps != null) {
-        spAvgVal.textContent = `${avgSp.avgTps} tok/s`;
-        const overallPart = (avgSp.avgOverallTps != null && Math.abs(avgSp.avgOverallTps - avgSp.avgTps) >= 0.5)
-          ? t('session.speed.avgOverallPart', { overallTps: avgSp.avgOverallTps })
-          : '';
-        spAvgVal.title = t('session.speed.avgTip', {
-          avgTps: avgSp.avgTps,
-          overallPart,
-          count: avgSp.count,
-          totalTok: fmt(avgSp.totalOutputTokens),
-          totalDur: avgSp.totalDurationSec ?? '—'
-        });
+      if (speedMetrics.sessionPrimaryTps != null) {
+        spAvgVal.textContent = `${speedMetrics.sessionPrimaryTps} tok/s`;
+        const hasDiffSecondary = speedMetrics.sessionSecondaryTps != null && Math.abs(speedMetrics.sessionSecondaryTps - speedMetrics.sessionPrimaryTps) >= 0.5;
+        if (speedMetrics.sessionPrimaryKind === 'stream' && avgSp?.totalStreamingSec != null) {
+          const secondaryPart = hasDiffSecondary
+            ? t('session.speed.avgOverallPart', { overallTps: speedMetrics.sessionSecondaryTps })
+            : '';
+          spAvgVal.title = t('session.speed.avgTipStream', {
+            avgTps: speedMetrics.sessionPrimaryTps,
+            secondaryPart,
+            count: avgSp.count,
+            streamTok: fmt(avgSp.totalStreamTokens > 0 ? avgSp.totalStreamTokens : avgSp.totalOutputTokens),
+            streamDur: avgSp.totalStreamingSec,
+            totalDur: avgSp.totalDurationSec ?? '—'
+          });
+        } else {
+          const secondaryPart = hasDiffSecondary
+            ? t('session.speed.avgStreamPart', { streamTps: speedMetrics.sessionSecondaryTps })
+            : '';
+          spAvgVal.title = t('session.speed.avgTipE2e', {
+            avgTps: speedMetrics.sessionPrimaryTps,
+            secondaryPart,
+            count: avgSp.count,
+            totalTok: fmt(avgSp.totalOutputTokens),
+            totalDur: avgSp.totalDurationSec ?? '—'
+          });
+        }
       } else {
         spAvgVal.textContent = '—';
         spAvgVal.title = '';
@@ -21829,10 +21994,8 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         spVal.textContent = evalRes.shortTitle || '—';
       } else if (evalRes.isSampleSparse) {
         spVal.textContent = shortSampleText;
-      } else if (evalRes.streamSpeed != null) {
-        spVal.textContent = `${evalRes.streamSpeed} tok/s`;
-      } else if (evalRes.overallTps != null) {
-        spVal.textContent = `${evalRes.overallTps} tok/s`;
+      } else if (speedMetrics.stepPrimaryTps != null) {
+        spVal.textContent = `${speedMetrics.stepPrimaryTps} tok/s`;
       } else {
         spVal.textContent = '—';
       }
@@ -21851,11 +22014,21 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       }
     }
     if (spTakeaway) {
-      const avgNote = (evalRes.phase === 'final' && evalRes.overallTps != null && (evalRes.isSampleSparse || (evalRes.streamSpeed != null && Math.abs(evalRes.overallTps - evalRes.streamSpeed) >= 5)))
-        ? (isEn ? ` (Overall avg ${evalRes.overallTps} tok/s)` : (isTw ? `（整體均速 ${evalRes.overallTps} tok/s）` : `（整体均速 ${evalRes.overallTps} tok/s）`))
-        : '';
-      const sessionAvgNote = avgSp?.avgTps != null
-        ? t('speed.takeaway.avgInline', { avgTps: avgSp.avgTps, count: avgSp.count })
+      let avgNote = '';
+      if (evalRes.phase === 'final') {
+        if (speedMetrics.mode === 'e2e') {
+          if (evalRes.streamSpeed != null && (evalRes.overallTps == null || Math.abs(evalRes.overallTps - evalRes.streamSpeed) >= 5)) {
+            avgNote = isEn ? ` (Pure stream ${evalRes.streamSpeed} tok/s)` : (isTw ? `（純串流 ${evalRes.streamSpeed} tok/s）` : `（纯流式 ${evalRes.streamSpeed} tok/s）`);
+          }
+        } else if (evalRes.overallTps != null && (evalRes.isSampleSparse || (evalRes.streamSpeed != null && Math.abs(evalRes.overallTps - evalRes.streamSpeed) >= 5))) {
+          avgNote = isEn ? ` (Overall avg ${evalRes.overallTps} tok/s)` : (isTw ? `（整體均速 ${evalRes.overallTps} tok/s）` : `（整体均速 ${evalRes.overallTps} tok/s）`);
+        }
+      }
+      const sessionAvgNote = speedMetrics.sessionPrimaryTps != null
+        ? t(speedMetrics.sessionPrimaryKind === 'e2e' ? 'speed.takeaway.avgInlineE2e' : 'speed.takeaway.avgInlineStream', {
+          avgTps: speedMetrics.sessionPrimaryTps,
+          count: avgSp.count
+        })
         : '';
       spTakeaway.textContent = `${evalRes.comment || ''}${avgNote}${sessionAvgNote}`;
     }
@@ -21908,14 +22081,20 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         { k: t('session.speed.breakdown.overall'), v: evalRes.overallTps != null ? `${evalRes.overallTps} tok/s` : unk, color: null, note: '' },
         {
           k: t('session.speed.breakdown.sessionAvg'),
-          v: avgSp?.avgTps != null ? `${avgSp.avgTps} tok/s` : unk,
+          v: speedMetrics.sessionPrimaryTps != null ? `${speedMetrics.sessionPrimaryTps} tok/s` : unk,
           color: null,
-          note: avgSp?.avgTps != null
-            ? (isEn
-              ? `${avgSp.count} turn(s) · ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`
-              : (isTw
-                ? `共 ${avgSp.count} 輪 · 累計 ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`
-                : `共 ${avgSp.count} 轮 · 累计 ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`))
+          note: speedMetrics.sessionPrimaryTps != null
+            ? (speedMetrics.sessionPrimaryKind === 'stream' && avgSp?.totalStreamingSec != null
+              ? (isEn
+                ? `${avgSp.count} step(s) · ${fmt(avgSp.totalStreamTokens > 0 ? avgSp.totalStreamTokens : avgSp.totalOutputTokens)} tok / ${avgSp.totalStreamingSec}s stream`
+                : (isTw
+                  ? `共 ${avgSp.count} 步 · 純串流 ${fmt(avgSp.totalStreamTokens > 0 ? avgSp.totalStreamTokens : avgSp.totalOutputTokens)} tok / ${avgSp.totalStreamingSec}s`
+                  : `共 ${avgSp.count} 步 · 纯流式 ${fmt(avgSp.totalStreamTokens > 0 ? avgSp.totalStreamTokens : avgSp.totalOutputTokens)} tok / ${avgSp.totalStreamingSec}s`))
+              : (isEn
+                ? `${avgSp.count} step(s) · ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`
+                : (isTw
+                  ? `共 ${avgSp.count} 步 · 累計 ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`
+                  : `共 ${avgSp.count} 步 · 累计 ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`)))
             : ''
         },
         { k: t('session.speed.breakdown.stability'), v: stabText, color: evalRes.stability?.isStable ? '#10B981' : null, note: '' }
@@ -31687,6 +31866,8 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
     getAutoHideTopbarOnDockedPanel: () => autoHideTopbarOnDockedPanel,
     setQuotaBadgeWindowMode: (mode, opts = {}) => setQuotaBadgeWindowMode(mode, opts),
     getQuotaBadgeWindowMode: () => quotaBadgeWindowMode,
+    setSpeedDisplayMode: (mode, opts = {}) => setSpeedDisplayMode(mode, opts),
+    getSpeedDisplayMode: () => speedDisplayMode,
     getTokenCacheBreakdownForTest: () => ({
       input: el('tcb-input-val')?.textContent || '',
       cacheRead: el('tcb-cache-val')?.textContent || '',
@@ -32271,6 +32452,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   if (el('v-tokens')) el('v-tokens').textContent = formatDisplayVersion(METER_RENDERER_VERSION);
   syncDockPositionUi();
   syncQuotaWindowModeUi();
+  syncSpeedDisplayModeUi();
   syncAllViewPrefControlsUi();
   syncRadialOrbHiddenUi();
   if (el('chk-show-composer-quota')) el('chk-show-composer-quota').checked = showComposerQuotaSummary;

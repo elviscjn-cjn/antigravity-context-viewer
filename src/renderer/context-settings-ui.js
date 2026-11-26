@@ -1349,6 +1349,19 @@ const {
 
       <div class="ag-ns-row">
         <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="settings.speedMode.label">速度统计口径</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.speedMode.desc">纯流式扣除首字延迟；端到端包含首字等待，作用于顶栏、卡片与尾部微标</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-seg" role="radiogroup" data-ag-ns-seg="speedDisplayMode">
+            <button type="button" class="ag-ns-seg-btn is-active" role="radio" aria-checked="true" data-val="stream" data-i18n="settings.speedMode.stream">纯流式</button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="e2e" data-i18n="settings.speedMode.e2e">端到端</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
           <div class="ag-ns-row-title" data-i18n="settings.nextPrompt.label">下一句预测建议</div>
           <div class="ag-ns-row-desc" data-i18n="ns.nextPrompt.desc">默认关闭 · 开启后每轮结束会调用当前账号模型并消耗额外额度，按 Tab 填入草稿</div>
         </div>
