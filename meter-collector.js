@@ -4345,6 +4345,7 @@ function getPluginSettings(options = {}) {
   const validTopbarModes = new Set(['full', 'compact', 'hidden']);
   const validPanelDockModes = new Set(['popover', 'aux', 'page']);
   const validQuotaWindowModes = new Set(['auto', '5h', 'weekly', 'both']);
+  const validSpeedDisplayModes = new Set(['stream', 'e2e']);
   const validPanelLanguages = new Set(['zh-CN', 'zh-TW', 'en']);
   const validQuickMenuStyles = new Set(['floating', 'topbar', 'bottombar', 'classic']);
   const defaultViewPrefs = sanitizeDefaultViewPrefs(uiPrefs.defaultViewPrefs, uiPrefs.savedHeatView);
@@ -4414,6 +4415,7 @@ function getPluginSettings(options = {}) {
     floatingOrbHidden: !resolvedRadialOrbEnabled,
     radialOrbPos: savedOrbPos,
     quotaBadgeWindowMode: validQuotaWindowModes.has(uiPrefs.quotaBadgeWindowMode) ? uiPrefs.quotaBadgeWindowMode : 'auto',
+    speedDisplayMode: validSpeedDisplayModes.has(uiPrefs.speedDisplayMode) ? uiPrefs.speedDisplayMode : 'stream',
     panelLanguage: hasExplicitPanelLanguage ? uiPrefs.panelLanguage : 'zh-CN',
     panelLanguageExplicit: hasExplicitPanelLanguage,
     showTurnFooterStats: uiPrefs.showTurnFooterStats !== false,
@@ -4520,6 +4522,7 @@ function savePluginSettings(payload = {}, options = {}) {
   const validPanelLanguages = new Set(['zh-CN', 'zh-TW', 'en']);
   const validDockPositions = new Set(['flow', 'compact', 'fixed', 'aux', 'page', 'hide']);
   const validQuotaWindowModes = new Set(['auto', '5h', 'weekly', 'both']);
+  const validSpeedDisplayModes = new Set(['stream', 'e2e']);
   const validQuickMenuStyles = new Set(['floating', 'topbar', 'bottombar', 'classic']);
   if (typeof payload.autoCheckUpdate === 'boolean') {
     topLevelUiPrefs.autoCheckUpdate = payload.autoCheckUpdate;
@@ -4605,6 +4608,9 @@ function savePluginSettings(payload = {}, options = {}) {
   if (typeof payload.quotaBadgeWindowMode === 'string' && validQuotaWindowModes.has(payload.quotaBadgeWindowMode)) {
     topLevelUiPrefs.quotaBadgeWindowMode = payload.quotaBadgeWindowMode;
   }
+  if (typeof payload.speedDisplayMode === 'string' && validSpeedDisplayModes.has(payload.speedDisplayMode)) {
+    topLevelUiPrefs.speedDisplayMode = payload.speedDisplayMode;
+  }
   if (typeof payload.panelLanguage === 'string' && validPanelLanguages.has(payload.panelLanguage)) {
     topLevelUiPrefs.panelLanguage = payload.panelLanguage;
   }
@@ -4678,6 +4684,9 @@ function savePluginSettings(payload = {}, options = {}) {
     }
     if (incomingUiPrefs.panelLanguage !== undefined && !validPanelLanguages.has(incomingUiPrefs.panelLanguage)) {
       delete incomingUiPrefs.panelLanguage;
+    }
+    if (incomingUiPrefs.speedDisplayMode !== undefined && !validSpeedDisplayModes.has(incomingUiPrefs.speedDisplayMode)) {
+      delete incomingUiPrefs.speedDisplayMode;
     }
     if (incomingUiPrefs.defaultViewPrefs && !topLevelUiPrefs.defaultViewPrefs) {
       incomingUiPrefs.defaultViewPrefs = sanitizeDefaultViewPrefs(incomingUiPrefs.defaultViewPrefs, incomingUiPrefs.savedHeatView || settings.uiPreferences?.savedHeatView);

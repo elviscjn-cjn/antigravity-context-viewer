@@ -3,10 +3,13 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 
 const core = require('./meter-core');
+const collector = require('./meter-collector');
+const contextSettingsUi = require('./src/renderer/context-settings-ui');
 const RENDERER_SOURCE = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
 
 function createSpeedUiHarness(opts = {}) {
@@ -69,6 +72,14 @@ function createSpeedUiHarness(opts = {}) {
           if (xId) docElements.set(xId, x);
         }
       },
+      prepend(x) {
+        if (x) {
+          x.parentElement = node;
+          node.children.unshift(x);
+          const xId = x.id || x.getAttribute?.('id');
+          if (xId) docElements.set(xId, x);
+        }
+      },
       contains(target) {
         if (target === node) return true;
         return node.children.some(c => c.contains?.(target));
@@ -78,7 +89,14 @@ function createSpeedUiHarness(opts = {}) {
         node.children = [];
         for (const it of items) node.appendChild(it);
       },
+      querySelector(sel) {
+        if (sel === '.ag-cm-turn-footer') {
+          return node.children.find(c => (c.className || '').split(/\s+/).includes('ag-cm-turn-footer')) || null;
+        }
+        return null;
+      },
       querySelectorAll() { return []; },
+      get firstElementChild() { return node.children[0] || null; },
       click() { listeners.get(node)?.get('click')?.(); },
       getBoundingClientRect() { return { left: 100, top: 100, width: 120, height: 24, right: 220, bottom: 124 }; },
       trigger(type, ev = {}) { listeners.get(node)?.get(type)?.(ev); }
@@ -100,12 +118,35 @@ function createSpeedUiHarness(opts = {}) {
     querySelectorAll() { return []; }
   });
 
+  const tbMain = opts.withTurnToolbar ? (() => {
+    const tb = makeEl();
+    const row = makeEl();
+    row.clientWidth = 600;
+    tb.clientWidth = 600;
+    tb.setAttribute('data-testid', 'cascade-system-message-toolbar');
+    tb.appendChild(row);
+    return { tb, row };
+  })() : null;
+  const lStore = opts.localStorageMap || new Map();
+
   let first = true;
   const sandbox = {
     location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' },
+    localStorage: {
+      getItem: k => (lStore.has(k) ? lStore.get(k) : null),
+      setItem: (k, v) => { lStore.set(k, String(v)); },
+      removeItem: k => { lStore.delete(k); }
+    },
     document: {
       createElement: () => { if (first) { first = false; return host; } return makeEl(); },
       getElementById: id => docElements.get(id) || null,
+      querySelectorAll: sel => {
+        if (tbMain && sel && sel.includes('cascade-system-message-toolbar')) return [tbMain.tb];
+        if (tbMain && sel && sel.includes('.ag-cm-turn-footer')) {
+          return tbMain.row.children.filter(c => (c.className || '').split(/\s+/).includes('ag-cm-turn-footer'));
+        }
+        return [];
+      },
       documentElement: { appendChild() { } },
       addEventListener() { },
       removeEventListener() { },
@@ -115,7 +156,9 @@ function createSpeedUiHarness(opts = {}) {
       __APP_CONFIG__: { csrfToken: 'test-csrf' },
       contextMeterAPI: {
         scan: async () => { opts.onScan?.(); return { ok: true, data: { session: null, scannedAt: Date.now() } }; },
-        getTokenHistory: async () => { opts.onGetTokenHistory?.(); return { ok: true, dailyMap: {} }; }
+        getTokenHistory: async () => { opts.onGetTokenHistory?.(); return { ok: true, dailyMap: {} }; },
+        ...(opts.getSettings ? { getSettings: opts.getSettings } : {}),
+        ...(opts.saveSettings ? { saveSettings: opts.saveSettings } : {})
       }
     },
     matchMedia: () => ({ matches: false }),
@@ -134,6 +177,8 @@ function createSpeedUiHarness(opts = {}) {
   return {
     sandbox,
     elements,
+    tbMain,
+    lStore,
     api: sandbox.__AGContextMeter
   };
 }
@@ -781,4 +826,218 @@ test('Phase 3 (图 5): 移除拆解冗余按钮、保留诊断评分、requested
   } finally {
     h.api.dispose();
   }
+});
+
+test('Issue #114: 速度显示口径切换 (纯流式 vs 端到端含首字)、分子分母对齐、持久化与原生设置集成', async () => {
+  // 1. Core: totalStreamTokens 与 resolveSpeedDisplayMetrics / pickCallDisplayTps
+  const mixedSummary = core.summarizeSessionSpeed([
+    { callId: 's1', status: 'final', outputTokens: 200, streamingSec: 2.0, streamingTps: 100, durationSec: 3.0 },
+    { callId: 's2', status: 'final', outputTokens: 600, streamingSec: 4.0, streamingTps: 150, durationSec: 5.0 },
+    { callId: 's3', status: 'final', outputTokens: 400, durationSec: 4.0 }
+  ]);
+  assert.equal(mixedSummary.count, 3);
+  assert.equal(mixedSummary.streamCount, 2);
+  assert.equal(mixedSummary.totalOutputTokens, 1200);
+  assert.equal(mixedSummary.totalStreamTokens, 800);
+  assert.equal(mixedSummary.totalStreamingSec, 6);
+  assert.equal(mixedSummary.totalDurationSec, 12);
+  assert.equal(mixedSummary.avgStreamTps, 133.3);
+  assert.equal(mixedSummary.avgOverallTps, 100);
+
+  const evalSample = { streamSpeed: 150, overallTps: 120 };
+  const streamMetrics = core.resolveSpeedDisplayMetrics(mixedSummary, evalSample, 'stream');
+  assert.equal(streamMetrics.mode, 'stream');
+  assert.equal(streamMetrics.sessionPrimaryTps, 133.3);
+  assert.equal(streamMetrics.sessionSecondaryTps, 100);
+  assert.equal(streamMetrics.stepPrimaryTps, 150);
+  assert.equal(streamMetrics.stepSecondaryTps, 120);
+
+  const e2eMetrics = core.resolveSpeedDisplayMetrics(mixedSummary, evalSample, 'e2e');
+  assert.equal(e2eMetrics.mode, 'e2e');
+  assert.equal(e2eMetrics.sessionPrimaryTps, 100);
+  assert.equal(e2eMetrics.sessionSecondaryTps, 133.3);
+  assert.equal(e2eMetrics.stepPrimaryTps, 120);
+  assert.equal(e2eMetrics.stepSecondaryTps, 150);
+
+  assert.equal(core.normalizeSpeedDisplayMode('e2e'), 'e2e');
+  assert.equal(core.normalizeSpeedDisplayMode('unknown'), 'stream');
+  assert.equal(core.pickCallDisplayTps({ streamingTps: 150, tps: 120 }, 'stream'), 150);
+  assert.equal(core.pickCallDisplayTps({ streamingTps: 150, tps: 120 }, 'e2e'), 120);
+  assert.equal(core.pickCallDisplayTps({ tps: 95 }, 'stream'), 95);
+
+  // 2. Collector 持久化与非法值保护
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-speed-mode-'));
+  try {
+    const defSettings = collector.getPluginSettings({ targetDir: tmpDir });
+    assert.equal(defSettings.speedDisplayMode, 'stream');
+
+    const saveRes = collector.savePluginSettings({ speedDisplayMode: 'e2e' }, { targetDir: tmpDir });
+    assert.equal(saveRes.ok, true);
+    assert.equal(collector.getPluginSettings({ targetDir: tmpDir }).speedDisplayMode, 'e2e');
+
+    collector.savePluginSettings({ speedDisplayMode: 'invalid_mode' }, { targetDir: tmpDir });
+    assert.equal(collector.getPluginSettings({ targetDir: tmpDir }).speedDisplayMode, 'e2e');
+
+    collector.savePluginSettings({ speedDisplayMode: 'stream' }, { targetDir: tmpDir });
+    assert.equal(collector.getPluginSettings({ targetDir: tmpDir }).speedDisplayMode, 'stream');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+
+  // 3. Renderer DOM 全表面联动：顶栏、浮窗口径一致、详情卡片、底栏、回复尾标、持久化
+  const savedPayloads = [];
+  const h = createSpeedUiHarness({
+    withTurnToolbar: true,
+    saveSettings: async (payload) => {
+      savedPayloads.push(payload);
+      return { ok: true };
+    }
+  });
+  try {
+    h.api.setSessionCallsForTest([
+      {
+        callId: 'm1',
+        attributedModelLabel: 'Gemini 4 Neon',
+        inputTokens: 1000,
+        outputTokens: 200,
+        ttftSec: 1.0,
+        streamingSec: 2.0,
+        durationSec: 3.0,
+        tps: 66.7,
+        streamingTps: 100.0,
+        status: 'final',
+        timestamp: 1700000001000
+      },
+      {
+        callId: 'm2',
+        attributedModelLabel: 'Gemini 4 Neon',
+        inputTokens: 1200,
+        outputTokens: 600,
+        ttftSec: 1.0,
+        streamingSec: 4.0,
+        durationSec: 5.0,
+        tps: 120.0,
+        streamingTps: 150.0,
+        status: 'final',
+        timestamp: 1700000002000
+      }
+    ], { replace: true });
+    h.api.setContextLatestForTest({
+      actual: 1800,
+      speed: {
+        tps: 120.0,
+        streamingTps: 150.0,
+        streamingSec: '4.00',
+        duration: '5.0',
+        ttft: '1.0',
+        outputTokens: 600,
+        phase: 'final',
+        status: 'final'
+      }
+    });
+
+    // 默认 stream 口径
+    assert.equal(h.api.getSpeedDisplayMode(), 'stream');
+    assert.equal(h.elements.get('speed-amount').textContent, '133.3 tok/s');
+    assert.equal(h.elements.get('overflow-speed-val').textContent, '133.3 tok/s');
+    assert.equal(h.elements.get('speed-avg-val').textContent, '133.3 tok/s');
+    assert.equal(h.elements.get('speed-val').textContent, '150 tok/s');
+    assert.equal(h.elements.get('speed-avg-label').textContent, '会话纯流式均速');
+    assert.equal(h.elements.get('speed-val-label').textContent, '本步纯流式');
+    assert.match(h.elements.get('badge-speed').title, /133\.3 tok\/s.*端到端含首字 100 tok\/s.*共 2 步.*流式 800 tokens \/ 6s；含首字总耗时 8s/);
+    assert.doesNotMatch(h.elements.get('badge-speed').title, /共 \d+ 轮/);
+    assert.match(h.tbMain.row.children[0].textContent, /150 tok\/s/);
+
+    // 切换为端到端口径 (e2e)
+    h.api.setSpeedDisplayMode('e2e', { persist: true });
+    assert.equal(h.api.getSpeedDisplayMode(), 'e2e');
+    assert.equal(h.lStore.get('ag_speed_display_mode'), 'e2e');
+    assert.ok(savedPayloads.some(p => p && p.speedDisplayMode === 'e2e'));
+
+    assert.equal(h.elements.get('speed-amount').textContent, '100 tok/s');
+    assert.equal(h.elements.get('overflow-speed-val').textContent, '100 tok/s');
+    assert.equal(h.elements.get('speed-avg-val').textContent, '100 tok/s');
+    assert.equal(h.elements.get('speed-val').textContent, '120 tok/s');
+    assert.equal(h.elements.get('speed-avg-label').textContent, '会话端到端均速');
+    assert.equal(h.elements.get('speed-val-label').textContent, '本步端到端');
+    assert.match(h.elements.get('speed-takeaway').textContent, /端到端均速 100 tok\/s（共 2 步）/);
+    assert.match(h.elements.get('badge-speed').title, /100 tok\/s.*纯流式 133\.3 tok\/s.*共 2 步.*累计 800 tokens \/ 8s/);
+    assert.match(h.elements.get('speed-avg-val').title, /100 tok\/s.*纯流式 133\.3 tok\/s.*共 2 步.*累计 800 tokens \/ 8s/);
+    assert.match(h.tbMain.row.children[0].textContent, /120 tok\/s/);
+    assert.match(h.elements.get('csb-speed-text').textContent, /120 tok\/s/);
+
+    // 切换英文：零中文字符且单位为 step(s)
+    await h.api.setPanelLanguage('en', { persist: false });
+    assert.equal(h.elements.get('speed-avg-label').textContent, 'Session E2E Avg');
+    assert.equal(h.elements.get('speed-val-label').textContent, 'Step E2E');
+    assert.doesNotMatch(h.elements.get('badge-speed').title, /[\u4e00-\u9fff]/);
+    assert.doesNotMatch(h.elements.get('speed-avg-val').title, /[\u4e00-\u9fff]/);
+    assert.match(h.elements.get('badge-speed').title, /2 steps, 800 tokens \/ 8s/);
+  } finally {
+    h.api.dispose();
+  }
+
+  // 4. 冷启动从宿主配置恢复 speedDisplayMode = 'e2e'
+  const hCold = createSpeedUiHarness({
+    getSettings: async () => ({ ok: true, speedDisplayMode: 'e2e', uiPreferences: { speedDisplayMode: 'e2e' } })
+  });
+  try {
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    assert.equal(hCold.api.getSpeedDisplayMode(), 'e2e');
+  } finally {
+    hCold.api.dispose();
+  }
+
+  // 5. 原生宿主设置页 (context-settings-ui.js) 分段开关渲染与点击回调
+  const nsHtml = contextSettingsUi.buildNativeSettingsPageHtml();
+  assert.match(nsHtml, /data-ag-ns-seg="speedDisplayMode"/);
+  assert.match(nsHtml, /data-val="stream"/);
+  assert.match(nsHtml, /data-val="e2e"/);
+
+  const nsMkBtn = (val) => {
+    const cls = new Set(['ag-ns-seg-btn']);
+    const attrs = new Map([['data-val', val]]);
+    return {
+      disabled: false,
+      classList: {
+        toggle(c, on) { if (on) cls.add(c); else cls.delete(c); },
+        contains(c) { return cls.has(c); }
+      },
+      setAttribute(k, v) { attrs.set(k, String(v)); },
+      getAttribute(k) { return attrs.get(k) ?? null; },
+      closest(sel) { return sel === '.ag-ns-seg-btn' ? this : null; }
+    };
+  };
+  const btnStream = nsMkBtn('stream');
+  const btnE2e = nsMkBtn('e2e');
+  let segClickHandler = null;
+  const nsSegGroup = {
+    getAttribute(k) { return k === 'data-ag-ns-seg' ? 'speedDisplayMode' : null; },
+    addEventListener(ev, fn) { if (ev === 'click') segClickHandler = fn; },
+    contains(b) { return b === btnStream || b === btnE2e; },
+    querySelectorAll(sel) { return sel === '.ag-ns-seg-btn' ? [btnStream, btnE2e] : []; }
+  };
+  const nsContainer = {
+    dataset: {},
+    querySelectorAll(sel) { return sel === '[data-ag-ns-seg]' ? [nsSegGroup] : []; },
+    querySelector() { return null; },
+    addEventListener() { }
+  };
+  const nsRoot = { getElementById(id) { return id === 'ag-ns-root' ? nsContainer : null; } };
+  const nsChanges = [];
+  contextSettingsUi.initContextSettingsUI(nsRoot, {
+    onChange: (k, v) => nsChanges.push([k, v])
+  });
+  contextSettingsUi.renderContextSettingsUI(nsRoot, { settings: { speedDisplayMode: 'e2e' } });
+  assert.equal(btnE2e.classList.contains('is-active'), true);
+  assert.equal(btnE2e.getAttribute('aria-checked'), 'true');
+  assert.equal(btnStream.classList.contains('is-active'), false);
+  segClickHandler({ target: btnStream });
+  assert.deepEqual(nsChanges, [['speedDisplayMode', 'stream']]);
+
+  const tplHtml = fs.readFileSync(path.join(__dirname, 'src/renderer/template.html'), 'utf8');
+  assert.match(tplHtml, /id="row-speed-display-mode"/);
+  assert.match(tplHtml, /id="speed-mode-segmented"/);
+  assert.match(tplHtml, /data-speed-display-mode="e2e"/);
 });
