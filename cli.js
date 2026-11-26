@@ -1904,8 +1904,10 @@ async function runMacDockLauncher(customPath = null, cdpOptions = {}, options = 
   }
 
   // 2. 检测当前窗口状态
+  const forceRelaunch = options.forceRelaunch === true;
   const initialLive = await queryFn(cdpOptions);
-  if (initialLive && initialLive.running && initialLive.pageFound) {
+  const effectiveCdpPort = cdpOptions.port || initialLive?.cdpPort || initialLive?.port || null;
+  if (!forceRelaunch && initialLive && initialLive.running && initialLive.pageFound) {
     let mounted = Boolean(initialLive.active);
     if (!mounted) {
       try {
@@ -1917,8 +1919,9 @@ async function runMacDockLauncher(customPath = null, cdpOptions = {}, options = 
     return {
       ok: true,
       mode: 'focused_existing_cdp',
-      port: initialLive.port || cdpOptions.port || null,
+      port: effectiveCdpPort,
       mounted,
+      i18nActive: Boolean(initialLive.i18nActive),
       watcherRunning,
       watcherStarted,
       watcherPid: watchPid || null,
@@ -1927,13 +1930,13 @@ async function runMacDockLauncher(customPath = null, cdpOptions = {}, options = 
     };
   }
 
-  const hostRunningWithoutCdp = Boolean(
-    (initialLive && initialLive.running && initialLive.cdpEnabled === false) ||
+  const hostRunning = Boolean(
+    (initialLive && initialLive.running) ||
     await isAntigravityHostRunning(customPath, { ...options, _hostTarget: target })
   );
 
   let mode = 'launched_with_cdp';
-  if (hostRunningWithoutCdp) {
+  if (hostRunning) {
     if (isRunningInsideAntigravitySession(options.env || process.env)) {
       return {
         ok: false,
@@ -1945,7 +1948,7 @@ async function runMacDockLauncher(customPath = null, cdpOptions = {}, options = 
       };
     }
     if (options.relaunch === false) {
-      const portHint = cdpOptions.port || DEFAULT_LAUNCH_CDP_PORT;
+      const portHint = effectiveCdpPort || DEFAULT_LAUNCH_CDP_PORT;
       return {
         ok: false,
         reason: 'cdp_not_enabled',
@@ -1973,7 +1976,7 @@ async function runMacDockLauncher(customPath = null, cdpOptions = {}, options = 
   // 3. 选择可用端口并以干净环境直接 spawn 官方 Antigravity 二进制
   let port;
   try {
-    port = await pickAvailableCdpPort(cdpOptions.port, { ...options, checkPortOccupied: Boolean(cdpOptions.port) });
+    port = await pickAvailableCdpPort(effectiveCdpPort, { ...options, checkPortOccupied: Boolean(effectiveCdpPort) });
   } catch (err) {
     return {
       ok: false,
@@ -2001,12 +2004,14 @@ async function runMacDockLauncher(customPath = null, cdpOptions = {}, options = 
 
   // 4. 确保挂载：先短等常驻 watch 自动注入，如尚未注入则立即主动补挂
   let mounted = Boolean(ready.active);
+  let i18nActive = Boolean(ready.i18nActive);
   const settleDeadline = Date.now() + (options.mountWaitMs ?? 2500);
   while (!mounted && Date.now() < settleDeadline) {
     await new Promise(r => setTimeout(r, options.mountPollMs ?? 300));
     const snap = await queryFn({ ...cdpOptions, port });
     if (snap && snap.running && snap.pageFound && snap.active) {
       mounted = true;
+      i18nActive = Boolean(snap.i18nActive);
       break;
     }
   }
@@ -2014,6 +2019,10 @@ async function runMacDockLauncher(customPath = null, cdpOptions = {}, options = 
     try {
       const rep = await runLiveFn(customPath, { ...cdpOptions, port }, { ...options, source: 'cli-launcher' });
       mounted = Boolean(rep?.ok);
+      if (mounted) {
+        const snapAfter = await queryFn({ ...cdpOptions, port }).catch(() => null);
+        if (snapAfter) i18nActive = Boolean(snapAfter.i18nActive);
+      }
     } catch { }
   }
 
@@ -2024,6 +2033,7 @@ async function runMacDockLauncher(customPath = null, cdpOptions = {}, options = 
     mode,
     port,
     mounted,
+    i18nActive,
     watcherRunning: Boolean(finalWatchPid && (options._spawnWatch ? true : isPidAliveForUser(finalWatchPid))),
     watcherStarted,
     watcherPid: finalWatchPid,
@@ -2807,12 +2817,13 @@ async function main() {
       if (!res.ok) process.exitCode = 1;
     } else if (cmd === 'launcher:run') {
       const res = await runMacDockLauncher(customPath, cdpOptions, {
-        relaunch: !args.includes('--no-relaunch')
+        relaunch: !args.includes('--no-relaunch'),
+        forceRelaunch: args.includes('--force-relaunch') || args.includes('--relaunch')
       });
       if (wantJson) {
         console.log(JSON.stringify(res, null, 2));
       } else if (res.ok) {
-        console.log(`✅ [${res.mode}] Antigravity 已启动/激活并挂载 (port=${res.port || 'existing'}, mounted=${res.mounted}, watchPid=${res.watcherPid || 'none'})`);
+        console.log(`✅ [${res.mode}] Antigravity 已启动/激活并挂载 (port=${res.port || 'existing'}, mounted=${res.mounted}, i18nActive=${Boolean(res.i18nActive)}, watchPid=${res.watcherPid || 'none'})`);
       } else {
         console.error(`❌ Dock 启动器运行失败 (${res.reason || 'error'}): ${res.error || '未知错误'}`);
       }

@@ -2749,6 +2749,22 @@
   </div>
 </div>
 
+<!-- 切换账号二次确认模态弹窗（免改盘 / Live-Host 模式防误切，确认后经插件启动入口重启并自动挂回） -->
+<div id="account-switch-modal" class="ag-modal-overlay" hidden role="dialog" aria-modal="true"
+  aria-labelledby="modal-account-switch-title">
+  <div class="ag-modal-card">
+    <div id="modal-account-switch-title" class="ag-modal-title" data-i18n="accounts.switchModal.title">确认切换账号</div>
+    <div id="modal-account-switch-text" class="ag-modal-body"></div>
+    <div id="modal-account-switch-feedback" class="ag-modal-feedback" hidden></div>
+    <div class="ag-modal-actions">
+      <button id="btn-modal-account-switch-cancel" class="unlock-btn unlock-btn-secondary" type="button"
+        data-i18n="accounts.switchModal.cancel">取消</button>
+      <button id="btn-modal-account-switch-confirm" class="unlock-btn unlock-btn-primary" type="button"
+        data-i18n="accounts.switchModal.confirm">确认切号并重启</button>
+    </div>
+  </div>
+</div>
+
 <!-- 弹出式面板 2: Token 用量一览 (#panel-tokens, 730px) -->
 <section id="panel-tokens" class="ag-panel" hidden aria-label="Token 用量一览" data-i18n-aria="badge.tokens.aria">
   <div class="panel-header-bar">

@@ -2162,6 +2162,22 @@ const PANEL_I18N = {
   'accounts.removeModal.confirm': { 'zh-CN': '确认移除', 'zh-TW': '確認移除', en: 'Confirm Remove' },
   'accounts.removeModal.removing': { 'zh-CN': '移除中…', 'zh-TW': '移除中…', en: 'Removing…' },
   'accounts.removeModal.failed': { 'zh-CN': '移除失败：{detail}', 'zh-TW': '移除失敗：{detail}', en: 'Remove failed: {detail}' },
+  'accounts.switchModal.title': { 'zh-CN': '确认切换账号', 'zh-TW': '確認切換帳號', en: 'Confirm account switch' },
+  'accounts.switchModal.body': {
+    'zh-CN': '即将切换活跃账号至 {email}，并通过插件启动入口重启 Antigravity 后自动挂回看板与中文界面。重启会中断正在运行的任务，请先确认。',
+    'zh-TW': '即將切換使用中帳號至 {email}，並透過外掛啟動入口重新啟動 Antigravity 後自動掛回看板與中文介面。重新啟動會中斷進行中的任務，請先確認。',
+    en: 'Switch active account to {email} and relaunch Antigravity via the plugin launcher so the dashboard and localization re-attach automatically. Active tasks will be interrupted.'
+  },
+  'accounts.switchModal.bodyManual': {
+    'zh-CN': '即将写入 {email} 的登录凭据。写入后请完全退出 Antigravity 并通过插件入口（Antigravity (Context Meter).app 或 node cli.js watch）重新打开，以自动挂回看板与中文界面。',
+    'zh-TW': '即將寫入 {email} 的登入憑證。寫入後請完全結束 Antigravity 並透過外掛入口重新開啟，以自動掛回看板與中文介面。',
+    en: 'Credentials for {email} will be applied. Quit Antigravity completely and reopen via the plugin launcher so the dashboard and localization re-attach.'
+  },
+  'accounts.switchModal.cancel': { 'zh-CN': '取消', 'zh-TW': '取消', en: 'Cancel' },
+  'accounts.switchModal.confirm': { 'zh-CN': '确认切号并重启', 'zh-TW': '確認切號並重啟', en: 'Switch & Restart' },
+  'accounts.switchModal.switching': { 'zh-CN': '正在切号并重启…', 'zh-TW': '正在切號並重啟…', en: 'Switching & restarting…' },
+  'accounts.switchModal.failed': { 'zh-CN': '切号失败：{detail}', 'zh-TW': '切號失敗：{detail}', en: 'Switch failed: {detail}' },
+  'accounts.switchRestartPending': { 'zh-CN': '正在重启 Antigravity 以生效切换至 {email}…', 'zh-TW': '正在重新啟動 Antigravity 以生效切換至 {email}…', en: 'Restarting Antigravity to activate {email}…' },
   'accounts.removeSuccess': { 'zh-CN': '已移除 {email}，历史用量及归属已保留.', 'zh-TW': '已移除 {email}，歷史用量與歸屬已保留.', en: 'Removed {email}; historical usage and attribution preserved.' },
   'accounts.quotaStageErr': { 'zh-CN': '本次刷新失败 · 上次快照已保留：{detail}', 'zh-TW': '本次重新整理失敗 · 上次快照已保留：{detail}', en: 'Quota fetch failed, previous snapshot kept: {detail}' },
   'accounts.lastSnapshotTime': { 'zh-CN': '上次快照 {time}', 'zh-TW': '上次快照 {time}', en: 'Last snapshot {time}' },

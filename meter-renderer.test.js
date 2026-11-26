@@ -11313,3 +11313,110 @@ test('Issue #107: 右键额度圆环在捕获与冒泡双层阻断宿主 Copy �
     api.dispose();
   }
 });
+
+test('Issue #115: 关闭自动切号时手动切号重启不误报「已开启 · 重启生效中」，免改盘点击切号先弹二次确认弹窗', async () => {
+  const fetchCalls = [];
+  const h = harness(undefined, {
+    fetch: async (url, init = {}) => {
+      const body = init.body ? JSON.parse(init.body) : {};
+      fetchCalls.push({ url, body });
+      if (String(url).endsWith('/accounts-action') && body.action === 'switch') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ok: true,
+            restartPending: true,
+            manualRestartRequired: false,
+            message: '已写入目标账号凭据，正在通过 Antigravity (Context Meter).app 重启 Antigravity 并自动挂回看板与中文…',
+            overview: {
+              ok: true,
+              activeAccountEmail: 'first@example.com',
+              accounts: [
+                { email: 'first@example.com', maskedEmail: 'fi***st@example.com', isActive: true, hasRefreshToken: true },
+                { email: 'second@example.com', maskedEmail: 'se***nd@example.com', isActive: false, hasRefreshToken: true }
+              ],
+              autoSwitch: { enabled: false, poolKey: 'shared_gemini_main', windowKey: '5h', metricMode: 'remaining_pct', thresholdPct: 10, candidates: [] },
+              autoSwitchStatus: {
+                state: 'disabled',
+                lastResult: {
+                  ok: false,
+                  restartPending: true,
+                  manualRestartRequired: false,
+                  fromEmail: 'first@example.com',
+                  toEmail: 'second@example.com',
+                  atMs: Date.now(),
+                  trigger: 'manual',
+                  message: '已写入目标账号凭据，正在通过 Antigravity (Context Meter).app 重启 Antigravity 并自动挂回看板与中文…'
+                }
+              }
+            }
+          })
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    }
+  });
+  const api = h.sandbox.__AGContextMeter;
+  // 模拟免改盘 live-host 模式（无 Electron IPC accountsAction）
+  delete h.sandbox.window.contextMeterAPI;
+  h.sandbox.window.__AGContextMeterLive = {
+    port: 54788,
+    token: 'tok-115',
+    version: '0.9.4',
+    capabilities: ['accounts', 'restartHost']
+  };
+
+  try {
+    api.setAccountsOverviewForTest({
+      ok: true,
+      activeAccountEmail: 'first@example.com',
+      accounts: [
+        { email: 'first@example.com', maskedEmail: 'fi***st@example.com', isActive: true, hasRefreshToken: true },
+        { email: 'second@example.com', maskedEmail: 'se***nd@example.com', isActive: false, hasRefreshToken: true }
+      ],
+      autoSwitch: { enabled: false, poolKey: 'shared_gemini_main', windowKey: '5h', metricMode: 'remaining_pct', thresholdPct: 10, candidates: [] },
+      autoSwitchStatus: { state: 'disabled', lastResult: null }
+    });
+
+    const collectButtons = (node, out = []) => {
+      if (!node) return out;
+      if (node.tagName === 'BUTTON' || node.type === 'button') out.push(node);
+      for (const ch of (node.children || [])) collectButtons(ch, out);
+      return out;
+    };
+
+    // 1. 点击切号按钮 -> 先弹二次确认弹窗，不得直接发 /accounts-action switch
+    const switchBtn = collectButtons(h.elements.get('quota-accounts-list')).find(b => String(b.textContent).includes('切'));
+    assert.ok(switchBtn, '必须渲染切号按钮');
+    switchBtn.click();
+    assert.equal(h.elements.get('account-switch-modal').hidden, false, '免改盘点击切号必须先弹出二次确认弹窗');
+    assert.equal(fetchCalls.filter(c => c.body?.action === 'switch').length, 0, '未确认前绝不得发送 switch 请求');
+
+    // 2. 点击取消 -> 关闭弹窗且仍未发送 switch
+    h.elements.get('btn-modal-account-switch-cancel').click();
+    assert.equal(h.elements.get('account-switch-modal').hidden, true);
+    assert.equal(fetchCalls.filter(c => c.body?.action === 'switch').length, 0);
+
+    // 3. 再次点击切号并点「确认切号并重启」-> 发送 confirmed: true
+    const switchBtn2 = collectButtons(h.elements.get('quota-accounts-list')).find(b => String(b.textContent).includes('切'));
+    switchBtn2.click();
+    assert.equal(h.elements.get('account-switch-modal').hidden, false);
+    h.elements.get('btn-modal-account-switch-confirm').click();
+    await new Promise(r => setTimeout(r, 30));
+
+    const swCalls = fetchCalls.filter(c => c.body?.action === 'switch');
+    assert.equal(swCalls.length, 1, '确认后应恰好发送 1 次 switch 请求');
+    assert.equal(swCalls[0].body.email, 'second@example.com');
+    assert.equal(swCalls[0].body.confirmed, true, '确认弹窗必须携带 confirmed: true');
+    assert.equal(h.elements.get('account-switch-modal').hidden, true, '确认提交成功后应关闭确认弹窗');
+
+    // 4. 关闭自动切号时，手动切号重启不得把自动切号状态胶囊误标为「已开启 · 重启生效中」
+    const autoPillText = h.elements.get('auto-switch-status-pill').textContent;
+    assert.equal(autoPillText, '已关闭', '关闭自动切号时手动切号重启不得误显示「已开启 · 重启生效中」');
+    const tabPillText = h.elements.get('ctx-autoswitch-status-pill').textContent;
+    assert.equal(tabPillText, '已关闭');
+  } finally {
+    api.dispose();
+  }
+});

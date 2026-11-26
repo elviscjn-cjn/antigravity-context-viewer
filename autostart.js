@@ -437,8 +437,8 @@ if [ ! -f "$CLI_PATH" ]; then
   exit 1
 fi
 
-printf '[%s] Dock launcher invoked: %s %s %s\\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$NODE_BIN" "$CLI_PATH" ${shellQuotePosix(runArgs.join(' '))} >> "$LOG_FILE"
-exec "$NODE_BIN" "$CLI_PATH" ${quotedRunArgs} >> "$LOG_FILE" 2>&1
+printf '[%s] Dock launcher invoked: %s %s %s%s\\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$NODE_BIN" "$CLI_PATH" ${shellQuotePosix(runArgs.join(' '))} "\${*:+ $*}" >> "$LOG_FILE"
+exec "$NODE_BIN" "$CLI_PATH" ${quotedRunArgs} "$@" >> "$LOG_FILE" 2>&1
 `;
 }
 

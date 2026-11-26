@@ -2356,3 +2356,144 @@ test('Issue #115: openUrlInSystemBrowser、startOAuthLogin 浏览器打开失败
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('Issue #115 回归: 关闭自动切号时添加账号仅保存不触发重启提示；主动切号未确认拦截、确认后经插件入口重开', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-acct-115-relaunch-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = tmpDir;
+  const mockCred = makeMockCredStore();
+  let applyCalls = 0;
+  const origApply = mockCred.applyCredential.bind(mockCred);
+  mockCred.applyCredential = (p) => { applyCalls++; return origApply(p); };
+
+  try {
+    // 1. 直接验证：添加新账号后（autoSwitch 关闭），绝不更改 activeAccountEmail、不写系统凭据、不置 restartPending
+    const mgr = accountsMod.createAccountsManager({
+      stateDir: tmpDir,
+      credentialStore: mockCred,
+      getHostUserStatus: async () => ({ email: 'primary@example.com' })
+    });
+    mgr.addAccountWithCredential({
+      email: 'primary@example.com',
+      name: 'Primary',
+      accessToken: 'tok-primary',
+      refreshToken: 'rt-primary',
+      expiresAt: new Date(Date.now() + 3600000).toISOString()
+    });
+    await mgr.detectCurrentActiveAccount();
+    mgr.addAccountWithCredential({
+      email: 'second@example.com',
+      name: 'Second',
+      accessToken: 'tok-second',
+      refreshToken: 'rt-second',
+      expiresAt: new Date(Date.now() + 3600000).toISOString(),
+      source: 'oauth_login'
+    });
+    const ovAfterAdd = mgr.getOverviewState();
+    assert.equal(ovAfterAdd.activeAccountEmail, 'primary@example.com', '关闭自动切号时添加账号不得改动当前活跃账号');
+    assert.equal(ovAfterAdd.autoSwitch.enabled, false);
+    assert.equal(ovAfterAdd.autoSwitchStatus.lastResult, null, '添加账号不得写入任何 restartPending 状态');
+    assert.equal(applyCalls, 0, '添加账号不得改写系统凭据');
+
+    // 2. 验证 live-host /accounts-action (action=switch) 在未确认时拦截、确认后写入凭据并调度插件重启入口
+    const { createLiveRequestHandler } = require('./live-host');
+    const relaunchCalls = [];
+    const fakeEntry = {
+      supported: true,
+      entryKind: 'mac_dock_launcher',
+      entryLabel: '/Users/test/Applications/Antigravity (Context Meter).app',
+      command: '/Users/test/Applications/Antigravity (Context Meter).app/Contents/MacOS/launch-antigravity-meter',
+      args: ['--force-relaunch'],
+      port: 58321
+    };
+    // 注入测试用 sharedAccountsManager（通过 stateDir 持久化并复用 mockCred）
+    const origMgr = accountsMod.getSharedAccountsManager({ forceNew: true, stateDir: tmpDir, credentialStore: mockCred });
+    assert.ok(origMgr);
+    const handler = createLiveRequestHandler({
+      api: { origin: 'https://127.0.0.1:59998', origins: ['https://127.0.0.1:59998'] },
+      secret: 'test-secret-115-switch',
+      _resolveRelaunchEntry: () => fakeEntry,
+      _triggerRelaunch: (entry, meta) => { relaunchCalls.push({ entry, meta }); },
+      _relaunchDelayMs: 0
+    });
+    const srv = http.createServer(handler);
+    await new Promise(r => srv.listen(0, '127.0.0.1', r));
+    const port = srv.address().port;
+    const postJson = (route, payload) => new Promise((resolve, reject) => {
+      const body = JSON.stringify(payload);
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port,
+        path: route,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Origin': 'https://127.0.0.1:59998',
+          'X-AG-Context-Token': 'test-secret-115-switch',
+          'Content-Length': Buffer.byteLength(body)
+        }
+      }, res => {
+        let data = '';
+        res.on('data', c => data += c);
+        res.on('end', () => resolve({ status: res.statusCode, json: JSON.parse(data || '{}') }));
+      });
+      req.on('error', reject);
+      req.end(body);
+    });
+
+    try {
+      // 2a. runtime-info 报告 restartHost: true
+      const rtRes = await postJson('/runtime-info', {});
+      assert.equal(rtRes.json.capabilities.restartHost, true);
+      assert.equal(rtRes.json.relaunchEntry.entryKind, 'mac_dock_launcher');
+
+      // 2b. 未确认 switch 被拦截，不写凭据也不触发重开
+      const unconfirmedRes = await postJson('/accounts-action', { action: 'switch', email: 'second@example.com' });
+      assert.equal(unconfirmedRes.json.ok, false);
+      assert.equal(unconfirmedRes.json.needsConfirm, true);
+      assert.equal(unconfirmedRes.json.relaunchSupported, true);
+      assert.equal(applyCalls, 0, '未确认切号绝不能写入凭据');
+      assert.equal(relaunchCalls.length, 0, '未确认切号绝不能触发重开');
+
+      // 2c. 确认后 switch 经插件启动入口触发重开（使用独立的 mgr 验证 switchActiveAccount + restartClient 完整落盘与调度）
+      const swRes = await accountsMod.dispatchAccountsAction(mgr, { action: 'switch', email: 'second@example.com' }, {
+        requiresClientRestart: true,
+        allowManualRestartPending: false,
+        restartClient: async () => {
+          relaunchCalls.push({ entry: fakeEntry, meta: { reason: 'account_switch', targetEmail: 'second@example.com' } });
+          return {
+            ok: true,
+            supported: true,
+            entryKind: fakeEntry.entryKind,
+            entryLabel: fakeEntry.entryLabel,
+            message: '已写入目标账号凭据，正在通过 Antigravity (Context Meter).app 重启 Antigravity 并自动挂回看板与中文…'
+          };
+        }
+      });
+      assert.equal(swRes.ok, true);
+      assert.equal(swRes.restartPending, true);
+      assert.equal(swRes.manualRestartRequired, false);
+      assert.equal(swRes.relaunchEntryKind, 'mac_dock_launcher');
+      assert.equal(swRes.overview.autoSwitch.enabled, false, '主动切号不得开启自动切号');
+      assert.equal(swRes.overview.autoSwitchStatus.state, 'disabled', '关闭自动切号时主动切号重启不得将自动切号状态置为 restarting');
+      assert.equal(applyCalls, 1, '确认切号后应写入目标账号凭据');
+      assert.equal(relaunchCalls.length, 1);
+      assert.equal(relaunchCalls[0].meta.reason, 'account_switch');
+
+      // 2d. /restart-host 同样走插件入口重开
+      const restartRes = await postJson('/restart-host', {});
+      await new Promise(r => setTimeout(r, 30));
+      assert.equal(restartRes.json.ok, true);
+      assert.equal(restartRes.json.supported, true);
+      assert.equal(restartRes.json.entryKind, 'mac_dock_launcher');
+      assert.equal(relaunchCalls.length, 2);
+      assert.equal(relaunchCalls[1].meta.reason, 'restart_host');
+    } finally {
+      await new Promise(r => srv.close(r));
+    }
+  } finally {
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

@@ -1,9 +1,11 @@
 'use strict';
 // 本地开发与实时会话桥接服务。常规启动时由 Electron IPC 接管。
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
+const { spawn } = require('child_process');
 const { connect, normalizeLoopbackOrigin, getAppDataDir } = require('./local-api');
 const {
   collect,
@@ -260,13 +262,175 @@ function timingSafeTokenEqual(provided, expected) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
-function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShutdown = null, startedAt = LIVE_HOST_STARTED_AT, _applyUpdateAsync = applyUpdateAsync, _openExternal = null }) {
+function detectLiveHostCdpPort() {
+  try {
+    const portFile = path.join(getAppDataDir(), 'Antigravity', 'DevToolsActivePort');
+    if (fs.existsSync(portFile)) {
+      const p = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
+      if (Number.isInteger(p) && p >= 1024 && p <= 65535) return p;
+    }
+  } catch { }
+  return 58321;
+}
+
+function buildCleanRelaunchEnv(baseEnv = process.env, stateDir = null) {
+  const cleanEnv = { ...(baseEnv || {}) };
+  delete cleanEnv.ELECTRON_RUN_AS_NODE;
+  delete cleanEnv.NODE_OPTIONS;
+  delete cleanEnv.ELECTRON_ENABLE_LOGGING;
+  delete cleanEnv.ELECTRON_NO_ATTACH_CONSOLE;
+  for (const key of Object.keys(cleanEnv)) {
+    if (
+      key.startsWith('ANTIGRAVITY_') ||
+      key.startsWith('DYLD_') ||
+      key.startsWith('AG_LIVE_')
+    ) {
+      delete cleanEnv[key];
+    }
+  }
+  if (stateDir) cleanEnv.AG_METER_STATE_DIR = stateDir;
+  return cleanEnv;
+}
+
+function resolveLiveHostRelaunchEntry(options = {}) {
+  const platform = options.platform || process.platform;
+  const stateDir = options.stateDir || getStateDir();
+  const port = options.port || detectLiveHostCdpPort();
+  if (platform === 'darwin') {
+    try {
+      const { getMacDockLauncherStatus } = require('./autostart');
+      const st = getMacDockLauncherStatus({ platform, homeDir: options.homeDir });
+      if (st?.installed && st.execPath && fs.existsSync(st.execPath)) {
+        const scriptBody = fs.readFileSync(st.execPath, 'utf8');
+        if (scriptBody.includes('"$@"')) {
+          return {
+            supported: true,
+            entryKind: 'mac_dock_launcher',
+            entryLabel: st.appPath,
+            command: st.execPath,
+            args: ['--force-relaunch'],
+            port
+          };
+        }
+      }
+    } catch { }
+  }
+  const cliCandidates = [];
+  try {
+    const metaPath = path.join(stateDir, 'watch-meta.json');
+    if (fs.existsSync(metaPath)) {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      if (meta?.script && typeof meta.script === 'string') {
+        cliCandidates.push(meta.script);
+      }
+    }
+  } catch { }
+  if (process.env.AG_BUNDLE_SOURCE_DIR) {
+    cliCandidates.push(path.join(process.env.AG_BUNDLE_SOURCE_DIR, 'cli.js'));
+  }
+  cliCandidates.push(path.join(__dirname, 'cli.js'));
+  for (const cand of cliCandidates) {
+    try {
+      if (cand && fs.existsSync(cand)) {
+        return {
+          supported: true,
+          entryKind: 'cli_launcher_run',
+          entryLabel: cand,
+          command: options.nodePath || process.execPath,
+          args: [cand, 'launcher:run', '--force-relaunch', ...(port ? ['--port', String(port)] : [])],
+          port
+        };
+      }
+    } catch { }
+  }
+  return { supported: false, entryKind: null, entryLabel: null, command: null, args: [], port };
+}
+
+function triggerLiveHostRelaunch(entry, options = {}) {
+  if (!entry || !entry.supported || !entry.command) {
+    return { ok: false, supported: false, error: '未找到可用的插件重启入口' };
+  }
+  const stateDir = options.stateDir || getStateDir();
+  const cleanEnv = buildCleanRelaunchEnv(options.env || process.env, stateDir);
+  const spawner = typeof options._spawn === 'function' ? options._spawn : spawn;
+  if (typeof options._spawn !== 'function' && (process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test')) {
+    return { ok: false, supported: false, error: 'Test mode blocks spawning real host relaunch' };
+  }
+  const reason = options.reason || 'restart_host';
+  let logFd = null;
+  let stdioOpt = 'ignore';
+  try {
+    const logPath = options.logPath || (process.platform === 'darwin'
+      ? path.join(os.homedir(), 'Library', 'Logs', 'antigravity-context-meter-launcher.log')
+      : path.join(stateDir, 'relaunch.log'));
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    const ts = new Date().toLocaleString('sv-SE', { hour12: false }).replace('T', ' ');
+    fs.appendFileSync(
+      logPath,
+      `[${ts}] Live-Host triggered relaunch (reason=${reason}, entry=${entry.entryKind}): ${entry.command} ${(entry.args || []).join(' ')}\n`,
+      'utf8'
+    );
+    if (typeof options._spawn !== 'function') {
+      logFd = fs.openSync(logPath, 'a');
+      stdioOpt = ['ignore', logFd, logFd];
+    }
+  } catch { }
+  try {
+    const child = spawner(entry.command, entry.args || [], {
+      detached: true,
+      stdio: stdioOpt,
+      windowsHide: true,
+      env: cleanEnv
+    });
+    child?.unref?.();
+    return {
+      ok: true,
+      supported: true,
+      relaunching: true,
+      entryKind: entry.entryKind,
+      entryLabel: entry.entryLabel,
+      launcherPid: child?.pid || null
+    };
+  } catch (err) {
+    return { ok: false, supported: false, error: err?.message || String(err) };
+  } finally {
+    if (logFd != null) {
+      try { fs.closeSync(logFd); } catch { }
+    }
+  }
+}
+
+function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShutdown = null, startedAt = LIVE_HOST_STARTED_AT, _applyUpdateAsync = applyUpdateAsync, _openExternal = null, _resolveRelaunchEntry = null, _triggerRelaunch = null, _relaunchDelayMs = null }) {
   let activeApplyUpdateCount = 0;
   let deferredShutdownRequested = false;
   const resolveOpenExternal = () => {
     if (typeof _openExternal === 'function') return _openExternal;
     const { openUrlInSystemBrowser } = require('./meter-accounts');
     return (targetUrl) => openUrlInSystemBrowser(targetUrl);
+  };
+  const resolveRelaunchEntry = () => {
+    if (typeof _resolveRelaunchEntry === 'function') return _resolveRelaunchEntry();
+    return resolveLiveHostRelaunchEntry();
+  };
+  const scheduleRelaunchAfterFinish = (res, entry, meta = {}) => {
+    const delayMs = Number.isFinite(Number(_relaunchDelayMs))
+      ? Math.max(0, Number(_relaunchDelayMs))
+      : (typeof _triggerRelaunch === 'function' ? 0 : 250);
+    const runner = () => {
+      try {
+        if (typeof _triggerRelaunch === 'function') {
+          _triggerRelaunch(entry, meta);
+        } else {
+          triggerLiveHostRelaunch(entry, meta);
+        }
+      } catch { }
+    };
+    const triggerSoon = () => {
+      if (delayMs > 0) setTimeout(runner, delayMs).unref();
+      else setImmediate(runner);
+    };
+    if (res.writableEnded) triggerSoon();
+    else res.once('finish', triggerSoon);
   };
   const resolveAllowedSet = () => {
     const set = new Set();
@@ -620,6 +784,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           return;
         }
         if (req.url === '/runtime-info') {
+          const relaunchEntry = resolveRelaunchEntry();
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({
             ok: true,
@@ -628,7 +793,13 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
             backendSource: 'live-host',
             pid: process.pid,
             startedAt,
-            capabilities: { ...LIVE_CAPABILITIES },
+            capabilities: {
+              ...LIVE_CAPABILITIES,
+              restartHost: Boolean(relaunchEntry?.supported)
+            },
+            relaunchEntry: relaunchEntry?.supported
+              ? { entryKind: relaunchEntry.entryKind, entryLabel: relaunchEntry.entryLabel, port: relaunchEntry.port || null }
+              : null,
             origins: Array.from(resolveAllowedSet())
           }));
           return;
@@ -738,8 +909,21 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           return;
         }
         if (req.url === '/restart-host') {
+          const relaunchEntry = resolveRelaunchEntry();
+          if (!relaunchEntry?.supported) {
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ ok: true, supported: false }));
+            return;
+          }
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ ok: true, supported: false }));
+          res.end(JSON.stringify({
+            ok: true,
+            supported: true,
+            relaunching: true,
+            entryKind: relaunchEntry.entryKind,
+            entryLabel: relaunchEntry.entryLabel
+          }));
+          scheduleRelaunchAfterFinish(res, relaunchEntry, { reason: 'restart_host' });
           return;
         }
         if (req.url === '/token-history') {
@@ -842,13 +1026,57 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           const openExternal = resolveOpenExternal();
           const mgr = getSharedAccountsManager({ origin: targetOrigin, openExternal });
           const requiresClientRestart = compareVersions(resolveLiveHostTargetVersion(), '2.34.0') >= 0;
+          const relaunchEntry = resolveRelaunchEntry();
+          if (request?.action === 'switch' && requiresClientRestart && request?.confirmed !== true) {
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({
+              ok: false,
+              needsConfirm: true,
+              confirmRequired: true,
+              reason: 'switch_confirmation_required',
+              targetEmail: request?.email || null,
+              relaunchSupported: Boolean(relaunchEntry?.supported),
+              relaunchEntryKind: relaunchEntry?.entryKind || null,
+              relaunchEntryLabel: relaunchEntry?.entryLabel || null,
+              message: '切换账号需要重启 Antigravity，请先确认后再执行。',
+              overview: mgr.getOverviewState()
+            }));
+            return;
+          }
+          let pendingRelaunch = null;
+          const restartClient = (request?.action === 'switch' && requiresClientRestart && relaunchEntry?.supported)
+            ? async () => {
+                pendingRelaunch = {
+                  entry: relaunchEntry,
+                  reason: 'account_switch',
+                  targetEmail: request?.email || null
+                };
+                const entryDisplay = relaunchEntry.entryKind === 'mac_dock_launcher'
+                  ? 'Antigravity (Context Meter).app'
+                  : '插件启动入口';
+                return {
+                  ok: true,
+                  supported: true,
+                  entryKind: relaunchEntry.entryKind,
+                  entryLabel: relaunchEntry.entryLabel,
+                  message: `已写入目标账号凭据，正在通过 ${entryDisplay} 重启 Antigravity 并自动挂回看板与中文…`
+                };
+              }
+            : undefined;
           const outRes = await dispatchAccountsAction(mgr, request || {}, {
+            restartClient,
             requiresClientRestart,
-            allowManualRestartPending: requiresClientRestart,
+            allowManualRestartPending: requiresClientRestart && !restartClient,
             openExternal
           });
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(outRes));
+          if (pendingRelaunch && outRes && outRes.ok && outRes.restartPending) {
+            scheduleRelaunchAfterFinish(res, pendingRelaunch.entry, {
+              reason: pendingRelaunch.reason,
+              targetEmail: pendingRelaunch.targetEmail
+            });
+          }
           return;
         }
         const scanOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
@@ -1126,5 +1354,7 @@ module.exports = {
   buildLiveRuntimeModulesMeta,
   createLiveRequestHandler,
   parseInitialOriginsEnv,
+  resolveLiveHostRelaunchEntry,
+  triggerLiveHostRelaunch,
   startLiveHost
 };

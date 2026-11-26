@@ -6725,6 +6725,13 @@
       isActive: false,
       busy: false,
       error: ''
+    },
+    switchModal: {
+      open: false,
+      email: '',
+      busy: false,
+      error: '',
+      relaunchSupported: true
     }
   };
   function resetAccountScopedViewOffsets() {
@@ -30143,9 +30150,10 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     const ov = ovOverride || accountsUiState.overview || { accounts: [], autoSwitch: {}, autoSwitchStatus: { state: 'disabled' } };
     const lr = ov.autoSwitchStatus?.lastResult;
     const isRestartPend = Boolean(lr?.restartPending);
+    const isAutoRestartPend = Boolean(isRestartPend && (ov.autoSwitch?.enabled || String(lr?.trigger || '').startsWith('auto')));
     const hasDraft = Boolean(autoSwitchDraftDirty || accountsUiState.autoSwitchDraft?.dirty);
     const savedTargetValid = Boolean(encodeAutoSwitchTargetKey(ov.autoSwitch?.poolKey, ov.autoSwitch?.windowKey));
-    let sKey = isRestartPend ? 'restarting' : (ov.autoSwitchStatus?.state || (ov.autoSwitch?.enabled ? 'watching' : 'disabled'));
+    let sKey = isAutoRestartPend ? 'restarting' : (ov.autoSwitchStatus?.state || (ov.autoSwitch?.enabled ? 'watching' : 'disabled'));
     if (!hasDraft && ov.autoSwitch?.enabled && !savedTargetValid && !['error', 'switching', 'restarting'].includes(sKey)) {
       sKey = 'blocked_legacy_rule';
     }
@@ -30246,6 +30254,10 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       const tBtn = el(tid);
       if (tBtn) tBtn.hidden = !hasTools;
     }
+    for (const bid of ['btn-acct-oauth-add', 'btn-tab-acct-oauth-add', 'btn-acct-import-current', 'btn-tab-acct-import-current']) {
+      const actionBtn = el(bid);
+      if (actionBtn) actionBtn.disabled = Boolean(accountsUiState.busy || accountsUiState.switchModal?.busy);
+    }
     const lr = ov.autoSwitchStatus?.lastResult;
     const rawLastErr = (lr?.ok === false && lr?.error) ? lr.error : ov.autoSwitchStatus?.lastError;
     const formatPersistedError = (raw) => {
@@ -30265,7 +30277,12 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     let displayFeedback = accountsUiState.feedback || '';
     let displayTone = accountsUiState.feedbackTone;
     if (!displayFeedback && hasRecentPersistedResult) {
-      if (lr.ok === false) {
+      if (lr.restartPending) {
+        displayFeedback = lr.message
+          ? (typeof translateBackendText === 'function' ? translateBackendText(lr.message) : lr.message)
+          : t('accounts.switchRestartPending', { email: lr.toEmail || '' });
+        displayTone = 'info';
+      } else if (lr.ok === false) {
         displayFeedback = formatPersistedError(rawLastErr || t('accounts.actionFail'));
         displayTone = 'error';
       } else if (lr.ok === true && (lr.message || lr.toEmail)) {
@@ -30349,9 +30366,15 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
             const swBtn = document.createElement('button');
             swBtn.className = 'switch-pill-btn';
             swBtn.type = 'button';
-            swBtn.disabled = accountsUiState.busy || Boolean(accountsUiState.removeModal?.busy) || !acc.hasRefreshToken || Boolean(acc.authInvalid);
+            swBtn.disabled = accountsUiState.busy || Boolean(accountsUiState.removeModal?.busy) || Boolean(accountsUiState.switchModal?.busy) || !acc.hasRefreshToken || Boolean(acc.authInvalid);
             swBtn.textContent = t('accounts.switchBtn');
-            swBtn.addEventListener('click', () => void performAccountAction('switch', { email: acc.email }));
+            swBtn.addEventListener('click', () => {
+              if (typeof window?.contextMeterAPI?.accountsAction === 'function') {
+                void performAccountAction('switch', { email: acc.email });
+              } else {
+                openSwitchAccountModal(acc);
+              }
+            });
             right.appendChild(swBtn);
           }
           const rmBtn = document.createElement('button');
@@ -30483,11 +30506,11 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       resolvedNote = t('prefs.saveError', { reason: accountsUiState.autoSwitchDraft.saveErrorDetail || t('accounts.actionFail') });
     } else if (rawLastErr) {
       resolvedNote = formatPersistedError(rawLastErr);
-    } else if (lr?.ok === false && lr?.restartPending) {
+    } else if (lr?.ok === false && lr?.restartPending && (ov.autoSwitch?.enabled || String(lr?.trigger || '').startsWith('auto'))) {
       resolvedNote = lr.message
         ? (typeof translateBackendText === 'function' ? translateBackendText(lr.message) : lr.message)
         : t('accounts.status.restarting');
-    } else if (lr?.ok === false) {
+    } else if (lr?.ok === false && !lr?.restartPending) {
       resolvedNote = formatPersistedError(t('accounts.actionFail'));
     } else if (blockedReasonText) {
       resolvedNote = blockedReasonText;
@@ -30670,6 +30693,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     syncQuotaAccountsSummaryCard(ov);
     syncTokenAccountFilterOptions(ANTIGRAVITY_TOKEN_DATA.rawPayload);
     if (accountsUiState.removeModal?.open) renderAccountRemoveModal();
+    if (accountsUiState.switchModal?.open) renderAccountSwitchModal();
     syncHostSettingsUi();
   }
 
@@ -30872,6 +30896,104 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     if (ev.target === el('account-remove-modal')) closeRemoveAccountModal();
   });
 
+  function renderAccountSwitchModal() {
+    const modal = el('account-switch-modal');
+    const titleEl = el('modal-account-switch-title');
+    const textEl = el('modal-account-switch-text');
+    const fbEl = el('modal-account-switch-feedback');
+    const cancelBtn = el('btn-modal-account-switch-cancel');
+    const confirmBtn = el('btn-modal-account-switch-confirm');
+    const st = accountsUiState.switchModal || {};
+    if (!modal) return;
+    modal.hidden = !st.open;
+    if (!st.open) return;
+    if (titleEl) titleEl.textContent = t('accounts.switchModal.title');
+    if (textEl) {
+      textEl.textContent = st.relaunchSupported === false
+        ? t('accounts.switchModal.bodyManual', { email: st.email || '' })
+        : t('accounts.switchModal.body', { email: st.email || '' });
+    }
+    if (fbEl) {
+      fbEl.hidden = !st.error;
+      fbEl.textContent = st.error || '';
+    }
+    if (cancelBtn) {
+      cancelBtn.textContent = t('accounts.switchModal.cancel');
+      cancelBtn.disabled = Boolean(st.busy);
+    }
+    if (confirmBtn) {
+      confirmBtn.textContent = st.busy ? t('accounts.switchModal.switching') : t('accounts.switchModal.confirm');
+      confirmBtn.disabled = Boolean(st.busy) || !st.email;
+    }
+  }
+
+  function openSwitchAccountModal(acc, opts = {}) {
+    const email = typeof acc === 'string' ? acc : acc?.email;
+    if (!email || accountsUiState.busy || accountsUiState.switchModal?.busy) return;
+    accountsUiState.switchModal = {
+      open: true,
+      email,
+      busy: false,
+      error: '',
+      relaunchSupported: opts.relaunchSupported !== undefined ? Boolean(opts.relaunchSupported) : Boolean(hostSupportsRestart)
+    };
+    renderAccountSwitchModal();
+  }
+
+  function closeSwitchAccountModal(forceClose = false) {
+    if (!forceClose && accountsUiState.switchModal?.busy) return;
+    accountsUiState.switchModal = {
+      open: false,
+      email: '',
+      busy: false,
+      error: '',
+      relaunchSupported: true
+    };
+    renderAccountSwitchModal();
+  }
+
+  async function confirmSwitchAccountModal() {
+    const st = accountsUiState.switchModal;
+    if (!st?.open || !st.email || st.busy || accountsUiState.busy) return null;
+    const targetEmail = st.email;
+    st.busy = true;
+    st.error = '';
+    renderAccountSwitchModal();
+    renderAccountsOverviewSection();
+    try {
+      const out = await performAccountAction('switch', { email: targetEmail, confirmed: true });
+      if (out && out.ok) {
+        closeSwitchAccountModal(true);
+        return out;
+      }
+      const errDetail = translateBackendText(out?.error || out?.message || t('accounts.actionFail'));
+      accountsUiState.switchModal = {
+        ...accountsUiState.switchModal,
+        open: true,
+        busy: false,
+        error: t('accounts.switchModal.failed', { detail: errDetail })
+      };
+      renderAccountSwitchModal();
+      return out || { ok: false, error: errDetail };
+    } catch (err) {
+      const errDetail = translateBackendText(err?.message || t('accounts.actionFail'));
+      accountsUiState.switchModal = {
+        ...accountsUiState.switchModal,
+        open: true,
+        busy: false,
+        error: t('accounts.switchModal.failed', { detail: errDetail })
+      };
+      renderAccountSwitchModal();
+      return { ok: false, error: errDetail };
+    }
+  }
+
+  el('btn-modal-account-switch-cancel')?.addEventListener('click', () => closeSwitchAccountModal());
+  el('btn-modal-account-switch-confirm')?.addEventListener('click', () => void confirmSwitchAccountModal());
+  el('account-switch-modal')?.addEventListener('click', (ev) => {
+    if (ev.target === el('account-switch-modal')) closeSwitchAccountModal();
+  });
+
   async function performAccountAction(action, extraPayload = {}) {
     if (accountsUiState.busy) return null;
     accountsUiState.busy = true;
@@ -30892,6 +31014,12 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       if (out.overview) accountsUiState.overview = out.overview;
       if (out.cancelled) {
         accountsUiState.feedback = '';
+        return out;
+      }
+      if (action === 'switch' && out.needsConfirm) {
+        accountsUiState.feedback = '';
+        accountsUiState.busy = false;
+        openSwitchAccountModal({ email: extraPayload.email || out.targetEmail || '' }, { relaunchSupported: out.relaunchSupported });
         return out;
       }
       const isOk = out.ok === true;

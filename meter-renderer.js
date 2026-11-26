@@ -19610,6 +19610,22 @@
   </div>
 </div>
 
+<!-- 切换账号二次确认模态弹窗（免改盘 / Live-Host 模式防误切，确认后经插件启动入口重启并自动挂回） -->
+<div id="account-switch-modal" class="ag-modal-overlay" hidden role="dialog" aria-modal="true"
+  aria-labelledby="modal-account-switch-title">
+  <div class="ag-modal-card">
+    <div id="modal-account-switch-title" class="ag-modal-title" data-i18n="accounts.switchModal.title">确认切换账号</div>
+    <div id="modal-account-switch-text" class="ag-modal-body"></div>
+    <div id="modal-account-switch-feedback" class="ag-modal-feedback" hidden></div>
+    <div class="ag-modal-actions">
+      <button id="btn-modal-account-switch-cancel" class="unlock-btn unlock-btn-secondary" type="button"
+        data-i18n="accounts.switchModal.cancel">取消</button>
+      <button id="btn-modal-account-switch-confirm" class="unlock-btn unlock-btn-primary" type="button"
+        data-i18n="accounts.switchModal.confirm">确认切号并重启</button>
+    </div>
+  </div>
+</div>
+
 <!-- 弹出式面板 2: Token 用量一览 (#panel-tokens, 730px) -->
 <section id="panel-tokens" class="ag-panel" hidden aria-label="Token 用量一览" data-i18n-aria="badge.tokens.aria">
   <div class="panel-header-bar">
@@ -23528,6 +23544,22 @@ const PANEL_I18N = {
   'accounts.removeModal.confirm': { 'zh-CN': '确认移除', 'zh-TW': '確認移除', en: 'Confirm Remove' },
   'accounts.removeModal.removing': { 'zh-CN': '移除中…', 'zh-TW': '移除中…', en: 'Removing…' },
   'accounts.removeModal.failed': { 'zh-CN': '移除失败：{detail}', 'zh-TW': '移除失敗：{detail}', en: 'Remove failed: {detail}' },
+  'accounts.switchModal.title': { 'zh-CN': '确认切换账号', 'zh-TW': '確認切換帳號', en: 'Confirm account switch' },
+  'accounts.switchModal.body': {
+    'zh-CN': '即将切换活跃账号至 {email}，并通过插件启动入口重启 Antigravity 后自动挂回看板与中文界面。重启会中断正在运行的任务，请先确认。',
+    'zh-TW': '即將切換使用中帳號至 {email}，並透過外掛啟動入口重新啟動 Antigravity 後自動掛回看板與中文介面。重新啟動會中斷進行中的任務，請先確認。',
+    en: 'Switch active account to {email} and relaunch Antigravity via the plugin launcher so the dashboard and localization re-attach automatically. Active tasks will be interrupted.'
+  },
+  'accounts.switchModal.bodyManual': {
+    'zh-CN': '即将写入 {email} 的登录凭据。写入后请完全退出 Antigravity 并通过插件入口（Antigravity (Context Meter).app 或 node cli.js watch）重新打开，以自动挂回看板与中文界面。',
+    'zh-TW': '即將寫入 {email} 的登入憑證。寫入後請完全結束 Antigravity 並透過外掛入口重新開啟，以自動掛回看板與中文介面。',
+    en: 'Credentials for {email} will be applied. Quit Antigravity completely and reopen via the plugin launcher so the dashboard and localization re-attach.'
+  },
+  'accounts.switchModal.cancel': { 'zh-CN': '取消', 'zh-TW': '取消', en: 'Cancel' },
+  'accounts.switchModal.confirm': { 'zh-CN': '确认切号并重启', 'zh-TW': '確認切號並重啟', en: 'Switch & Restart' },
+  'accounts.switchModal.switching': { 'zh-CN': '正在切号并重启…', 'zh-TW': '正在切號並重啟…', en: 'Switching & restarting…' },
+  'accounts.switchModal.failed': { 'zh-CN': '切号失败：{detail}', 'zh-TW': '切號失敗：{detail}', en: 'Switch failed: {detail}' },
+  'accounts.switchRestartPending': { 'zh-CN': '正在重启 Antigravity 以生效切换至 {email}…', 'zh-TW': '正在重新啟動 Antigravity 以生效切換至 {email}…', en: 'Restarting Antigravity to activate {email}…' },
   'accounts.removeSuccess': { 'zh-CN': '已移除 {email}，历史用量及归属已保留.', 'zh-TW': '已移除 {email}，歷史用量與歸屬已保留.', en: 'Removed {email}; historical usage and attribution preserved.' },
   'accounts.quotaStageErr': { 'zh-CN': '本次刷新失败 · 上次快照已保留：{detail}', 'zh-TW': '本次重新整理失敗 · 上次快照已保留：{detail}', en: 'Quota fetch failed, previous snapshot kept: {detail}' },
   'accounts.lastSnapshotTime': { 'zh-CN': '上次快照 {time}', 'zh-TW': '上次快照 {time}', en: 'Last snapshot {time}' },
@@ -35943,6 +35975,13 @@ let activeCnyTimerId = null;
       isActive: false,
       busy: false,
       error: ''
+    },
+    switchModal: {
+      open: false,
+      email: '',
+      busy: false,
+      error: '',
+      relaunchSupported: true
     }
   };
   function resetAccountScopedViewOffsets() {
@@ -70125,9 +70164,10 @@ function initCrossSessionInsightsControls() {
     const ov = ovOverride || accountsUiState.overview || { accounts: [], autoSwitch: {}, autoSwitchStatus: { state: 'disabled' } };
     const lr = ov.autoSwitchStatus?.lastResult;
     const isRestartPend = Boolean(lr?.restartPending);
+    const isAutoRestartPend = Boolean(isRestartPend && (ov.autoSwitch?.enabled || String(lr?.trigger || '').startsWith('auto')));
     const hasDraft = Boolean(autoSwitchDraftDirty || accountsUiState.autoSwitchDraft?.dirty);
     const savedTargetValid = Boolean(encodeAutoSwitchTargetKey(ov.autoSwitch?.poolKey, ov.autoSwitch?.windowKey));
-    let sKey = isRestartPend ? 'restarting' : (ov.autoSwitchStatus?.state || (ov.autoSwitch?.enabled ? 'watching' : 'disabled'));
+    let sKey = isAutoRestartPend ? 'restarting' : (ov.autoSwitchStatus?.state || (ov.autoSwitch?.enabled ? 'watching' : 'disabled'));
     if (!hasDraft && ov.autoSwitch?.enabled && !savedTargetValid && !['error', 'switching', 'restarting'].includes(sKey)) {
       sKey = 'blocked_legacy_rule';
     }
@@ -70228,6 +70268,10 @@ function initCrossSessionInsightsControls() {
       const tBtn = el(tid);
       if (tBtn) tBtn.hidden = !hasTools;
     }
+    for (const bid of ['btn-acct-oauth-add', 'btn-tab-acct-oauth-add', 'btn-acct-import-current', 'btn-tab-acct-import-current']) {
+      const actionBtn = el(bid);
+      if (actionBtn) actionBtn.disabled = Boolean(accountsUiState.busy || accountsUiState.switchModal?.busy);
+    }
     const lr = ov.autoSwitchStatus?.lastResult;
     const rawLastErr = (lr?.ok === false && lr?.error) ? lr.error : ov.autoSwitchStatus?.lastError;
     const formatPersistedError = (raw) => {
@@ -70247,7 +70291,12 @@ function initCrossSessionInsightsControls() {
     let displayFeedback = accountsUiState.feedback || '';
     let displayTone = accountsUiState.feedbackTone;
     if (!displayFeedback && hasRecentPersistedResult) {
-      if (lr.ok === false) {
+      if (lr.restartPending) {
+        displayFeedback = lr.message
+          ? (typeof translateBackendText === 'function' ? translateBackendText(lr.message) : lr.message)
+          : t('accounts.switchRestartPending', { email: lr.toEmail || '' });
+        displayTone = 'info';
+      } else if (lr.ok === false) {
         displayFeedback = formatPersistedError(rawLastErr || t('accounts.actionFail'));
         displayTone = 'error';
       } else if (lr.ok === true && (lr.message || lr.toEmail)) {
@@ -70331,9 +70380,15 @@ function initCrossSessionInsightsControls() {
             const swBtn = document.createElement('button');
             swBtn.className = 'switch-pill-btn';
             swBtn.type = 'button';
-            swBtn.disabled = accountsUiState.busy || Boolean(accountsUiState.removeModal?.busy) || !acc.hasRefreshToken || Boolean(acc.authInvalid);
+            swBtn.disabled = accountsUiState.busy || Boolean(accountsUiState.removeModal?.busy) || Boolean(accountsUiState.switchModal?.busy) || !acc.hasRefreshToken || Boolean(acc.authInvalid);
             swBtn.textContent = t('accounts.switchBtn');
-            swBtn.addEventListener('click', () => void performAccountAction('switch', { email: acc.email }));
+            swBtn.addEventListener('click', () => {
+              if (typeof window?.contextMeterAPI?.accountsAction === 'function') {
+                void performAccountAction('switch', { email: acc.email });
+              } else {
+                openSwitchAccountModal(acc);
+              }
+            });
             right.appendChild(swBtn);
           }
           const rmBtn = document.createElement('button');
@@ -70465,11 +70520,11 @@ function initCrossSessionInsightsControls() {
       resolvedNote = t('prefs.saveError', { reason: accountsUiState.autoSwitchDraft.saveErrorDetail || t('accounts.actionFail') });
     } else if (rawLastErr) {
       resolvedNote = formatPersistedError(rawLastErr);
-    } else if (lr?.ok === false && lr?.restartPending) {
+    } else if (lr?.ok === false && lr?.restartPending && (ov.autoSwitch?.enabled || String(lr?.trigger || '').startsWith('auto'))) {
       resolvedNote = lr.message
         ? (typeof translateBackendText === 'function' ? translateBackendText(lr.message) : lr.message)
         : t('accounts.status.restarting');
-    } else if (lr?.ok === false) {
+    } else if (lr?.ok === false && !lr?.restartPending) {
       resolvedNote = formatPersistedError(t('accounts.actionFail'));
     } else if (blockedReasonText) {
       resolvedNote = blockedReasonText;
@@ -70652,6 +70707,7 @@ function initCrossSessionInsightsControls() {
     syncQuotaAccountsSummaryCard(ov);
     syncTokenAccountFilterOptions(ANTIGRAVITY_TOKEN_DATA.rawPayload);
     if (accountsUiState.removeModal?.open) renderAccountRemoveModal();
+    if (accountsUiState.switchModal?.open) renderAccountSwitchModal();
     syncHostSettingsUi();
   }
 
@@ -70854,6 +70910,104 @@ function initCrossSessionInsightsControls() {
     if (ev.target === el('account-remove-modal')) closeRemoveAccountModal();
   });
 
+  function renderAccountSwitchModal() {
+    const modal = el('account-switch-modal');
+    const titleEl = el('modal-account-switch-title');
+    const textEl = el('modal-account-switch-text');
+    const fbEl = el('modal-account-switch-feedback');
+    const cancelBtn = el('btn-modal-account-switch-cancel');
+    const confirmBtn = el('btn-modal-account-switch-confirm');
+    const st = accountsUiState.switchModal || {};
+    if (!modal) return;
+    modal.hidden = !st.open;
+    if (!st.open) return;
+    if (titleEl) titleEl.textContent = t('accounts.switchModal.title');
+    if (textEl) {
+      textEl.textContent = st.relaunchSupported === false
+        ? t('accounts.switchModal.bodyManual', { email: st.email || '' })
+        : t('accounts.switchModal.body', { email: st.email || '' });
+    }
+    if (fbEl) {
+      fbEl.hidden = !st.error;
+      fbEl.textContent = st.error || '';
+    }
+    if (cancelBtn) {
+      cancelBtn.textContent = t('accounts.switchModal.cancel');
+      cancelBtn.disabled = Boolean(st.busy);
+    }
+    if (confirmBtn) {
+      confirmBtn.textContent = st.busy ? t('accounts.switchModal.switching') : t('accounts.switchModal.confirm');
+      confirmBtn.disabled = Boolean(st.busy) || !st.email;
+    }
+  }
+
+  function openSwitchAccountModal(acc, opts = {}) {
+    const email = typeof acc === 'string' ? acc : acc?.email;
+    if (!email || accountsUiState.busy || accountsUiState.switchModal?.busy) return;
+    accountsUiState.switchModal = {
+      open: true,
+      email,
+      busy: false,
+      error: '',
+      relaunchSupported: opts.relaunchSupported !== undefined ? Boolean(opts.relaunchSupported) : Boolean(hostSupportsRestart)
+    };
+    renderAccountSwitchModal();
+  }
+
+  function closeSwitchAccountModal(forceClose = false) {
+    if (!forceClose && accountsUiState.switchModal?.busy) return;
+    accountsUiState.switchModal = {
+      open: false,
+      email: '',
+      busy: false,
+      error: '',
+      relaunchSupported: true
+    };
+    renderAccountSwitchModal();
+  }
+
+  async function confirmSwitchAccountModal() {
+    const st = accountsUiState.switchModal;
+    if (!st?.open || !st.email || st.busy || accountsUiState.busy) return null;
+    const targetEmail = st.email;
+    st.busy = true;
+    st.error = '';
+    renderAccountSwitchModal();
+    renderAccountsOverviewSection();
+    try {
+      const out = await performAccountAction('switch', { email: targetEmail, confirmed: true });
+      if (out && out.ok) {
+        closeSwitchAccountModal(true);
+        return out;
+      }
+      const errDetail = translateBackendText(out?.error || out?.message || t('accounts.actionFail'));
+      accountsUiState.switchModal = {
+        ...accountsUiState.switchModal,
+        open: true,
+        busy: false,
+        error: t('accounts.switchModal.failed', { detail: errDetail })
+      };
+      renderAccountSwitchModal();
+      return out || { ok: false, error: errDetail };
+    } catch (err) {
+      const errDetail = translateBackendText(err?.message || t('accounts.actionFail'));
+      accountsUiState.switchModal = {
+        ...accountsUiState.switchModal,
+        open: true,
+        busy: false,
+        error: t('accounts.switchModal.failed', { detail: errDetail })
+      };
+      renderAccountSwitchModal();
+      return { ok: false, error: errDetail };
+    }
+  }
+
+  el('btn-modal-account-switch-cancel')?.addEventListener('click', () => closeSwitchAccountModal());
+  el('btn-modal-account-switch-confirm')?.addEventListener('click', () => void confirmSwitchAccountModal());
+  el('account-switch-modal')?.addEventListener('click', (ev) => {
+    if (ev.target === el('account-switch-modal')) closeSwitchAccountModal();
+  });
+
   async function performAccountAction(action, extraPayload = {}) {
     if (accountsUiState.busy) return null;
     accountsUiState.busy = true;
@@ -70874,6 +71028,12 @@ function initCrossSessionInsightsControls() {
       if (out.overview) accountsUiState.overview = out.overview;
       if (out.cancelled) {
         accountsUiState.feedback = '';
+        return out;
+      }
+      if (action === 'switch' && out.needsConfirm) {
+        accountsUiState.feedback = '';
+        accountsUiState.busy = false;
+        openSwitchAccountModal({ email: extraPayload.email || out.targetEmail || '' }, { relaunchSupported: out.relaunchSupported });
         return out;
       }
       const isOk = out.ok === true;
@@ -71525,7 +71685,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   }
 
   globalThis.__AGContextMeter = {
-    buildId: 'edae049c2f1a7f19',
+    buildId: '63669415685a1970',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;

@@ -275,6 +275,7 @@ test('Issue #119: macOS Dock 一键启动挂载入口 (.app) 生成、签名、�
     const script = fs.readFileSync(res.execPath, 'utf8');
     assert.match(script, /launcher:run/);
     assert.match(script, /58321/);
+    assert.match(script, /"\$@"/, 'macOS Dock 启动脚本必须透传额外参数以支持 --force-relaunch');
     assert.ok(execLog.some(x => x.startsWith('codesign:--force')));
 
     const st = autostart.getMacDockLauncherStatus({

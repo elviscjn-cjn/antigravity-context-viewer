@@ -2547,7 +2547,7 @@ function createAccountsManager(options = {}) {
         return logFailAndReturn('credential_persist', e, { targetHost: 'local_store' });
       }
 
-      // 阶段 6：拉取新账号初始配额（即使额度查询失败也保留账号并返回部分成功与重试状态）
+      // 阶段 6：拉取新账号初始配额（即使额度查询失败也保留账号并返回部分成功与重试状态；绝不自动切号或触发重启提示）
       const quotaRes = await refreshAccountQuota(userInfo.email, { stage: 'initial_quota_fetch' });
       const freshStore = loadStore();
       const viewAccount = sanitizeAccountForView(freshStore.accounts[userInfo.email] || rec, freshStore.activeAccountEmail);
@@ -2555,17 +2555,25 @@ function createAccountsManager(options = {}) {
         return {
           ok: true,
           quotaOk: false,
+          switched: false,
+          restartPending: false,
+          manualRestartRequired: false,
           stage: quotaRes.stage || 'initial_quota_fetch',
           targetHost: quotaRes.targetHost || 'cloudcode-pa.googleapis.com',
           httpStatus: quotaRes.httpStatus ?? null,
           quotaError: quotaRes.error || '初始额度查询暂不可用',
+          message: `已添加账号 ${userInfo.email}（凭据已保存，未切换当前活跃账号；初始额度暂不可用：${quotaRes.error || '初始额度查询暂不可用'}）`,
           account: viewAccount
         };
       }
       return {
         ok: true,
         quotaOk: true,
+        switched: false,
+        restartPending: false,
+        manualRestartRequired: false,
         stage: 'completed',
+        message: `已添加账号 ${userInfo.email}（仅保存，未切换当前活跃账号）`,
         account: viewAccount
       };
     }
@@ -3410,7 +3418,29 @@ function createAccountsManager(options = {}) {
             return { ok: false, cancelled: true, rolledBack, reason: 'user_cancelled_restart', message: cancelMsg };
           }
           if (!result?.supported || result.ok === false) throw new Error(result?.error || '当前客户端无法自动重启');
-          return { ok: true, restartPending: true, verifiedEffective: false, message: '已准备切换账号，正在重启客户端' };
+          const relaunchMsg = result?.message || '已准备切换账号，正在重启客户端';
+          if (result?.entryLabel || result?.entryKind || result?.message) {
+            const stMeta = loadStore();
+            if (stMeta.autoSwitchStatus?.lastResult) {
+              stMeta.autoSwitchStatus.lastResult = {
+                ...stMeta.autoSwitchStatus.lastResult,
+                manualRestartRequired: false,
+                ...(result.entryKind ? { relaunchEntryKind: result.entryKind } : {}),
+                ...(result.entryLabel ? { relaunchEntry: result.entryLabel } : {}),
+                message: relaunchMsg
+              };
+              saveStore(stMeta);
+            }
+          }
+          return {
+            ok: true,
+            restartPending: true,
+            manualRestartRequired: false,
+            verifiedEffective: false,
+            ...(result?.entryKind ? { relaunchEntryKind: result.entryKind } : {}),
+            ...(result?.entryLabel ? { relaunchEntry: result.entryLabel } : {}),
+            message: relaunchMsg
+          };
         }
         if (opts.requiresClientRestart) {
             if (opts.allowManualRestartPending && !String(opts.trigger || '').startsWith('auto')) {

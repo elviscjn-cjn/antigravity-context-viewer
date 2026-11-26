@@ -1097,6 +1097,41 @@ test('Issue #119: runMacDockLauncher 单击冷启动带 CDP、确保常驻 watch
     assert.equal(resInside.ok, false);
     assert.equal(resInside.reason, 'inside_antigravity_session');
   }
+
+  // 3. Issue #115: forceRelaunch=true 时即使旧宿主已带 CDP，也必须优雅退出、带 CDP 重开并自动挂回看板与中文
+  {
+    let hostRunning = true;
+    let quitCalls = 0;
+    const relaunchedPorts = [];
+    let queryStep = 0;
+    const resForce = await cli.runMacDockLauncher(null, { port: 58321 }, {
+      stateDir,
+      forceRelaunch: true,
+      ensureWatcher: false,
+      env: {},
+      mountWaitMs: 200,
+      mountPollMs: 30,
+      quitPollMs: 10,
+      relaunchSettleMs: 0,
+      _hostTarget: macTarget,
+      _isHostRunning: async () => hostRunning,
+      _quitHost: async () => { quitCalls++; hostRunning = false; },
+      _isPortFree: async () => true,
+      _launchHost: async (_target, port) => { relaunchedPorts.push(port); hostRunning = true; },
+      _queryLiveWindow: async () => {
+        queryStep++;
+        if (queryStep === 1) return { running: true, cdpEnabled: true, cdpPort: 58321, pageFound: true, active: true, i18nActive: true };
+        return { running: true, cdpEnabled: true, cdpPort: 58321, pageFound: true, active: queryStep >= 3, i18nActive: queryStep >= 3 };
+      },
+      _activateHost: () => {}
+    });
+    assert.equal(resForce.ok, true);
+    assert.equal(resForce.mode, 'relaunched_with_cdp');
+    assert.equal(quitCalls, 1, 'forceRelaunch 必须优雅退出旧 CDP 宿主');
+    assert.deepEqual(relaunchedPorts, [58321], '必须以原 CDP 端口重开宿主');
+    assert.equal(resForce.mounted, true);
+    assert.equal(resForce.i18nActive, true);
+  }
   } finally {
     fs.rmSync(stateDir, { recursive: true, force: true });
   }
