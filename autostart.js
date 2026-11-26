@@ -71,6 +71,7 @@ function resolveNodePath(nodePath) {
 function buildWatchArgs(options = {}) {
   const scriptPath = resolveScriptPath(options.scriptPath);
   const args = [scriptPath, 'watch'];
+  if (options.persistent === true) args.push('--persistent');
   if (options.port) args.push('--port', String(options.port));
   return args;
 }
@@ -82,6 +83,10 @@ function buildLaunchAgentPlist(options = {}) {
   const logPath = options.logPath || path.join(homeDir, 'Library', 'Logs', 'antigravity-context-meter.log');
   const label = options.label || LABEL;
   const envPath = options.envPath || '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
+  const keepAliveTag = options.persistent === true ? '<true/>' : '<false/>';
+  const throttleBlock = options.persistent === true
+    ? `\n  <key>ThrottleInterval</key>\n  <integer>10</integer>`
+    : '';
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -103,7 +108,7 @@ ${args.map((a) => `    <string>${escapeXml(a)}</string>`).join('\n')}
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <false/>
+  ${keepAliveTag}${throttleBlock}
   <key>ProcessType</key>
   <string>Interactive</string>
   <key>StandardOutPath</key>

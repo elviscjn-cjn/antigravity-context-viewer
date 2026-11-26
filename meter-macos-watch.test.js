@@ -409,7 +409,7 @@ test('Issue #42: v2.33 免 CDP 时通过 daemon hub 发现运行中 origin、不
     (err) => {
       assert.equal(err.code, 'CDP_NOT_ENABLED');
       assert.match(err.message, /不会自动结束您的客户端进程/);
-      assert.match(err.message, /open -a Antigravity --args --remote-debugging-port=58321/);
+      assert.match(err.message, /\/Applications\/Antigravity\.app\/Contents\/MacOS\/Antigravity" --remote-debugging-port=58321/);
       return true;
     }
   );
@@ -778,4 +778,54 @@ test('PR #43: live/watch 自动启动(含特殊路径与多窗口)、已有 CDP 
     assert.equal(res.action, 'launched');
     assert.equal(launchedTarget?.execPath, specialTarget.execPath);
   }
+});
+
+test('Issue #119 & 多窗口同步: persistent 守护在窗口关闭后待命重挂，且第二窗口打开或汉化状态变更自动重注入', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-watch-persistent-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const stateDir = path.join(tmpDir, 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+
+  let cycle = 0;
+  let injectCalls = 0;
+  const watchRes = await cli.runWatchDaemon({
+    stateDir,
+    silent: true,
+    handleSignals: false,
+    persistent: true,
+    pollIntervalMs: 5,
+    startupPollMs: 5,
+    maxConsecutiveMisses: 1,
+    maxCycles: 6,
+    _discoverWindow: async () => {
+      cycle++;
+      if (cycle === 1) {
+        return { running: true, cdpEnabled: true, pageFound: true, active: false, allWindowsActive: false, i18nActive: false, origin: 'https://127.0.0.1:49897', origins: ['https://127.0.0.1:49897'], version: null };
+      }
+      if (cycle === 2) {
+        // 模拟第二窗口打开但未注入
+        return { running: true, cdpEnabled: true, pageFound: true, active: true, allWindowsActive: false, i18nActive: false, origin: 'https://127.0.0.1:49897', origins: ['https://127.0.0.1:49897'], version: cli.PROJECT_VERSION, hasIpcBridge: false, liveBridgeAttached: { version: cli.PROJECT_VERSION, port: 49913 } };
+      }
+      if (cycle === 3) {
+        // 模拟客户端关闭：persistent 模式不应退出，应待命
+        return { running: false, cdpEnabled: false, pageFound: false, origins: [] };
+      }
+      // 第 4 轮客户端重新带 CDP 打开，应自动重新挂载
+      return { running: true, cdpEnabled: true, pageFound: true, active: false, allWindowsActive: false, i18nActive: false, origin: 'https://127.0.0.1:49897', origins: ['https://127.0.0.1:49897'], version: null };
+    },
+    _ensureBridge: async () => ({
+      ready: true,
+      reused: true,
+      backendSource: 'live-host',
+      liveInfo: { port: 49913, token: 'tok', origin: 'https://127.0.0.1:49897', origins: ['https://127.0.0.1:49897'], version: cli.PROJECT_VERSION }
+    }),
+    _hotInject: async () => {
+      injectCalls++;
+      return { ok: true, injectedCount: 1, windowCount: 1 };
+    }
+  });
+
+  assert.equal(watchRes.ok, true);
+  assert.equal(watchRes.exitReason, 'max_cycles', 'persistent 模式在窗口关闭后不应提前以 window_closed 退出');
+  assert.ok(injectCalls >= 3, `应覆盖首注入、第二窗口补注入与关闭重开后重注入 (actual=${injectCalls})`);
 });

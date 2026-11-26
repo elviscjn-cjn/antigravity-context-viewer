@@ -727,12 +727,31 @@
   var I18N_DATA = (root && (root.__AGY_I18N_DATA__ || root.__AGY_I18N_DICT__)) || { exact: {}, patterns: [] };
   var I18N_CONFIG = (root && root.__AGY_I18N_CONFIG__) || { enabled: true, language: 'zh-CN', brandTitle: 'english' };
   var i18nEnabled = I18N_CONFIG.enabled !== false && I18N_CONFIG.language !== 'en';
+  var translatedTextNodes = typeof Set !== 'undefined' ? new Set() : null;
+  var translatedAttrEls = typeof Set !== 'undefined' ? new Set() : null;
   function getBrandTitleMode() {
     var cfg = (root && root.__AGY_I18N_CONFIG__) || I18N_CONFIG;
     if (cfg && (cfg.brandTitle === 'hidden' || cfg.brandTitle === 'translated')) {
       return cfg.brandTitle;
     }
     return 'english';
+  }
+
+  function recordTranslatedTextNode(node, sourceValue) {
+    if (!node) return;
+    if (node._agySourceValue === undefined) {
+      node._agySourceValue = sourceValue;
+    }
+    if (translatedTextNodes) translatedTextNodes.add(node);
+  }
+
+  function recordTranslatedAttr(el, attr, sourceValue) {
+    if (!el || !attr) return;
+    var srcKey = MARK_ATTR + '_src_' + attr;
+    if (el[srcKey] === undefined) {
+      el[srcKey] = sourceValue;
+    }
+    if (translatedAttrEls) translatedAttrEls.add(el);
   }
 
   var defaultEngine = createI18nEngine(I18N_DATA);
@@ -854,6 +873,119 @@
     return false;
   }
 
+  function isAgentResponseWrapper(cur) {
+    if (!cur || cur.nodeType !== 1 || !cur.getAttribute) return false;
+    var dtid = cur.getAttribute('data-testid');
+    if (dtid !== 'agent-response') return false;
+    if (cur.hasAttribute && (cur.hasAttribute('data-markdown-root') || cur.hasAttribute('data-markdown-virtualized') || cur.hasAttribute('data-markdown-block-index'))) {
+      return false;
+    }
+    return true;
+  }
+
+  function isAssistantShellMarker(cur) {
+    if (!cur || cur.nodeType !== 1) return false;
+    if (isAgentResponseWrapper(cur)) return true;
+    if (cur.getAttribute) {
+      var dr = cur.getAttribute('data-role') || '';
+      if (dr === 'assistant') return true;
+      var dtid = cur.getAttribute('data-testid') || '';
+      if (dtid === 'assistant-message') return true;
+    }
+    var cls = typeof cur.className === 'string' ? cur.className : '';
+    if (cls && /\bassistant-message\b/i.test(cls) && !/\b(?:markdown|prose|code|terminal|tool-output)\b/i.test(cls)) {
+      return true;
+    }
+    return false;
+  }
+
+  var TOOL_STEP_ACTION_EXACT = {
+    Ran: '已运行',
+    Running: '正在运行',
+    Analyzed: '已分析',
+    Analyzing: '正在分析',
+    Viewed: '已查看',
+    Viewing: '正在查看',
+    Edited: '已编辑',
+    Editing: '正在编辑',
+    Searched: '已搜索',
+    Searching: '正在搜索',
+    Explored: '已浏览',
+    Exploring: '正在探索',
+    Read: '已读取',
+    Reading: '正在读取',
+    Wrote: '已写入',
+    Writing: '正在写入',
+    Listed: '已列出',
+    Listing: '正在列出',
+    Checked: '已检查',
+    Checking: '正在检查',
+    Created: '已创建',
+    Creating: '正在创建',
+    Deleted: '已删除',
+    Deleting: '正在删除',
+    Updated: '已更新',
+    Updating: '正在更新',
+    Fetched: '已获取',
+    Fetching: '正在获取',
+    Found: '已找到',
+    Called: '已调用',
+    Calling: '正在调用',
+    Thought: '已思考',
+    Thinking: '正在思考'
+  };
+
+  var TOOL_STEP_PREFIX_RE = /^(Ran|Running|Analyzed|Analyzing|Viewed|Viewing|Edited|Editing|Searched|Searching|Explored|Exploring|Read|Reading|Wrote|Writing|Listed|Listing|Checked|Checking|Created|Creating|Deleted|Deleting|Updated|Updating|Fetched|Fetching|Called|Calling)\s+(.+)$/;
+  var TOOL_STEP_DURATION_RE = /^(?:Thought|Worked)\s+for\s+/i;
+  var TOOL_STEP_COUNT_RE = /^(?:Ran|Used|Read|Searched|Analyzed|Edited|Viewed|Explored)\s+\d+\s+(?:command|tool|file|match|result|step)s?$/i;
+
+  function translateToolStepActionText(trimmed) {
+    if (!trimmed) return null;
+    if (Object.prototype.hasOwnProperty.call(TOOL_STEP_ACTION_EXACT, trimmed)) {
+      return TOOL_STEP_ACTION_EXACT[trimmed];
+    }
+    if (TOOL_STEP_DURATION_RE.test(trimmed) || TOOL_STEP_COUNT_RE.test(trimmed)) {
+      var unitTrans = translateSingleUnit(trimmed);
+      if (unitTrans && unitTrans !== trimmed) return unitTrans;
+    }
+    var pm = trimmed.match(TOOL_STEP_PREFIX_RE);
+    if (pm && Object.prototype.hasOwnProperty.call(TOOL_STEP_ACTION_EXACT, pm[1])) {
+      var rest = pm[2];
+      // 保留命令/文件路径/标识符原文，仅汉化前置动作动词
+      return TOOL_STEP_ACTION_EXACT[pm[1]] + ' ' + rest;
+    }
+    return null;
+  }
+
+  function isSafeToolStepActionNode(cur) {
+    if (!cur || cur.nodeType !== 1) return false;
+    var tag = cur.tagName ? String(cur.tagName).toUpperCase() : '';
+    if (tag !== 'SPAN' && tag !== 'DIV' && tag !== 'BUTTON' && tag !== 'LABEL') return false;
+    var childElCount = typeof cur.childElementCount === 'number'
+      ? cur.childElementCount
+      : (cur.children ? cur.children.length : 0);
+    if (childElCount > 0) return false;
+    if (hasProtectedCoreOwnMarkers(cur, true)) return false;
+    var txt = (cur.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!txt || txt.length > 140) return false;
+    if (Object.prototype.hasOwnProperty.call(TOOL_STEP_ACTION_EXACT, txt)) return true;
+    if (TOOL_STEP_DURATION_RE.test(txt) || TOOL_STEP_COUNT_RE.test(txt)) return true;
+    // 对 "Ran find all ..." / "Analyzed meter-renderer.js" 等带目标参数的步骤行，仅当处于按钮或步骤容器内才放行
+    if (TOOL_STEP_PREFIX_RE.test(txt)) {
+      var p = cur;
+      for (var stepDepth = 0; stepDepth < 5 && p && p.nodeType === 1; stepDepth++) {
+        var pTag = p.tagName ? String(p.tagName).toUpperCase() : '';
+        var pTid = p.getAttribute ? (p.getAttribute('data-testid') || '') : '';
+        var pCls = typeof p.className === 'string' ? p.className : '';
+        if (pTag === 'BUTTON' || /(?:tool|step|collapsible|action)/i.test(pTid) || /(?:tool-step|action-pill|step-header)/i.test(pCls)) {
+          return true;
+        }
+        p = p.parentElement || p.parentNode;
+      }
+    }
+    return false;
+  }
+
   function hasProtectedCoreOwnMarkers(cur, checkInputSelf) {
     if (!cur || cur.nodeType !== 1) return false;
     var tag = cur.tagName ? String(cur.tagName).toUpperCase() : '';
@@ -864,7 +996,7 @@
         cur.hasAttribute('data-markdown-root') ||
         cur.hasAttribute('data-markdown-virtualized') ||
         cur.hasAttribute('data-markdown-block-index') ||
-        cur.hasAttribute('data-quotable') ||
+        (cur.hasAttribute('data-quotable') && !isAgentResponseWrapper(cur)) ||
         cur.hasAttribute('data-quotable-inline') ||
         cur.hasAttribute('data-md-table') ||
         cur.hasAttribute('data-diff-type') ||
@@ -941,6 +1073,7 @@
     if (!cur || cur.nodeType !== 1 || !cur.getAttribute) return false;
     var dtid = cur.getAttribute('data-testid');
     if (dtid === 'queued-decorators' || dtid === 'user-message-actions') return true;
+    if (dtid === 'worked-for-collapsible') return true;
     if (dtid === 'thinking-collapsible-trigger' && cur.tagName && String(cur.tagName).toUpperCase() === 'BUTTON') return true;
     return false;
   }
@@ -977,7 +1110,7 @@
     return false;
   }
 
-  // 返回状态：0 = 放行；1 = 忽略；2 = 处于安全白名单控制条内放行
+  // 返回状态：0 = 放行；1 = 忽略；2 = 处于安全白名单控制条内放行；3 = 助手外层容器（仅向下放行安全控制条与工具步骤动作标签）
   function inspectIgnoreState(el) {
     if (!el || el.nodeType !== 1) return 0;
     var cur = el;
@@ -985,6 +1118,8 @@
     var menuOpt = null;
     var inSafeBar = false;
     var inProtected = false;
+    var inAssistantShellOnly = false;
+    var inNonShellProtected = false;
     while (cur && depth < 64) {
       if (cur.nodeType === 1) {
         if (hasProtectedCoreOwnMarkers(cur, cur !== el)) return 1;
@@ -994,8 +1129,13 @@
         if (!inSafeBar && isSafeActionBarNode(cur)) {
           inSafeBar = true;
         }
-        if (!inProtected && hasProtectedNodeOwnMarkers(cur)) {
+        if (hasProtectedNodeOwnMarkers(cur)) {
           inProtected = true;
+          if (isAssistantShellMarker(cur)) {
+            inAssistantShellOnly = true;
+          } else {
+            inNonShellProtected = true;
+          }
         }
       }
       cur = cur.parentElement || cur.parentNode;
@@ -1008,11 +1148,17 @@
       return inSafeBar ? 2 : 0;
     }
     if (inSafeBar) return 2;
+    if (!inNonShellProtected && inAssistantShellOnly) {
+      if (isSafeToolStepActionNode(el)) return 2;
+      return 3;
+    }
     return inProtected ? 1 : 0;
   }
 
-  function resolveOwnIgnoreState(el, ancestorSafeBar) {
-    if (!el || el.nodeType !== 1) return ancestorSafeBar ? 2 : 0;
+  function resolveOwnIgnoreState(el, ancestorState) {
+    var ancestorSafeBar = ancestorState === 2;
+    var ancestorAssistantShell = ancestorState === 3;
+    if (!el || el.nodeType !== 1) return ancestorSafeBar ? 2 : (ancestorAssistantShell ? 3 : 0);
     if (hasProtectedCoreOwnMarkers(el, false)) return 1;
     if (el.getAttribute && el.getAttribute('data-testid') === 'menu-option-label') {
       var optTxt = (el.innerText || el.textContent || '').trim();
@@ -1021,7 +1167,15 @@
     }
     var safeNow = ancestorSafeBar || isSafeActionBarNode(el);
     if (safeNow) return 2;
-    if (hasProtectedNodeOwnMarkers(el)) return 1;
+    if (ancestorAssistantShell) {
+      if (isSafeToolStepActionNode(el)) return 2;
+      if (hasProtectedNodeOwnMarkers(el) && !isAssistantShellMarker(el)) return 1;
+      return 3;
+    }
+    if (hasProtectedNodeOwnMarkers(el)) {
+      if (isAssistantShellMarker(el)) return 3;
+      return 1;
+    }
     return 0;
   }
 
@@ -1183,7 +1337,7 @@
     }
   }
 
-  function translateTextNode(node, parentChecked) {
+  function translateTextNode(node, parentChecked, isToolStepAction) {
     if (!node || node.nodeType !== 3) return;
     var parent = node.parentElement || node.parentNode;
     if (parent) {
@@ -1257,12 +1411,15 @@
     }
 
     if (trimmed === '.' && node.previousSibling && /[\u4e00-\u9fa5]/.test(node.previousSibling.textContent || '')) {
+      recordTranslatedTextNode(node, original);
       node.nodeValue = original.replace('.', '。');
       node._agyOriginal = node.nodeValue;
       return;
     }
 
-    var translated = (trimmed === 'New' && isNewBadgeTextNode(node)) ? '新' : translateSingleUnit(trimmed);
+    var translated = isToolStepAction
+      ? translateToolStepActionText(trimmed)
+      : ((trimmed === 'New' && isNewBadgeTextNode(node)) ? '新' : translateSingleUnit(trimmed));
     if (translated !== null && translated !== trimmed) {
       var leadingSpace = original.match(/^\s*/)[0];
       var trailingSpace = original.match(/\s*$/)[0];
@@ -1272,6 +1429,7 @@
           leadingSpace = ' ';
         }
       }
+      recordTranslatedTextNode(node, original);
       node.nodeValue = leadingSpace + translated + trailingSpace;
       node._agyOriginal = node.nodeValue;
     } else {
@@ -1292,7 +1450,7 @@
     return null;
   }
 
-  function translateElement(el, scanId, ancestorState, budget) {
+  function translateElement(el, scanId, ancestorState, budget, yieldBudget) {
     if (!el || el.nodeType !== 1) return;
     if (scanId && el._agyScanId === scanId) return;
     if (budget) {
@@ -1306,9 +1464,27 @@
     }
     var ignoreState = ancestorState === undefined
       ? inspectIgnoreState(el)
-      : resolveOwnIgnoreState(el, ancestorState === 2);
+      : resolveOwnIgnoreState(el, ancestorState);
     if (ignoreState === 1) return;
     if (scanId) el._agyScanId = scanId;
+
+    // 处于助手外层容器 (state === 3)：本身不翻译，仅向下遍历子元素寻找白名单控制条与工具步骤动作标签
+    if (ignoreState === 3) {
+      var shellChild = el.firstChild;
+      while (shellChild) {
+        if (shellChild.nodeType === 1) {
+          if (yieldBudget && yieldBudget.checkExceeded()) {
+            enqueueNode(shellChild);
+          } else {
+            translateElement(shellChild, scanId, 3, budget, yieldBudget);
+          }
+        }
+        shellChild = shellChild.nextSibling;
+      }
+      return;
+    }
+
+    var isToolStepLeaf = Boolean(ignoreState === 2 && !isSafeActionBarNode(el) && isSafeToolStepActionNode(el));
 
     if (i18nEnabled && el.getAttribute && el.getAttribute('data-testid') === 'plan-command-fyi-alert') {
       var alertSpan = el.querySelector ? el.querySelector('span') : null;
@@ -1316,6 +1492,7 @@
         var alertChild = alertSpan.firstChild;
         while (alertChild) {
           if (alertChild.nodeType === 3 && alertChild.nodeValue && alertChild.nodeValue.trim() === 'Type') {
+            recordTranslatedTextNode(alertChild, alertChild.nodeValue);
             alertChild.nodeValue = alertChild.nodeValue.replace('Type', '输入');
             alertChild._agyOriginal = alertChild.nodeValue;
           }
@@ -1325,7 +1502,7 @@
       }
     }
 
-    if (i18nEnabled) {
+    if (i18nEnabled && !isToolStepLeaf) {
       for (var i = 0; i < TRANSLATABLE_ATTRS.length; i++) {
         var attr = TRANSLATABLE_ATTRS[i];
         if (el.hasAttribute && el.hasAttribute(attr)) {
@@ -1336,6 +1513,7 @@
 
             var trans = translateSingleUnit(val);
             if (trans !== null && trans !== val) {
+              recordTranslatedAttr(el, attr, val);
               el.setAttribute(attr, trans);
               el[markKey] = trans;
             } else {
@@ -1353,7 +1531,7 @@
     }
 
     // 空状态多节点混合残片收敛 (如 "No 自动化 yet" -> "暂无自动化")
-    if (i18nEnabled && el.childNodes && el.childNodes.length >= 2 && el.childNodes.length <= 5) {
+    if (i18nEnabled && !isToolStepLeaf && el.childNodes && el.childNodes.length >= 2 && el.childNodes.length <= 5) {
       var leafTexts = [];
       var allSimple = true;
       for (var li = 0; li < el.childNodes.length; li++) {
@@ -1378,9 +1556,11 @@
             group: '暂无分组', groups: '暂无分组', '分组': '暂无分组'
           };
           var eTarget = eMap[emptyMatch[1].toLowerCase()] || '暂无自动化';
+          recordTranslatedTextNode(leafTexts[0], leafTexts[0].nodeValue);
           leafTexts[0].nodeValue = eTarget;
           leafTexts[0]._agyOriginal = eTarget;
           for (var cClr = 1; cClr < leafTexts.length; cClr++) {
+            recordTranslatedTextNode(leafTexts[cClr], leafTexts[cClr].nodeValue);
             leafTexts[cClr].nodeValue = '';
             leafTexts[cClr]._agyOriginal = '';
           }
@@ -1403,12 +1583,16 @@
       if (allText) {
         var combinedText = el.textContent;
         if (combinedText) {
-          var combinedTrans = translateSingleUnit(combinedText);
+          var combinedTrans = isToolStepLeaf
+            ? translateToolStepActionText(combinedText.trim())
+            : translateSingleUnit(combinedText);
           if (combinedTrans !== null && combinedTrans !== combinedText) {
+            recordTranslatedTextNode(first, first.nodeValue);
             first.nodeValue = combinedTrans;
             first._agyOriginal = combinedTrans;
             var other = first.nextSibling;
             while (other) {
+              recordTranslatedTextNode(other, other.nodeValue);
               other.nodeValue = '';
               other._agyOriginal = '';
               other = other.nextSibling;
@@ -1416,7 +1600,7 @@
             return;
           }
         }
-      } else if (!el.childNodes || el.childNodes.length <= 16) {
+      } else if (!isToolStepLeaf && (!el.childNodes || el.childNodes.length <= 16)) {
         var alsoNode = null;
         var whenNode = null;
         var scanCur = first;
@@ -1436,6 +1620,7 @@
         if (alsoNode && whenNode) {
           var alsoText = alsoNode.nodeValue.trim();
           var prefix = (alsoText.indexOf('也') !== -1 || alsoText.indexOf('Also') !== -1) ? '在此项目中工作时，也包含' : '在此项目中工作时包含';
+          recordTranslatedTextNode(alsoNode, alsoNode.nodeValue);
           alsoNode.nodeValue = prefix;
           alsoNode._agyOriginal = alsoNode.nodeValue;
 
@@ -1444,6 +1629,7 @@
           var between = alsoContainer.nextSibling;
           while (between && between !== whenContainer) {
             if (between.nodeType === 3 && !between.nodeValue.trim()) {
+              recordTranslatedTextNode(between, between.nodeValue);
               between.nodeValue = '';
               between._agyOriginal = '';
             }
@@ -1451,6 +1637,7 @@
           }
 
           var cleanedWhen = whenNode.nodeValue.replace(/when\s+working\s+in\s+this\s+project[。.]?/gi, '').replace(/在此项目中工作时[。.]?/g, '').trim();
+          recordTranslatedTextNode(whenNode, whenNode.nodeValue);
           whenNode.nodeValue = cleanedWhen ? ('。 ' + cleanedWhen) : '。';
           whenNode._agyOriginal = whenNode.nodeValue;
         }
@@ -1460,9 +1647,13 @@
     var child = el.firstChild;
     while (child) {
       if (child.nodeType === 3) {
-        translateTextNode(child, true);
+        translateTextNode(child, true, isToolStepLeaf);
       } else if (child.nodeType === 1) {
-        translateElement(child, scanId, ignoreState, budget);
+        if (yieldBudget && yieldBudget.checkExceeded()) {
+          enqueueNode(child);
+        } else {
+          translateElement(child, scanId, ignoreState, budget, yieldBudget);
+        }
       }
       child = child.nextSibling;
     }
@@ -1489,6 +1680,75 @@
     }
   }
 
+  function restoreOriginalDom() {
+    disconnectObserver();
+    pendingNodes.length = 0;
+    if (pendingNodeSet) pendingNodeSet.clear();
+    if (translatedTextNodes) {
+      translatedTextNodes.forEach(function (node) {
+        try {
+          if (node && node._agySourceValue !== undefined) {
+            if (node.nodeValue !== node._agySourceValue) {
+              node.nodeValue = node._agySourceValue;
+            }
+            node._agyOriginal = node._agySourceValue;
+            delete node._agySourceValue;
+          }
+        } catch (e) { }
+      });
+      translatedTextNodes.clear();
+    }
+    if (translatedAttrEls) {
+      translatedAttrEls.forEach(function (el) {
+        try {
+          if (!el || typeof el.setAttribute !== 'function') return;
+          for (var ai = 0; ai < TRANSLATABLE_ATTRS.length; ai++) {
+            var attr = TRANSLATABLE_ATTRS[ai];
+            var srcKey = MARK_ATTR + '_src_' + attr;
+            if (el[srcKey] !== undefined) {
+              el.setAttribute(attr, el[srcKey]);
+              el[MARK_ATTR + '_' + attr] = el[srcKey];
+              delete el[srcKey];
+            }
+          }
+        } catch (e) { }
+      });
+      translatedAttrEls.clear();
+    }
+    currentScanId++;
+    if (typeof WeakMap === 'function') ignoreElementCache = new WeakMap();
+  }
+
+  function setI18nEnabled(nextEnabled, opts) {
+    var wantOn = Boolean(nextEnabled);
+    i18nEnabled = wantOn;
+    var cfg = (root && root.__AGY_I18N_CONFIG__) || I18N_CONFIG;
+    cfg.enabled = wantOn;
+    cfg.language = wantOn ? 'zh-CN' : 'en';
+    if (opts && typeof opts.brandTitle === 'string' && opts.brandTitle) {
+      cfg.brandTitle = opts.brandTitle;
+    }
+    I18N_CONFIG = cfg;
+    if (root) root.__AGY_I18N_CONFIG__ = cfg;
+    if (typeof WeakMap === 'function') ignoreElementCache = new WeakMap();
+
+    if (!wantOn) {
+      restoreOriginalDom();
+      if (getBrandTitleMode() !== 'english') {
+        safeFullScan();
+        reconnectObserver();
+      }
+      return { enabled: false, language: 'en', brandTitle: getBrandTitleMode() };
+    }
+    if (!observer) {
+      startObserver();
+    } else {
+      safeFullScan();
+      reconnectObserver();
+    }
+    return { enabled: true, language: 'zh-CN', brandTitle: getBrandTitleMode() };
+  }
+
   function safeFullScan() {
     if (!doc || !doc.documentElement) return;
     currentScanId++;
@@ -1496,7 +1756,9 @@
     try {
       translateElement(doc.documentElement, currentScanId);
     } catch (e) { }
-    reconnectObserver();
+    if (i18nEnabled || getBrandTitleMode() !== 'english') {
+      reconnectObserver();
+    }
   }
 
   var pendingNodes = [];
@@ -1540,6 +1802,14 @@
     var batchSet = typeof Set !== 'undefined' ? new Set(batch) : null;
     var flushScanId = ++currentScanId;
     var processed = 0;
+    var yieldOps = 0;
+    var yieldBudget = {
+      checkExceeded: function () {
+        yieldOps++;
+        if ((yieldOps & 15) !== 0) return false;
+        return (getNow() - startMs) >= 8;
+      }
+    };
     disconnectObserver();
     try {
       for (var i = 0; i < batch.length; i++) {
@@ -1550,7 +1820,7 @@
         if (node.nodeType === 1) {
           if (node._agyScanId === flushScanId) continue;
           if (batchSet && isAncestorInBatchSet(node, batchSet)) continue;
-          translateElement(node, flushScanId);
+          translateElement(node, flushScanId, undefined, undefined, yieldBudget);
           if (node.getAttribute && node.getAttribute('role') === 'dialog') {
             node._agyDialogTranslatedAt = Date.now ? Date.now() : (+new Date());
           }
@@ -1561,13 +1831,15 @@
           }
           translateTextNode(node);
         }
-        if (processed >= 1 && i + 1 < batch.length && (getNow() - startMs) >= 6) {
+        if (processed >= 1 && i + 1 < batch.length && (getNow() - startMs) >= 8) {
           break;
         }
       }
     } catch (e) { } finally {
       if (processed > 0) pendingNodes.splice(0, processed);
-      reconnectObserver();
+      if (i18nEnabled || getBrandTitleMode() !== 'english') {
+        reconnectObserver();
+      }
     }
     if (pendingNodes.length > 0) scheduleFlush();
   }
@@ -1683,6 +1955,7 @@
       }
 
       var onHoverAction = function (e) {
+        if (!i18nEnabled && getBrandTitleMode() === 'english') return;
         var target = e && e.target;
         if (!target || target.nodeType !== 1) return;
         // PR #90：插件自身节点与受保护正文在悬停入口最前面直接返回，
@@ -1730,6 +2003,8 @@
     root.__AGY_TRANSLATE_UNIT__ = translateSingleUnit;
     root.__AGY_TRANSLATE_EL__ = translateElement;
     root.__AGY_RUN_FULL_SCAN__ = safeFullScan;
+    root.__AGY_SET_ENABLED__ = setI18nEnabled;
+    root.__AGY_RESTORE_ORIGINAL__ = restoreOriginalDom;
     root.__AGY_CACHE__ = defaultEngine.cache;
     root.__AGY_IS_FLOATING__ = isFloatingElement;
     root.__AGY_IS_CHAT_OR_MARKDOWN__ = isChatOrMarkdownContent;

@@ -71,6 +71,57 @@ const liveBootProxySnapshot = (() => {
 })();
 
 const liveBootChineseSnapshots = new Map();
+let cachedLiveChineseBundle = null;
+
+function resolveLiveChineseAssets(baseDir = __dirname) {
+  const candidates = [];
+  if (baseDir) {
+    candidates.push(path.join(baseDir, 'i18n'));
+    candidates.push(path.join(baseDir, 'src', 'i18n'));
+  }
+  try {
+    const stateDir = getStateDir();
+    candidates.push(path.join(stateDir, 'live-runtime', 'i18n'));
+    candidates.push(path.join(stateDir, 'i18n'));
+  } catch { }
+  for (const dir of candidates) {
+    const dictPath = path.join(dir, 'zh-CN.json');
+    const runtimePath = path.join(dir, 'i18n-runtime.js');
+    try {
+      if (fs.existsSync(dictPath) && fs.existsSync(runtimePath)) {
+        const dictStat = fs.statSync(dictPath);
+        const rtStat = fs.statSync(runtimePath);
+        if (dictStat.size > 500 && rtStat.size > 500) {
+          return {
+            ready: true,
+            dir,
+            dictPath,
+            runtimePath,
+            sig: `${dictPath}:${dictStat.size}:${dictStat.mtimeMs}|${runtimePath}:${rtStat.size}:${rtStat.mtimeMs}`
+          };
+        }
+      }
+    } catch { }
+  }
+  return { ready: false, dir: null, dictPath: null, runtimePath: null, sig: null };
+}
+
+function loadLiveChineseBundle(baseDir = __dirname) {
+  const assets = resolveLiveChineseAssets(baseDir);
+  if (!assets.ready) return { ok: false, error: '当前运行目录缺少客户端汉化资源 (i18n/zh-CN.json 或 i18n/i18n-runtime.js)' };
+  if (cachedLiveChineseBundle && cachedLiveChineseBundle.sig === assets.sig) {
+    return {
+      ok: true,
+      dict: cachedLiveChineseBundle.dict,
+      runtimeSource: cachedLiveChineseBundle.runtimeSource,
+      dir: assets.dir
+    };
+  }
+  const dict = JSON.parse(fs.readFileSync(assets.dictPath, 'utf8'));
+  const runtimeSource = fs.readFileSync(assets.runtimePath, 'utf8');
+  cachedLiveChineseBundle = { sig: assets.sig, dict, runtimeSource };
+  return { ok: true, dict, runtimeSource, dir: assets.dir };
+}
 
 function resolveLiveBootChineseSnapshot(customAsarPath = null) {
   const key = `${String(process.env.AG_METER_STATE_DIR || '__default__')}|${String(customAsarPath || '__auto__')}`;
@@ -90,9 +141,11 @@ function resolveLiveBootChineseSnapshot(customAsarPath = null) {
     const { loadModulesConfig, inspectDiskModules } = require('./modules-config');
     const cfg = loadModulesConfig();
     const disk = inspectDiskModules(customAsarPath || null);
+    const liveAssets = resolveLiveChineseAssets();
     const ch = cfg?.modules?.chinese || {};
     const diskReady = disk.chineseReady !== undefined ? Boolean(disk.chineseReady) : Boolean(disk.chinese);
-    const active = Boolean(ch.enabled && String(ch.language || '').toLowerCase() !== 'en' && diskReady);
+    const effectiveReady = diskReady || Boolean(liveAssets.ready);
+    const active = Boolean(ch.enabled && String(ch.language || '').toLowerCase() !== 'en' && effectiveReady);
     snap = {
       enabled: active,
       language: String(ch.language || (ch.enabled ? 'zh-CN' : 'en'))
@@ -103,7 +156,7 @@ function resolveLiveBootChineseSnapshot(customAsarPath = null) {
 }
 try { resolveLiveBootChineseSnapshot(); } catch { }
 
-function buildLiveRuntimeModulesMeta(cfg, customAsarPath = null) {
+function buildLiveRuntimeModulesMeta(cfg, customAsarPath = null, diskOverride = null) {
   const diskProxy = cfg?.modules?.proxy || {};
   const diskEnabled = Boolean(diskProxy.enabled);
   const diskUrl = normalizeProxyUrl(diskProxy.proxyUrl || '');
@@ -116,15 +169,23 @@ function buildLiveRuntimeModulesMeta(cfg, customAsarPath = null) {
   const bootZh = resolveLiveBootChineseSnapshot(customAsarPath);
   const diskCh = cfg?.modules?.chinese || {};
   const diskZhActive = Boolean(diskCh.enabled && String(diskCh.language || '').toLowerCase() !== 'en');
+  const liveAssets = resolveLiveChineseAssets();
+  const diskChineseReady = diskOverride
+    ? (diskOverride.chineseReady !== undefined ? Boolean(diskOverride.chineseReady) : Boolean(diskOverride.chinese))
+    : false;
+  const chineseLiveSupported = Boolean(liveAssets.ready);
+  const chineseViaLiveRuntime = Boolean(!diskChineseReady && chineseLiveSupported);
   return {
     injectedAtStartup: Boolean(liveBootProxySnapshot.injectedAtStartup),
     proxyActive: runtimeEnabled,
     runtimeProxyUrl: redactProxyUrl(runtimeUrl) || null,
     runtimeBypassList: typeof liveBootProxySnapshot.bypassList === 'string' ? liveBootProxySnapshot.bypassList : null,
     proxyNeedsRestart,
-    chineseActive: Boolean(bootZh.enabled),
-    chineseBootLanguage: bootZh.language,
-    chineseNeedsRestart: diskZhActive !== Boolean(bootZh.enabled)
+    chineseActive: chineseViaLiveRuntime ? diskZhActive : Boolean(bootZh.enabled),
+    chineseBootLanguage: chineseViaLiveRuntime ? (diskZhActive ? 'zh-CN' : 'en') : bootZh.language,
+    chineseNeedsRestart: chineseViaLiveRuntime ? false : (diskZhActive !== Boolean(bootZh.enabled)),
+    chineseLiveSupported,
+    chineseMode: diskChineseReady ? 'disk-asar' : (chineseLiveSupported ? 'live-runtime' : 'unavailable')
   };
 }
 
@@ -155,6 +216,7 @@ const ALLOWED_ROUTES = [
   '/rehydrate-install-python',
   '/modules-status',
   '/toggle-module',
+  '/i18n-bundle',
   '/test-proxy',
   '/check-update',
   '/apply-update',
@@ -181,6 +243,7 @@ const LIVE_CAPABILITIES = {
   enhance: true,
   rehydrate: true,
   modules: true,
+  chineseLive: true,
   accounts: true,
   checkUpdate: true,
   applyUpdate: true,
@@ -408,15 +471,39 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           res.end(JSON.stringify({ ok: true, data: report }));
           return;
         }
+        if (req.url === '/i18n-bundle') {
+          const { loadModulesConfig } = require('./modules-config');
+          const cfg = loadModulesConfig();
+          const bundle = loadLiveChineseBundle(__dirname);
+          if (!bundle.ok) {
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ ok: false, error: bundle.error }));
+            return;
+          }
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({
+            ok: true,
+            config: cfg?.modules?.chinese || { enabled: false, language: 'en', brandTitle: 'english' },
+            dict: bundle.dict,
+            runtimeSource: bundle.runtimeSource
+          }));
+          return;
+        }
         if (req.url === '/modules-status') {
           const { loadModulesConfig, inspectDiskModules } = require('./modules-config');
           const cfg = loadModulesConfig();
+          const diskRaw = inspectDiskModules(request?.asarPath || null);
+          const liveAssets = resolveLiveChineseAssets(__dirname);
+          const disk = {
+            ...diskRaw,
+            chineseLiveReady: Boolean(liveAssets.ready)
+          };
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({
             ok: true,
             data: cfg,
-            disk: inspectDiskModules(request?.asarPath || null),
-            runtime: buildLiveRuntimeModulesMeta(cfg, request?.asarPath || null),
+            disk,
+            runtime: buildLiveRuntimeModulesMeta(cfg, request?.asarPath || null, disk),
             configCorrupted: Boolean(cfg.__configCorrupted),
             configError: cfg.__configError || null,
             corruptedConfigPath: cfg.__corruptedConfigPath || null
@@ -434,12 +521,19 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           }
           const extra = request?.opts || {};
           const targetEnable = Boolean(request?.enable);
-          const disk = inspectDiskModules(extra.asarPath || null);
+          const diskRaw = inspectDiskModules(extra.asarPath || null);
+          const liveAssets = resolveLiveChineseAssets(__dirname);
+          const disk = {
+            ...diskRaw,
+            chineseLiveReady: Boolean(liveAssets.ready)
+          };
+          const chineseLiveFallback = mod === 'chinese' && !disk.chineseReady && Boolean(liveAssets.ready);
           const hasDiskCapability = mod === 'chinese'
-            ? Boolean(disk.chineseReady)
+            ? Boolean(disk.chineseReady || liveAssets.ready)
             : (mod === 'proxy' ? Boolean(disk.proxyReady) : Boolean(disk.meterReady));
 
           // 在热挂载模式或未持久化注入下尝试开启未注入模块时，给出可执行的外部补装指引，不假报切换成功
+          // 注：客户端汉化在免改盘 watch/live 模式下优先复用 live-runtime 自带 i18n 资源，不再被磁盘 ASAR 门禁拦截
           if (targetEnable && !hasDiskCapability) {
             const modLabel = mod === 'chinese' ? '汉化' : (mod === 'proxy' ? '免 TUN 代理' : '核心监控');
             const subCmd = mod === 'proxy' ? 'proxy:enable' : (mod === 'chinese' ? 'chinese:enable' : 'install');
@@ -452,7 +546,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
               status: 'install_failed',
               data: cfg,
               disk,
-              runtime: buildLiveRuntimeModulesMeta(cfg, extra.asarPath || null),
+              runtime: buildLiveRuntimeModulesMeta(cfg, extra.asarPath || null, disk),
               error: `当前客户端磁盘 ASAR 未注入${modLabel}组件（或组件不完整）。请先彻底退出 Antigravity（包含系统托盘），再${cmdHint} 完成持久化注入。`,
               restartRequired: false
             }));
@@ -479,7 +573,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
                   status: 'invalid_config',
                   error: check.error,
                   data: cfg,
-                  runtime: buildLiveRuntimeModulesMeta(cfg, extra.asarPath || null)
+                  runtime: buildLiveRuntimeModulesMeta(cfg, extra.asarPath || null, disk)
                 }));
                 return;
               }
@@ -494,7 +588,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
             }
           }
           saveModulesConfig(cfg);
-          const runtime = buildLiveRuntimeModulesMeta(cfg, extra.asarPath || null);
+          const runtime = buildLiveRuntimeModulesMeta(cfg, extra.asarPath || null, disk);
           const langChanged = mod === 'chinese' && (
             Boolean(cfg.modules.chinese.enabled) !== prevChineseEnabled ||
             cfg.modules.chinese.language !== prevChineseLang
@@ -502,11 +596,17 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           const brandOnlyUpdate = mod === 'chinese' && extra.brandTitle !== undefined && !langChanged;
           const restartRequired = mod === 'proxy'
             ? Boolean(runtime.proxyNeedsRestart)
-            : (brandOnlyUpdate ? false : Boolean(runtime.chineseNeedsRestart));
+            : (brandOnlyUpdate || chineseLiveFallback ? false : Boolean(runtime.chineseNeedsRestart));
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({
             ok: true,
             status: 'config_toggled',
+            liveApplied: chineseLiveFallback,
+            message: chineseLiveFallback
+              ? (cfg.modules.chinese.enabled
+                ? '已保存并准备在免改盘模式下即时启用客户端简体中文'
+                : '已保存并准备在免改盘模式下即时恢复客户端官方英文')
+              : undefined,
             data: cfg,
             disk,
             runtime,

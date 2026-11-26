@@ -773,3 +773,105 @@ test('Phase 7.3: 底栏开关解耦、#csb-group-status 直达与窄窗优先露
     api.dispose();
   }
 });
+
+test('底栏挂载防呆: 不得误插进横排分栏右侧且错位后可自愈重挂', async () => {
+  const h = createHostSettingsTestHarness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    await h.flush();
+    const csbBar = h.elements.get('composer-status-bar');
+    assert.ok(csbBar, 'composer-status-bar 应存在');
+
+    // 模拟已错位挂在左右分栏（flex-direction: row）的聊天主栏右侧
+    const rowSplit = { tagName: 'DIV', style: { display: 'flex', flexDirection: 'row' }, children: [] };
+    const chatColumn = {
+      tagName: 'DIV',
+      parentElement: rowSplit,
+      closest: () => null,
+      querySelector: (sel) => (String(sel).includes('textarea') ? { tagName: 'TEXTAREA' } : null),
+      getBoundingClientRect: () => ({ height: 860 })
+    };
+    rowSplit.children = [chatColumn, csbBar];
+    csbBar.parentElement = rowSplit;
+    Object.defineProperty(csbBar, 'isConnected', { value: true, configurable: true });
+    Object.defineProperty(csbBar, 'previousElementSibling', { get: () => chatColumn, configurable: true });
+    csbBar.hidden = false;
+
+    const origGetComputedStyle = h.sandbox.getComputedStyle;
+    h.sandbox.getComputedStyle = (node) => {
+      if (node === rowSplit) return { display: 'flex', flexDirection: 'row' };
+      if (node && node.style) return node.style;
+      return origGetComputedStyle ? origGetComputedStyle(node) : {};
+    };
+    h.sandbox.window.innerHeight = 900;
+
+    // 没有真实输入框控件时，短路不应放行错位，应自动隐藏防止悬在右侧
+    api.ensureComposerStatusBarMountedForTest();
+    assert.equal(csbBar.hidden, true, '处于横排分栏右侧时不得短路放行，应隐藏待重挂');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('Issue #124: 普通 [role="dialog"] 归档提示与确认弹窗不被误注入 Context Meter，真实设置弹窗仍正常挂载', async () => {
+  const h = createHostSettingsTestHarness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    await h.flush();
+
+    // 1. 归档通知气泡 [role="dialog"]（含标题行 × 关闭按钮与底部“撤销”按钮）
+    const toast = h.createMockNode('div');
+    toast.setAttribute('role', 'dialog');
+    const toastHeader = h.createMockNode('div');
+    const toastTitle = h.createMockNode('span');
+    toastTitle.textContent = 'Conversation Archived';
+    const closeBtn = h.createMockNode('button');
+    closeBtn.textContent = '×';
+    toastHeader.appendChild(toastTitle);
+    toastHeader.appendChild(closeBtn);
+    const toastBody = h.createMockNode('div');
+    toastBody.textContent = 'View archived in the sidebar.';
+    const undoBtn = h.createMockNode('button');
+    undoBtn.textContent = '撤销';
+    toastBody.appendChild(undoBtn);
+    toast.appendChild(toastHeader);
+    toast.appendChild(toastBody);
+    h.bodyNode.appendChild(toast);
+
+    // 2. 普通确认弹窗 [role="dialog"]（含“继续”与“取消”按钮）
+    const confirmDialog = h.createMockNode('div');
+    confirmDialog.setAttribute('role', 'dialog');
+    const confirmContent = h.createMockNode('div');
+    confirmContent.textContent = 'Confirm action?';
+    const confirmActions = h.createMockNode('div');
+    const continueBtn = h.createMockNode('button');
+    continueBtn.textContent = '继续';
+    const cancelBtn = h.createMockNode('button');
+    cancelBtn.textContent = '取消';
+    confirmActions.appendChild(continueBtn);
+    confirmActions.appendChild(cancelBtn);
+    confirmDialog.appendChild(confirmContent);
+    confirmDialog.appendChild(confirmActions);
+    h.bodyNode.appendChild(confirmDialog);
+
+    api.syncHostSettingsForTest();
+    assert.equal(h.docElements.get('ag-cm-host-settings-nav'), undefined, '普通 [role="dialog"] 不得挂载 Context Meter 导航项');
+    assert.equal(toastHeader.children.length, 2, '归档提示标题行不得被注入额外按钮');
+    assert.equal(confirmActions.children.length, 2, '确认弹窗按钮栏不得被注入额外按钮');
+
+    // 3. 打开真正的宿主设置弹窗后，Context Meter 仍能正常挂载到设置侧栏
+    h.mountHostSettingsModal();
+    api.syncHostSettingsForTest();
+    assert.ok(h.docElements.get('ag-cm-host-settings-nav'), '真实宿主设置弹窗必须正常挂载 Context Meter 导航项');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('Issue #123: 原生设置页「监控额度」下拉展开态同步不销毁选项 DOM，且旧规则占位项可见时点击首项必派发 change', async () => {
+  const src = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'context-settings-ui.js'), 'utf8');
+  assert.match(src, /preserveDomIfUnchanged/, 'enhanceNativeSelect 必须在列表签名未变时原地同步而非销毁重建选项 DOM');
+  assert.match(src, /hasVisibleEmptyPlaceholderOption/, 'selectEntry 必须在可见空值旧规则占位项存在时强制派发 change');
+  assert.match(src, /menu\.addEventListener\('mousedown'/, 'enhanceNativeSelect 必须在稳定父节点 menu 上阻止 mousedown 失焦抖动');
+  assert.match(src, /menu\.addEventListener\('click'/, 'enhanceNativeSelect 必须在稳定父节点 menu 上委托处理选项点击');
+});

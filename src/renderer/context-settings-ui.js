@@ -1854,6 +1854,8 @@ const {
 
     var focusIdx = -1;
     var visibleOpts = [];
+    var lastRenderedSig = '';
+    var currentFilterKw = '';
 
     function focusTriggerNoScroll() {
       if (typeof trigger.focus !== 'function') return;
@@ -1877,12 +1879,29 @@ const {
       if (card) card.classList?.remove?.('is-dropdown-open');
       if (group) group.classList?.remove?.('is-dropdown-open');
       focusIdx = -1;
+      lastRenderedSig = '';
+      currentFilterKw = '';
       if (restoreFocus) focusTriggerNoScroll();
+    }
+
+    function hasVisibleEmptyPlaceholderOption() {
+      var opts = sel.options || sel.querySelectorAll?.('option') || [];
+      for (var i = 0; i < opts.length; i++) {
+        var o = opts[i];
+        if (!o) continue;
+        if (String(o.value ?? '') === '' && !o.hidden && o.getAttribute?.('hidden') === null) {
+          return true;
+        }
+      }
+      return false;
     }
 
     function selectEntry(entry) {
       if (!entry) return;
-      var changed = String(sel.value ?? '') !== String(entry.value ?? '');
+      var nextVal = String(entry.value ?? '');
+      var prevVal = String(sel.value ?? '');
+      var forceLegacyMigrate = Boolean(nextVal && hasVisibleEmptyPlaceholderOption());
+      var changed = prevVal !== nextVal || forceLegacyMigrate;
       sel.value = entry.value;
       syncLabel();
       closeMenu(true);
@@ -1904,14 +1923,45 @@ const {
       }
     }
 
-    function renderMenuItems(filterKw) {
+    function buildEntriesSignature(entries, kw) {
+      var parts = [kw || ''];
+      for (var i = 0; i < entries.length; i++) {
+        var e = entries[i];
+        parts.push(e.isGroup ? ('G:' + e.label) : ('O:' + e.value + '=' + e.label));
+      }
+      return parts.join('\u001f');
+    }
+
+    function syncOpenMenuSelectedInPlace() {
+      var listBox = menu.querySelector ? menu.querySelector('.ag-ns-dd-list') : null;
+      if (!listBox || typeof listBox.querySelectorAll !== 'function') return;
+      var curVal = String(sel.value ?? '');
+      var items = listBox.querySelectorAll('.ag-ns-dd-item');
+      for (var i = 0; i < items.length; i++) {
+        var itemEl = items[i];
+        var isSel = String(itemEl.getAttribute('data-value') ?? '') === curVal;
+        itemEl.classList?.toggle?.('is-selected', isSel);
+        itemEl.setAttribute?.('aria-selected', isSel ? 'true' : 'false');
+      }
+    }
+
+    function renderMenuItems(filterKw, opts) {
       var listBox = menu.querySelector ? menu.querySelector('.ag-ns-dd-list') : null;
       if (!listBox) return;
+
+      var kw = String(filterKw || '').trim().toLowerCase();
+      currentFilterKw = kw;
+      var allEntries = collectNativeSelectEntries(sel);
+      var nextSig = buildEntriesSignature(allEntries, kw);
+      if (opts && opts.preserveDomIfUnchanged && lastRenderedSig && nextSig === lastRenderedSig) {
+        syncOpenMenuSelectedInPlace();
+        return;
+      }
+      lastRenderedSig = nextSig;
+
       if (typeof listBox.replaceChildren === 'function') listBox.replaceChildren();
       else listBox.innerHTML = '';
 
-      var kw = String(filterKw || '').trim().toLowerCase();
-      var allEntries = collectNativeSelectEntries(sel);
       var curVal = String(sel.value ?? '');
       var filtered = [];
       var pendingGroup = null;
@@ -1976,15 +2026,32 @@ const {
 
           itemEl.appendChild(txt);
           itemEl.appendChild(chk);
-          itemEl.addEventListener('click', function (ev) {
-            ev?.stopPropagation?.();
-            selectEntry(optEntry);
-          });
           listBox.appendChild(itemEl);
           if (isSel) focusIdx = optIdx;
         })(it, optCursor++);
       }
     }
+
+    // Issue #123: 在稳定父节点 menu 上委托处理 mousedown / click，防止选项节点同步刷新时 click 丢失或失焦抖动
+    menu.addEventListener('mousedown', function (ev) {
+      var itemEl = ev?.target?.closest ? ev.target.closest('.ag-ns-dd-item') : null;
+      if (!itemEl) return;
+      ev?.preventDefault?.();
+      ev?.stopPropagation?.();
+    });
+    menu.addEventListener('click', function (ev) {
+      var itemEl = ev?.target?.closest ? ev.target.closest('.ag-ns-dd-item') : null;
+      if (!itemEl) return;
+      ev?.stopPropagation?.();
+      var idx = Number(itemEl.getAttribute('data-index'));
+      if (Number.isInteger(idx) && idx >= 0 && visibleOpts[idx]) {
+        selectEntry(visibleOpts[idx]);
+        return;
+      }
+      var val = itemEl.getAttribute('data-value');
+      var matched = visibleOpts.find(function (o) { return String(o.value ?? '') === String(val ?? ''); });
+      if (matched) selectEntry(matched);
+    });
 
     function buildMenu() {
       if (typeof menu.replaceChildren === 'function') menu.replaceChildren();
@@ -2113,7 +2180,7 @@ const {
       if (labelEl.textContent !== txt) labelEl.textContent = txt;
       trigger.title = txt;
       if (wrap.classList?.contains?.('is-open')) {
-        renderMenuItems('');
+        renderMenuItems(currentFilterKw, { preserveDomIfUnchanged: true });
       }
     }
 

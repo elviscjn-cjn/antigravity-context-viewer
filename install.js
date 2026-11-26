@@ -13,7 +13,7 @@ const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 const { loadAsarEngine, builtinAsar, collectUnpackedPaths, getStateDir, getAppDataDir, isIsolatedTestPath, findAsarPath } = require('./asar-engine');
-const { inspectMacAsarIntegrity } = require('./macos-binary-utils');
+const { inspectMacAsarIntegrity, resignMacAppBundleIfNeeded, logMacBundleResignResult } = require('./macos-binary-utils');
 const { discoverAntigravityCdp, createCdpClient } = require('./local-api');
 const { loadModulesConfig, saveModulesConfig, acquireFileLock, getHostCoreBuildId } = require('./modules-config');
 const {
@@ -211,6 +211,33 @@ async function tryHotInjectDetailed(options = {}) {
       if (historyData && !historyData.loading) cachedHistory = historyData;
     } catch { }
 
+    let liveI18nDictRaw = null;
+    let liveI18nRuntimeRaw = null;
+    const wantLiveI18n = Boolean(
+      cachedChineseConfig && (
+        (cachedChineseConfig.enabled === true && String(cachedChineseConfig.language || '').toLowerCase() !== 'en') ||
+        (cachedChineseConfig.brandTitle && cachedChineseConfig.brandTitle !== 'english')
+      )
+    );
+    if (wantLiveI18n) {
+      const i18nDirs = [
+        path.join(__dirname, 'i18n'),
+        path.join(__dirname, 'src', 'i18n'),
+        path.join(stateDir, 'live-runtime', 'i18n')
+      ];
+      for (const dir of i18nDirs) {
+        const dp = path.join(dir, 'zh-CN.json');
+        const rp = path.join(dir, 'i18n-runtime.js');
+        if (fs.existsSync(dp) && fs.existsSync(rp)) {
+          try {
+            liveI18nDictRaw = fs.readFileSync(dp, 'utf8');
+            liveI18nRuntimeRaw = fs.readFileSync(rp, 'utf8');
+            break;
+          } catch { }
+        }
+      }
+    }
+
     for (const target of targets) {
       const targetOrigin = new URL(target.url).origin;
       const winEntry = { origin: targetOrigin, injected: false, rendererVersion: null, backendSource: null, backendVersion: null, error: null };
@@ -258,6 +285,34 @@ async function tryHotInjectDetailed(options = {}) {
 
         const evalRes = await evalExpr(bundle, 8000);
         if (evalRes && !evalRes.exceptionDetails) {
+          // 免改盘 live / watch 模式客户端汉化注入与实时状态同步（无需改写 app.asar）
+          try {
+            const wantZhEnable = Boolean(
+              cachedChineseConfig &&
+              cachedChineseConfig.enabled === true &&
+              String(cachedChineseConfig.language || '').toLowerCase() !== 'en'
+            );
+            const brandMode = (cachedChineseConfig && cachedChineseConfig.brandTitle) || 'english';
+            if (wantLiveI18n && liveI18nDictRaw && liveI18nRuntimeRaw) {
+              const i18nCfg = {
+                enabled: wantZhEnable,
+                language: wantZhEnable ? 'zh-CN' : 'en',
+                brandTitle: brandMode
+              };
+              const hasRuntimeRes = await evalExpr('typeof window.__AGY_SET_ENABLED__ === "function"', 3000);
+              if (hasRuntimeRes?.result?.value === true) {
+                await evalExpr(`window.__AGY_SET_ENABLED__(${JSON.stringify(wantZhEnable)}, ${JSON.stringify({ brandTitle: brandMode })})`, 5000);
+              } else {
+                await evalExpr(`window.__AGY_I18N_CONFIG__ = ${JSON.stringify(i18nCfg)}; window.__AGY_I18N_DATA__ = ${liveI18nDictRaw.trim()};`, 6000);
+                await evalExpr(liveI18nRuntimeRaw, 8000);
+              }
+              winEntry.i18nInjected = true;
+            } else if (cachedChineseConfig) {
+              // 已切回官方英文时，若页面曾注入过 live 汉化运行时则即时还原原文
+              await evalExpr(`(function(){ if (typeof window.__AGY_SET_ENABLED__ === "function") { window.__AGY_SET_ENABLED__(false, ${JSON.stringify({ brandTitle: brandMode })}); return true; } return false; })()`, 4000);
+            }
+          } catch { }
+
           winEntry.injected = true;
           report.injectedCount++;
           try {
@@ -945,6 +1000,18 @@ async function install(options = {}) {
         manifest.verifiedMainSha256 = installedMainSha;
         manifest.helperSha256 = helperSha;
         manifest.verifiedAt = new Date().toISOString();
+
+        const macResign = resignMacAppBundleIfNeeded(installed, macIntegrity, {
+          _platform: options._platform,
+          _existsSync: options._existsSync,
+          _execFileSync: options._execFileSync,
+          skipMacResign: options.skipMacResign,
+          codesignBin: options.codesignBin
+        });
+        if (macResign.attempted) {
+          manifest.macResign = macResign;
+          logMacBundleResignResult(macResign, { silent: options.silent });
+        }
 
         fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
         replacedManifest = true;

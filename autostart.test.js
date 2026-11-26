@@ -152,3 +152,18 @@ test('autostart 7: Windows 未写入时启用会调用 reg add 携带 /f', async
   assert.ok(addCall.includes('/f'));
   assert.ok(addCall.includes('C:\\node.exe C:\\tools\\cli.js watch --port 58322'));
 });
+
+test('autostart 8 (Issue #119): persistent 选项写入 KeepAlive=true、ThrottleInterval 与 --persistent 参数', () => {
+  const plist = buildLaunchAgentPlist({
+    nodePath: '/opt/homebrew/bin/node',
+    scriptPath: '/opt/app/cli.js',
+    port: 58321,
+    persistent: true,
+    homeDir: '/tmp/home',
+    logPath: '/tmp/home/Library/Logs/ag.log'
+  });
+  assert.match(plist, /<key>KeepAlive<\/key>\s*<true\/>/);
+  assert.match(plist, /<key>ThrottleInterval<\/key>\s*<integer>10<\/integer>/);
+  const args = readLaunchAgentProgramArguments(plist);
+  assert.deepEqual(args, ['/opt/homebrew/bin/node', '/opt/app/cli.js', 'watch', '--persistent', '--port', '58321']);
+});

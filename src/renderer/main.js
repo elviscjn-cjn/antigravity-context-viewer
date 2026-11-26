@@ -1263,6 +1263,7 @@
       '/rehydrate-install-python': 'rehydrate',
       '/modules-status': 'modules',
       '/toggle-module': 'modules',
+      '/i18n-bundle': 'chineseLive',
       '/test-proxy': 'modules',
       '/accounts-overview': 'accounts',
       '/accounts-action': 'accounts',
@@ -1375,9 +1376,20 @@
       }
     }
     if (hasIpc) {
-      const res = await ipcCall();
-      syncObservedBackendMeta('electron-ipc', res?.data || res);
-      return { source: 'electron-ipc', result: res };
+      try {
+        const res = await ipcCall();
+        syncObservedBackendMeta('electron-ipc', res?.data || res);
+        return { source: 'electron-ipc', result: res };
+      } catch (ipcErr) {
+        const errMsg = String(ipcErr?.message || ipcErr || '');
+        const isMissingChannel = /No handler registered|Invalid channel|not implemented|not a function/i.test(errMsg);
+        if (isMissingChannel && hasLiveHttpBridge() && liveRoute && hasLiveRouteCapability(liveRoute)) {
+          const res = await postLiveHttpEndpoint(liveRoute, liveBody, liveFetchOpts);
+          syncObservedBackendMeta('live-host', res?.data || res);
+          return { source: 'live-host', result: res };
+        }
+        throw ipcErr;
+      }
     }
     if (hasLiveHttpBridge() && liveRoute) {
       const res = await postLiveHttpEndpoint(liveRoute, liveBody, liveFetchOpts);
@@ -3140,6 +3152,38 @@
     } catch { }
   }
 
+  function isComposerMountContainerValid(composer, opts = {}) {
+    if (!composer || composer === document.body || composer === document.documentElement) return false;
+    if (composer.closest?.('header,[role="dialog"],#ag-context-meter')) return false;
+    const isForm = Boolean(opts.trustedForm) || composer.tagName === 'FORM';
+    if (!isForm && !composer.querySelector?.('[contenteditable="true"],textarea')) return false;
+
+    // 防止在无 <form> 时沿父链爬升至聊天主栏外层，误插进左右分栏（flex row / 多列 grid）的右侧区域
+    const parent = composer.parentElement;
+    if (!isForm && parent && typeof getComputedStyle === 'function') {
+      try {
+        const pStyle = getComputedStyle(parent);
+        if (pStyle) {
+          const disp = String(pStyle.display || '').toLowerCase();
+          const dir = String(pStyle.flexDirection || '').toLowerCase();
+          if ((disp === 'flex' || disp === 'inline-flex') && dir.startsWith('row')) return false;
+          if ((disp === 'grid' || disp === 'inline-grid') &&
+              String(pStyle.gridTemplateColumns || '').trim().split(/\s+/).filter(Boolean).length > 1) {
+            return false;
+          }
+        }
+      } catch { }
+    }
+    if (!isForm && typeof composer.getBoundingClientRect === 'function' &&
+        typeof window !== 'undefined' && Number(window.innerHeight) > 0) {
+      try {
+        const rect = composer.getBoundingClientRect();
+        if (rect && rect.height > 0 && rect.height > window.innerHeight * 0.65) return false;
+      } catch { }
+    }
+    return true;
+  }
+
   function ensureComposerStatusBarMounted(opts = {}) {
     try {
       const csbBar = el('composer-status-bar');
@@ -3159,10 +3203,7 @@
         (!document.contains || document.contains(csbBar))
       ) {
         const prevSibling = csbBar.previousElementSibling;
-        if (
-          prevSibling &&
-          (prevSibling.tagName === 'FORM' || Boolean(prevSibling.querySelector?.('[contenteditable="true"],textarea')))
-        ) {
+        if (isComposerMountContainerValid(prevSibling)) {
           csbBar.hidden = false;
           return;
         }
@@ -3172,12 +3213,12 @@
       if (!target || !target.bar) return;
 
       let composer = target.bar.closest('form');
+      const trustedForm = Boolean(composer);
       if (!composer) {
         composer = target.bar;
         while (composer && !composer.querySelector('[contenteditable="true"],textarea')) composer = composer.parentElement;
       }
-      if (!composer || composer === document.body || composer === document.documentElement ||
-          composer.closest?.('header,[role="dialog"],#ag-context-meter')) return;
+      if (!isComposerMountContainerValid(composer, { trustedForm })) return;
       if (composer.nextElementSibling !== csbBar) composer.after(csbBar);
       csbBar.hidden = false;
     } catch (e) {
@@ -3849,7 +3890,7 @@
           state.livePendingRequest ||
           (latestCallRec && latestCallRec.status === 'streaming')
         );
-        const minIntervalMs = isActivelyBusy ? 250 : 5000;
+        const minIntervalMs = isActivelyBusy ? 1200 : 5000;
         if (nowMs - lastCompactionDomCheckAt < minIntervalMs) return;
       }
       lastCompactionCheckedRoute = state.route;
@@ -3864,7 +3905,7 @@
       let sawCompacting = false;
       let compactedBannerCount = 0;
       const totalNodes = nodes.length;
-      const minIdx = Math.max(0, totalNodes - 4000);
+      const minIdx = Math.max(0, totalNodes - 400);
       for (let i = totalNodes - 1; i >= minIdx; i--) {
         const n = nodes[i];
         if (!n || n === host || n.className === 'ag-cm-turn-footer') continue;
@@ -3955,9 +3996,22 @@
     }
   }
 
+  let resizeLayoutRaf = 0;
   try {
     if (typeof ResizeObserver !== 'undefined') {
-      resizeObserver = new ResizeObserver(() => updateResponsiveLayout(true));
+      const scheduleResizeLayout = () => {
+        if (state.disposed) return;
+        if (typeof requestAnimationFrame === 'function') {
+          if (resizeLayoutRaf) return;
+          resizeLayoutRaf = requestAnimationFrame(() => {
+            resizeLayoutRaf = 0;
+            if (!state.disposed) updateResponsiveLayout(true);
+          });
+        } else {
+          updateResponsiveLayout(true);
+        }
+      };
+      resizeObserver = new ResizeObserver(scheduleResizeLayout);
       if (document.body) resizeObserver.observe(document.body);
     }
     if (typeof MutationObserver !== 'undefined' && document.body) {
@@ -3979,6 +4033,7 @@
             if (elNode === host || (typeof host.contains === 'function' && host.contains(elNode))) return true;
             if (elNode.id === 'ag-composer-status-bar' || elNode.id === 'ag-cm-host-settings-nav' || elNode.id === 'ag-cm-host-settings-page' || elNode.className === 'ag-cm-turn-footer') return true;
             if (elNode.closest?.('#ag-context-meter, #ag-composer-status-bar, .ag-cm-turn-footer, #ag-cm-host-settings-nav, #ag-cm-host-settings-page')) return true;
+            if (m.type === 'characterData' && elNode.closest?.('[data-testid="conversation-view"]')) return true;
             if (isIdleConv && elNode.closest?.('[data-testid="conversation-view"]')) return true;
             return false;
           };
@@ -4069,6 +4124,7 @@
           removeDpiWatcher();
           removeDpiWatcher = null;
         }
+        if (resizeLayoutRaf && typeof cancelAnimationFrame === 'function') { cancelAnimationFrame(resizeLayoutRaf); resizeLayoutRaf = 0; }
         if (hostModelSyncTimer) { clearTimeout(hostModelSyncTimer); hostModelSyncTimer = null; }
         if (domMutationThrottleTimer) { clearTimeout(domMutationThrottleTimer); domMutationThrottleTimer = null; }
       } catch { }
@@ -17682,6 +17738,101 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     void applyBrandTitleSetting(selectedBrandTitle || currentBrandTitle);
   });
 
+  let isChineseLiveModeSupported = false;
+  let liveI18nApplyPromise = null;
+
+  async function applyLiveClientLanguageInPage(targetLang, brandTitle = currentBrandTitle, { broadcast = true } = {}) {
+    const wantChinese = String(targetLang || '').toLowerCase() === 'zh-cn';
+    const nextBrand = brandTitle || currentBrandTitle || 'english';
+    const run = async () => {
+      if (typeof window.__AGY_SET_ENABLED__ === 'function') {
+        window.__AGY_SET_ENABLED__(wantChinese, { brandTitle: nextBrand });
+      } else if (wantChinese || nextBrand !== 'english') {
+        if (!hasLiveHttpBridge()) {
+          return { ok: false, error: '当前未连接 live-host 桥接，无法拉取免改盘汉化资源' };
+        }
+        const bundleRes = await postLiveHttpEndpoint('/i18n-bundle', {}, { timeoutMs: 8000 });
+        if (!bundleRes || !bundleRes.ok || !bundleRes.dict || !bundleRes.runtimeSource) {
+          return { ok: false, error: bundleRes?.error || '拉取免改盘汉化资源失败' };
+        }
+        window.__AGY_I18N_CONFIG__ = {
+          enabled: wantChinese,
+          language: wantChinese ? 'zh-CN' : 'en',
+          brandTitle: nextBrand
+        };
+        window.__AGY_I18N_DATA__ = bundleRes.dict;
+        const execRuntime = new Function(bundleRes.runtimeSource);
+        execRuntime();
+        if (typeof window.__AGY_SET_ENABLED__ === 'function') {
+          window.__AGY_SET_ENABLED__(wantChinese, { brandTitle: nextBrand });
+        }
+      } else {
+        window.__AGY_I18N_CONFIG__ = {
+          enabled: false,
+          language: 'en',
+          brandTitle: nextBrand
+        };
+      }
+      if (broadcast) {
+        const payload = JSON.stringify({
+          language: wantChinese ? 'zh-CN' : 'en',
+          brandTitle: nextBrand,
+          ts: Date.now()
+        });
+        try { if (typeof localStorage !== 'undefined') localStorage.setItem('ag_meter_live_i18n_sync', payload); } catch { }
+        try {
+          if (typeof BroadcastChannel === 'function') {
+            const ch = new BroadcastChannel('ag_meter_live_i18n_sync');
+            ch.postMessage(payload);
+            ch.close();
+          }
+        } catch { }
+      }
+      return { ok: true, enabled: wantChinese, language: wantChinese ? 'zh-CN' : 'en', brandTitle: nextBrand };
+    };
+    const p = run();
+    liveI18nApplyPromise = p;
+    try {
+      return await p;
+    } finally {
+      if (liveI18nApplyPromise === p) liveI18nApplyPromise = null;
+    }
+  }
+
+  // 多窗口实时同步：另一窗口切换免改盘客户端语言/品牌时，本窗口自动同步生效或恢复英文
+  const handleCrossWindowI18nSync = (rawPayload) => {
+    if (state.disposed || !rawPayload) return;
+    try {
+      const msg = typeof rawPayload === 'string' ? JSON.parse(rawPayload) : rawPayload;
+      if (!msg || typeof msg !== 'object') return;
+      const nextLang = String(msg.language || '').toLowerCase() === 'zh-cn' ? 'zh-CN' : 'en';
+      const nextBrand = msg.brandTitle || currentBrandTitle || 'english';
+      void applyLiveClientLanguageInPage(nextLang, nextBrand, { broadcast: false }).then(() => {
+        if (!state.disposed) void refreshModulesDisplay();
+      });
+    } catch { }
+  };
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    const onLiveI18nStorage = (ev) => {
+      if (ev && ev.key === 'ag_meter_live_i18n_sync' && ev.newValue) {
+        handleCrossWindowI18nSync(ev.newValue);
+      }
+    };
+    window.addEventListener('storage', onLiveI18nStorage);
+    earlyDisposeHooks.push(() => {
+      try { window.removeEventListener('storage', onLiveI18nStorage); } catch { }
+    });
+  }
+  if (typeof BroadcastChannel === 'function') {
+    try {
+      const liveI18nBc = new BroadcastChannel('ag_meter_live_i18n_sync');
+      liveI18nBc.onmessage = (ev) => handleCrossWindowI18nSync(ev?.data);
+      earlyDisposeHooks.push(() => {
+        try { liveI18nBc.close(); } catch { }
+      });
+    } catch { }
+  }
+
   async function refreshModulesDisplay({ forceProxySync = false } = {}) {
     const seq = ++modulesStatusReqSeq;
     try {
@@ -17772,7 +17923,12 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       }
       const disk = res.disk || {};
       const isChineseDiskReady = disk.chineseReady !== undefined ? Boolean(disk.chineseReady) : Boolean(disk.chinese);
-      const isChinesePartial = Boolean(disk.chinese && disk.chineseReady === false);
+      const isChineseLiveReady = Boolean(
+        !isChineseDiskReady &&
+        (runtimeMeta?.chineseLiveSupported === true || disk.chineseLiveReady === true || hasLiveRouteCapability('/i18n-bundle'))
+      );
+      isChineseLiveModeSupported = isChineseLiveReady;
+      const isChinesePartial = Boolean(disk.chinese && disk.chineseReady === false && !isChineseLiveReady);
       const isProxyDiskReady = disk.proxyReady !== undefined ? Boolean(disk.proxyReady) : Boolean(disk.proxy);
       const isProxyPartial = Boolean(disk.proxy && disk.proxyReady === false);
 
@@ -17781,12 +17937,18 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           if (isDomTranslated) {
             chineseBadge.textContent = t('mod.zh.badgeRestartEn');
             chineseBadge.className = 'key-pill pill-warn';
+          } else if (isChineseLiveReady) {
+            chineseBadge.textContent = t('mod.zh.badgeOffLiveReady');
+            chineseBadge.className = 'key-pill pill-muted';
           } else {
             chineseBadge.textContent = isChineseDiskReady ? t('mod.zh.badgeOffReady') : t('mod.zh.badgeNotInstalled');
             chineseBadge.className = 'key-pill pill-muted';
           }
         } else if (isDomTranslated) {
-          chineseBadge.textContent = t('mod.zh.badgeActive');
+          chineseBadge.textContent = isChineseLiveReady ? t('mod.zh.badgeActiveLive') : t('mod.zh.badgeActive');
+          chineseBadge.className = 'key-pill pill-ok';
+        } else if (isChineseLiveReady) {
+          chineseBadge.textContent = t('mod.zh.badgeActiveLive');
           chineseBadge.className = 'key-pill pill-ok';
         } else if (!isChineseDiskReady) {
           chineseBadge.textContent = t('mod.zh.badgeNotInjected');
@@ -17800,13 +17962,15 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         if (!currentChineseEnabled) {
           if (isDomTranslated) {
             chineseStatusDesc.textContent = t('mod.zh.descRestartEn');
+          } else if (isChineseLiveReady) {
+            chineseStatusDesc.textContent = t('mod.zh.descOffLiveReady');
           } else {
             chineseStatusDesc.textContent = isChineseDiskReady
               ? t('mod.zh.descOffReady')
               : t('mod.zh.descOffNotInstalled');
           }
-        } else if (isDomTranslated) {
-          chineseStatusDesc.textContent = t('mod.zh.descActive');
+        } else if (isDomTranslated || isChineseLiveReady) {
+          chineseStatusDesc.textContent = isChineseLiveReady ? t('mod.zh.descActiveLive') : t('mod.zh.descActive');
         } else if (!isChineseDiskReady) {
           chineseStatusDesc.textContent = isChinesePartial && disk.chineseReason
             ? t('mod.zh.descPartialInject', { reason: translateBackendText(disk.chineseReason) })
@@ -17816,7 +17980,9 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         }
       }
       if (btnToggleChineseModule) {
-        btnToggleChineseModule.textContent = t('settings.clientLang.applyRestart');
+        btnToggleChineseModule.textContent = isChineseLiveReady
+          ? t('settings.clientLang.applyNow')
+          : t('settings.clientLang.applyRestart');
       }
       syncClientLanguageButtons();
 
@@ -17951,19 +18117,35 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           return { ok: false, error: mismatchMsg };
         }
       }
-      needsRestartAfterApply = Boolean(res.restartRequired);
-      renderClientStatusBar();
-      if (res.restartRequired) {
-        const savedMsg = t(wantChinese ? 'mod.zh.savedEnableRestart' : 'mod.zh.savedDisableRestart');
-        clientLangFeedbackState = {
-          ok: true,
-          text: hostSupportsRestart ? savedMsg : `${savedMsg} ${t('client.restart.hostNotSupported')}`
-        };
-        showEnhanceResultBox(true, () => savedMsg, { needsHostRestart: true });
+      const canLiveApply = Boolean(res.liveApplied || res.runtime?.chineseMode === 'live-runtime' || isChineseLiveModeSupported);
+      if (canLiveApply && !res.restartRequired) {
+        const liveApplyRes = await applyLiveClientLanguageInPage(targetLang, currentBrandTitle, { broadcast: true });
+        if (!liveApplyRes || !liveApplyRes.ok) {
+          const liveErrMsg = resolveSettingsErrorText(liveApplyRes, 'mod.zh.toggleFail');
+          clientLangFeedbackState = { ok: false, text: liveErrMsg };
+          showEnhanceResultBox(false, () => liveErrMsg);
+          return liveApplyRes || { ok: false, error: liveErrMsg };
+        }
+        needsRestartAfterApply = false;
+        renderClientStatusBar();
+        const liveMsg = t(wantChinese ? 'mod.zh.savedLiveEnable' : 'mod.zh.savedLiveDisable');
+        clientLangFeedbackState = { ok: true, text: liveMsg };
+        showEnhanceResultBox(true, () => liveMsg, { needsHostRestart: false });
       } else {
-        const syncedMsg = translateBackendText(res.message || '已同步回当前运行状态，无需重启');
-        clientLangFeedbackState = { ok: true, text: syncedMsg };
-        showEnhanceResultBox(true, () => syncedMsg, { needsHostRestart: false });
+        needsRestartAfterApply = Boolean(res.restartRequired);
+        renderClientStatusBar();
+        if (res.restartRequired) {
+          const savedMsg = t(wantChinese ? 'mod.zh.savedEnableRestart' : 'mod.zh.savedDisableRestart');
+          clientLangFeedbackState = {
+            ok: true,
+            text: hostSupportsRestart ? savedMsg : `${savedMsg} ${t('client.restart.hostNotSupported')}`
+          };
+          showEnhanceResultBox(true, () => savedMsg, { needsHostRestart: true });
+        } else {
+          const syncedMsg = translateBackendText(res.message || '已同步回当前运行状态，无需重启');
+          clientLangFeedbackState = { ok: true, text: syncedMsg };
+          showEnhanceResultBox(true, () => syncedMsg, { needsHostRestart: false });
+        }
       }
       await refreshModulesDisplay();
       if (res.restartRequired && opts.triggerRestartIfSupported && hostSupportsRestart && globalRestartModal) {
@@ -17980,7 +18162,9 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       isClientLangBusy = false;
       if (btnToggleChineseModule) {
         btnToggleChineseModule.disabled = false;
-        btnToggleChineseModule.textContent = t('settings.clientLang.applyRestart');
+        btnToggleChineseModule.textContent = isChineseLiveModeSupported
+          ? t('settings.clientLang.applyNow')
+          : t('settings.clientLang.applyRestart');
       }
       syncHostSettingsUi();
     }
@@ -20821,7 +21005,9 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
             clientLangBadgeClass: currentChineseEnabled && !needsRestartAfterApply ? 'is-accent' : (needsRestartAfterApply ? 'is-warn' : ''),
             clientLangDescText: chineseStatusDesc?.textContent || t('settings.clientLang.detecting'),
             clientLangBusy: Boolean(isClientLangBusy),
-            clientLangBtnText: isClientLangBusy ? t('mod.zh.submitting') : t('settings.clientLang.applyRestart'),
+            clientLangBtnText: isClientLangBusy
+              ? t('mod.zh.submitting')
+              : (isChineseLiveModeSupported ? t('settings.clientLang.applyNow') : t('settings.clientLang.applyRestart')),
             clientLangFeedback: clientLangFeedbackState.text || '',
             clientLangFeedbackOk: clientLangFeedbackState.ok,
             rehydrateBadgeText: rhBadgeText,

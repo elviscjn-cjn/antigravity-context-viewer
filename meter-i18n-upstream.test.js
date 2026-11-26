@@ -437,3 +437,170 @@ test('性能回归: 3000+ 节点模拟设置弹窗 O(N) 单趟翻译 <50ms 且 p
   }
   assert.equal(untouchedTxt.nodeValue, 'Save', 'pointerenter 落在大型容器时禁止重扫整棵大子树');
 });
+
+test('macOS watch 免改盘汉化: live-host 免 ASAR 门禁切换、/i18n-bundle、即时恢复英文、Issue #118 步骤标签与 Issue #58 英文隔离', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-live-i18n-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const prevState = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = tmpDir;
+  t.after(() => {
+    if (prevState === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevState;
+  });
+
+  // 1. live-host 在未改写 app.asar 时允许开启/恢复汉化并提供 /i18n-bundle
+  const { createLiveRequestHandler } = require('./live-host');
+  const secret = 'test-secret-live-i18n';
+  const origin = 'https://127.0.0.1:49999';
+  const handler = createLiveRequestHandler({ api: { origin }, secret });
+  const callRoute = (urlPath, payload = {}) => new Promise((resolve) => {
+    const body = JSON.stringify(payload);
+    const req = new (require('events').EventEmitter)();
+    req.method = 'POST';
+    req.url = urlPath;
+    req.headers = { origin, 'x-ag-context-token': secret };
+    let out = '';
+    const res = {
+      statusCode: 200,
+      headers: {},
+      setHeader(k, v) { this.headers[k] = v; },
+      writeHead(code) { this.statusCode = code; },
+      end(chunk = '') { out += chunk; resolve({ statusCode: this.statusCode, json: out ? JSON.parse(out) : null }); }
+    };
+    handler(req, res);
+    req.emit('data', body);
+    req.emit('end');
+  });
+
+  const fakeMissingAsar = path.join(tmpDir, 'nonexistent.asar');
+  const stBefore = await callRoute('/modules-status', { asarPath: fakeMissingAsar });
+  assert.equal(stBefore.statusCode, 200);
+  assert.equal(stBefore.json.ok, true);
+  assert.equal(stBefore.json.disk.chineseReady, false, '未改盘时 disk.chineseReady 应保持 false');
+  assert.equal(stBefore.json.disk.chineseLiveReady, true, 'live-runtime 资源存在时 disk.chineseLiveReady 应为 true');
+  assert.equal(stBefore.json.runtime.chineseLiveSupported, true);
+  assert.equal(stBefore.json.runtime.chineseMode, 'live-runtime');
+
+  const toggleOn = await callRoute('/toggle-module', {
+    name: 'chinese',
+    enable: true,
+    opts: { language: 'zh-CN', brandTitle: 'english', asarPath: fakeMissingAsar }
+  });
+  assert.equal(toggleOn.json.ok, true, '免改盘 watch/live 下开启客户端简体中文不得被磁盘门禁拦截');
+  assert.equal(toggleOn.json.liveApplied, true);
+  assert.equal(toggleOn.json.restartRequired, false);
+  assert.equal(toggleOn.json.data.modules.chinese.enabled, true);
+  assert.equal(toggleOn.json.data.modules.chinese.language, 'zh-CN');
+
+  const bundleRes = await callRoute('/i18n-bundle');
+  assert.equal(bundleRes.json.ok, true);
+  assert.ok(bundleRes.json.dict && Object.keys(bundleRes.json.dict.exact || {}).length > 1000);
+  assert.ok(typeof bundleRes.json.runtimeSource === 'string' && bundleRes.json.runtimeSource.includes('__AGY_SET_ENABLED__'));
+
+  const toggleOff = await callRoute('/toggle-module', {
+    name: 'chinese',
+    enable: false,
+    opts: { language: 'en', brandTitle: 'english', asarPath: fakeMissingAsar }
+  });
+  assert.equal(toggleOff.json.ok, true);
+  assert.equal(toggleOff.json.restartRequired, false);
+  assert.equal(toggleOff.json.data.modules.chinese.enabled, false);
+  assert.equal(toggleOff.json.data.modules.chinese.language, 'en');
+
+  // 2. 运行时实时切换 zh-CN <-> en + Issue #118 工具步骤标签 + Issue #58 英文隔离
+  const d = makeMockDom();
+  const sidebarBtn = d.el('button', { attrs: { 'data-testid': 'new-conversation-button', 'aria-label': 'New Conversation' } });
+  const sidebarTxt = d.text('New Conversation');
+  sidebarBtn.appendChild(sidebarTxt);
+
+  const settingsBtn = d.el('button', { attrs: { 'data-testid': 'settings-button' } });
+  const settingsTxt = d.text('Settings');
+  settingsBtn.appendChild(settingsTxt);
+
+  // Issue #118: Antigravity v2.35.2 agent-response (带 data-quotable) 内的工具步骤标签
+  const agentResp = d.el('div', { attrs: { 'data-testid': 'agent-response', 'data-quotable': 'true' } });
+  const workedBtn = d.el('button', { attrs: { 'data-testid': 'worked-for-collapsible' } });
+  const workedSpan = d.el('span');
+  const workedTxt = d.text('Worked for 7m');
+  workedSpan.appendChild(workedTxt);
+  workedBtn.appendChild(workedSpan);
+
+  const stepBtn = d.el('button', { attrs: { 'data-testid': 'tool-step-row' } });
+  const ranVerb = d.el('span');
+  const ranVerbTxt = d.text('Ran');
+  ranVerb.appendChild(ranVerbTxt);
+  const analyzedLine = d.el('span');
+  const analyzedLineTxt = d.text('Analyzed meter-renderer.js');
+  analyzedLine.appendChild(analyzedLineTxt);
+  stepBtn.appendChild(ranVerb);
+  stepBtn.appendChild(analyzedLine);
+
+  // Issue #58: 同一 agent-response 内的英文 Markdown 正文、代码与工具输出必须严格保持原文
+  const mdRoot = d.el('div', { attrs: { 'data-markdown-root': 'true' } });
+  const mdP = d.el('p');
+  const mdProseTxt = d.text('Plane Trajectory Planning (Table 3)');
+  mdP.appendChild(mdProseTxt);
+  const mdCode = d.el('code');
+  const mdCodeTxt = d.text('Ran Settings Analyzed');
+  mdCode.appendChild(mdCodeTxt);
+  mdRoot.appendChild(mdP);
+  mdRoot.appendChild(mdCode);
+
+  const toolOut = d.el('div', { className: 'tool-output' });
+  const toolOutTxt = d.text('New Conversation Settings Ran');
+  toolOut.appendChild(toolOutTxt);
+
+  const userInput = d.el('div', { attrs: { contenteditable: 'true', role: 'textbox' } });
+  const userInputTxt = d.text('Settings New Conversation');
+  userInput.appendChild(userInputTxt);
+
+  agentResp.appendChild(workedBtn);
+  agentResp.appendChild(stepBtn);
+  agentResp.appendChild(mdRoot);
+  agentResp.appendChild(toolOut);
+  d.body.appendChild(sidebarBtn);
+  d.body.appendChild(settingsBtn);
+  d.body.appendChild(agentResp);
+  d.body.appendChild(userInput);
+
+  const docMock = {
+    documentElement: d.body,
+    body: d.body,
+    readyState: 'complete',
+    title: 'Antigravity',
+    addEventListener() {}
+  };
+  const sandbox = {
+    window: {
+      __AGY_I18N_CONFIG__: { enabled: true, language: 'zh-CN', brandTitle: 'english' },
+      __AGY_I18N_DATA__: bundleRes.json.dict
+    },
+    document: docMock,
+    performance,
+    setTimeout: () => 1,
+    clearTimeout() {},
+    setInterval: () => 1
+  };
+  sandbox.window.document = docMock;
+  vm.runInNewContext(bundleRes.json.runtimeSource, sandbox);
+
+  assert.equal(sidebarTxt.nodeValue, '新建会话', '侧边栏按钮应汉化');
+  assert.equal(sidebarBtn.getAttribute('aria-label'), '新建会话', 'aria-label 属性应汉化');
+  assert.equal(settingsTxt.nodeValue, '设置', '设置按钮应汉化');
+  assert.equal(workedTxt.nodeValue, '已运行 7 分钟', 'Issue #118: worked-for-collapsible 应汉化');
+  assert.equal(ranVerbTxt.nodeValue, '已运行', 'Issue #118: Ran 动作标签应汉化');
+  assert.equal(analyzedLineTxt.nodeValue, '已分析 meter-renderer.js', 'Issue #118: Analyzed 步骤行应仅汉化动词并保留文件名原文');
+  assert.equal(mdProseTxt.nodeValue, 'Plane Trajectory Planning (Table 3)', 'Issue #58: 英文对话正文不得掺杂中文');
+  assert.equal(mdCodeTxt.nodeValue, 'Ran Settings Analyzed', '代码块必须保持原文');
+  assert.equal(toolOutTxt.nodeValue, 'New Conversation Settings Ran', '工具输出必须保持原文');
+  assert.equal(userInputTxt.nodeValue, 'Settings New Conversation', '用户输入必须保持原文');
+
+  // 3. 切回官方英文：__AGY_SET_ENABLED__(false) 立即完整恢复所有文本和属性原文
+  sandbox.window.__AGY_SET_ENABLED__(false, { brandTitle: 'english' });
+  assert.equal(sidebarTxt.nodeValue, 'New Conversation', '切回英文应恢复侧边栏文本原文');
+  assert.equal(sidebarBtn.getAttribute('aria-label'), 'New Conversation', '切回英文应恢复 aria-label 原文');
+  assert.equal(settingsTxt.nodeValue, 'Settings', '切回英文应恢复设置按钮原文');
+  assert.equal(workedTxt.nodeValue, 'Worked for 7m', '切回英文应恢复 Worked for 原文');
+  assert.equal(ranVerbTxt.nodeValue, 'Ran', '切回英文应恢复 Ran 原文');
+  assert.equal(analyzedLineTxt.nodeValue, 'Analyzed meter-renderer.js', '切回英文应恢复 Analyzed 原文');
+});

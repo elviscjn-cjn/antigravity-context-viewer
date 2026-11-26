@@ -262,10 +262,9 @@ function resolveAntigravityHostTarget(customPath = null, options = {}) {
 function formatManualCdpLaunchCommand(target = null, port = DEFAULT_MANUAL_CDP_PORT) {
   const platform = target?.platform || process.platform;
   if (platform === 'darwin') {
-    const appRef = target?.appBundlePath || '/Applications/Antigravity.app';
-    return appRef === '/Applications/Antigravity.app'
-      ? `open -a Antigravity --args --remote-debugging-port=${port}`
-      : `open -a "${appRef}" --args --remote-debugging-port=${port}`;
+    const macExec = target?.execPath
+      || (target?.appBundlePath ? path.join(target.appBundlePath, 'Contents', 'MacOS', 'Antigravity') : '/Applications/Antigravity.app/Contents/MacOS/Antigravity');
+    return `"${macExec}" --remote-debugging-port=${port}`;
   }
   if (platform === 'win32') {
     const exe = target?.execPath || 'Antigravity.exe';
@@ -419,8 +418,15 @@ async function pickAvailableCdpPort(preferredPort = null, options = {}) {
 function buildCleanHostLaunchEnv(baseEnv = process.env) {
   const cleanEnv = { ...(baseEnv || {}) };
   delete cleanEnv.ELECTRON_RUN_AS_NODE;
+  delete cleanEnv.NODE_OPTIONS;
+  delete cleanEnv.ELECTRON_ENABLE_LOGGING;
+  delete cleanEnv.ELECTRON_NO_ATTACH_CONSOLE;
   for (const key of Object.keys(cleanEnv)) {
-    if (key.startsWith('ANTIGRAVITY_')) {
+    if (
+      key.startsWith('ANTIGRAVITY_') ||
+      key.startsWith('DYLD_') ||
+      key.startsWith('AG_LIVE_')
+    ) {
       delete cleanEnv[key];
     }
   }
@@ -438,8 +444,19 @@ async function launchAntigravityHostWithCdp(target, port, options = {}) {
     throw new Error('未找到 Antigravity 客户端安装路径');
   }
   const cleanEnv = buildCleanHostLaunchEnv(options.env || process.env);
+  // Issue #111: macOS 27+ 上 `open -a <app> --args --remote-debugging-port=...` 会丢失启动参数，
+  // 因此优先直接 spawn 可执行文件（与 proxy:launch 一致），仅在可执行文件缺失时回退 `open -n -a`。
+  if (target.platform === 'darwin' && target.execPath && fs.existsSync(target.execPath)) {
+    const child = spawn(target.execPath, [`--remote-debugging-port=${port}`], {
+      detached: true,
+      stdio: 'ignore',
+      env: cleanEnv
+    });
+    child.unref();
+    return;
+  }
   if (target.platform === 'darwin' && target.appBundlePath) {
-    execFileSync('open', ['-a', target.appBundlePath, '--args', `--remote-debugging-port=${port}`], {
+    execFileSync('open', ['-n', '-a', target.appBundlePath, '--args', `--remote-debugging-port=${port}`], {
       stdio: 'ignore',
       timeout: 10000,
       env: cleanEnv
@@ -813,12 +830,55 @@ async function queryLiveWindow(options = {}) {
           } : null,
           effectiveBackendSource: backendStatus?.backendSource || (ipcRuntimeInfo?.backendVersion ? 'electron-ipc' : null),
           effectiveBackendVersion: backendStatus?.backendVersion || quotaState?.state?.collectorVersion || ipcRuntimeInfo?.backendVersion || null,
+          i18nActive: Boolean(window.__AGY_I18N_CONFIG__ && window.__AGY_I18N_CONFIG__.enabled === true && String(window.__AGY_I18N_CONFIG__.language || '').toLowerCase() !== 'en'),
+          i18nBrandTitle: window.__AGY_I18N_CONFIG__?.brandTitle || 'english',
           badgeText: root?.getElementById('amount')?.textContent || null,
           route: s?.route || null,
           latest: s?.latest || null
         };
       })()`, { timeoutMs: 4000 });
-      return { running: true, cdpEnabled: true, cdpPort: port, pageFound: true, origin, origins, windowCount: matchedTargets.length, ...(status || {}) };
+
+      let allWindowsActive = Boolean(status?.active);
+      let allWindowsI18nMatch = true;
+      const primaryI18nActive = Boolean(status?.i18nActive);
+      const primaryBrandTitle = status?.i18nBrandTitle || 'english';
+      if (matchedTargets.length > 1) {
+        for (const extraTarget of matchedTargets) {
+          if (extraTarget.webSocketDebuggerUrl === target.webSocketDebuggerUrl) continue;
+          let extraClient = null;
+          try {
+            extraClient = await createCdpClient(extraTarget.webSocketDebuggerUrl, { timeoutMs: 2500 });
+            const extraSnap = await extraClient.evaluateValue(`(() => ({
+              active: Boolean(window.__AGContextMeter),
+              version: window.__AGContextMeter?.version || null,
+              i18nActive: Boolean(window.__AGY_I18N_CONFIG__ && window.__AGY_I18N_CONFIG__.enabled === true && String(window.__AGY_I18N_CONFIG__.language || '').toLowerCase() !== 'en'),
+              i18nBrandTitle: window.__AGY_I18N_CONFIG__?.brandTitle || 'english'
+            }))()`, { timeoutMs: 2500 });
+            if (!extraSnap?.active || (status?.version && extraSnap.version !== status.version)) {
+              allWindowsActive = false;
+            }
+            if (Boolean(extraSnap?.i18nActive) !== primaryI18nActive || (extraSnap?.i18nBrandTitle || 'english') !== primaryBrandTitle) {
+              allWindowsI18nMatch = false;
+            }
+          } catch {
+            allWindowsActive = false;
+          } finally {
+            try { extraClient?.close?.(); } catch {}
+          }
+        }
+      }
+      return {
+        running: true,
+        cdpEnabled: true,
+        cdpPort: port,
+        pageFound: true,
+        origin,
+        origins,
+        windowCount: matchedTargets.length,
+        allWindowsActive,
+        allWindowsI18nMatch,
+        ...(status || {})
+      };
     } finally {
       client.close();
     }
@@ -1484,16 +1544,26 @@ async function runWatchDaemon(options = {}) {
               }
             }
           }
-          if (Date.now() - startedAt >= startupTimeoutMs) {
+          if (!options.persistent && Date.now() - startedAt >= startupTimeoutMs) {
             exitReason = (live && live.running && live.cdpEnabled === false) ? 'cdp_not_enabled' : 'startup_timeout';
             break;
           }
-          await sleep(startupPollMs);
+          await sleep(options.persistent ? Math.max(pollIntervalMs, 3000) : startupPollMs);
           continue;
         }
 
         consecutiveMisses++;
         if (consecutiveMisses >= maxConsecutiveMisses) {
+          if (options.persistent) {
+            // Issue #119: 常驻模式下窗口关闭后释放 live-host 并回到低频待命，客户端重新带 CDP 启动时自动重挂
+            await stopLiveBridge({ stateDir });
+            windowEverSeen = false;
+            consecutiveMisses = 0;
+            warnedMissingCdp = false;
+            cdpRestartPrompted = false;
+            await sleep(Math.max(pollIntervalMs, 3000));
+            continue;
+          }
           exitReason = 'window_closed';
           break;
         }
@@ -1507,11 +1577,18 @@ async function runWatchDaemon(options = {}) {
       consecutiveMisses = 0;
 
       let meterEnabled = true;
+      let desiredChineseEnabled = false;
+      let desiredBrandTitle = 'english';
       try {
         const cfg = loadModulesConfig({ stateDir });
         if (cfg?.modules?.meter?.enabled === false) {
           meterEnabled = false;
         }
+        desiredChineseEnabled = Boolean(
+          cfg?.modules?.chinese?.enabled === true &&
+          String(cfg?.modules?.chinese?.language || '').toLowerCase() !== 'en'
+        );
+        desiredBrandTitle = cfg?.modules?.chinese?.brandTitle || 'english';
       } catch {}
 
       if (!meterEnabled) {
@@ -1541,8 +1618,18 @@ async function runWatchDaemon(options = {}) {
           (!live.hasIpcBridge || live.ipcBackendVersion !== expectedVersion) &&
           (!coveredByLiveSession || !live.liveBridgeAttached || live.liveBridgeAttached.version !== expectedVersion)
         );
+        const hasUninjectedWindow = live.allWindowsActive === false;
+        const needsI18nSync = Boolean(
+          typeof live.i18nActive === 'boolean' && (
+            live.i18nActive !== desiredChineseEnabled ||
+            (live.i18nBrandTitle || 'english') !== desiredBrandTitle ||
+            live.allWindowsI18nMatch === false
+          )
+        );
         const needsInject = Boolean(
           !live.active ||
+          hasUninjectedWindow ||
+          needsI18nSync ||
           live.version !== expectedVersion ||
           (live.effectiveBackendVersion && live.effectiveBackendVersion !== expectedVersion) ||
           needsBridge
@@ -2237,6 +2324,7 @@ async function main() {
       autoLaunch: !isNoLaunch
     });
   } else if (cmd === 'watch') {
+    const isPersistent = args.includes('--persistent');
     console.log('👀 [Antigravity 对话上下文查看器] 免改盘守护模式启动中（不修改 app.asar，保留官方原始签名）...');
     const res = await runWatchDaemon({
       ...cdpOptions,
@@ -2244,7 +2332,8 @@ async function main() {
       autoRecover: getStagedLiveRuntime()?.dir !== __dirname,
       autoBootstrapHost: !isNoLaunch,
       autoLaunch: !isNoLaunch,
-      relaunch: isRelaunch
+      relaunch: isRelaunch,
+      persistent: isPersistent
     });
     if (!res.alreadyRunning && !res.selfReloaded) {
       console.log(`👋 守护模式已停止 (${res.exitReason})，已清理临时桥接状态。`);
@@ -2258,7 +2347,11 @@ async function main() {
     }
   } else if (cmd === 'autostart-status' || cmd === 'autostart:enable' || cmd === 'autostart:disable') {
     const { getAutostartStatus, enableAutostart, disableAutostart } = require('./autostart');
-    const autostartOptions = { port: cdpOptions.port };
+    const autostartOptions = {
+      port: cdpOptions.port,
+      persistent: args.includes('--persistent'),
+      force: args.includes('--force')
+    };
     if (cmd === 'autostart:enable') {
       const res = await enableAutostart(autostartOptions);
       if (!res.ok) {
@@ -2294,7 +2387,7 @@ async function main() {
     }
   } else if (cmd === 'restore' || cmd === 'uninstall') {
     const restoreAll = args.includes('--all');
-    const res = await restore({ path: customPath, force: isForce, ...cdpOptions });
+    const res = await restore({ path: customPath, force: isForce, allowIntegrityOverride: isForceMacAsar, ...cdpOptions });
     // 卸载时同步移除登录自启，避免登录后拉起已不存在的 watch
     if (!customPath) {
       await stopWatchDaemon();

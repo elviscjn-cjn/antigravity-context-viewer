@@ -321,6 +321,29 @@ function createHostSettingsController(deps = {}) {
     return null;
   }
 
+  const SETTINGS_CATEGORY_LABEL_RE = /^(?:general|browser|account|models|appearance|keybindings|shortcuts|notifications|privacy|agent|editor|terminal|mcp|extensions|plugins|通用|应用|浏览器|瀏覽器|账号|帳號|账户|帳戶|模型|外观|外觀|快捷键|快捷鍵|通知|隐私|隱私|代理|编辑器|編輯器|终端|終端|扩展|擴展|插件)$/i;
+
+  function hasExplicitSettingsModalSignal(modal, browserBtn, navBtns) {
+    if (!modal) return false;
+    const cls = String(modal.className || '');
+    if (/\bsettings-modal-container\b/.test(cls)) return true;
+    if (browserBtn) return true;
+    if (navBtns.some((b) => isHostNavTestId(b))) return true;
+    if (typeof modal.querySelector === 'function') {
+      if (modal.querySelector('[data-testid="settings-sidebar"], [data-settings-content-pane="true"], .settings-content-pane')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function getMatchedSettingsCategoryButtons(navBtns) {
+    return navBtns.filter((b) => {
+      const label = String(b.textContent || '').replace(/\s+/g, ' ').trim();
+      return label && SETTINGS_CATEGORY_LABEL_RE.test(label);
+    });
+  }
+
   function findHostSettingsTargets() {
     if (typeof document === 'undefined') {
       lastMountDiagnostic = 'no_document';
@@ -351,6 +374,9 @@ function createHostSettingsController(deps = {}) {
       const browserBtn = modal.querySelector?.('#settings-nav-item-Browser, [data-testid="settings-nav-item-Browser"]') || (browserById && (modal.contains?.(browserById) || browserById.parentElement?.parentElement === modal) ? browserById : null);
       const navBtns = getNavButtons(modal);
       if (!browserBtn && navBtns.length === 0) continue;
+      const isExplicitSettingsModal = hasExplicitSettingsModalSignal(modal, browserBtn, navBtns);
+      const matchedCategoryBtns = isExplicitSettingsModal ? [] : getMatchedSettingsCategoryButtons(navBtns);
+      if (!isExplicitSettingsModal && matchedCategoryBtns.length < 2) continue;
       let navList = null;
       if (browserBtn) {
         const directParent = browserBtn.parentElement;
@@ -361,7 +387,9 @@ function createHostSettingsController(deps = {}) {
           navList = directParent;
         }
       } else {
-        const sampleBtn = navBtns.find((b) => /general|browser|account|浏览器|通用/i.test(String(b.textContent || b.id || b.getAttribute?.('data-testid') || ''))) || navBtns[0];
+        const sampleBtn = isExplicitSettingsModal
+          ? (navBtns.find((b) => isHostNavTestId(b) || /general|browser|account|浏览器|通用/i.test(String(b.textContent || b.id || b.getAttribute?.('data-testid') || ''))) || navBtns[0])
+          : matchedCategoryBtns[0];
         const directParent = sampleBtn?.parentElement;
         const grandParent = directParent?.parentElement;
         navList = (grandParent && getNavButtons(grandParent).length > getNavButtons(directParent).length)
