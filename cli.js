@@ -1254,6 +1254,19 @@ async function tryAutoRecoverBeforeLaunch(customPath = null, options = {}, conte
   }
 }
 
+function describeWatchBootstrapFailure(bootstrapped = {}) {
+  const reason = bootstrapped?.reason || 'unknown';
+  if (bootstrapped?.error) return bootstrapped.error;
+  if (reason === 'port_occupied') return '指定的 CDP 调试端口已被其他进程占用';
+  if (reason === 'cdp_disabled_inside_host') return '当前位于 Antigravity 内部会话中，禁止自动关闭宿主进程，请在外部终端执行 --relaunch';
+  if (reason === 'cdp_disabled_needs_relaunch') return '检测到 Antigravity 正在运行但未开启 CDP 调试端口，未获得重开授权';
+  if (reason === 'relaunch_quit_timeout') return '等待旧 Antigravity 进程优雅退出超时，请先手动 Cmd+Q 退出客户端后重试';
+  if (reason === 'launch_timeout') return '已启动带 CDP 的 Antigravity，但在超时前未能连接到调试页面';
+  if (reason === 'host_not_found') return '未找到 Antigravity 客户端可执行文件路径';
+  if (reason === 'host_not_running') return 'Antigravity 客户端未运行且当前禁用了自动拉起 (--no-launch)';
+  return `宿主重开或连接失败 (${reason})`;
+}
+
 async function runWatchDaemon(options = {}) {
   const { loadModulesConfig } = require('./modules-config');
   const stateDir = options.stateDir || getStateDir();
@@ -1285,6 +1298,15 @@ async function runWatchDaemon(options = {}) {
   const discoverFn = typeof options._discoverWindow === 'function'
     ? options._discoverWindow
     : () => queryLiveWindow({ ...options, lightProbe: true });
+  const ensureBridgeFn = typeof options._ensureBridge === 'function'
+    ? options._ensureBridge
+    : (liveSnap) => ensureLiveBridgeIfNeeded(liveSnap, { ...options, stateDir });
+  const hotInjectFn = typeof options._hotInject === 'function'
+    ? options._hotInject
+    : (injectOpts) => tryHotInjectDetailed({ ...options, ...injectOpts, stateDir });
+  const hotDisposeFn = typeof options._hotDispose === 'function'
+    ? options._hotDispose
+    : () => tryHotDispose(options);
 
   if (!options._discoverWindow && !options._ensureLiveWindow && !options._hotInject && options.autoRecover !== false) {
     await tryAutoRecoverBeforeLaunch(options.customPath || null, { ...options, stateDir }, 'watch');
@@ -1292,6 +1314,7 @@ async function runWatchDaemon(options = {}) {
 
   // 1. 单实例 PID 互斥锁与陈旧守护进程接管检查
   let replacedPid = null;
+  let prefetchedLive = null;
   const existingLock = readWatchLockInfo(stateDir);
   const existingPid = existingLock ? existingLock.pid : null;
   if (existingPid && existingPid !== process.pid && isPidAliveForUser(existingPid)) {
@@ -1316,17 +1339,144 @@ async function runWatchDaemon(options = {}) {
     } else {
       if (options.autoBootstrapHost) {
         const curSnap = await discoverFn();
-        if (!curSnap || !curSnap.running || !curSnap.pageFound) {
-          await ensureLiveWindowAvailable(options.customPath || null, options, {
+        let targetLive = (curSnap && curSnap.running && curSnap.pageFound) ? curSnap : null;
+        let bootstrapAction = targetLive ? 'connected' : null;
+        let bootstrapPort = targetLive ? (targetLive.cdpPort || options.port || null) : null;
+
+        if (!targetLive) {
+          const bootstrapped = await ensureLiveWindowAvailable(options.customPath || null, options, {
             ...options,
             _queryLiveWindow: () => discoverFn()
           });
+          if (!bootstrapped.ok) {
+            if (options.relaunch || bootstrapped.reason === 'port_occupied') {
+              const errMsg = describeWatchBootstrapFailure(bootstrapped);
+              if (!options.silent) {
+                console.error(`❌ [Watch] --relaunch 接管失败 (${bootstrapped.reason}): ${errMsg}`);
+                if (bootstrapped.manualCmd) {
+                  console.error(`   👉 可手动退出客户端后执行: ${bootstrapped.manualCmd}`);
+                }
+              }
+              return {
+                ok: false,
+                alreadyRunning: true,
+                pid: existingPid,
+                relaunched: false,
+                exitReason: bootstrapped.reason || 'relaunch_failed',
+                error: errMsg,
+                manualCmd: bootstrapped.manualCmd || null
+              };
+            }
+          } else {
+            targetLive = bootstrapped.live || null;
+            bootstrapAction = bootstrapped.action || 'connected';
+            bootstrapPort = targetLive?.cdpPort || bootstrapped.port || options.port || null;
+          }
+        }
+
+        if (options.relaunch && targetLive) {
+          let meterEnabled = true;
+          let desiredChineseEnabled = false;
+          let desiredBrandTitle = 'english';
+          try {
+            const cfg = loadModulesConfig({ stateDir });
+            if (cfg?.modules?.meter?.enabled === false) meterEnabled = false;
+            desiredChineseEnabled = Boolean(
+              cfg?.modules?.chinese?.enabled === true &&
+              String(cfg?.modules?.chinese?.language || '').toLowerCase() !== 'en'
+            );
+            desiredBrandTitle = cfg?.modules?.chinese?.brandTitle || 'english';
+          } catch {}
+
+          let handoffInjected = 0;
+          if (meterEnabled) {
+            const needsSync = Boolean(
+              !targetLive.active ||
+              targetLive.allWindowsActive === false ||
+              targetLive.version !== expectedVersion ||
+              (typeof targetLive.i18nActive === 'boolean' && (
+                targetLive.i18nActive !== desiredChineseEnabled ||
+                (targetLive.i18nBrandTitle || 'english') !== desiredBrandTitle ||
+                targetLive.allWindowsI18nMatch === false
+              ))
+            );
+            if (needsSync) {
+              const bridgePrep = await ensureBridgeFn(targetLive);
+              if (bridgePrep && bridgePrep.needed !== false && !bridgePrep.ready) {
+                const errMsg = bridgePrep.error || 'live-host 本地桥接启动失败';
+                if (!options.silent) {
+                  console.error(`❌ [Watch] 宿主已带 CDP 重开，但桥接服务启动失败: ${errMsg}`);
+                }
+                return {
+                  ok: false,
+                  alreadyRunning: true,
+                  pid: existingPid,
+                  relaunched: bootstrapAction === 'relaunched',
+                  action: bootstrapAction,
+                  port: bootstrapPort,
+                  exitReason: 'bridge_start_failed',
+                  error: errMsg
+                };
+              }
+              const report = await hotInjectFn({
+                source: 'cli-watch-relaunch',
+                port: bootstrapPort || undefined,
+                liveInfo: bridgePrep?.liveInfo || null,
+                liveVerified: Boolean(bridgePrep?.ready && bridgePrep?.liveInfo),
+                preferLiveHost: Boolean(bridgePrep?.ready && bridgePrep?.backendSource === 'live-host'),
+                clearStaleLiveBridge: Boolean(bridgePrep?.clearStaleLiveBridge)
+              });
+              if (!report?.ok) {
+                if (bridgePrep && !bridgePrep.reused && bridgePrep.liveInfo) {
+                  await rollbackPreparedLiveBridge(bridgePrep);
+                }
+                const errMsg = report?.error || report?.reason || '热挂载失败';
+                if (!options.silent) {
+                  console.error(`❌ [Watch] 宿主已带 CDP 重开，但热挂载失败: ${errMsg}`);
+                }
+                return {
+                  ok: false,
+                  alreadyRunning: true,
+                  pid: existingPid,
+                  relaunched: bootstrapAction === 'relaunched',
+                  action: bootstrapAction,
+                  port: bootstrapPort,
+                  exitReason: 'hot_inject_failed',
+                  error: errMsg
+                };
+              }
+              handoffInjected = Number(report.injectedCount || 1);
+              if (bridgePrep?.previousLiveInfo) {
+                await shutdownLiveHostGracefully(bridgePrep.previousLiveInfo);
+              }
+            }
+          }
+
+          if (isPidAliveForUser(existingPid)) {
+            if (!options.silent) {
+              console.log(`✅ [Watch] 已完成宿主带 CDP 接管与热挂载 (${bootstrapAction}, CDP ${bootstrapPort || 'auto'})，保留现有常驻守护进程 (PID ${existingPid})。`);
+            }
+            return {
+              ok: true,
+              alreadyRunning: true,
+              pid: existingPid,
+              relaunched: bootstrapAction === 'relaunched',
+              action: bootstrapAction,
+              port: bootstrapPort,
+              injectedCount: handoffInjected
+            };
+          }
+          // 既有守护在重开期间已退出，由当前实例顺位接管并持有单实例锁
+          prefetchedLive = targetLive;
+          replacedPid = existingPid;
         }
       }
-      if (!options.silent) {
-        console.log(`ℹ️ [Watch] 已有运行中的守护进程 (PID ${existingPid})，本次实例自动退出。`);
+      if (!prefetchedLive && isPidAliveForUser(existingPid)) {
+        if (!options.silent) {
+          console.log(`ℹ️ [Watch] 已有运行中的守护进程 (PID ${existingPid})，本次实例自动退出。`);
+        }
+        return { ok: true, alreadyRunning: true, pid: existingPid };
       }
-      return { ok: true, alreadyRunning: true, pid: existingPid };
     }
   }
 
@@ -1412,30 +1562,27 @@ async function runWatchDaemon(options = {}) {
   let cdpRestartPrompted = false;
   let cdpPromptCount = 0;
   let warnedMissingCdp = false;
-  let prefetchedLive = null;
 
-  const ensureBridgeFn = typeof options._ensureBridge === 'function'
-    ? options._ensureBridge
-    : (liveSnap) => ensureLiveBridgeIfNeeded(liveSnap, { ...options, stateDir });
-  const hotInjectFn = typeof options._hotInject === 'function'
-    ? options._hotInject
-    : (injectOpts) => tryHotInjectDetailed({ ...options, ...injectOpts, stateDir });
-  const hotDisposeFn = typeof options._hotDispose === 'function'
-    ? options._hotDispose
-    : () => tryHotDispose(options);
-
-  if (options.autoBootstrapHost) {
+  if (options.autoBootstrapHost && !prefetchedLive) {
     const bootstrapped = await ensureLiveWindowAvailable(options.customPath || null, options, {
       ...options,
       _queryLiveWindow: () => discoverFn()
     });
     if (bootstrapped.ok && bootstrapped.live) {
       prefetchedLive = bootstrapped.live;
-    } else if (!bootstrapped.ok && bootstrapped.reason === 'port_occupied') {
+    } else if (!bootstrapped.ok && (bootstrapped.reason === 'port_occupied' || options.relaunch)) {
+      const errMsg = describeWatchBootstrapFailure(bootstrapped);
       if (!options.silent) {
-        console.error(`❌ [Watch] ${bootstrapped.error || 'CDP 端口被占用'}`);
+        if (options.relaunch && bootstrapped.reason !== 'port_occupied') {
+          console.error(`❌ [Watch] --relaunch 接管失败 (${bootstrapped.reason}): ${errMsg}`);
+          if (bootstrapped.manualCmd) {
+            console.error(`   👉 可手动退出客户端后执行: ${bootstrapped.manualCmd}`);
+          }
+        } else {
+          console.error(`❌ [Watch] ${errMsg}`);
+        }
       }
-      exitReason = 'port_occupied';
+      exitReason = bootstrapped.reason || 'relaunch_failed';
       if (options.handleSignals !== false) {
         process.off('SIGINT', onSigInt);
         process.off('SIGTERM', onSigTerm);
@@ -1446,6 +1593,7 @@ async function runWatchDaemon(options = {}) {
         pid: process.pid,
         replacedPid,
         exitReason,
+        error: errMsg,
         cycles,
         injectedCount,
         disposedCount,
@@ -2335,7 +2483,10 @@ async function main() {
       relaunch: isRelaunch,
       persistent: isPersistent
     });
-    if (!res.alreadyRunning && !res.selfReloaded) {
+    if (!res || res.ok === false) {
+      process.exitCode = 1;
+    }
+    if (res && !res.alreadyRunning && !res.selfReloaded) {
       console.log(`👋 守护模式已停止 (${res.exitReason})，已清理临时桥接状态。`);
     }
   } else if (cmd === 'stop-watch') {

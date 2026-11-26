@@ -364,13 +364,25 @@ function isExactMacLanguageServerProcess(procPath, knownTargetPaths = []) {
   );
 }
 
-function listMacProcessesSync() {
-  if (process.platform !== 'darwin') return [];
+function buildPosixCLocaleEnv(baseEnv = process.env) {
+  return {
+    ...(baseEnv || {}),
+    LC_ALL: 'C',
+    LC_TIME: 'C',
+    LANG: 'C'
+  };
+}
+
+function listMacProcessesSync(options = {}) {
+  const platform = options._platform || process.platform;
+  if (platform !== 'darwin') return [];
+  const execSyncFn = options._execFileSync || execFileSync;
   try {
-    const out = execFileSync('ps', ['-ax', '-o', 'pid=,lstart=,comm='], {
+    const out = execSyncFn('ps', ['-ax', '-o', 'pid=,lstart=,comm='], {
       encoding: 'utf8',
       timeout: 3000,
-      stdio: ['ignore', 'pipe', 'ignore']
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: buildPosixCLocaleEnv(options.env || process.env)
     });
     return parsePsOutput(out);
   } catch {
@@ -378,12 +390,15 @@ function listMacProcessesSync() {
   }
 }
 
-function listMacProcessesAsync() {
-  if (process.platform !== 'darwin') return Promise.resolve([]);
+function listMacProcessesAsync(options = {}) {
+  const platform = options._platform || process.platform;
+  if (platform !== 'darwin') return Promise.resolve([]);
+  const execAsyncFn = options._execFile || execFile;
   return new Promise((resolve) => {
-    execFile('ps', ['-ax', '-o', 'pid=,lstart=,comm='], {
+    execAsyncFn('ps', ['-ax', '-o', 'pid=,lstart=,comm='], {
       encoding: 'utf8',
-      timeout: 3000
+      timeout: 3000,
+      env: buildPosixCLocaleEnv(options.env || process.env)
     }, (err, stdout) => {
       if (err) return resolve([]);
       resolve(parsePsOutput(stdout));

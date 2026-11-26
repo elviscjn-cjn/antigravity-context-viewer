@@ -829,3 +829,208 @@ test('Issue #119 & 多窗口同步: persistent 守护在窗口关闭后待命重
   assert.equal(watchRes.exitReason, 'max_cycles', 'persistent 模式在窗口关闭后不应提前以 window_closed 退出');
   assert.ok(injectCalls >= 3, `应覆盖首注入、第二窗口补注入与关闭重开后重注入 (actual=${injectCalls})`);
 });
+
+test('中文 Locale macOS ps 子进程固定 LC_ALL=C：同步与异步均正确解析进程 PID 与路径', async () => {
+  const macUtils = require('./macos-binary-utils');
+  const seenSyncEnvs = [];
+  const seenAsyncEnvs = [];
+  const posixSample = [
+    '40309 Thu Nov 26 18:45:16 2026 /Applications/Antigravity.app/Contents/MacOS/Antigravity',
+    '40310 Thu Nov 26 18:45:17 2026 /Applications/Antigravity.app/Contents/Resources/bin/language_server_macos_arm'
+  ].join('\n');
+
+  const syncProcs = macUtils.listMacProcessesSync({
+    _platform: 'darwin',
+    env: { LANG: 'zh_CN.UTF-8', LC_ALL: 'zh_CN.UTF-8', LC_TIME: 'zh_CN.UTF-8' },
+    _execFileSync: (bin, args, opts) => {
+      assert.equal(bin, 'ps');
+      seenSyncEnvs.push(opts.env);
+      return posixSample;
+    }
+  });
+  assert.equal(seenSyncEnvs.length, 1);
+  assert.equal(seenSyncEnvs[0].LC_ALL, 'C');
+  assert.equal(seenSyncEnvs[0].LC_TIME, 'C');
+  assert.equal(seenSyncEnvs[0].LANG, 'C');
+  assert.equal(syncProcs.length, 2);
+  assert.equal(syncProcs[0].pid, 40309);
+  assert.equal(syncProcs[0].path, '/Applications/Antigravity.app/Contents/MacOS/Antigravity');
+
+  const asyncProcs = await macUtils.listMacProcessesAsync({
+    _platform: 'darwin',
+    env: { LANG: 'zh_CN.UTF-8', LC_ALL: 'zh_CN.UTF-8', LC_TIME: 'zh_CN.UTF-8' },
+    _execFile: (bin, args, opts, cb) => {
+      assert.equal(bin, 'ps');
+      seenAsyncEnvs.push(opts.env);
+      cb(null, posixSample);
+    }
+  });
+  assert.equal(seenAsyncEnvs.length, 1);
+  assert.equal(seenAsyncEnvs[0].LC_ALL, 'C');
+  assert.equal(seenAsyncEnvs[0].LC_TIME, 'C');
+  assert.equal(seenAsyncEnvs[0].LANG, 'C');
+  assert.equal(asyncProcs.length, 2);
+  assert.equal(asyncProcs[0].pid, 40309);
+  assert.equal(asyncProcs[0].path, '/Applications/Antigravity.app/Contents/MacOS/Antigravity');
+
+  if (process.platform === 'darwin') {
+    const liveSync = macUtils.listMacProcessesSync({ env: { ...process.env, LANG: 'zh_CN.UTF-8', LC_ALL: 'zh_CN.UTF-8' } });
+    const liveAsync = await macUtils.listMacProcessesAsync({ env: { ...process.env, LANG: 'zh_CN.UTF-8', LC_ALL: 'zh_CN.UTF-8' } });
+    assert.ok(liveSync.length > 0, '真实 macOS 中文 Locale 下 listMacProcessesSync 必须返回非空进程列表');
+    assert.ok(liveAsync.length > 0, '真实 macOS 中文 Locale 下 listMacProcessesAsync 必须返回非空进程列表');
+    assert.ok(liveSync.some(p => p.pid === process.pid), 'listMacProcessesSync 应识别当前 Node 进程 PID');
+    assert.ok(liveAsync.some(p => p.pid === process.pid), 'listMacProcessesAsync 应识别当前 Node 进程 PID');
+  }
+});
+
+test('已有常驻 watch 时显式执行 watch --relaunch --persistent：成功接管保留单守护，失败返回明确原因与非零退出码', async (t) => {
+  const { spawn, spawnSync } = require('node:child_process');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-watch-relaunch-takeover-'));
+  const holder = spawn(process.execPath, ['-e', 'setInterval(()=>{}, 60000)'], { stdio: 'ignore' });
+  t.after(() => {
+    try { holder.kill(); } catch {}
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const stateDir = path.join(tmpDir, 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+  const cliScript = path.resolve(__filename).replace('meter-macos-watch.test.js', 'cli.js');
+  const curBuildId = cli.getWatchBundleBuildId();
+  const writeHolderLock = () => {
+    fs.writeFileSync(cli.getWatchPidPath(stateDir), JSON.stringify({
+      pid: holder.pid,
+      script: cliScript,
+      version: require('./package.json').version,
+      repo: require('./meter-collector').OFFICIAL_REPO,
+      buildId: curBuildId
+    }));
+    fs.writeFileSync(cli.getWatchMetaPath(stateDir), JSON.stringify({
+      pid: holder.pid,
+      buildId: curBuildId
+    }));
+  };
+  writeHolderLock();
+
+  const macTarget = {
+    platform: 'darwin',
+    appBundlePath: '/Applications/Antigravity.app',
+    execPath: '/Applications/Antigravity.app/Contents/MacOS/Antigravity'
+  };
+
+  // 1. 成功路径：宿主先无 CDP 运行（模拟 Dock 重开），--relaunch 优雅重开并立即热挂载，同时保留原常驻 watch (holder.pid)
+  {
+    let hostRunning = true;
+    let cdpReady = false;
+    const seq = [];
+    const res = await cli.runWatchDaemon({
+      stateDir,
+      silent: true,
+      handleSignals: false,
+      autoBootstrapHost: true,
+      relaunch: true,
+      persistent: true,
+      env: {},
+      expectedBuildId: curBuildId,
+      requireWatchMeta: false,
+      watchScript: cliScript,
+      quitPollMs: 5,
+      launchPollMs: 5,
+      launchTimeoutMs: 500,
+      _hostTarget: macTarget,
+      _isHostRunning: async () => hostRunning,
+      _isPortFree: async () => true,
+      _quitHost: async () => { seq.push('quit'); hostRunning = false; },
+      _launchHost: async (_t, port) => { seq.push(`launch:${port}`); hostRunning = true; cdpReady = true; },
+      _discoverWindow: async () => (
+        cdpReady
+          ? { running: true, cdpEnabled: true, pageFound: true, active: false, allWindowsActive: false, i18nActive: false, cdpPort: 58321, origin: 'https://127.0.0.1:55901', origins: ['https://127.0.0.1:55901'] }
+          : { running: true, cdpEnabled: false, pageFound: false, discoverySource: 'daemon_hub', origins: ['https://127.0.0.1:55469'] }
+      ),
+      _ensureBridge: async () => {
+        seq.push('ensureBridge');
+        return { ready: true, reused: false, backendSource: 'live-host', liveInfo: { port: 56001, token: 'tok', origins: ['https://127.0.0.1:55901'] } };
+      },
+      _hotInject: async () => {
+        seq.push('hotInject');
+        return { ok: true, injectedCount: 1, windowCount: 1 };
+      }
+    });
+    assert.deepEqual(seq, ['quit', 'launch:58321', 'ensureBridge', 'hotInject']);
+    assert.equal(res.ok, true);
+    assert.equal(res.alreadyRunning, true);
+    assert.equal(res.relaunched, true);
+    assert.equal(res.action, 'relaunched');
+    assert.equal(res.pid, holder.pid, '成功接管后应保留现有单个常驻 watch PID');
+    assert.equal(cli.readWatchPid(stateDir), holder.pid, 'watch.pid 仍指向唯一常驻守护进程');
+  }
+
+  // 2. 失败路径 A：优雅退出超时 -> 返回 ok:false 与明确原因
+  {
+    const resFail = await cli.runWatchDaemon({
+      stateDir,
+      silent: true,
+      handleSignals: false,
+      autoBootstrapHost: true,
+      relaunch: true,
+      persistent: true,
+      env: {},
+      expectedBuildId: curBuildId,
+      requireWatchMeta: false,
+      watchScript: cliScript,
+      quitTimeoutMs: 30,
+      quitPollMs: 5,
+      _hostTarget: macTarget,
+      _isHostRunning: async () => true,
+      _isPortFree: async () => true,
+      _quitHost: async () => {},
+      _discoverWindow: async () => ({ running: true, cdpEnabled: false, pageFound: false, discoverySource: 'daemon_hub' })
+    });
+    assert.equal(resFail.ok, false);
+    assert.equal(resFail.exitReason, 'relaunch_quit_timeout');
+    assert.match(resFail.error, /超时|Cmd\+Q/);
+  }
+
+  // 3. 失败路径 B：位于 Antigravity 内部会话中执行 --relaunch -> 返回 ok:false 且子进程以非零退出码退出
+  {
+    const resInside = await cli.runWatchDaemon({
+      stateDir,
+      silent: true,
+      handleSignals: false,
+      autoBootstrapHost: true,
+      relaunch: true,
+      persistent: true,
+      env: { ANTIGRAVITY_AGENT: '1' },
+      expectedBuildId: curBuildId,
+      requireWatchMeta: false,
+      watchScript: cliScript,
+      _hostTarget: macTarget,
+      _isHostRunning: async () => true,
+      _isPortFree: async () => true,
+      _discoverWindow: async () => ({ running: true, cdpEnabled: false, pageFound: false, discoverySource: 'daemon_hub' })
+    });
+    assert.equal(resInside.ok, false);
+    assert.equal(resInside.exitReason, 'cdp_disabled_inside_host');
+    assert.match(resInside.error, /内部会话/);
+
+    // 子进程 CLI 端到端验证：传入被占用的显式端口强制触发 --relaunch 失败，验证真实非零退出码
+    const net = require('node:net');
+    const blocker = net.createServer();
+    await new Promise(r => blocker.listen(0, '127.0.0.1', r));
+    const occupiedPort = blocker.address().port;
+    try {
+      const proc = spawnSync(process.execPath, [cliScript, 'watch', '--relaunch', '--persistent', '--port', String(occupiedPort)], {
+        encoding: 'utf8',
+        timeout: 15000,
+        env: {
+          ...process.env,
+          AG_METER_TEST_MODE: '1',
+          AG_METER_STATE_DIR: stateDir
+        }
+      });
+      assert.notEqual(proc.status, 0, `watch --relaunch 失败必须返回非零退出码 (actual=${proc.status}, out=${proc.stdout}, err=${proc.stderr})`);
+      assert.match(`${proc.stdout}\n${proc.stderr}`, /接管失败|端口|占用/);
+    } finally {
+      await new Promise(r => blocker.close(r));
+    }
+  }
+});
