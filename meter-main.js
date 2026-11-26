@@ -367,6 +367,7 @@ const injectionTimers = new WeakMap();
 const inFlightInjections = new WeakMap();
 const pendingForceInjections = new WeakMap();
 const wcProbeTimers = new WeakMap();
+const lastOverlayHeightByWin = new WeakMap();
 
 function setAppQuitting(val = true) {
   isAppQuitting = Boolean(val);
@@ -1545,7 +1546,9 @@ function syncWindowOverlayHeight(win) {
     // 严格遵循宿主原生 30px 默认高度（DEFAULT_TITLE_BAR_OVERLAY_HEIGHT），避免写死 40px 产生右上角大黑块色差
     const baseH = 30;
     const targetH = Math.max(26, Math.min(48, Math.round(baseH * (Number.isFinite(zf) && zf > 0 ? zf : 1))));
+    if (lastOverlayHeightByWin.get(win) === targetH) return;
     win.setTitleBarOverlay({ height: targetH });
+    lastOverlayHeightByWin.set(win, targetH);
   } catch { }
 }
 
@@ -1677,19 +1680,20 @@ exports.installContextMeter = function (win) {
 
   if (!boundWindows.has(win)) {
     boundWindows.add(win);
-    if (process.platform === 'win32') {
+    const ensureHiddenMenuBar = () => {
+      if (process.platform !== 'win32') return;
       try {
-        if (typeof win.setMenuBarVisibility === 'function') win.setMenuBarVisibility(false);
-        win.autoHideMenuBar = true;
-      } catch { }
-    }
-    const onWinVisibleOrActive = () => {
-      if (process.platform === 'win32') {
-        try {
-          if (typeof win.setMenuBarVisibility === 'function') win.setMenuBarVisibility(false);
+        if (typeof win.setMenuBarVisibility === 'function' && (typeof win.isMenuBarVisible !== 'function' || win.isMenuBarVisible() !== false)) {
+          win.setMenuBarVisibility(false);
+        }
+        if (win.autoHideMenuBar !== true) {
           win.autoHideMenuBar = true;
-        } catch { }
-      }
+        }
+      } catch { }
+    };
+    ensureHiddenMenuBar();
+    const onWinVisibleOrActive = () => {
+      ensureHiddenMenuBar();
       void ensureMeterInjected(win, { force: false });
     };
     win.on?.('show', onWinVisibleOrActive);
