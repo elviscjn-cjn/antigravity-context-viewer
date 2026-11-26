@@ -31069,7 +31069,7 @@ try {
           state.livePendingRequest ||
           (latestCallRec && latestCallRec.status === 'streaming')
         );
-        const minIntervalMs = isActivelyBusy ? 250 : 5000;
+        const minIntervalMs = isActivelyBusy ? 1200 : 5000;
         if (nowMs - lastCompactionDomCheckAt < minIntervalMs) return;
       }
       lastCompactionCheckedRoute = state.route;
@@ -31084,7 +31084,7 @@ try {
       let sawCompacting = false;
       let compactedBannerCount = 0;
       const totalNodes = nodes.length;
-      const minIdx = Math.max(0, totalNodes - 4000);
+      const minIdx = Math.max(0, totalNodes - 400);
       for (let i = totalNodes - 1; i >= minIdx; i--) {
         const n = nodes[i];
         if (!n || n === host || n.className === 'ag-cm-turn-footer') continue;
@@ -31175,9 +31175,22 @@ try {
     }
   }
 
+  let resizeLayoutRaf = 0;
   try {
     if (typeof ResizeObserver !== 'undefined') {
-      resizeObserver = new ResizeObserver(() => updateResponsiveLayout(true));
+      const scheduleResizeLayout = () => {
+        if (state.disposed) return;
+        if (typeof requestAnimationFrame === 'function') {
+          if (resizeLayoutRaf) return;
+          resizeLayoutRaf = requestAnimationFrame(() => {
+            resizeLayoutRaf = 0;
+            if (!state.disposed) updateResponsiveLayout(true);
+          });
+        } else {
+          updateResponsiveLayout(true);
+        }
+      };
+      resizeObserver = new ResizeObserver(scheduleResizeLayout);
       if (document.body) resizeObserver.observe(document.body);
     }
     if (typeof MutationObserver !== 'undefined' && document.body) {
@@ -31199,6 +31212,7 @@ try {
             if (elNode === host || (typeof host.contains === 'function' && host.contains(elNode))) return true;
             if (elNode.id === 'ag-composer-status-bar' || elNode.id === 'ag-cm-host-settings-nav' || elNode.id === 'ag-cm-host-settings-page' || elNode.className === 'ag-cm-turn-footer') return true;
             if (elNode.closest?.('#ag-context-meter, #ag-composer-status-bar, .ag-cm-turn-footer, #ag-cm-host-settings-nav, #ag-cm-host-settings-page')) return true;
+            if (m.type === 'characterData' && elNode.closest?.('[data-testid="conversation-view"]')) return true;
             if (isIdleConv && elNode.closest?.('[data-testid="conversation-view"]')) return true;
             return false;
           };
@@ -31289,6 +31303,7 @@ try {
           removeDpiWatcher();
           removeDpiWatcher = null;
         }
+        if (resizeLayoutRaf && typeof cancelAnimationFrame === 'function') { cancelAnimationFrame(resizeLayoutRaf); resizeLayoutRaf = 0; }
         if (hostModelSyncTimer) { clearTimeout(hostModelSyncTimer); hostModelSyncTimer = null; }
         if (domMutationThrottleTimer) { clearTimeout(domMutationThrottleTimer); domMutationThrottleTimer = null; }
       } catch { }
@@ -71152,7 +71167,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   }
 
   globalThis.__AGContextMeter = {
-    buildId: '6fa9255b969466ee',
+    buildId: 'ba1a532d5ae32fd9',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;
