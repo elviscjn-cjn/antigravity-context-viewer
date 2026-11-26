@@ -167,3 +167,50 @@ test('autostart 8 (Issue #119): persistent 选项写入 KeepAlive=true、Throttl
   const args = readLaunchAgentProgramArguments(plist);
   assert.deepEqual(args, ['/opt/homebrew/bin/node', '/opt/app/cli.js', 'watch', '--persistent', '--port', '58321']);
 });
+
+test('autostart 9 (macOS EIO 竞态): bootout 后等待 launchd 卸载完成并对瞬态 Bootstrap failed: 5 重试成功', async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-autostart-eio-'));
+  try {
+    let printCalls = 0;
+    let bootstrapCalls = 0;
+    const seq = [];
+    const exec = (file, args) => {
+      seq.push(`${file}:${args[0]}`);
+      if (file === 'launchctl' && args[0] === 'print') {
+        printCalls++;
+        if (printCalls <= 2) {
+          return 'gui/502/com.elviscjn.antigravity-context-meter = {\n\tstate = running\n\tpid = 40026\n}';
+        }
+        throw new Error('Could not find service');
+      }
+      if (file === 'launchctl' && args[0] === 'bootstrap') {
+        bootstrapCalls++;
+        if (bootstrapCalls === 1) {
+          throw new Error('Command failed: launchctl bootstrap gui/502 ...\nBootstrap failed: 5: Input/output error');
+        }
+        return '';
+      }
+      return '';
+    };
+
+    const res = await enableAutostart({
+      platform: 'darwin',
+      homeDir,
+      exec,
+      persistent: true,
+      force: true,
+      scriptPath: path.join(homeDir, 'cli.js'),
+      nodePath: '/opt/homebrew/bin/node',
+      _pollIntervalMs: 5,
+      _bootoutWaitTimeoutMs: 500,
+      _bootstrapRetryMs: 5
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.warning, null, '等待卸载并重试后不应再返回 bootstrap warning');
+    assert.ok(printCalls >= 3, `应轮询 launchctl print 直至服务卸载 (actual=${printCalls})`);
+    assert.equal(bootstrapCalls, 2, '遇到瞬态 Bootstrap failed: 5 应自动重试并在第 2 次成功');
+    assert.ok(seq.includes('launchctl:enable'), 'bootstrap 前应调用 launchctl enable');
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});

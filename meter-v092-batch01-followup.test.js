@@ -1467,27 +1467,27 @@ test('第 3 项：自动切号总开关直提与校验、双维度状态反馈�
     assert.match(RENDERER_SOURCE, /#ag-context-meter\[hidden\][\s\S]*?pointer-events:\s*none\s*!important/);
     assert.match(CSS_SOURCE, /--ag-host-accent,\s*#7748CF/);
 
-    // 2. 双向客户端语言切换 zh-CN <-> en（保留品牌且不改面板语言）
+    // 2. 双向客户端语言切换 zh-CN <-> en（保留品牌且不改面板语言，严格隔离在临时 stateDir 中）
     const modConfigMod = require('./modules-config');
-    const tmpCfg = path.join(os.tmpdir(), `agcm-lang-cfg-${Date.now()}.json`);
+    const tmpStateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agcm-lang-cfg-'));
     try {
       const baseCfg = JSON.parse(JSON.stringify(modConfigMod.DEFAULT_CONFIG));
       baseCfg.modules.chinese = { enabled: false, language: 'en', brandTitle: 'translated' };
-      modConfigMod.saveModulesConfig(baseCfg, { configPath: tmpCfg });
+      modConfigMod.saveModulesConfig(baseCfg, { stateDir: tmpStateDir });
 
-      const c1 = modConfigMod.loadModulesConfig({ configPath: tmpCfg });
+      const c1 = modConfigMod.loadModulesConfig({ stateDir: tmpStateDir });
       c1.modules.chinese.enabled = true;
       c1.modules.chinese.language = 'zh-CN';
-      modConfigMod.saveModulesConfig(c1, { configPath: tmpCfg });
-      const readZh = modConfigMod.loadModulesConfig({ configPath: tmpCfg });
+      modConfigMod.saveModulesConfig(c1, { stateDir: tmpStateDir });
+      const readZh = modConfigMod.loadModulesConfig({ stateDir: tmpStateDir });
       assert.equal(readZh.modules.chinese.enabled, true);
       assert.equal(readZh.modules.chinese.language, 'zh-CN');
       assert.equal(readZh.modules.chinese.brandTitle, 'translated');
 
       readZh.modules.chinese.enabled = false;
       readZh.modules.chinese.language = 'en';
-      modConfigMod.saveModulesConfig(readZh, { configPath: tmpCfg });
-      const backToEn = modConfigMod.loadModulesConfig({ configPath: tmpCfg });
+      modConfigMod.saveModulesConfig(readZh, { stateDir: tmpStateDir });
+      const backToEn = modConfigMod.loadModulesConfig({ stateDir: tmpStateDir });
       assert.equal(backToEn.modules.chinese.enabled, false);
       assert.equal(backToEn.modules.chinese.language, 'en');
       assert.equal(backToEn.modules.chinese.brandTitle, 'translated', '切回原生英文必须保留品牌偏好');
@@ -1495,7 +1495,7 @@ test('第 3 项：自动切号总开关直提与校验、双维度状态反馈�
       const meterMainSrc = fs.readFileSync(path.join(__dirname, 'meter-main.js'), 'utf8');
       assert.doesNotMatch(meterMainSrc, /!targetEnable[\s\S]{0,160}brandTitle\s*=\s*['"]english['"]/, 'meter-main 切回英文不得重置 brandTitle');
     } finally {
-      fs.rmSync(tmpCfg, { force: true });
+      fs.rmSync(tmpStateDir, { recursive: true, force: true });
     }
   });
 

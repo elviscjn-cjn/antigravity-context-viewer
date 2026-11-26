@@ -183,6 +183,35 @@ function getAutostartStatus(options = {}) {
   return { enabled: false, supported: false, platform, kind: 'unsupported', file: null, command: null, reason: '当前平台暂不支持登录自启 · 仅支持 macOS 与 Windows' };
 }
 
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientBootstrapError(error) {
+  const msg = `${error?.message || ''}\n${error?.stderr || ''}\n${error?.stdout || ''}`;
+  return /Bootstrap failed:\s*5\b|Input\/output error|service already loaded|in progress/i.test(msg);
+}
+
+async function waitForLaunchAgentUnloaded(exec, domainTarget, options = {}) {
+  const pollMs = options._pollIntervalMs ?? 100;
+  const timeoutMs = options._bootoutWaitTimeoutMs ?? 4000;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    let stillLoaded = false;
+    try {
+      const out = exec('launchctl', ['print', domainTarget]);
+      // 真实 macOS launchctl print 在服务尚未卸载完毕时会返回包含状态信息的非空文本；
+      // 简单单测 stub 返回空串时直接视为已卸载，避免空等。
+      stillLoaded = Boolean(out && /\bstate\s*=|\bpid\s*=|\bactive count\s*=/i.test(String(out)));
+    } catch {
+      stillLoaded = false;
+    }
+    if (!stillLoaded) return true;
+    await sleepMs(pollMs);
+  }
+  return false;
+}
+
 async function enableAutostart(options = {}) {
   const target = resolveAutostartTarget(options);
   const exec = options.exec || defaultExec;
@@ -199,17 +228,53 @@ async function enableAutostart(options = {}) {
     const plist = buildLaunchAgentPlist(options);
     fs.writeFileSync(target.file, plist, 'utf8');
     const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+    const domain = `gui/${uid}`;
+    const serviceTarget = `${domain}/${target.label}`;
+    let bootoutAttempted = false;
     try {
-      exec('launchctl', ['bootout', `gui/${uid}/${target.label}`]);
+      exec('launchctl', ['bootout', serviceTarget]);
+      bootoutAttempted = true;
     } catch {
       // 未加载时 bootout 一定失败，忽略即可
     }
-    let warning = null;
+    if (bootoutAttempted) {
+      await waitForLaunchAgentUnloaded(exec, serviceTarget, options);
+    }
     try {
-      exec('launchctl', ['bootstrap', `gui/${uid}`, target.file]);
-    } catch (error) {
+      exec('launchctl', ['enable', serviceTarget]);
+    } catch {
+      // 某些旧版 macOS 或未禁用状态忽略 enable 失败
+    }
+    const maxAttempts = Math.max(1, Number(options._bootstrapMaxAttempts ?? 5));
+    const retryBaseMs = Math.max(0, Number(options._bootstrapRetryMs ?? 200));
+    let warning = null;
+    let lastError = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        exec('launchctl', ['bootstrap', domain, target.file]);
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        if (attempt < maxAttempts && isTransientBootstrapError(error)) {
+          try {
+            exec('launchctl', ['bootout', serviceTarget]);
+          } catch {
+            // 忽略重复 bootout 报错
+          }
+          await waitForLaunchAgentUnloaded(exec, serviceTarget, {
+            ...options,
+            _bootoutWaitTimeoutMs: Math.min(options._bootoutWaitTimeoutMs ?? 4000, 1500)
+          });
+          if (retryBaseMs > 0) await sleepMs(retryBaseMs * attempt);
+          continue;
+        }
+        break;
+      }
+    }
+    if (lastError) {
       // plist 已写入，登录时仍会生效；此处仅提示本次未能立即加载
-      warning = `launchctl bootstrap 失败，登录后仍会生效: ${error && error.message ? error.message : error}`;
+      warning = `launchctl bootstrap 失败，登录后仍会生效: ${lastError && lastError.message ? lastError.message : lastError}`;
     }
     return { ok: true, action: status.enabled ? 'updated' : 'enabled', warning, ...getAutostartStatus(options) };
   }
