@@ -779,3 +779,250 @@ test('PR #43: live/watch 自动启动(含特殊路径与多窗口)、已有 CDP 
     assert.equal(launchedTarget?.execPath, specialTarget.execPath);
   }
 });
+
+test('macOS 点击红灯关闭窗口驻留 Dock 场景：零窗口不误报 CDP 未开、watch/live-host 待命重注且 Cmd+Q 正常清理退出', async (t) => {
+  const liveHost = require('./live-host');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-macos-dock-close-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const daemonDir = path.join(tmpDir, 'daemon');
+  const appSupportDir = path.join(tmpDir, 'AppSupport');
+  const stateDir = path.join(tmpDir, 'state');
+  fs.mkdirSync(daemonDir, { recursive: true });
+  fs.mkdirSync(path.join(appSupportDir, 'Antigravity'), { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true });
+
+  // 1. 模拟点击 Mac 红色关闭按钮后：CDP 端口仍存活但 pages 为空，同时语言服务 hub 仍存活
+  const mock = createMockCdpServer();
+  await new Promise(r => mock.server.listen(0, '127.0.0.1', r));
+  t.after(() => mock.close());
+  const cdpPort = mock.server.address().port;
+  mock.state.pages = [];
+
+  fs.writeFileSync(path.join(appSupportDir, 'Antigravity', 'DevToolsActivePort'), `${cdpPort}\n/devtools/browser/mock\n`, 'utf8');
+  fs.writeFileSync(path.join(daemonDir, 'hub_dock.json'), JSON.stringify({
+    pid: process.pid,
+    httpsPort: 56991,
+    csrfToken: 'mock-dock-csrf'
+  }), 'utf8');
+
+  await assert.rejects(
+    () => discoverAntigravityCdp({ appDataDir: appSupportDir, includeCandidatePorts: false }),
+    (err) => {
+      assert.equal(err.code, 'NO_PAGE_TARGETS');
+      assert.equal(err.cdpPort, cdpPort);
+      assert.equal(err.fromDevToolsPortFile, true);
+      return true;
+    }
+  );
+
+  const dockSnap = await cli.queryLiveWindow({
+    appDataDir: appSupportDir,
+    daemonDir,
+    stateDir,
+    includeCandidatePorts: false
+  });
+  assert.equal(dockSnap.running, true);
+  assert.equal(dockSnap.cdpEnabled, true, 'Mac 零窗口驻留 Dock 时绝不能误判为 cdpEnabled: false');
+  assert.equal(dockSnap.cdpPort, cdpPort);
+  assert.equal(dockSnap.pageFound, false);
+  assert.equal(dockSnap.windowCount, 0);
+  assert.equal(dockSnap.reason, 'no_page_targets');
+
+  // 2. 验证 watch 守护：初次挂载 -> 红灯关窗连续 5 轮零窗口(>maxConsecutiveMisses)不退出 -> 点 Dock 重开自动重注 -> Cmd+Q 真退出清理
+  const { spawn } = require('node:child_process');
+  const dummyLiveHost = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 15000)'], { stdio: 'ignore' });
+  t.after(() => { try { dummyLiveHost.kill('SIGKILL'); } catch {} });
+
+  const pkgVer = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
+  let step = 0;
+  let watchInjections = 0;
+  fs.writeFileSync(path.join(stateDir, '.live-session.json'), JSON.stringify({
+    pid: dummyLiveHost.pid,
+    port: 60037,
+    token: 'tok-dock',
+    version: pkgVer,
+    origins: ['https://127.0.0.1:56991']
+  }));
+
+  const watchRes = await cli.runWatchDaemon({
+    stateDir,
+    silent: true,
+    handleSignals: false,
+    pollIntervalMs: 5,
+    startupPollMs: 5,
+    maxConsecutiveMisses: 2,
+    maxCycles: 20,
+    _discoverWindow: async () => {
+      step++;
+      if (step === 1) {
+        return {
+          running: true,
+          cdpEnabled: true,
+          cdpPort,
+          pageFound: true,
+          active: false,
+          origin: 'https://127.0.0.1:56991',
+          origins: ['https://127.0.0.1:56991']
+        };
+      }
+      if (step >= 2 && step <= 6) {
+        // 连续 5 轮处于 Mac 红灯关窗后的 Dock 无窗口驻留态（超过 maxConsecutiveMisses=2）
+        return dockSnap;
+      }
+      if (step === 7) {
+        // 用户点击 Dock 重新打开 Antigravity 新窗口（active: false）
+        return {
+          running: true,
+          cdpEnabled: true,
+          cdpPort,
+          pageFound: true,
+          active: false,
+          origin: 'https://127.0.0.1:56991',
+          origins: ['https://127.0.0.1:56991']
+        };
+      }
+      if (step === 8) {
+        // 重注后稳态
+        return {
+          running: true,
+          cdpEnabled: true,
+          cdpPort,
+          pageFound: true,
+          active: true,
+          version: pkgVer,
+          origin: 'https://127.0.0.1:56991',
+          origins: ['https://127.0.0.1:56991'],
+          liveBridgeAttached: { backendSource: 'live-host', version: pkgVer }
+        };
+      }
+      // 第 9~10 轮：模拟用户按 Cmd+Q 真正退出宿主
+      return { running: false, cdpEnabled: false, pageFound: false, origins: [] };
+    },
+    _ensureBridge: async () => ({
+      ready: true,
+      reused: true,
+      backendSource: 'live-host',
+      backendVersion: pkgVer,
+      liveInfo: { pid: dummyLiveHost.pid, port: 60037, token: 'tok-dock', version: pkgVer, origins: ['https://127.0.0.1:56991'] }
+    }),
+    _hotInject: async () => {
+      watchInjections++;
+      return { ok: true, injectedCount: 1, windowCount: 1, backendVersion: pkgVer, backendSource: 'live-host' };
+    },
+    _hotDispose: async () => true
+  });
+
+  assert.equal(watchRes.ok, true);
+  assert.equal(watchRes.cdpPromptCount, 0, '零窗口驻留期间不得误报未开启 CDP');
+  assert.equal(watchInjections, 2, '初次打开与从 Dock 重开新窗口均必须完成自动挂载');
+  assert.equal(watchRes.exitReason, 'window_closed', 'Cmd+Q 彻底退出客户端后 watch 应正常收尾退出');
+
+  // 3. 验证单次 node cli.js live 在客户端处于 Mac Dock 零窗口驻留态时自动唤醒主窗口并挂载（无需重启客户端）
+  {
+    const macTarget = {
+      platform: 'darwin',
+      asarPath: '/Applications/Antigravity.app/Contents/Resources/app.asar',
+      appBundlePath: '/Applications/Antigravity.app',
+      execPath: '/Applications/Antigravity.app/Contents/MacOS/Antigravity'
+    };
+    let windowActivated = false;
+    let activateCalls = 0;
+    let quitCalls = 0;
+    let launchCalls = 0;
+
+    const liveRes = await cli.cmdLive(null, {}, {
+      silent: true,
+      platform: 'darwin',
+      pageReadyTimeoutMs: 10,
+      launchPollMs: 5,
+      launchTimeoutMs: 300,
+      _hostTarget: macTarget,
+      _activateHost: async (target) => {
+        assert.equal(target.appBundlePath, '/Applications/Antigravity.app');
+        activateCalls++;
+        windowActivated = true;
+      },
+      _quitHost: async () => { quitCalls++; },
+      _launchHost: async () => { launchCalls++; },
+      _queryLiveWindow: async () => (
+        windowActivated
+          ? { running: true, cdpEnabled: true, cdpPort, pageFound: true, origin: 'https://127.0.0.1:56991', origins: ['https://127.0.0.1:56991'] }
+          : dockSnap
+      ),
+      _ensureBridge: async () => ({ ready: true, backendSource: 'live-host', liveInfo: { port: 60037, token: 'tok-dock' } }),
+      _hotInject: async () => ({ ok: true, injectedCount: 1, windowCount: 1 })
+    });
+    assert.equal(liveRes.ok, true);
+    assert.equal(liveRes.action, 'activated');
+    assert.equal(activateCalls, 1, '应通过 macOS open -a 唤醒驻留 Dock 的宿主窗口');
+    assert.equal(quitCalls, 0, '已有 CDP 端口驻留时绝不能退出重启宿主');
+    assert.equal(launchCalls, 0, '已有 CDP 端口驻留时绝不能重复冷启动');
+  }
+
+  // 4. 验证单次 live 模式的后台 live-host：无 watch 进程时，红灯关窗再从 Dock 重开新窗口会自动补注，且与 watch 互斥不冲突
+  {
+    const cdpEmpty = await liveHost.inspectLiveCdpState({ appDataDir: appSupportDir, includeCandidatePorts: false });
+    assert.equal(cdpEmpty.cdpPortAlive, true);
+    assert.equal(cdpEmpty.port, cdpPort);
+    assert.equal(cdpEmpty.pages.length, 0);
+
+    const verifiedPageMap = new Map();
+    const liveInfo = { port: 60037, token: 'tok-dock', version: pkgVer, backendSource: 'live-host', origins: ['https://127.0.0.1:56991'] };
+    const reopenedState = {
+      cdpPortAlive: true,
+      port: cdpPort,
+      pages: [{ id: 'reopened-win-1', type: 'page', url: 'https://127.0.0.1:56991/c/new', webSocketDebuggerUrl: `ws://127.0.0.1:${cdpPort}/devtools/page/reopened-win-1` }],
+      origins: ['https://127.0.0.1:56991']
+    };
+
+    // 4a. 若 watch 守护正在运行，live-host 自动让出注入权
+    fs.writeFileSync(cli.getWatchPidPath(stateDir), JSON.stringify({ pid: process.ppid }), 'utf8');
+    const skipped = await liveHost.reinjectMissingCdpPagesIfNeeded(reopenedState, liveInfo, {
+      stateDir,
+      verifiedPageMap
+    });
+    assert.equal(skipped.reinjected, false);
+    assert.equal(skipped.skippedReason, 'watch_active');
+    fs.unlinkSync(cli.getWatchPidPath(stateDir));
+
+    // 4b. 纯 live 模式下（无 watch.pid）：新窗口未挂载 -> 自动触发重注 -> 稳态命中缓存零重复注入
+    let mounted = false;
+    let probeHits = 0;
+    let hotInjectHits = 0;
+    const firstPass = await liveHost.reinjectMissingCdpPagesIfNeeded(reopenedState, liveInfo, {
+      stateDir,
+      verifiedPageMap,
+      reverifyIntervalMs: 60000,
+      _createCdpClient: async () => ({
+        evaluateValue: async () => { probeHits++; return mounted; },
+        close() {}
+      }),
+      _hotInject: async () => {
+        hotInjectHits++;
+        mounted = true;
+        return { ok: true, injectedCount: 1, windowCount: 1 };
+      }
+    });
+    assert.equal(firstPass.reinjected, true);
+    assert.equal(probeHits, 1);
+    assert.equal(hotInjectHits, 1);
+
+    const steadyPass = await liveHost.reinjectMissingCdpPagesIfNeeded(reopenedState, liveInfo, {
+      stateDir,
+      verifiedPageMap,
+      reverifyIntervalMs: 60000,
+      _createCdpClient: async () => ({
+        evaluateValue: async () => { probeHits++; return mounted; },
+        close() {}
+      }),
+      _hotInject: async () => {
+        hotInjectHits++;
+        return { ok: true, injectedCount: 1, windowCount: 1 };
+      }
+    });
+    assert.equal(steadyPass.reinjected, false);
+    assert.equal(probeHits, 1, '已验证窗口在缓存期内不得重复建立 CDP WebSocket 探测');
+    assert.equal(hotInjectHits, 1);
+  }
+});
