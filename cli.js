@@ -2005,7 +2005,7 @@ async function runMacDockLauncher(customPath = null, cdpOptions = {}, options = 
   // 4. 确保挂载：先短等常驻 watch 自动注入，如尚未注入则立即主动补挂
   let mounted = Boolean(ready.active);
   let i18nActive = Boolean(ready.i18nActive);
-  const settleDeadline = Date.now() + (options.mountWaitMs ?? 2500);
+  const settleDeadline = Date.now() + (options.mountWaitMs ?? 6000);
   while (!mounted && Date.now() < settleDeadline) {
     await new Promise(r => setTimeout(r, options.mountPollMs ?? 300));
     const snap = await queryFn({ ...cdpOptions, port });
@@ -2362,7 +2362,7 @@ const CLI_VALUE_FLAGS = new Set([
 const CLI_BOOLEAN_FLAGS = new Set([
   '--force', '--all', '--cli', '--no-cli-sync', '--no-sync', '--previous', '--in-place', '--no-shortcut',
   '--today', '--week', '--month', '--json', '--compact', '--once', '--dry-run',
-  '--clear', '--sync-cli-settings', '--no-open', '--relaunch', '--no-launch', '--persistent', '--force-mac-asar', '--disk-only',
+  '--clear', '--sync-cli-settings', '--no-open', '--relaunch', '--force-relaunch', '--no-launch', '--persistent', '--force-mac-asar', '--disk-only',
   '--check-only', '--beta', '--silent', '--add-to-dock', '--keep-dock', '--no-relaunch'
 ]);
 

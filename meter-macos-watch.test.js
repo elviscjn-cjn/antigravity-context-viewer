@@ -1098,8 +1098,12 @@ test('Issue #119: runMacDockLauncher 单击冷启动带 CDP、确保常驻 watch
     assert.equal(resInside.reason, 'inside_antigravity_session');
   }
 
-  // 3. Issue #115: forceRelaunch=true 时即使旧宿主已带 CDP，也必须优雅退出、带 CDP 重开并自动挂回看板与中文
+  // 3. Issue #115: parseCliArgs 必须接受 launcher:run --port 58321 --force-relaunch，且 forceRelaunch=true 时即使旧宿主已带 CDP，也必须优雅退出、带 CDP 重开并自动挂回看板与中文
   {
+    const parsed = cli.parseCliArgs(['launcher:run', '--port', '58321', '--force-relaunch']);
+    assert.equal(parsed.cmd, 'launcher:run');
+    assert.equal(parsed.showHelp, false, '--force-relaunch 必须被 parseCliArgs 识别为合法布尔参数');
+    assert.equal(parsed.exitCode, 0);
     let hostRunning = true;
     let quitCalls = 0;
     const relaunchedPorts = [];
