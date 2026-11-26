@@ -4,7 +4,14 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
-const { connect, normalizeLoopbackOrigin, getAppDataDir } = require('./local-api');
+const {
+  connect,
+  normalizeLoopbackOrigin,
+  parseExplicitPort,
+  getAppDataDir,
+  discoverAntigravityCdp,
+  createCdpClient
+} = require('./local-api');
 const {
   collect,
   collectTurnState,
@@ -829,35 +836,146 @@ function parseInitialOriginsEnv() {
   return Array.from(new Set(raw.split(/[,;\s]+/).map(normalizeLoopbackOrigin).filter(Boolean)));
 }
 
-function discoverCdpPageOrigins() {
-  return new Promise((resolve) => {
-    try {
-      const portFile = path.join(getAppDataDir(), 'Antigravity', 'DevToolsActivePort');
-      if (!fs.existsSync(portFile)) return resolve([]);
-      const port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
-      if (!Number.isFinite(port) || port <= 0) return resolve([]);
-      const req = http.get(`http://127.0.0.1:${port}/json/list`, { agent: false }, res => {
-        let d = '';
-        res.on('data', c => d += c);
-        res.on('end', () => {
-          try {
-            const pages = JSON.parse(d);
-            const list = Array.from(new Set(
-              (Array.isArray(pages) ? pages : [])
-                .filter(item => item && item.type === 'page' && /^https?:\/\/127\.0\.0\.1:\d+\//.test(item.url))
-                .map(item => normalizeLoopbackOrigin(item.url))
-                .filter(Boolean)
-            ));
-            resolve(list);
-          } catch { resolve([]); }
-        });
-      });
-      req.setTimeout(2000, () => { req.destroy(); resolve([]); });
-      req.on('error', () => resolve([]));
-    } catch {
-      resolve([]);
+async function inspectLiveCdpState(options = {}) {
+  const discoverFn = typeof options._discoverCdp === 'function' ? options._discoverCdp : discoverAntigravityCdp;
+  try {
+    const discovered = await discoverFn(options);
+    const pages = Array.isArray(discovered?.pages) ? discovered.pages : [];
+    const origins = Array.from(new Set(pages.map(p => normalizeLoopbackOrigin(p?.url)).filter(Boolean)));
+    return {
+      cdpPortAlive: true,
+      port: discovered?.port || parseExplicitPort(options.port) || null,
+      pages,
+      origins
+    };
+  } catch (err) {
+    if (
+      err &&
+      err.cdpPort &&
+      (err.code === 'NO_PAGE_TARGETS' || String(err.message || '').includes('未找到 Antigravity 主窗口'))
+    ) {
+      return {
+        cdpPortAlive: true,
+        port: err.cdpPort,
+        pages: [],
+        origins: []
+      };
     }
+    return {
+      cdpPortAlive: false,
+      port: null,
+      pages: [],
+      origins: []
+    };
+  }
+}
+
+async function discoverCdpPageOrigins(options = {}) {
+  const st = await inspectLiveCdpState(options);
+  return st.origins;
+}
+
+function isExternalWatchDaemonRunning(stateDir = null) {
+  try {
+    const pidFile = path.join(stateDir || getStateDir(), 'watch.pid');
+    if (!fs.existsSync(pidFile)) return false;
+    const raw = fs.readFileSync(pidFile, 'utf8').trim();
+    if (!raw) return false;
+    const pid = raw.startsWith('{') ? Number(JSON.parse(raw)?.pid) : parseInt(raw, 10);
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function reinjectMissingCdpPagesIfNeeded(cdpState, liveSessionInfo, options = {}) {
+  if (!cdpState || !Array.isArray(cdpState.pages) || cdpState.pages.length === 0) {
+    return { checked: 0, reinjected: false };
+  }
+  const stateDir = options.stateDir || getStateDir();
+  if (!options._ignoreWatchLock && isExternalWatchDaemonRunning(stateDir)) {
+    return { checked: 0, reinjected: false, skippedReason: 'watch_active' };
+  }
+  try {
+    const { loadModulesConfig } = require('./modules-config');
+    const cfg = loadModulesConfig({ stateDir });
+    if (cfg?.modules?.meter?.enabled === false) {
+      return { checked: 0, reinjected: false, skippedReason: 'meter_disabled' };
+    }
+  } catch { }
+
+  const verifiedPageMap = options.verifiedPageMap instanceof Map ? options.verifiedPageMap : null;
+  const reverifyIntervalMs = options.reverifyIntervalMs ?? 6000;
+  const now = Date.now();
+  const cdpClientFactory = typeof options._createCdpClient === 'function' ? options._createCdpClient : createCdpClient;
+  const expectedVer = liveSessionInfo?.version || PROJECT_VERSION;
+  const expectedPort = Number(liveSessionInfo?.port || 0);
+
+  if (verifiedPageMap) {
+    const aliveIds = new Set(cdpState.pages.map(p => p?.id).filter(Boolean));
+    for (const id of Array.from(verifiedPageMap.keys())) {
+      if (!aliveIds.has(id)) verifiedPageMap.delete(id);
+    }
+  }
+
+  let needsReinject = false;
+  let checked = 0;
+  for (const page of cdpState.pages) {
+    if (!page || !page.webSocketDebuggerUrl) continue;
+    const pageId = page.id || page.webSocketDebuggerUrl;
+    const prev = verifiedPageMap ? verifiedPageMap.get(pageId) : null;
+    if (prev && prev.url === page.url && now - prev.verifiedAt < reverifyIntervalMs) {
+      continue;
+    }
+    checked += 1;
+    let client = null;
+    try {
+      client = await cdpClientFactory(page.webSocketDebuggerUrl, { timeoutMs: 2500 });
+      const mounted = await client.evaluateValue(
+        `Boolean(window.__AGContextMeter && document.getElementById("ag-context-meter") && window.__AGContextMeter.version === ${JSON.stringify(expectedVer)} && window.__AGContextMeterLive && Number(window.__AGContextMeterLive.port) === ${expectedPort})`,
+        { timeoutMs: 2500 }
+      );
+      if (mounted === true) {
+        if (verifiedPageMap) verifiedPageMap.set(pageId, { url: page.url, verifiedAt: Date.now() });
+      } else {
+        needsReinject = true;
+        break;
+      }
+    } catch {
+      // 页面尚在初始化导航中，留待下一轮检查
+    } finally {
+      if (client) {
+        try { client.close(); } catch { }
+      }
+    }
+  }
+
+  if (!needsReinject) {
+    return { checked, reinjected: false };
+  }
+
+  const hotInjectFn = typeof options._hotInject === 'function'
+    ? options._hotInject
+    : require('./install').tryHotInjectDetailed;
+  const report = await hotInjectFn({
+    ...(cdpState.port ? { port: cdpState.port } : {}),
+    stateDir,
+    bundleDir: options.bundleDir || __dirname,
+    source: 'live-host-reopen',
+    liveInfo: liveSessionInfo,
+    liveVerified: true,
+    preferLiveHost: true
   });
+  if (report?.ok && verifiedPageMap) {
+    const ts = Date.now();
+    for (const page of cdpState.pages) {
+      const pageId = page?.id || page?.webSocketDebuggerUrl;
+      if (pageId) verifiedPageMap.set(pageId, { url: page.url, verifiedAt: ts });
+    }
+  }
+  return { checked, reinjected: Boolean(report?.ok), report };
 }
 
 function probeOriginAlive(origin) {
@@ -915,10 +1033,14 @@ async function startLiveHost() {
     : path.join(getStateDir(), '.live-session.json');
   const hostPidRaw = Number(process.env.AG_LIVE_HOST_PID || getCliArgValue('--host-pid') || 0);
   const watchHostPid = Number.isInteger(hostPidRaw) && hostPidRaw > 0 ? hostPidRaw : null;
+  const initialCdpPort = parseExplicitPort(process.env.AG_LIVE_CDP_PORT || getCliArgValue('--cdp-port'));
+  let activeCdpPort = initialCdpPort;
 
   let checkTimer = null;
   let server = null;
   let shuttingDown = false;
+  let liveSessionInfo = null;
+  const verifiedPageMap = new Map();
   const shutdownGracefully = () => {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -955,6 +1077,13 @@ async function startLiveHost() {
     startedAt: LIVE_HOST_STARTED_AT
   }));
 
+  const persistLiveStamp = (infoObj) => {
+    fs.mkdirSync(path.dirname(stamp), { recursive: true });
+    const tmpStamp = `${stamp}.tmp-${process.pid}`;
+    fs.writeFileSync(tmpStamp, JSON.stringify(infoObj, null, 2));
+    fs.renameSync(tmpStamp, stamp);
+  };
+
   server.listen(0, '127.0.0.1', () => {
     const info = {
       port: server.address().port,
@@ -971,16 +1100,16 @@ async function startLiveHost() {
       capabilities: Object.keys(LIVE_CAPABILITIES).filter(k => LIVE_CAPABILITIES[k]),
       startedAt: LIVE_HOST_STARTED_AT
     };
-    fs.mkdirSync(path.dirname(stamp), { recursive: true });
-    const tmpStamp = `${stamp}.tmp-${process.pid}`;
-    fs.writeFileSync(tmpStamp, JSON.stringify(info, null, 2));
-    fs.renameSync(tmpStamp, stamp);
+    liveSessionInfo = info;
+    persistLiveStamp(info);
     console.log('Context Meter local bridge ready on loopback port ' + info.port);
   });
 
   let misses = 0;
+  let checkBusy = false;
   checkTimer = setInterval(async () => {
-    if (shuttingDown) return;
+    if (shuttingDown || checkBusy) return;
+    checkBusy = true;
     try {
       if (watchHostPid) {
         try { process.kill(watchHostPid, 0); } catch {
@@ -988,9 +1117,30 @@ async function startLiveHost() {
           return;
         }
       }
-      const cdpOrigins = await discoverCdpPageOrigins();
-      if (cdpOrigins.length > 0) {
-        currentOrigins = Array.from(new Set([...cdpOrigins, ...envOrigins]));
+      const cdpState = await inspectLiveCdpState(activeCdpPort ? { port: activeCdpPort } : {});
+      if (cdpState.port) {
+        activeCdpPort = cdpState.port;
+      }
+      if (cdpState.origins.length > 0) {
+        const nextOrigins = Array.from(new Set([...cdpState.origins, ...currentOrigins, ...envOrigins]));
+        const originsChanged = nextOrigins.length !== currentOrigins.length || nextOrigins.some((o, i) => o !== currentOrigins[i]);
+        currentOrigins = nextOrigins;
+        if (liveSessionInfo) {
+          liveSessionInfo = { ...liveSessionInfo, origins: currentOrigins };
+          if (originsChanged) {
+            try { persistLiveStamp(liveSessionInfo); } catch { }
+          }
+          await reinjectMissingCdpPagesIfNeeded(cdpState, liveSessionInfo, {
+            stateDir: getStateDir(),
+            bundleDir: __dirname,
+            verifiedPageMap
+          });
+        }
+        misses = 0;
+        return;
+      }
+      if (cdpState.cdpPortAlive) {
+        verifiedPageMap.clear();
         misses = 0;
         return;
       }
@@ -1003,11 +1153,13 @@ async function startLiveHost() {
       }
       throw new Error('No live Antigravity origins available');
     } catch {
-      if (++misses >= 3) {
+      if (++misses >= 6) {
         shutdownGracefully();
       }
+    } finally {
+      checkBusy = false;
     }
-  }, 10000);
+  }, 2500);
 }
 
 if (require.main === module) {
@@ -1021,5 +1173,9 @@ module.exports = {
   buildLiveRuntimeModulesMeta,
   createLiveRequestHandler,
   parseInitialOriginsEnv,
+  inspectLiveCdpState,
+  discoverCdpPageOrigins,
+  isExternalWatchDaemonRunning,
+  reinjectMissingCdpPagesIfNeeded,
   startLiveHost
 };

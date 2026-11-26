@@ -117,6 +117,9 @@ async function shutdownLiveHostGracefully(liveInfo) {
       return { ok: true, method: 'http_shutdown', pid: liveInfo.pid };
     }
   }
+  if (Number(liveInfo.pid) === process.pid) {
+    return { ok: false, reason: 'self_pid', pid: liveInfo.pid };
+  }
   try {
     process.kill(liveInfo.pid, 0);
     process.kill(liveInfo.pid);

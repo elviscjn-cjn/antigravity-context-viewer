@@ -212,11 +212,17 @@ async function discoverAntigravityCdp(options = {}) {
 
   const timeoutMs = options.timeoutMs || 1500;
   let anyPortResponded = false;
+  let firstRespondedPort = null;
+  let devToolsRespondedPort = null;
 
   for (const port of candidatePorts) {
     try {
       const allPages = await fetchJsonList(port, timeoutMs);
       anyPortResponded = true;
+      if (!firstRespondedPort) firstRespondedPort = port;
+      if (portFileInfo.valid && port === portFileInfo.port) {
+        devToolsRespondedPort = port;
+      }
       const matchedPages = allPages.filter(
         item => item && item.type === 'page' && Boolean(normalizeLoopbackOrigin(item.url))
       );
@@ -262,7 +268,11 @@ async function discoverAntigravityCdp(options = {}) {
   }
 
   if (anyPortResponded) {
-    throw new Error('未找到 Antigravity 主窗口，请等待窗口加载后重试');
+    const err = new Error('未找到 Antigravity 主窗口，请等待窗口加载后重试');
+    err.code = 'NO_PAGE_TARGETS';
+    err.cdpPort = devToolsRespondedPort || firstRespondedPort;
+    err.fromDevToolsPortFile = Boolean(devToolsRespondedPort);
+    throw err;
   }
   if (portFileInfo.exists && !portFileInfo.valid) {
     throw new Error('Antigravity 本地连接信息无效，请重新打开客户端');
