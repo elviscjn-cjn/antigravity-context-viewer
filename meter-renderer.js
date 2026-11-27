@@ -37992,6 +37992,7 @@ let activeCnyTimerId = null;
   }
 
   const turnFooterScopeState = new Map();
+  let lastTurnFooterTimelineSyncAt = 0;
 
   function renderTurnFooterStats() {
     try {
@@ -38024,7 +38025,11 @@ let activeCnyTimerId = null;
       const { source, turns } = buildAuthoritativeMainTurns();
       // 若主区回复条数多于已分段轮次数（或时间线滞后），后台静默拉取时间线做精确归属，绝不把旧轮次错绑到新回复
       if (mainToolbars.length > turns.length && state.route && !state.timelineLoading && !state.timelineError && typeof fetchSessionTimeline === 'function') {
-        void fetchSessionTimeline(state.route, { force: source === 'timeline' });
+        const nowTs = Date.now();
+        if (source !== 'timeline' || (nowTs - lastTurnFooterTimelineSyncAt > 3000)) {
+          lastTurnFooterTimelineSyncAt = nowTs;
+          void fetchSessionTimeline(state.route, { force: source === 'timeline' });
+        }
       }
 
       const cacheFn = typeof computeCacheHitSummary === 'function' ? computeCacheHitSummary : core?.computeCacheHitSummary;
@@ -38195,8 +38200,8 @@ let activeCnyTimerId = null;
             if (k) boundTurnKeys.add(k);
             applyFooterToToolbar(mainToolbars[i], tr);
           }
-        } else {
-          // Issue #140: DOM 回复条数多于时间线已落盘轮次数（典型为新回复刚出现、时间线滞后），
+        } else if (source === 'timeline') {
+          // Issue #140: 时间线已就绪但 DOM 回复条数多于时间线已落盘轮次数（典型为新回复刚出现、时间线滞后），
           // 从头部按轮次顺序对齐前 T 条，尾部尚未同步的回复隐藏尾标，绝不把前序轮次（如 turn-1）错绑到最新回复。
           for (let i = 0; i < M; i++) {
             if (i >= T) {
@@ -38204,6 +38209,23 @@ let activeCnyTimerId = null;
               continue;
             }
             const tr = turns[i];
+            const k = tr?.turnKey;
+            if (!tr || (k && boundTurnKeys.has(k))) {
+              applyFooterToToolbar(mainToolbars[i], null);
+              continue;
+            }
+            if (k) boundTurnKeys.add(k);
+            applyFooterToToolbar(mainToolbars[i], tr);
+          }
+        } else {
+          // 无时间线回退态下仅匹配最后 T 条，前置未匹配条目绝不复用 turns[0]
+          const startToolbarIdx = M - T;
+          for (let i = 0; i < M; i++) {
+            if (i < startToolbarIdx) {
+              applyFooterToToolbar(mainToolbars[i], null);
+              continue;
+            }
+            const tr = turns[i - startToolbarIdx];
             const k = tr?.turnKey;
             if (!tr || (k && boundTurnKeys.has(k))) {
               applyFooterToToolbar(mainToolbars[i], null);
@@ -72673,7 +72695,7 @@ function initCrossSessionInsightsControls() {
   }
 
   globalThis.__AGContextMeter = {
-    buildId: 'ed7116fe151d3856',
+    buildId: 'b0a64312d7920f33',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;

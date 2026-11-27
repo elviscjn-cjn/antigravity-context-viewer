@@ -565,3 +565,74 @@ test('Issue #117: 原生设置页 UI 构建与双向同步底栏字号和高对�
     ['turnFooterHighContrast', false]
   ]);
 });
+
+test('Issue #140: 时间线滞后(M=2, T=1)绝不将 turn-1 错绑到第二条回复，补齐时间线后精确恢复 turn-2 与跨模型统计', () => {
+  const h = harness();
+  try {
+    const makeTb = () => {
+      const row = h.sandbox.document.createElement('div');
+      row.clientWidth = 520;
+      const tb = h.sandbox.document.createElement('div');
+      tb.clientWidth = 520;
+      tb.appendChild(row);
+      tb.firstElementChild = row;
+      tb.row = row;
+      return tb;
+    };
+    const tb1 = makeTb();
+    const tb2 = makeTb();
+    const origQsa = h.sandbox.document.querySelectorAll;
+    h.sandbox.document.querySelectorAll = (sel) => {
+      if (sel && sel.includes('cascade-system-message-toolbar')) return [tb1, tb2];
+      if (sel && sel.includes('.ag-cm-turn-footer')) {
+        return [
+          tb1.row.children.find(c => c.className === 'ag-cm-turn-footer'),
+          tb2.row.children.find(c => c.className === 'ag-cm-turn-footer')
+        ].filter(Boolean);
+      }
+      return origQsa ? origQsa(sel) : [];
+    };
+
+    const api = h.sandbox.__AGContextMeter;
+    api.setTurnFooterStatsEnabledForTest(true);
+
+    const call1 = { callId: 'c-1', stepIndex: 2, modelLabel: 'Model A', inputTokens: 1000, cacheReadTokens: 0, outputTokens: 100, streamingTps: 80 };
+    const call2 = { callId: 'c-2', stepIndex: 5, modelLabel: 'Model B', inputTokens: 1500, cacheReadTokens: 500, outputTokens: 150, streamingTps: 120 };
+
+    // 阶段 1：DOM 已有 2 条回复，但时间线仅落盘 turn-1（滞后）
+    api.setComposerStateForTest({
+      sessionCalls: [call1, call2],
+      sessionTimeline: {
+        turns: [{ turnIndex: 1, stepIndex: 1, calls: [call1] }]
+      }
+    });
+    const f1Lag = tb1.row.children.find(c => c.className === 'ag-cm-turn-footer');
+    const f2Lag = tb2.row.children.find(c => c.className === 'ag-cm-turn-footer');
+    assert.ok(f1Lag, '第一条回复应绑定 turn-1');
+    assert.equal(f1Lag.getAttribute('data-turn-key'), 'turn-1');
+    assert.match(f1Lag.textContent, /Model A/);
+    assert.match(f1Lag.textContent, /Out 100/);
+    assert.equal(f2Lag, undefined, '时间线滞后时第二条回复必须隐藏尾标，绝不能错绑 turn-1');
+
+    // 阶段 2：时间线补齐 turn-2 后，两条回复各自精确绑定且跨模型独立
+    api.setComposerStateForTest({
+      sessionCalls: [call1, call2],
+      sessionTimeline: {
+        turns: [
+          { turnIndex: 1, stepIndex: 1, calls: [call1] },
+          { turnIndex: 2, stepIndex: 4, calls: [call2] }
+        ]
+      }
+    });
+    const f1Full = tb1.row.children.find(c => c.className === 'ag-cm-turn-footer');
+    const f2Full = tb2.row.children.find(c => c.className === 'ag-cm-turn-footer');
+    assert.ok(f1Full && f2Full);
+    assert.equal(f1Full.getAttribute('data-turn-key'), 'turn-1');
+    assert.match(f1Full.textContent, /Model A/);
+    assert.equal(f2Full.getAttribute('data-turn-key'), 'turn-2');
+    assert.match(f2Full.textContent, /Model B/);
+    assert.match(f2Full.textContent, /Out 150/);
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+});

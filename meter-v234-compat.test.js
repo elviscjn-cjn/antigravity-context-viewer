@@ -849,6 +849,8 @@ test('macOS --force-mac-asar 安装与还原后按需自动 ad-hoc 重签并复�
   assert.equal(resFailed.ok, false);
   assert.match(resFailed.error, /permission denied/);
   assert.match(resFailed.manualCmd, /codesign --force --sign - --preserve-metadata=entitlements/);
+});
+
 // ============================================================================
 // 5. 远程服务器（SSH Hub）连接场景下的额度获取、会话扫描与多级回退
 // ============================================================================
@@ -1118,6 +1120,8 @@ test('meter-main IPC 与 live-host 兼容 localhost 远程回环窗口并安全�
   assert.equal(typeof capturedOpts.rendererRpcFetcher, 'function');
   assert.equal(await capturedOpts.resolveCsrfToken(remoteOrigin), 'sender-live-csrf-token');
   assert.equal(await capturedOpts.resolveCsrfToken('http://127.0.0.1:41234'), null, 'resolveCsrfToken 严禁跨 origin 返回令牌');
+});
+
 test('Issues #109 & #116: 非默认安装路径探测、自定义路径持久化校验、.unpacked 透传与原生设置入口', async (t) => {
   const {
     normalizeAsarPathCandidate,
