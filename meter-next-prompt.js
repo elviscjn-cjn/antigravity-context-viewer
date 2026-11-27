@@ -243,17 +243,16 @@ function buildPredictionPrompts(ctx, mode = 'enhanced') {
   const systemPrompt = [
     'You predict the single most likely next message the USER will type into the chat box after a completed assistant turn.',
     `Output language MUST match the user's language (${langLabel}) and concise direct tone.`,
-    'Strict selection priority:',
+    'Selection priority (prefer giving a helpful concrete suggestion rather than abstaining whenever a practical follow-up exists):',
     '1. First priority: the smallest concrete next step the user explicitly asked for in recent goals or pending task items that has NOT been done yet.',
-    '2. Second priority: a concrete verification or follow-up check strictly grounded in current task evidence and not yet completed.',
-    '3. Third priority: a natural user answer to a question in the assistant reply ONLY when earlier user goals or preferences already provide sufficient clues.',
-    'Strict abstention rules (output ONLY the exact token NO_SUGGESTION in all these cases):',
-    '- The task and user goals are already verified/complete with no remaining pending items.',
-    '- The assistant offers two or more choices (e.g. A or B) where the user gave no prior preference.',
-    '- Predicting would guess an unstated preference, expand scope, or emit vague filler like "continue", "ok", "thanks", or "继续".',
+    '2. Second priority: a natural answer or confirmation to a question/proposal in the assistant reply (if options were given, prefer the recommended or lowest-risk option).',
+    '3. Third priority: a practical, specific next workflow step grounded in the current task (e.g., verifying a related page/edge case, checking logs/status, submitting/committing code, or checking online effects after a fix/release).',
+    'Strict abstention rules (output ONLY the exact token NO_SUGGESTION only in these narrow cases):',
+    '- The conversation has no actionable context (e.g., pure greeting or empty/broken reply).',
+    '- The only possible reply would be generic filler like "continue", "ok", "thanks", or "继续".',
     'Hard constraints:',
     '- Suggest ONLY ONE short, directly sendable user-voiced sentence (no quotes, no bullets, no markdown framing, max 120 chars / 22 words).',
-    '- Ignore [BACKGROUND_NOTIFICATION] entries as user intent. Never repeat items marked completed [x] in task checklist.'
+    '- Ignore [BACKGROUND_NOTIFICATION] entries as user intent. Never repeat items already marked completed [x] in task checklist.'
   ].join('\n');
 
   const blocks = [];
@@ -337,7 +336,16 @@ async function callCloudCodeGenerateContent(prompts, options = {}) {
     const store = mgr.loadStore?.() || { accounts: {} };
     const activeEmail = normalizeEmail(ov.activeAccountEmail || store.activeAccountEmail || '');
     const rec = activeEmail ? store.accounts?.[activeEmail] : null;
-    accessToken = rec?.credential?.accessToken || null;
+    if (activeEmail && rec && typeof mgr.ensureFreshTokenForAccount === 'function') {
+      try {
+        const freshCred = await mgr.ensureFreshTokenForAccount(activeEmail);
+        accessToken = freshCred?.accessToken || null;
+      } catch {
+        accessToken = rec?.credential?.accessToken || null;
+      }
+    } else {
+      accessToken = rec?.credential?.accessToken || null;
+    }
     projectId = projectId || rec?.projectId || '';
   }
 

@@ -3,7 +3,7 @@
   const METER_DISPLAY_VERSION = '0.9.4';
 
   'use strict';
-  if ((location.protocol !== 'https:' && location.protocol !== 'http:') || location.hostname !== '127.0.0.1') return;
+  if ((location.protocol !== 'https:' && location.protocol !== 'http:') || (location.hostname !== '127.0.0.1' && location.hostname !== 'localhost')) return;
 
   const HOT_RELOAD_SCROLL_IDS = ['panel', 'panel-tokens', 'panel-quota', 'ctx-model-list', 'view-quota', 'quota-view-body'];
 
@@ -236,6 +236,19 @@
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_show_turn_footer_stats') : null;
       return saved === 'false' ? false : true;
     } catch { return true; }
+  })();
+  const VALID_STATUS_FONT_SIZES = ['compact', 'comfortable', 'large'];
+  let composerStatusFontSize = (() => {
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_composer_status_font_size') : null;
+      return VALID_STATUS_FONT_SIZES.includes(saved) ? saved : 'compact';
+    } catch { return 'compact'; }
+  })();
+  let turnFooterHighContrast = (() => {
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_turn_footer_high_contrast') : null;
+      return saved === 'true';
+    } catch { return false; }
   })();
   let showComposerQuotaSummary = (() => {
     try {
@@ -12491,6 +12504,52 @@
       overflow: hidden;
     }
 
+    .composer-status-bar[data-font-size="comfortable"],
+    .composer-status-bar[data-font-size="comfortable"] .csb-pill,
+    .composer-status-bar[data-font-size="comfortable"] .csb-text {
+      font-size: 12.5px;
+    }
+
+    .composer-status-bar[data-font-size="comfortable"] .csb-pill {
+      height: 24px;
+    }
+
+    .composer-status-bar[data-font-size="comfortable"] #csb-context-text {
+      max-width: 86px;
+    }
+
+    .composer-status-bar[data-font-size="large"],
+    .composer-status-bar[data-font-size="large"] .csb-pill,
+    .composer-status-bar[data-font-size="large"] .csb-text {
+      font-size: 14px;
+    }
+
+    .composer-status-bar[data-font-size="large"] .csb-pill {
+      height: 26px;
+    }
+
+    .composer-status-bar[data-font-size="large"] #csb-context-text {
+      max-width: 98px;
+    }
+
+    .composer-status-bar[data-high-contrast="true"],
+    .composer-status-bar[data-high-contrast="true"] .csb-pill,
+    .composer-status-bar[data-high-contrast="true"] .csb-text {
+      opacity: 1;
+      font-weight: 500;
+      color: var(--ag-text-primary, #f1f5f9);
+    }
+
+    :host([data-theme="light"]) .composer-status-bar[data-high-contrast="true"],
+    :host([data-theme="light"]) .composer-status-bar[data-high-contrast="true"] .csb-pill,
+    :host([data-theme="light"]) .composer-status-bar[data-high-contrast="true"] .csb-text,
+    :host([data-panel-tone="light"]) .composer-status-bar[data-high-contrast="true"],
+    :host([data-panel-tone="light"]) .composer-status-bar[data-high-contrast="true"] .csb-pill,
+    :host([data-panel-tone="light"]) .composer-status-bar[data-high-contrast="true"] .csb-text {
+      opacity: 1;
+      color: #0f172a;
+    }
+
     .csb-pill:not(#csb-group-tokens) {
       cursor: default !important;
     }
@@ -18967,6 +19026,41 @@
                   </div>
                 </div>
               </div>
+
+              <div class="ctx-prefs-row" id="row-status-font-size">
+                <div class="ctx-prefs-row-main">
+                  <div class="ctx-prefs-row-title" data-i18n="settings.statusFontSize.label">底栏与尾标字号</div>
+                  <div class="ctx-prefs-row-sub" data-i18n="settings.statusFontSize.desc">
+                    调整输入框底栏状态摘要与回复尾部统计的文字大小.</div>
+                </div>
+                <div class="ctx-prefs-row-ctl">
+                  <div id="status-font-size-segmented" class="ctx-segmented ctx-seg-pill" role="group"
+                    aria-label="底栏与尾标字号">
+                    <button id="btn-status-font-compact" class="ctx-seg-btn active" type="button"
+                      data-status-font-size="compact" data-i18n="settings.statusFontSize.compact">紧凑 11px</button>
+                    <button id="btn-status-font-comfortable" class="ctx-seg-btn" type="button"
+                      data-status-font-size="comfortable"
+                      data-i18n="settings.statusFontSize.comfortable">舒适 13px</button>
+                    <button id="btn-status-font-large" class="ctx-seg-btn" type="button"
+                      data-status-font-size="large" data-i18n="settings.statusFontSize.large">大号 14px</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="ctx-prefs-row" id="row-turn-footer-contrast">
+                <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-turn-footer-contrast"
+                  for="chk-turn-footer-high-contrast">
+                  <span class="ctx-prefs-row-title" data-i18n="settings.turnFooterContrast.label">尾标与底栏高对比度</span>
+                  <span class="ctx-prefs-row-sub" data-i18n="settings.turnFooterContrast.desc">
+                    移除低透明度淡化并提升文字对比度，便于阅读.</span>
+                </label>
+                <div class="ctx-prefs-row-ctl">
+                  <label class="ctx-toggle" for="chk-turn-footer-high-contrast">
+                    <input id="chk-turn-footer-high-contrast" class="ctx-toggle-input" type="checkbox">
+                    <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
+                  </label>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -19580,6 +19674,26 @@
                 data-i18n="settings.colors.resetAll">全部恢复跟随主题</button>
             </div>
           </div>
+        </div>
+
+        <!-- 6.5 自定义 Antigravity 安装路径 -->
+        <div class="ctx-settings-card" id="settings-install-path-card">
+          <div class="ctx-settings-card-hdr">
+            <div class="ctx-settings-card-title" data-i18n="ns.installPath.title">Antigravity 安装路径</div>
+          </div>
+          <div class="ctx-settings-card-desc" data-i18n="ns.installPath.desc">
+            非默认目录安装时，填写安装根目录或 resources/app.asar 路径，留空恢复自动探测</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px">
+            <input id="input-custom-install-path" class="ctx-input" type="text"
+              style="flex:1;min-width:180px;font-size:11px;padding:5px 8px"
+              data-i18n-placeholder="ns.installPath.placeholder"
+              placeholder="自动探测（可填如 F:\\Apps\\Antigravity）" />
+            <button id="btn-apply-custom-install-path" class="unlock-btn unlock-btn-primary" type="button"
+              data-i18n="ns.installPath.save">保存路径</button>
+            <button id="btn-clear-custom-install-path" class="unlock-btn unlock-btn-secondary" type="button"
+              data-i18n="ns.installPath.clear">恢复自动探测</button>
+          </div>
+          <div id="status-custom-install-path" class="ctx-result-manual-note" style="margin-top:6px" hidden></div>
         </div>
 
         <!-- 7. 版本更新与项目链接 -->
@@ -22355,6 +22469,13 @@ const PANEL_I18N = {
   'settings.dock.pageHint': { 'zh-CN': '独立页面已开启，可使用顶部“返回聊天”切回常驻工具栏.', 'zh-TW': '獨立頁面已開啟，可使用頂部「返回聊天」切回常駐工具列.', en: 'Standalone view active; use top "Back to Chat" to return.' },
   'settings.turnFooter.label': { 'zh-CN': '每轮回复尾部统计', 'zh-TW': '每輪回覆尾部統計', en: 'Per-turn footer stats' },
   'settings.turnFooter.desc': { 'zh-CN': '在助手回复操作栏末尾显示本轮模型、用量与耗时微标.', 'zh-TW': '在助手回覆操作列末尾顯示本輪模型、用量與耗時微標.', en: 'Show this turn model, usage and duration chip at the end of the assistant action bar.' },
+  'settings.statusFontSize.label': { 'zh-CN': '底栏与尾标字号', 'zh-TW': '底欄與尾標字級', en: 'Status bar & footer font size' },
+  'settings.statusFontSize.desc': { 'zh-CN': '调整输入框底栏状态摘要与回复尾部统计的文字大小.', 'zh-TW': '調整輸入框底欄狀態摘要與回覆尾部統計的文字大小.', en: 'Adjust text size for the composer status bar and per-turn reply footer.' },
+  'settings.statusFontSize.compact': { 'zh-CN': '紧凑 11px', 'zh-TW': '緊湊 11px', en: 'Compact 11px' },
+  'settings.statusFontSize.comfortable': { 'zh-CN': '舒适 13px', 'zh-TW': '舒適 13px', en: 'Comfortable 13px' },
+  'settings.statusFontSize.large': { 'zh-CN': '大号 14px', 'zh-TW': '大號 14px', en: 'Large 14px' },
+  'settings.turnFooterContrast.label': { 'zh-CN': '尾标与底栏高对比度', 'zh-TW': '尾標與底欄高對比度', en: 'High-contrast status & footer' },
+  'settings.turnFooterContrast.desc': { 'zh-CN': '移除低透明度淡化并提升文字对比度，便于阅读.', 'zh-TW': '移除低透明度淡化並提升文字對比度，便於閱讀.', en: 'Disable dimmed opacity and boost text contrast for clearer readability.' },
   'settings.composerQuota.label': { 'zh-CN': '输入框下方状态条', 'zh-TW': '輸入框下方狀態列', en: 'Status bar under the composer' },
   'settings.composerQuota.desc': { 'zh-CN': '在聊天输入框下方显示速度、Token、上下文与额度摘要.', 'zh-TW': '在聊天輸入框下方顯示速度、Token、上下文與額度摘要.', en: 'Show speed, tokens, context and quota summary below the chat composer.' },
   'settings.nextPrompt.label': { 'zh-CN': '下一句预测建议', 'zh-TW': '下一句預測建議', en: 'Next prompt prediction' },
@@ -24060,6 +24181,8 @@ const PANEL_I18N = {
   'ns.showComposerBar.desc': { 'zh-CN': '在输入框底部展示当前上下文、速率、缓存命中与额度摘要', 'zh-TW': '在輸入框底部展示目前上下文、速率、快取命中與額度摘要', en: 'Shows context, speed, cache hit rate, and quota below the input box' },
   'ns.turnFooter.desc': { 'zh-CN': '在助手回复操作栏末尾显示本轮模型、用量与耗时微标', 'zh-TW': '在助手回覆操作欄末尾顯示本輪模型、用量與耗時微標', en: 'Shows per-turn model, token usage, and latency badge in reply actions' },
   'ns.speedMode.desc': { 'zh-CN': '纯流式扣除首字延迟；端到端包含首字等待，作用于顶栏、卡片与尾部微标', 'zh-TW': '純串流扣除首字延遲；端到端包含首字等待，作用於頂欄、卡片與尾部微標', en: 'Pure stream excludes TTFT; End-to-End includes TTFT across topbar, card, and footer' },
+  'ns.statusFontSize.desc': { 'zh-CN': '调节底栏状态摘要与每轮回复尾标的字体大小', 'zh-TW': '調節底欄狀態摘要與每輪回覆尾標的字體大小', en: 'Adjust font size of composer status bar and per-turn footer' },
+  'ns.turnFooterContrast.desc': { 'zh-CN': '取消透明度淡化并加深或提亮前景色，增强小字辨识度', 'zh-TW': '取消透明度淡化並加深或提亮前景色，增強小字辨識度', en: 'Remove dimmed opacity and sharpen foreground contrast for better legibility' },
   'ns.nextPrompt.desc': { 'zh-CN': '默认关闭 · 开启后每轮结束会调用当前账号模型并消耗额外额度，按 Tab 填入草稿', 'zh-TW': '預設關閉 · 開啟後每輪結束會呼叫目前帳號模型並消耗額外額度，按 Tab 填入草稿', en: 'Off by default · queries active model after each turn using quota; press Tab to insert' },
   'ns.autoSwitch.desc': { 'zh-CN': '达阈值后等待当前生成空闲且单窗口时切往备选账号', 'zh-TW': '達閾值後等待目前生成空閒且單視窗時切往備選帳號', en: 'Switches to a candidate account once threshold hits, idle, and single window' },
   'ns.autoSwitch.emptyCands': { 'zh-CN': '暂无可切入的备选账号', 'zh-TW': '暫無可切入的備選帳號', en: 'No candidate accounts available' },
@@ -24092,7 +24215,15 @@ const PANEL_I18N = {
   'ns.clearCache.title': { 'zh-CN': '清理本地统计缓存', 'zh-TW': '清理本機統計快取', en: 'Clear Local Stats Cache' },
   'ns.clearCache.btn': { 'zh-CN': '清理缓存', 'zh-TW': '清理快取', en: 'Clear Cache' },
   'ns.clearCache.desc': { 'zh-CN': '当前占用 {kb} KB · 清理不影响原有配置项', 'zh-TW': '目前佔用 {kb} KB · 清理不影響原有設定項', en: 'Using {kb} KB · preserves your settings' },
-  'ns.clearCache.done': { 'zh-CN': '已清理 {count} 项本地临时缓存，原有配置已保留', 'zh-TW': '已清理 {count} 項本機暫存快取，原有設定已保留', en: 'Cleared {count} cache entries; settings preserved' }
+  'ns.clearCache.done': { 'zh-CN': '已清理 {count} 项本地临时缓存，原有配置已保留', 'zh-TW': '已清理 {count} 項本機暫存快取，原有設定已保留', en: 'Cleared {count} cache entries; settings preserved' },
+  'ns.installPath.title': { 'zh-CN': 'Antigravity 安装路径', 'zh-TW': 'Antigravity 安裝路徑', en: 'Antigravity Install Path' },
+  'ns.installPath.desc': { 'zh-CN': '非默认目录安装时，填写安装根目录或 resources/app.asar 路径，留空恢复自动探测', 'zh-TW': '非預設目錄安裝時，填寫安裝根目錄或 resources/app.asar 路徑，留空恢復自動偵測', en: 'Specify install root or resources/app.asar path for custom locations; clear to auto-detect' },
+  'ns.installPath.placeholder': { 'zh-CN': '自动探测（可填如 F:\\Apps\\Antigravity）', 'zh-TW': '自動偵測（可填如 F:\\Apps\\Antigravity）', en: 'Auto-detect (e.g. F:\\Apps\\Antigravity)' },
+  'ns.installPath.save': { 'zh-CN': '保存路径', 'zh-TW': '儲存路徑', en: 'Save Path' },
+  'ns.installPath.clear': { 'zh-CN': '恢复自动探测', 'zh-TW': '恢復自動偵測', en: 'Reset Auto' },
+  'ns.installPath.saved': { 'zh-CN': '已保存自定义路径：{path}', 'zh-TW': '已儲存自訂路徑：{path}', en: 'Saved custom path: {path}' },
+  'ns.installPath.cleared': { 'zh-CN': '已恢复自动探测安装路径', 'zh-TW': '已恢復自動偵測安裝路徑', en: 'Restored automatic install path detection' },
+  'ns.installPath.saveFail': { 'zh-CN': '保存失败：{err}', 'zh-TW': '儲存失敗：{err}', en: 'Save failed: {err}' }
 };
 
 function t(key, vars = null) {
@@ -30391,6 +30522,76 @@ try {
         .ag-cm-turn-footer ~ [role="button"] {
           flex-shrink: 0 !important;
         }
+        #composer-status-bar[data-font-size="comfortable"],
+        #composer-status-bar[data-font-size="comfortable"] .csb-pill,
+        #composer-status-bar[data-font-size="comfortable"] .csb-text {
+          font-size: 12.5px !important;
+        }
+        #composer-status-bar[data-font-size="comfortable"] .csb-pill {
+          height: 24px !important;
+        }
+        #composer-status-bar[data-font-size="comfortable"] .csb-svg-icon svg {
+          width: 13.5px !important;
+          height: 13.5px !important;
+        }
+        #composer-status-bar[data-font-size="comfortable"] .csb-ring-morph-wrap {
+          width: 14.5px !important;
+          height: 14.5px !important;
+        }
+        #composer-status-bar[data-font-size="comfortable"] #csb-context-text {
+          max-width: 86px !important;
+        }
+        #composer-status-bar[data-font-size="large"],
+        #composer-status-bar[data-font-size="large"] .csb-pill,
+        #composer-status-bar[data-font-size="large"] .csb-text {
+          font-size: 14px !important;
+        }
+        #composer-status-bar[data-font-size="large"] .csb-pill {
+          height: 26px !important;
+        }
+        #composer-status-bar[data-font-size="large"] .csb-svg-icon svg {
+          width: 15px !important;
+          height: 15px !important;
+        }
+        #composer-status-bar[data-font-size="large"] .csb-ring-morph-wrap {
+          width: 16px !important;
+          height: 16px !important;
+        }
+        #composer-status-bar[data-font-size="large"] #csb-context-text {
+          max-width: 98px !important;
+        }
+        .ag-cm-turn-footer[data-font-size="comfortable"],
+        html[data-ag-tf-size="comfortable"] .ag-cm-turn-footer {
+          font-size: 12.5px !important;
+          line-height: 1.25 !important;
+          max-width: min(100%, 620px) !important;
+        }
+        .ag-cm-turn-footer[data-font-size="large"],
+        html[data-ag-tf-size="large"] .ag-cm-turn-footer {
+          font-size: 14px !important;
+          line-height: 1.28 !important;
+          max-width: min(100%, 680px) !important;
+        }
+        #composer-status-bar[data-high-contrast="true"],
+        #composer-status-bar[data-high-contrast="true"] .csb-pill,
+        #composer-status-bar[data-high-contrast="true"] .csb-text,
+        .ag-cm-turn-footer[data-high-contrast="true"],
+        html[data-ag-tf-contrast="high"] .ag-cm-turn-footer {
+          opacity: 1 !important;
+          font-weight: 500 !important;
+          color: var(--foreground, #ececef) !important;
+        }
+        #composer-status-bar[data-theme="light"][data-high-contrast="true"],
+        #composer-status-bar[data-theme="light"][data-high-contrast="true"] .csb-pill,
+        #composer-status-bar[data-theme="light"][data-high-contrast="true"] .csb-text,
+        :is(html.light, html[data-theme="light"], body.light, body.vscode-light, body[data-theme="light"]) .ag-cm-turn-footer[data-high-contrast="true"],
+        :is(html.light, html[data-theme="light"], body.light, body.vscode-light, body[data-theme="light"])[data-ag-tf-contrast="high"] .ag-cm-turn-footer,
+        :is(html.light, html[data-theme="light"], body.light, body.vscode-light, body[data-theme="light"]) #composer-status-bar[data-high-contrast="true"],
+        :is(html.light, html[data-theme="light"], body.light, body.vscode-light, body[data-theme="light"]) #composer-status-bar[data-high-contrast="true"] .csb-pill,
+        :is(html.light, html[data-theme="light"], body.light, body.vscode-light, body[data-theme="light"]) #composer-status-bar[data-high-contrast="true"] .csb-text {
+          opacity: 1 !important;
+          color: #0f172a !important;
+        }
         #composer-status-bar .csb-quota-pill {
           gap: 6px !important;
           min-width: 0 !important;
@@ -33299,6 +33500,92 @@ try {
     });
   };
   el('chk-show-turn-footer-stats')?.addEventListener('change', onShowTurnFooterToggle);
+  function syncStatusTypographyUi() {
+    ensureComposerStatusBarStyles?.();
+    const size = VALID_STATUS_FONT_SIZES.includes(composerStatusFontSize) ? composerStatusFontSize : 'compact';
+    const hcStr = turnFooterHighContrast ? 'true' : 'false';
+    const docContrast = turnFooterHighContrast ? 'high' : 'normal';
+    try {
+      document.documentElement?.setAttribute?.('data-ag-tf-size', size);
+      document.documentElement?.setAttribute?.('data-ag-tf-contrast', docContrast);
+    } catch { }
+    try {
+      host?.setAttribute?.('data-status-font-size', size);
+      host?.setAttribute?.('data-turn-footer-high-contrast', hcStr);
+    } catch { }
+    try {
+      if (composerSummary) {
+        composerSummary.setAttribute?.('data-font-size', size);
+        composerSummary.setAttribute?.('data-high-contrast', hcStr);
+      }
+      const docBar = typeof document !== 'undefined' ? document.getElementById?.('composer-status-bar') : null;
+      if (docBar && docBar !== composerSummary) {
+        docBar.setAttribute?.('data-font-size', size);
+        docBar.setAttribute?.('data-high-contrast', hcStr);
+      }
+    } catch { }
+    try {
+      const badges = document.querySelectorAll?.('.ag-cm-turn-footer') || [];
+      for (const node of badges) {
+        node?.setAttribute?.('data-font-size', size);
+        node?.setAttribute?.('data-high-contrast', hcStr);
+      }
+    } catch { }
+    const seg = el('status-font-size-segmented');
+    if (seg) {
+      for (const btn of Array.from(seg.children || [])) {
+        const val = btn.getAttribute?.('data-status-font-size');
+        const active = val === size;
+        btn.classList?.toggle?.('active', active);
+        btn.setAttribute?.('aria-pressed', active ? 'true' : 'false');
+      }
+    }
+    const chkHc = el('chk-turn-footer-high-contrast');
+    if (chkHc) chkHc.checked = Boolean(turnFooterHighContrast);
+  }
+  function setComposerStatusFontSize(size, opts = {}) {
+    const next = VALID_STATUS_FONT_SIZES.includes(size) ? size : 'compact';
+    composerStatusFontSize = next;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_composer_status_font_size', next);
+    } catch { }
+    syncStatusTypographyUi();
+    syncHostSettingsUi();
+    if (opts.persist !== false && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({ composerStatusFontSize: next });
+    }
+    return composerStatusFontSize;
+  }
+  const onTurnFooterHighContrastToggle = (e) => {
+    const chk = el('chk-turn-footer-high-contrast');
+    const prev = turnFooterHighContrast;
+    const next = e?.target ? Boolean(e.target.checked) : (chk ? Boolean(chk.checked) : prev);
+    void persistBooleanPreferenceToggle({
+      payloadKey: 'turnFooterHighContrast',
+      next,
+      prev,
+      checkboxEl: chk,
+      statusId: '',
+      localStorageKey: 'ag_turn_footer_high_contrast',
+      onApplyState: (val) => { turnFooterHighContrast = val; },
+      onUiSync: () => { syncStatusTypographyUi(); }
+    });
+  };
+  el('chk-turn-footer-high-contrast')?.addEventListener('change', onTurnFooterHighContrastToggle);
+  el('status-font-size-segmented')?.addEventListener('click', e => {
+    const target = e?.target;
+    const btn = target?.getAttribute?.('data-status-font-size')
+      ? target
+      : target?.closest?.('[data-status-font-size]');
+    const val = btn?.getAttribute?.('data-status-font-size');
+    if (val) setComposerStatusFontSize(val, { persist: true });
+  });
+  for (const btnId of ['btn-status-font-compact', 'btn-status-font-comfortable', 'btn-status-font-large']) {
+    el(btnId)?.addEventListener?.('click', () => {
+      const val = el(btnId)?.getAttribute?.('data-status-font-size');
+      if (val) setComposerStatusFontSize(val, { persist: true });
+    });
+  }
   const onShowComposerQuotaToggle = (e) => {
     const chk = el('chk-show-composer-quota');
     const prev = showComposerQuotaSummary;
@@ -37735,9 +38022,9 @@ let activeCnyTimerId = null;
       }
 
       const { source, turns } = buildAuthoritativeMainTurns();
-      // 若主区回复条数多于已分段轮次数（或尚无时间线），后台静默拉取时间线做精确归属，绝不把 turns[0] 复制到每条回复
-      if (mainToolbars.length > turns.length && source !== 'timeline' && state.route && !state.timelineLoading && !state.timelineError && typeof fetchSessionTimeline === 'function') {
-        void fetchSessionTimeline(state.route, { force: false });
+      // 若主区回复条数多于已分段轮次数（或时间线滞后），后台静默拉取时间线做精确归属，绝不把旧轮次错绑到新回复
+      if (mainToolbars.length > turns.length && state.route && !state.timelineLoading && !state.timelineError && typeof fetchSessionTimeline === 'function') {
+        void fetchSessionTimeline(state.route, { force: source === 'timeline' });
       }
 
       const cacheFn = typeof computeCacheHitSummary === 'function' ? computeCacheHitSummary : core?.computeCacheHitSummary;
@@ -37831,6 +38118,8 @@ let activeCnyTimerId = null;
           badge.tabIndex = 0;
           row.prepend ? row.prepend(badge) : row.appendChild?.(badge);
         }
+        badge.setAttribute('data-font-size', composerStatusFontSize);
+        badge.setAttribute('data-high-contrast', turnFooterHighContrast ? 'true' : 'false');
         badge.__turnObj = turnObj;
         badge.__forceFallback = forceFallbackScope;
         badge.__tb = tb;
@@ -37894,7 +38183,7 @@ let activeCnyTimerId = null;
       const T = turns.length;
       if (M > 0) {
         if (M <= T) {
-          // DOM 仅挂载末尾 M 条已生成回复时，从时间线尾部一对一精确对齐
+          // DOM 仅挂载末尾 M 条已生成回复时（如长对话虚拟滚动裁剪），从时间线尾部一对一精确对齐
           const offset = T - M;
           for (let i = 0; i < M; i++) {
             const tr = turns[offset + i];
@@ -37907,14 +38196,14 @@ let activeCnyTimerId = null;
             applyFooterToToolbar(mainToolbars[i], tr);
           }
         } else {
-          // 缺历史轮次边界时仅匹配最后 T 条，前置未匹配条目绝不复用 turns[0]
-          const startToolbarIdx = M - T;
+          // Issue #140: DOM 回复条数多于时间线已落盘轮次数（典型为新回复刚出现、时间线滞后），
+          // 从头部按轮次顺序对齐前 T 条，尾部尚未同步的回复隐藏尾标，绝不把前序轮次（如 turn-1）错绑到最新回复。
           for (let i = 0; i < M; i++) {
-            if (i < startToolbarIdx) {
+            if (i >= T) {
               applyFooterToToolbar(mainToolbars[i], null);
               continue;
             }
-            const tr = turns[i - startToolbarIdx];
+            const tr = turns[i];
             const k = tr?.turnKey;
             if (!tr || (k && boundTurnKeys.has(k))) {
               applyFooterToToolbar(mainToolbars[i], null);
@@ -39811,8 +40100,9 @@ let activeCnyTimerId = null;
     autoCompactCheckInFlight = true;
     lastAutoCompactCheckAt = Date.now();
     try {
+      const liveCsrf = getRendererCsrfToken();
       const ipcFn = window.contextMeterAPI?.getTurnState ? () => window.contextMeterAPI.getTurnState(route) : null;
-      const { result } = await callBackendWithPriority({ ipcCall: ipcFn, liveRoute: '/turn-state', liveBody: { id: route } });
+      const { result } = await callBackendWithPriority({ ipcCall: ipcFn, liveRoute: '/turn-state', liveBody: { id: route, ...(liveCsrf ? { csrfToken: liveCsrf } : {}) } });
       const status = String(result?.data?.cascadeStatus || '');
       if (result?.ok && result.data.conversation === route && /(?:^|_)(?:IDLE|COMPLETED|DONE|FINISHED)$/i.test(status)
         && !state.disposed && state.route === route && autoCompactEnabled) await requestOfficialCompact(true);
@@ -40176,7 +40466,7 @@ let activeCnyTimerId = null;
       try {
         if (!req || typeof req !== 'object' || typeof budgetEngine.transformOutgoingSendRequest !== 'function') return null;
         const compactCmd = detectOutgoingCompactCommand(req, 'client_object', 'SendUserCascadeMessage');
-        if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggestion(true);
+        if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggestion(true, { clearCache: true });
         const tx = budgetEngine.transformOutgoingSendRequest(req, buildInterceptorContext(channel, 'SendUserCascadeMessage'));
         if (compactCmd?.isCompact) {
           const cRec = registerCompactDispatch(compactCmd);
@@ -45680,6 +45970,9 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
   let currentProxyEnabled = false;
   let proxyInputDirty = false;
   let savedProxyUrl = '';
+  let savedCustomInstallPath = '';
+  let customInstallPathDirty = false;
+  let customInstallPathFeedbackState = { text: '', ok: null };
   let savedProxyBypass = '';
   let isProxyBusy = false;
   let modulesStatusReqSeq = 0;
@@ -47742,6 +48035,58 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     void applyProxyModuleUpdate(true);
   });
 
+  function syncCustomInstallPathUi() {
+    const inp = el('input-custom-install-path');
+    if (inp && !customInstallPathDirty && document?.activeElement !== inp) {
+      inp.value = savedCustomInstallPath || '';
+    }
+    const statusEl = el('status-custom-install-path');
+    if (statusEl) {
+      if (customInstallPathFeedbackState.text) {
+        statusEl.hidden = false;
+        statusEl.textContent = customInstallPathFeedbackState.text;
+        statusEl.style.color = customInstallPathFeedbackState.ok === false ? '#f87171' : (customInstallPathFeedbackState.ok === true ? '#34d399' : '');
+      } else {
+        statusEl.hidden = true;
+        statusEl.textContent = '';
+      }
+    }
+  }
+
+  async function applyCustomInstallPathSetting(rawVal) {
+    const trimmed = String(rawVal ?? '').trim();
+    const res = await saveSettingsPayloadBridge({ customInstallPath: trimmed });
+    if (!res || !res.ok) {
+      const errText = res?.error || t('msg.unknownErr');
+      customInstallPathFeedbackState = { text: t('ns.installPath.saveFail', { err: errText }), ok: false };
+      syncCustomInstallPathUi();
+      syncHostSettingsUi();
+      return { ok: false, error: errText };
+    }
+    const resolved = String(res.uiPreferences?.customInstallPath ?? trimmed);
+    savedCustomInstallPath = resolved;
+    customInstallPathDirty = false;
+    customInstallPathFeedbackState = {
+      text: resolved ? t('ns.installPath.saved', { path: resolved }) : t('ns.installPath.cleared'),
+      ok: true
+    };
+    syncCustomInstallPathUi();
+    syncHostSettingsUi();
+    return { ok: true, customInstallPath: resolved };
+  }
+
+  el('input-custom-install-path')?.addEventListener('input', () => {
+    customInstallPathDirty = true;
+  });
+  el('btn-apply-custom-install-path')?.addEventListener('click', () => {
+    const val = el('input-custom-install-path')?.value ?? '';
+    void applyCustomInstallPathSetting(val);
+  });
+  el('btn-clear-custom-install-path')?.addEventListener('click', () => {
+    if (el('input-custom-install-path')) el('input-custom-install-path').value = '';
+    void applyCustomInstallPathSetting('');
+  });
+
   btnTestProxy?.addEventListener('click', async () => {
     if (isProxyBusy) return;
     try {
@@ -49621,6 +49966,17 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           setToggleFeedbackUi('status-turn-footer', 'idle', showTurnFooterStats ? t('prefs.stateOn') : t('prefs.stateOff'));
           renderTurnFooterStats();
         }
+        const savedStatusFontSize = settingsRes.composerStatusFontSize ?? settingsRes.uiPreferences?.composerStatusFontSize;
+        if (typeof savedStatusFontSize === 'string' && VALID_STATUS_FONT_SIZES.includes(savedStatusFontSize)) {
+          composerStatusFontSize = savedStatusFontSize;
+          try { if (typeof localStorage !== 'undefined') localStorage.setItem('ag_composer_status_font_size', savedStatusFontSize); } catch { }
+        }
+        const savedTurnFooterContrast = settingsRes.turnFooterHighContrast ?? settingsRes.uiPreferences?.turnFooterHighContrast;
+        if (typeof savedTurnFooterContrast === 'boolean') {
+          turnFooterHighContrast = savedTurnFooterContrast;
+          try { if (typeof localStorage !== 'undefined') localStorage.setItem('ag_turn_footer_high_contrast', savedTurnFooterContrast ? 'true' : 'false'); } catch { }
+        }
+        syncStatusTypographyUi();
         const savedComposerQuota = settingsRes.showComposerQuotaSummary ?? settingsRes.uiPreferences?.showComposerQuotaSummary;
         if (savedComposerQuota !== undefined) {
           showComposerQuotaSummary = savedComposerQuota !== false;
@@ -49636,6 +49992,12 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         const savedNextPrompt = settingsRes.nextPromptEnabled ?? settingsRes.uiPreferences?.nextPromptEnabled;
         if (savedNextPrompt !== undefined) {
           setNextPromptEnabledState(savedNextPrompt === true, { persist: false });
+        }
+        const savedInstallPath = settingsRes.customInstallPath ?? settingsRes.uiPreferences?.customInstallPath;
+        if (typeof savedInstallPath === 'string') {
+          savedCustomInstallPath = savedInstallPath;
+          customInstallPathDirty = false;
+          syncCustomInstallPathUi();
         }
         const savedCockpitLayout = settingsRes.sessionCockpitLayout || settingsRes.uiPreferences?.sessionCockpitLayout;
         if (savedCockpitLayout && typeof persistCockpitLayout === 'function') {
@@ -54327,32 +54689,78 @@ function initSessionCockpitGrid() {
     model: null,
     composerEl: null,
     ghostEl: null,
+    inlineHostEl: null,
+    cachedRouteId: null,
+    cachedTurnKey: null,
+    cachedSuggestion: '',
     isComposing: false,
-    attemptedTurnKeys: new Set()
+    attemptedTurnKeys: new Set(),
+    dismissedTurnKeys: new Set()
   };
 
   function ensureNextPromptStyles() {
     try {
       if (typeof document === 'undefined' || !document.head) return;
-      if (document.getElementById(NEXT_PROMPT_STYLE_ID)) return;
-      const st = document.createElement('style');
-      st.id = NEXT_PROMPT_STYLE_ID;
+      let st = document.getElementById(NEXT_PROMPT_STYLE_ID);
+      if (!st) {
+        st = document.createElement('style');
+        st.id = NEXT_PROMPT_STYLE_ID;
+        document.head.appendChild(st);
+      }
       st.textContent = `
+        [data-ag-np-active="true"] > p.pointer-events-none,
+        [data-ag-np-active="true"] > p[class*="pointer-events-none"] {
+          opacity: 0 !important;
+          visibility: hidden !important;
+        }
+        @keyframes ag-np-fade-in {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
         .ag-np-ghost {
           display: flex;
           align-items: center;
           justify-content: space-between;
           gap: 8px;
-          margin: 4px 10px 2px;
-          padding: 4px 10px;
-          border-radius: 7px;
-          border: 1px dashed rgba(148, 163, 184, 0.32);
-          background: rgba(148, 163, 184, 0.08);
-          color: rgba(148, 163, 184, 0.92);
-          font-size: 11.5px;
+          margin: 4px 10px 4px;
+          padding: 5px 10px;
+          border-radius: 8px;
+          border: 1px dashed rgba(100, 116, 139, 0.45);
+          background: rgba(139, 92, 246, 0.07);
+          color: var(--ag-text-secondary, #475569);
+          font-size: 12px;
           line-height: 1.4;
           pointer-events: auto;
           user-select: none;
+        }
+        .ag-np-ghost.ag-np-inline {
+          position: absolute;
+          top: 8px;
+          left: 8px;
+          right: 8px;
+          z-index: 1;
+          display: inline-flex;
+          align-items: center;
+          justify-content: flex-start;
+          gap: 6px;
+          max-width: calc(100% - 16px);
+          height: 24px;
+          margin: 0;
+          padding: 0;
+          border: none;
+          border-radius: 0;
+          background: transparent;
+          color: inherit;
+          font-size: 14px;
+          line-height: 24px;
+          pointer-events: none;
+          user-select: none;
+          animation: ag-np-fade-in 150ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .ag-np-ghost.ag-np-inline {
+            animation: none;
+          }
         }
         .ag-np-ghost[hidden] {
           display: none !important;
@@ -54363,30 +54771,51 @@ function initSessionCockpitGrid() {
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
-          font-style: italic;
+          font-style: normal;
+        }
+        .ag-np-ghost.ag-np-inline .ag-np-ghost-text {
+          flex: 0 1 auto;
+          opacity: 0.45;
         }
         .ag-np-ghost-actions {
           display: inline-flex;
           align-items: center;
           gap: 6px;
           flex-shrink: 0;
-          font-size: 10.5px;
+          font-size: 11px;
         }
         .ag-np-kbd {
-          padding: 1px 5px;
+          padding: 1px 6px;
           border-radius: 4px;
-          border: 1px solid rgba(148, 163, 184, 0.35);
-          background: rgba(148, 163, 184, 0.12);
+          border: 1px solid rgba(100, 116, 139, 0.42);
+          background: rgba(148, 163, 184, 0.14);
           cursor: pointer;
           font-family: inherit;
           color: inherit;
+        }
+        .ag-np-ghost.ag-np-inline .ag-np-kbd {
+          pointer-events: auto;
+          height: 18px;
+          line-height: 16px;
+          padding: 0 5px;
+          font-size: 10.5px;
+          font-weight: 500;
+          border-radius: 4px;
+          border: 1px solid rgba(128, 128, 128, 0.35);
+          background: rgba(128, 128, 128, 0.08);
+          opacity: 0.55;
+          transition: opacity 120ms ease, background 120ms ease, border-color 120ms ease;
         }
         .ag-np-kbd:hover {
           background: rgba(139, 92, 246, 0.2);
           border-color: rgba(139, 92, 246, 0.5);
         }
+        .ag-np-ghost.ag-np-inline .ag-np-kbd:hover {
+          opacity: 0.92;
+          background: rgba(128, 128, 128, 0.18);
+          border-color: rgba(128, 128, 128, 0.55);
+        }
       `;
-      document.head.appendChild(st);
     } catch { }
   }
 
@@ -54428,8 +54857,9 @@ function initSessionCockpitGrid() {
       if (state.livePendingRequest) return true;
       if (state.compacting || state.lastDomCompactingActive) return true;
       if (typeof document !== 'undefined' && typeof document.querySelector === 'function') {
-        const stopBtn = composer?.querySelector?.('button[data-testid="stop-button"], button[aria-label^="Stop"]')
-          || document.querySelector('.surface-composer button[data-testid="stop-button"]');
+        const stopBtn = composer
+          ? composer.querySelector?.('button[data-testid="stop-button"], button[data-testid="input-cancel-button"]:not([disabled]), button[aria-label^="Stop"]')
+          : document.querySelector('.surface-composer button[data-testid="stop-button"], .surface-composer button[data-testid="input-cancel-button"]:not([disabled])');
         if (stopBtn) return true;
         const approvalBtn = document.querySelector('[data-testid*="approval"], [data-testid*="permission-prompt"], [role="alertdialog"]');
         if (approvalBtn && !approvalBtn.closest?.('#ag-context-meter')) return true;
@@ -54439,15 +54869,59 @@ function initSessionCockpitGrid() {
     return false;
   }
 
-  function dismissNextPromptSuggestion(invalidateInFlight = false) {
+  function clearNextPromptInlineHostFlag() {
+    try {
+      if (nextPromptState.inlineHostEl) {
+        nextPromptState.inlineHostEl.removeAttribute?.('data-ag-np-active');
+        nextPromptState.inlineHostEl = null;
+      }
+      const p = nextPromptState.ghostEl?.parentElement;
+      if (p?.hasAttribute?.('data-ag-np-active')) {
+        p.removeAttribute('data-ag-np-active');
+      }
+    } catch { }
+  }
+
+  function clearNextPromptCache() {
+    nextPromptState.cachedRouteId = null;
+    nextPromptState.cachedTurnKey = null;
+    nextPromptState.cachedSuggestion = '';
+  }
+
+  function restoreCachedNextPromptIfEmpty(composer = null) {
+    if (!nextPromptEnabled || state.disposed || nextPromptState.isComposing || nextPromptState.inFlight) return false;
+    if (nextPromptState.suggestion) return false;
+    if (!nextPromptState.cachedSuggestion || !nextPromptState.cachedTurnKey) return false;
+    const curRoute = state.route || null;
+    if (curRoute && nextPromptState.cachedRouteId && curRoute !== nextPromptState.cachedRouteId) return false;
+    if (nextPromptState.dismissedTurnKeys.has(nextPromptState.cachedTurnKey)) return false;
+    const comp = composer || findActiveVisibleComposer(curRoute);
+    if (!comp || hasPendingHostApprovalOrQueue(comp)) return false;
+    const editor = resolveComposerEditorEl(comp);
+    if (!editor || editor.disabled || editor.getAttribute?.('aria-disabled') === 'true') return false;
+    if (readEditorDraftText(editor).trim() !== '') return false;
+    renderNextPromptGhost(comp, nextPromptState.cachedSuggestion);
+    return true;
+  }
+
+  function dismissNextPromptSuggestion(invalidateInFlight = false, opts = {}) {
     if (invalidateInFlight) {
       nextPromptState.seq++;
       nextPromptState.inFlight = false;
     }
+    if (opts && opts.explicitUserDismiss) {
+      const tk = nextPromptState.turnKey || nextPromptState.cachedTurnKey;
+      if (tk) nextPromptState.dismissedTurnKeys.add(tk);
+      clearNextPromptCache();
+    } else if (opts && opts.clearCache) {
+      clearNextPromptCache();
+    }
     nextPromptState.suggestion = '';
+    clearNextPromptInlineHostFlag();
     if (nextPromptState.ghostEl) {
       nextPromptState.ghostEl.hidden = true;
-      nextPromptState.ghostEl.textContent = '';
+      const textSpan = nextPromptState.ghostEl.querySelector?.('.ag-np-ghost-text');
+      if (textSpan) textSpan.textContent = '';
     }
   }
 
@@ -54462,28 +54936,45 @@ function initSessionCockpitGrid() {
       dismissNextPromptSuggestion(true);
       return false;
     }
+    // 先清空建议状态防止重入，再写入编辑器
+    dismissNextPromptSuggestion(true);
     try {
       editor.focus?.();
+      let insertedViaExecCommand = false;
       if (typeof editor.value === 'string') {
         editor.value = text;
       } else if (typeof document?.execCommand === 'function') {
-        const ok = document.execCommand('insertText', false, text);
-        if (!ok) editor.textContent = text;
+        insertedViaExecCommand = Boolean(document.execCommand('insertText', false, text));
+        if (!insertedViaExecCommand) editor.textContent = text;
       } else {
         editor.textContent = text;
       }
-      try {
-        if (typeof editor.dispatchEvent === 'function') {
-          editor.dispatchEvent(typeof InputEvent === 'function'
-            ? new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' })
-            : { type: 'input', target: editor });
-        }
-      } catch { }
-      dismissNextPromptSuggestion(true);
+      if (!insertedViaExecCommand) {
+        try {
+          if (typeof editor.dispatchEvent === 'function') {
+            editor.dispatchEvent(typeof InputEvent === 'function'
+              ? new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' })
+              : { type: 'input', target: editor });
+          }
+        } catch { }
+      }
       return true;
     } catch {
       return false;
     }
+  }
+
+  function resolveNextPromptInlineHost(composer) {
+    const editor = resolveComposerEditorEl(composer);
+    const parent = editor?.parentElement || null;
+    if (!editor || !parent || parent === composer) return null;
+    const isLexical = editor.getAttribute?.('data-lexical-editor') === 'true';
+    let isRelative = false;
+    try {
+      isRelative = typeof getComputedStyle === 'function' && getComputedStyle(parent).position === 'relative';
+    } catch { }
+    if (isLexical || isRelative) return parent;
+    return null;
   }
 
   function renderNextPromptGhost(composer, suggestionText) {
@@ -54492,11 +54983,20 @@ function initSessionCockpitGrid() {
       return;
     }
     ensureNextPromptStyles();
+    const inlineHost = resolveNextPromptInlineHost(composer);
+    const mountTarget = inlineHost || composer;
+    const isInline = Boolean(inlineHost);
+
     let ghost = nextPromptState.ghostEl;
-    if (!ghost || ghost.parentElement !== composer) {
+    const modeMatches = ghost ? (ghost.classList?.contains('ag-np-inline') === isInline) : false;
+    if (!ghost || ghost.parentElement !== mountTarget || !modeMatches || !ghost.querySelector?.('.ag-np-ghost-text')) {
+      clearNextPromptInlineHostFlag();
       if (ghost) try { ghost.remove?.(); } catch { }
+      try {
+        composer.querySelectorAll?.('[data-ag-next-prompt-ghost]')?.forEach?.(el => el.remove?.());
+      } catch { }
       ghost = document.createElement('div');
-      ghost.className = 'ag-np-ghost';
+      ghost.className = isInline ? 'ag-np-ghost ag-np-inline' : 'ag-np-ghost';
       ghost.setAttribute('data-ag-next-prompt-ghost', 'true');
       const txtEl = document.createElement('span');
       txtEl.className = 'ag-np-ghost-text';
@@ -54506,32 +55006,122 @@ function initSessionCockpitGrid() {
       tabBtn.type = 'button';
       tabBtn.className = 'ag-np-kbd';
       tabBtn.setAttribute('data-np-action', 'accept');
-      tabBtn.textContent = t('nextPrompt.tabFill');
+      tabBtn.setAttribute('translate', 'no');
+      tabBtn.textContent = isInline ? '⇥ Tab' : t('nextPrompt.tabFill');
+      tabBtn.title = t('nextPrompt.tabFill');
+      tabBtn.addEventListener('mousedown', (e) => {
+        e.preventDefault?.();
+        e.stopPropagation?.();
+      });
       tabBtn.addEventListener('click', (e) => {
         e.stopPropagation?.();
         acceptNextPromptIntoComposer(composer);
       });
-      const escBtn = document.createElement('button');
-      escBtn.type = 'button';
-      escBtn.className = 'ag-np-kbd';
-      escBtn.setAttribute('data-np-action', 'dismiss');
-      escBtn.textContent = 'Esc';
-      escBtn.addEventListener('click', (e) => {
-        e.stopPropagation?.();
-        dismissNextPromptSuggestion(true);
-      });
       actEl.appendChild(tabBtn);
-      actEl.appendChild(escBtn);
+      if (!isInline) {
+        const escBtn = document.createElement('button');
+        escBtn.type = 'button';
+        escBtn.className = 'ag-np-kbd';
+        escBtn.setAttribute('data-np-action', 'dismiss');
+        escBtn.textContent = 'Esc';
+        escBtn.addEventListener('click', (e) => {
+          e.stopPropagation?.();
+          dismissNextPromptSuggestion(true, { explicitUserDismiss: true });
+        });
+        actEl.appendChild(escBtn);
+      }
       ghost.appendChild(txtEl);
       ghost.appendChild(actEl);
-      composer.appendChild?.(ghost);
+      if (isInline) {
+        mountTarget.appendChild?.(ghost);
+      } else {
+        const statusBar = composer.querySelector?.('.composer-status-bar');
+        if (statusBar && statusBar.parentElement === composer && typeof composer.insertBefore === 'function') {
+          composer.insertBefore(ghost, statusBar);
+        } else {
+          composer.appendChild?.(ghost);
+        }
+      }
       nextPromptState.ghostEl = ghost;
     }
     const textSpan = ghost.querySelector?.('.ag-np-ghost-text') || ghost.children?.[0];
     if (textSpan) textSpan.textContent = suggestionText;
     ghost.hidden = false;
+    if (isInline && inlineHost) {
+      inlineHost.setAttribute?.('data-ag-np-active', 'true');
+      nextPromptState.inlineHostEl = inlineHost;
+    } else {
+      clearNextPromptInlineHostFlag();
+    }
     nextPromptState.composerEl = composer;
     nextPromptState.suggestion = suggestionText;
+  }
+
+  function extractDomTurnsFromConversationView() {
+    if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return [];
+    const root = document.querySelector?.('[data-testid="conversation-view"]') || document;
+    const nodes = Array.from(root.querySelectorAll?.('[data-testid="user-message"], [data-testid="agent-response"]') || [])
+      .filter(el => el && !el.closest?.('#ag-context-meter'));
+    if (!nodes.length) return [];
+
+    const readCleanText = (el, stripSelectors = []) => {
+      if (!el) return '';
+      try {
+        if (typeof el.cloneNode === 'function') {
+          const clone = el.cloneNode(true);
+          if (stripSelectors.length && typeof clone.querySelectorAll === 'function') {
+            clone.querySelectorAll(stripSelectors.join(',')).forEach(n => n.remove?.());
+          }
+          return String(clone.innerText || clone.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+        }
+      } catch { }
+      return String(el.innerText || el.textContent || '').trim();
+    };
+
+    const turns = [];
+    for (const node of nodes.slice(-16)) {
+      const tid = node.getAttribute?.('data-testid');
+      if (tid === 'user-message') {
+        const contentEl = node.querySelector?.('[data-testid="user-message-content"]')
+          || node.querySelector?.('[data-testid="user-message-bubble"]')
+          || node;
+        const text = readCleanText(contentEl, ['style', 'script', 'noscript', 'svg', '.sr-only', '[data-testid="user-message-actions"]']);
+        if (text) {
+          turns.push({ role: 'user', sourceType: 'user', text, status: 'completed' });
+        }
+        continue;
+      }
+      if (tid === 'agent-response') {
+        const srHeading = node.querySelector?.('h6.sr-only, h6');
+        const headingText = String(srHeading?.textContent || '').trim();
+        const isStreaming = /\b(?:working|generating|thinking|running)\b/i.test(headingText);
+        const toolCard = node.querySelector?.('[data-testid="changed-files-card-header"]');
+        const toolSummary = toolCard ? String(toolCard.innerText || toolCard.textContent || '').replace(/\s+/g, ' ').trim() : '';
+        const text = readCleanText(node, [
+          'style',
+          'script',
+          'noscript',
+          'svg',
+          '.sr-only',
+          '[data-testid="worked-for-collapsible"]',
+          '[data-testid="tool-group-collapsible"]',
+          '[data-testid="turn-cards-container"]',
+          '[data-testid="cascade-system-message-toolbar"]',
+          '[data-testid="step-plan"]',
+          '.ag-cm-turn-footer'
+        ]);
+        if (isStreaming || text || toolSummary) {
+          turns.push({
+            role: 'assistant',
+            sourceType: 'assistant',
+            text,
+            status: isStreaming ? 'streaming' : 'completed',
+            toolSummary
+          });
+        }
+      }
+    }
+    return turns.slice(-8);
   }
 
   function extractRecentTurnsFromActiveSession() {
@@ -54546,6 +55136,8 @@ function initSessionCockpitGrid() {
         verificationEvidence: tr.verificationEvidence || ''
       }));
     }
+    const domTurns = extractDomTurnsFromConversationView();
+    if (domTurns.length > 0) return domTurns;
     const out = [];
     if (state.latest?.promptText) out.push({ role: 'user', sourceType: 'user', text: state.latest.promptText, status: 'completed' });
     if (state.latest?.responseText || state.latest?.lastText) {
@@ -54568,16 +55160,32 @@ function initSessionCockpitGrid() {
       }
     };
     const onCompEnd = (e) => {
-      if (e.target?.closest?.('.surface-composer')) {
+      const comp = e.target?.closest?.('.surface-composer');
+      if (comp) {
         nextPromptState.isComposing = false;
+        const editor = resolveComposerEditorEl(comp);
+        if (editor && readEditorDraftText(editor).trim() === '') {
+          restoreCachedNextPromptIfEmpty(comp);
+        }
+      }
+    };
+    const onBeforeInput = (e) => {
+      if (!nextPromptState.suggestion) return;
+      const comp = e.target?.closest?.('.surface-composer');
+      if (!comp || comp.closest?.('#ag-context-meter')) return;
+      if (e.data) {
+        dismissNextPromptSuggestion(true);
       }
     };
     const onInput = (e) => {
       const comp = e.target?.closest?.('.surface-composer');
       if (!comp || comp.closest?.('#ag-context-meter')) return;
       const editor = resolveComposerEditorEl(comp);
-      if (editor && readEditorDraftText(editor).trim() !== '') {
+      if (!editor) return;
+      if (readEditorDraftText(editor).trim() !== '') {
         dismissNextPromptSuggestion(true);
+      } else {
+        restoreCachedNextPromptIfEmpty(comp);
       }
     };
     const onKeyDown = (e) => {
@@ -54586,7 +55194,7 @@ function initSessionCockpitGrid() {
       if (!comp || comp !== nextPromptState.composerEl) return;
       if (e.key === 'Escape') {
         e.preventDefault?.();
-        dismissNextPromptSuggestion(true);
+        dismissNextPromptSuggestion(true, { explicitUserDismiss: true });
         return;
       }
       if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && !nextPromptState.isComposing) {
@@ -54599,12 +55207,14 @@ function initSessionCockpitGrid() {
     };
     document.addEventListener('compositionstart', onCompStart, true);
     document.addEventListener('compositionend', onCompEnd, true);
+    document.addEventListener('beforeinput', onBeforeInput, true);
     document.addEventListener('input', onInput, true);
     document.addEventListener('keydown', onKeyDown, true);
     activeDisposers.add(() => {
       try {
         document.removeEventListener('compositionstart', onCompStart, true);
         document.removeEventListener('compositionend', onCompEnd, true);
+        document.removeEventListener('beforeinput', onBeforeInput, true);
         document.removeEventListener('input', onInput, true);
         document.removeEventListener('keydown', onKeyDown, true);
       } catch { }
@@ -54616,6 +55226,9 @@ function initSessionCockpitGrid() {
     if (!nextPromptEnabled && opts.force !== true) return { skipped: true, reason: 'disabled' };
     const routeId = opts.routeId || state.route || null;
     if (!routeId) return { skipped: true, reason: 'no_route' };
+    if (nextPromptState.routeId && nextPromptState.routeId !== routeId) {
+      dismissNextPromptSuggestion(true, { clearCache: true });
+    }
     const composer = opts.composer || findActiveVisibleComposer(routeId);
     if (!composer) return { skipped: true, reason: 'no_composer' };
     if (nextPromptState.isComposing) return { skipped: true, reason: 'ime_composing' };
@@ -54638,8 +55251,21 @@ function initSessionCockpitGrid() {
       return { skipped: true, reason: 'turn_not_ready' };
     }
 
-    const turnKey = opts.turnKey || `${routeId}::${state.latest?.completedAtMs || state.latest?.turnId || lastTurn.text?.slice(-60) || turns.length}`;
+    const lastTailKey = `${turns.length}:${String(lastTurn.text || '').slice(-80)}`;
+    const turnKey = opts.turnKey || `${routeId}::${lastTailKey}`;
+    if (nextPromptState.inFlight && nextPromptState.turnKey === turnKey && opts.force !== true) {
+      return { skipped: true, reason: 'in_flight' };
+    }
     if (nextPromptState.attemptedTurnKeys.has(turnKey) && opts.force !== true) {
+      if (
+        !nextPromptState.suggestion
+        && nextPromptState.cachedTurnKey === turnKey
+        && nextPromptState.cachedSuggestion
+        && !nextPromptState.dismissedTurnKeys.has(turnKey)
+      ) {
+        renderNextPromptGhost(composer, nextPromptState.cachedSuggestion);
+        return { ok: true, restored: true, abstained: false, suggestion: nextPromptState.cachedSuggestion, model: nextPromptState.model };
+      }
       return { skipped: true, reason: 'already_predicted_for_turn' };
     }
     nextPromptState.attemptedTurnKeys.add(turnKey);
@@ -54663,12 +55289,7 @@ function initSessionCockpitGrid() {
       if (typeof window?.contextMeterAPI?.predictNextPrompt === 'function') {
         res = await window.contextMeterAPI.predictNextPrompt(payload);
       } else if (hasLiveHttpBridge()) {
-        const httpRes = await fetch(resolveLiveHttpUrl('/predict-next-prompt'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        res = httpRes.ok ? await httpRes.json() : { ok: false, error: `HTTP ${httpRes.status}` };
+        res = await postLiveHttpEndpoint('/predict-next-prompt', payload);
       }
 
       // 异步到达严格核对：会话切换 / 新轮开始 / 输入框已填草稿，必须丢弃旧建议
@@ -54694,6 +55315,10 @@ function initSessionCockpitGrid() {
       }
 
       nextPromptState.model = res.model || null;
+      nextPromptState.cachedRouteId = routeId;
+      nextPromptState.cachedTurnKey = turnKey;
+      nextPromptState.cachedSuggestion = sug;
+      nextPromptState.dismissedTurnKeys.delete(turnKey);
       renderNextPromptGhost(currentComp, sug);
       return { ok: true, abstained: false, suggestion: sug, model: nextPromptState.model };
     } catch (e) {
@@ -54703,8 +55328,9 @@ function initSessionCockpitGrid() {
   }
 
   function disposeNextPrompt() {
-    dismissNextPromptSuggestion(true);
+    dismissNextPromptSuggestion(true, { clearCache: true });
     nextPromptState.attemptedTurnKeys.clear();
+    nextPromptState.dismissedTurnKeys.clear();
     try { document.getElementById(NEXT_PROMPT_STYLE_ID)?.remove?.(); } catch { }
   }
 /**
@@ -56071,6 +56697,33 @@ const {
 
       <div class="ag-ns-row">
         <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="settings.statusFontSize.label">底栏与尾标字号</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.statusFontSize.desc">调节底栏状态摘要与每轮回复尾标的字体大小</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-seg" role="radiogroup" data-ag-ns-seg="composerStatusFontSize">
+            <button type="button" class="ag-ns-seg-btn" data-val="compact" data-i18n="settings.statusFontSize.compact">紧凑 11px</button>
+            <button type="button" class="ag-ns-seg-btn" data-val="comfortable" data-i18n="settings.statusFontSize.comfortable">舒适 13px</button>
+            <button type="button" class="ag-ns-seg-btn" data-val="large" data-i18n="settings.statusFontSize.large">大号 14px</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="settings.turnFooterContrast.label">尾标与底栏高对比度</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.turnFooterContrast.desc">取消透明度淡化并加深或提亮前景色，增强小字辨识度</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-switch-wrap">
+            <span class="ag-ns-switch-state" data-ag-ns-sw-status="turnFooterHighContrast" aria-live="polite"></span>
+            <button type="button" id="ag-ns-sw-turnFooterHighContrast" class="ag-ns-switch" role="switch" aria-checked="false" data-ag-ns-switch="turnFooterHighContrast"></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
           <div class="ag-ns-row-title" data-i18n="settings.nextPrompt.label">下一句预测建议</div>
           <div class="ag-ns-row-desc" data-i18n="ns.nextPrompt.desc">默认关闭 · 开启后每轮结束会调用当前账号模型并消耗额外额度，按 Tab 填入草稿</div>
         </div>
@@ -56437,6 +57090,19 @@ const {
           </div>
         </div>
         <div id="ag-hs-diag-summary" class="ag-ns-note-box"></div>
+      </div>
+
+      <div class="ag-ns-row ag-ns-row-stack">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="ns.installPath.title">Antigravity 安装路径</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.installPath.desc">非默认目录安装时，填写安装根目录或 resources/app.asar 路径，留空恢复自动探测</div>
+        </div>
+        <div class="ag-ns-control ag-ns-control-wide">
+          <input type="text" id="ag-ns-input-customInstallPath" class="ag-ns-input" data-ag-ns-input="customInstallPath" data-i18n-placeholder="ns.installPath.placeholder" placeholder="自动探测（可填如 F:\Apps\Antigravity）" />
+          <button type="button" class="ag-ns-btn is-primary" data-ag-ns-action="applyCustomInstallPath" data-i18n="ns.installPath.save">保存路径</button>
+          <button type="button" class="ag-ns-btn" data-ag-ns-action="clearCustomInstallPath" data-i18n="ns.installPath.clear">恢复自动探测</button>
+        </div>
+        <div id="ag-ns-install-path-feedback" class="ag-ns-note-box" hidden></div>
       </div>
 
       <div class="ag-ns-row">
@@ -57081,6 +57747,11 @@ const {
           if (actionName === 'applyProxy' || actionName === 'testProxy') {
             var proxyInput = byId(root, 'ag-ns-input-proxyUrl');
             payload = { proxyUrl: proxyInput ? String(proxyInput.value || '').trim() : '' };
+          } else if (actionName === 'applyCustomInstallPath') {
+            var pathInput = byId(root, 'ag-ns-input-customInstallPath');
+            payload = { customInstallPath: pathInput ? String(pathInput.value || '').trim() : '' };
+          } else if (actionName === 'clearCustomInstallPath') {
+            payload = { customInstallPath: '' };
           }
           if (typeof cbs.onAction === 'function') {
             cbs.onAction(actionName, payload);
@@ -57157,6 +57828,21 @@ const {
     var proxyInput = byId(root, 'ag-ns-input-proxyUrl');
     if (proxyInput && typeof settings.proxyUrl === 'string' && root.activeElement !== proxyInput) {
       if (proxyInput.value !== settings.proxyUrl) proxyInput.value = settings.proxyUrl;
+    }
+
+    var installPathInput = byId(root, 'ag-ns-input-customInstallPath');
+    if (installPathInput && typeof settings.customInstallPath === 'string' && root.activeElement !== installPathInput) {
+      if (installPathInput.value !== settings.customInstallPath) installPathInput.value = settings.customInstallPath;
+    }
+    var installPathFb = byId(root, 'ag-ns-install-path-feedback');
+    if (installPathFb) {
+      if (status.customInstallPathFeedback) {
+        installPathFb.hidden = false;
+        installPathFb.textContent = status.customInstallPathFeedback;
+        installPathFb.className = 'ag-ns-note-box ' + (status.customInstallPathFeedbackOk === false ? 'is-error' : (status.customInstallPathFeedbackOk === true ? 'is-ok' : ''));
+      } else {
+        installPathFb.hidden = true;
+      }
     }
 
     var thInput = byId(root, 'ag-ns-inp-autoSwitchThreshold');
@@ -58763,6 +59449,8 @@ function createHostSettingsController(deps = {}) {
             radialBottombar: Boolean(radialBottombarEnabled),
             showComposerBar: Boolean(showComposerQuotaSummary),
             showTurnFooter: Boolean(showTurnFooterStats),
+            composerStatusFontSize,
+            turnFooterHighContrast: Boolean(turnFooterHighContrast),
             nextPromptEnabled: Boolean(nextPromptEnabled),
             autoSwitchEnabled: Boolean(asCfg.enabled),
             autoSwitchTarget: encodeAutoSwitchTargetKey(asCfg.poolKey, asCfg.windowKey),
@@ -58775,6 +59463,9 @@ function createHostSettingsController(deps = {}) {
             enhanceChineseTitle: Boolean(enhanceTitleDraft),
             proxyEnabled: Boolean(currentProxyEnabled),
             proxyUrl: proxyInputDirty ? proxyInputElVal : (savedProxyUrl || proxyInputElVal || ''),
+            customInstallPath: customInstallPathDirty
+              ? String(hostSettingsCtrl?.getPageRoot?.()?.getElementById?.('ag-ns-input-customInstallPath')?.value ?? el('input-custom-install-path')?.value ?? '')
+              : (savedCustomInstallPath || ''),
             planTier: curPlanTier,
             billingRegion: curBillingRegion,
             displayCurrency: curDisplayCurrency,
@@ -58798,6 +59489,7 @@ function createHostSettingsController(deps = {}) {
               radialBottombar: buildSwFb('radialBottombarEnabled', radialBottombarEnabled),
               showComposerBar: buildSwFb('showComposerQuotaSummary', showComposerQuotaSummary),
               showTurnFooter: buildSwFb('showTurnFooterStats', showTurnFooterStats),
+              turnFooterHighContrast: buildSwFb('turnFooterHighContrast', turnFooterHighContrast),
               nextPromptEnabled: buildSwFb('nextPromptEnabled', nextPromptEnabled),
               autoCheckUpdate: buildSwFb('autoCheckUpdate', autoCheckUpdate),
               betaChannel: buildSwFb('allowBetaUpdates', allowBetaUpdates)
@@ -58832,6 +59524,8 @@ function createHostSettingsController(deps = {}) {
             proxyBadgeText: proxyBadge?.textContent || (currentProxyEnabled ? t('mod.proxy.badgeOk') : t('mod.proxy.badgeOff')),
             proxyBadgeClass: currentProxyEnabled ? 'is-accent' : '',
             proxyDescText: proxyDescLive,
+            customInstallPathFeedback: customInstallPathFeedbackState.text || '',
+            customInstallPathFeedbackOk: customInstallPathFeedbackState.ok,
             billingHint,
             version: formatDisplayVersion(METER_RENDERER_VERSION),
             checkingUpdate: strictUpd.stage === 'checking' || strictUpd.stage === 'downloading',
@@ -58916,6 +59610,8 @@ function createHostSettingsController(deps = {}) {
         }
         if (key === 'showComposerBar') { onShowComposerQuotaToggle({ target: { checked: Boolean(value) } }); return; }
         if (key === 'showTurnFooter') { onShowTurnFooterToggle({ target: { checked: Boolean(value) } }); return; }
+        if (key === 'composerStatusFontSize') { setComposerStatusFontSize(value, { persist: true }); return; }
+        if (key === 'turnFooterHighContrast') { onTurnFooterHighContrastToggle({ target: { checked: Boolean(value) } }); return; }
         if (key === 'nextPromptEnabled') { void setNextPromptEnabledState(Boolean(value), { persist: true }); return; }
         if (key === 'autoCheckUpdate') {
           const prev = autoCheckUpdate;
@@ -59033,6 +59729,11 @@ function createHostSettingsController(deps = {}) {
         if (key === 'proxyUrl') {
           proxyInputDirty = true;
           if (inputProxyUrl) inputProxyUrl.value = String(value || '');
+          return;
+        }
+        if (key === 'customInstallPath') {
+          customInstallPathDirty = true;
+          if (el('input-custom-install-path')) el('input-custom-install-path').value = String(value || '');
           return;
         }
         if (key === 'planTier') {
@@ -59174,7 +59875,15 @@ function createHostSettingsController(deps = {}) {
         } else if (actionName === 'applyProxy') {
           const urlVal = payload?.proxyUrl ?? inputProxyUrl?.value ?? '';
           if (inputProxyUrl) inputProxyUrl.value = String(urlVal);
-          void applyProxyModuleUpdate(true).then(() => syncHostSettingsUi());
+          void applyProxyModuleUpdate(true).then(() => {
+            syncHostSettingsUi();
+            showNativeSettingsToast(t('prefs.saved'));
+          });
+        } else if (actionName === 'applyCustomInstallPath' || actionName === 'clearCustomInstallPath') {
+          const rawVal = actionName === 'clearCustomInstallPath' ? '' : (payload?.customInstallPath ?? '');
+          void applyCustomInstallPathSetting(rawVal).then((res) => {
+            showNativeSettingsToast(res?.ok ? (res.customInstallPath ? t('prefs.saved') : t('ns.installPath.cleared')) : (res?.error || t('msg.unknownErr')));
+          });
         } else if (actionName === 'copyDiag') {
           const strict = recomputeStrictUpdateState();
           const diagPayload = JSON.stringify({
@@ -66181,6 +66890,10 @@ function initCrossSessionInsightsControls() {
       const stored = typeof window !== 'undefined' ? window.localStorage?.getItem?.('agy_session_csrf_token') : null;
       if (typeof stored === 'string' && stored.trim()) return stored.trim();
     } catch { }
+    try {
+      const sessStored = typeof window !== 'undefined' ? window.sessionStorage?.getItem?.('agy_session_csrf_token') : null;
+      if (typeof sessStored === 'string' && sessStored.trim()) return sessStored.trim();
+    } catch { }
     return '';
   }
 
@@ -66517,10 +67230,11 @@ function initCrossSessionInsightsControls() {
       state.controllers.add(controller);
       const timeout = setTimeout(() => controller.abort(), 180000);
       try {
+        const liveCsrf = getRendererCsrfToken();
         const out = await callBackendWithPriority({
           ipcCall: hasIpcScan ? () => window.contextMeterAPI.scan(id, force) : null,
           liveRoute: '/scan',
-          liveBody: { id, force },
+          liveBody: { id, force, ...(liveCsrf ? { csrfToken: liveCsrf } : {}) },
           liveFetchOpts: { signal: controller.signal }
         });
         result = out.result;
@@ -69505,6 +70219,7 @@ function initCrossSessionInsightsControls() {
           quotaAbortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
           const isGeneratingNow = hasActiveCompactionOrGeneration();
           const hasDraftNow = Boolean(autoSwitchDraftDirty || accountsUiState.autoSwitchDraft?.dirty || hasUnsavedChatComposerDraft());
+          const liveCsrf = getRendererCsrfToken();
           const out = await callBackendWithPriority({
             ipcCall: hasIpcGetQuota ? () => window.contextMeterAPI.getQuota({ force: Boolean(force), isGenerating: isGeneratingNow, hasUnsavedDraft: hasDraftNow }) : null,
             liveRoute: '/quota',
@@ -69512,7 +70227,8 @@ function initCrossSessionInsightsControls() {
               force: Boolean(force),
               isGenerating: isGeneratingNow,
               hasUnsavedDraft: hasDraftNow,
-              origin: typeof window !== 'undefined' ? (window.location?.origin || undefined) : undefined
+              origin: typeof window !== 'undefined' ? (window.location?.origin || undefined) : undefined,
+              ...(liveCsrf ? { csrfToken: liveCsrf } : {})
             },
             liveFetchOpts: { signal: quotaAbortController?.signal }
           });
@@ -71640,7 +72356,7 @@ function initCrossSessionInsightsControls() {
       const sameScreenSwitch = isSameScreenSessionSwitch(prevLayout, nextLayout, prevRoute, id);
       const cachedSnap = (sameScreenSwitch && id) ? readSessionSnapshotFromCache(id) : null;
       for (const controller of state.controllers) controller.abort(); state.controllers.clear(); state.generation++;
-if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggestion(true);
+      if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggestion(true, { clearCache: true });
       if (timelineFetchController) {
         try { timelineFetchController.abort(); } catch { }
         timelineFetchController = null;
@@ -71696,6 +72412,9 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
       syncAuxContextBar();
     }
     if (id && !document.hidden) checkHostDomCompactionSignals();
+    if (id && !document.hidden && nextPromptEnabled && !state.compacting && !nextPromptState.inFlight && typeof maybeRequestNextPromptPrediction === 'function') {
+      void maybeRequestNextPromptPrediction({ routeId: id });
+    }
     if (id && !state.requestBusy && Date.now() >= state.requestNext) void requestPoll(state.generation, id);
     if (id && !state.scanBusy && Date.now() >= state.scanNext) void scan(state.generation, id);
     if (!state.disposed && state.pendingFinalCalls?.size && !state.flushFinalsBusy && Date.now() >= (state.nextFlushRetryAt || 0)) {
@@ -71954,7 +72673,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   }
 
   globalThis.__AGContextMeter = {
-    buildId: '936d937d843a6e82',
+    buildId: 'ed7116fe151d3856',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;
@@ -72517,6 +73236,23 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
       renderTurnFooterStats();
       return showTurnFooterStats;
     },
+    getStatusTypographyForTest: () => ({
+      fontSize: composerStatusFontSize,
+      highContrast: turnFooterHighContrast,
+      barFontSize: composerSummary?.getAttribute?.('data-font-size') || null,
+      barHighContrast: composerSummary?.getAttribute?.('data-high-contrast') || null,
+      docFontSize: document.documentElement?.getAttribute?.('data-ag-tf-size') || null,
+      docContrast: document.documentElement?.getAttribute?.('data-ag-tf-contrast') || null
+    }),
+    setComposerStatusFontSizeForTest: (size, opts) => setComposerStatusFontSize(size, opts || { persist: false }),
+    setTurnFooterHighContrastForTest: (enabled) => {
+      turnFooterHighContrast = Boolean(enabled);
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem('ag_turn_footer_high_contrast', turnFooterHighContrast ? 'true' : 'false');
+      } catch { }
+      syncStatusTypographyUi();
+      return turnFooterHighContrast;
+    },
     getCumulativeViewStateForTest: () => ({
       summary: _lastCumSummary,
       lockedKey: cumLockedKey,
@@ -72874,6 +73610,8 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
     },
     getHostSettingsStateForTest: () => (hostSettingsCtrl ? hostSettingsCtrl.getStateForTest() : null),
     syncHostSettingsForTest: () => (hostSettingsCtrl ? hostSettingsCtrl.syncModalMount() : false),
+    getCustomInstallPathForTest: () => savedCustomInstallPath,
+    applyCustomInstallPathForTest: (p) => applyCustomInstallPathSetting(p),
     applyInheritedHotReloadStateForTest: (saved) => applyInheritedHotReloadState(saved),
     maybeRequestNextPromptForTest: (opts = {}) => (typeof maybeRequestNextPromptPrediction === 'function' ? maybeRequestNextPromptPrediction(opts) : Promise.resolve({ skipped: true })),
     acceptNextPromptForTest: (comp = null) => (typeof acceptNextPromptIntoComposer === 'function' ? acceptNextPromptIntoComposer(comp) : false),
@@ -72944,6 +73682,10 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
       try { document.getElementById('ag-wco-spacer')?.remove?.(); } catch { }
       try { document.getElementById('ag-topbar-host-fix')?.remove?.(); } catch { }
       turnFooterScopeState.clear();
+      try {
+        document.documentElement?.removeAttribute?.('data-ag-tf-size');
+        document.documentElement?.removeAttribute?.('data-ag-tf-contrast');
+      } catch { }
       cleanupLegacyModelPickerArtifacts();
       if (typeof disposeNextPrompt === 'function') disposeNextPrompt();
       disposeRadialTopLayer();
@@ -72962,6 +73704,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   cleanupLegacyModelPickerArtifacts();
   if (el('chk-next-prompt-enabled')) el('chk-next-prompt-enabled').checked = nextPromptEnabled;
   if (el('chk-show-turn-footer-stats')) el('chk-show-turn-footer-stats').checked = showTurnFooterStats;
+  syncStatusTypographyUi();
   if (typeof bindNextPromptComposerListeners === 'function') bindNextPromptComposerListeners();
   applyStaticPanelTranslations(shadow);
   if (radialShadow) {

@@ -4705,6 +4705,7 @@ function createAccountsManager(options = {}) {
     startOAuthLogin,
     addAccountWithCredential,
     removeAccount,
+    ensureFreshTokenForAccount,
     refreshAccountQuota,
     syncActiveHostQuotaSnapshot,
     switchActiveAccount,
