@@ -2642,7 +2642,15 @@ const PANEL_I18N = {
   'ns.clearCache.title': { 'zh-CN': '清理本地统计缓存', 'zh-TW': '清理本機統計快取', en: 'Clear Local Stats Cache' },
   'ns.clearCache.btn': { 'zh-CN': '清理缓存', 'zh-TW': '清理快取', en: 'Clear Cache' },
   'ns.clearCache.desc': { 'zh-CN': '当前占用 {kb} KB · 清理不影响原有配置项', 'zh-TW': '目前佔用 {kb} KB · 清理不影響原有設定項', en: 'Using {kb} KB · preserves your settings' },
-  'ns.clearCache.done': { 'zh-CN': '已清理 {count} 项本地临时缓存，原有配置已保留', 'zh-TW': '已清理 {count} 項本機暫存快取，原有設定已保留', en: 'Cleared {count} cache entries; settings preserved' }
+  'ns.clearCache.done': { 'zh-CN': '已清理 {count} 项本地临时缓存，原有配置已保留', 'zh-TW': '已清理 {count} 項本機暫存快取，原有設定已保留', en: 'Cleared {count} cache entries; settings preserved' },
+  'ns.installPath.title': { 'zh-CN': 'Antigravity 安装路径', 'zh-TW': 'Antigravity 安裝路徑', en: 'Antigravity Install Path' },
+  'ns.installPath.desc': { 'zh-CN': '非默认目录安装时，填写安装根目录或 resources/app.asar 路径，留空恢复自动探测', 'zh-TW': '非預設目錄安裝時，填寫安裝根目錄或 resources/app.asar 路徑，留空恢復自動偵測', en: 'Specify install root or resources/app.asar path for custom locations; clear to auto-detect' },
+  'ns.installPath.placeholder': { 'zh-CN': '自动探测（可填如 F:\\Apps\\Antigravity）', 'zh-TW': '自動偵測（可填如 F:\\Apps\\Antigravity）', en: 'Auto-detect (e.g. F:\\Apps\\Antigravity)' },
+  'ns.installPath.save': { 'zh-CN': '保存路径', 'zh-TW': '儲存路徑', en: 'Save Path' },
+  'ns.installPath.clear': { 'zh-CN': '恢复自动探测', 'zh-TW': '恢復自動偵測', en: 'Reset Auto' },
+  'ns.installPath.saved': { 'zh-CN': '已保存自定义路径：{path}', 'zh-TW': '已儲存自訂路徑：{path}', en: 'Saved custom path: {path}' },
+  'ns.installPath.cleared': { 'zh-CN': '已恢复自动探测安装路径', 'zh-TW': '已恢復自動偵測安裝路徑', en: 'Restored automatic install path detection' },
+  'ns.installPath.saveFail': { 'zh-CN': '保存失败：{err}', 'zh-TW': '儲存失敗：{err}', en: 'Save failed: {err}' }
 };
 
 function t(key, vars = null) {

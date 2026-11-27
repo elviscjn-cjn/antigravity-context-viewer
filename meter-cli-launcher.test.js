@@ -642,3 +642,30 @@ test('CLI 启动模块 11: launchCliSession 与 cli.js launch-cli --account 隔�
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('CLI 启动模块 12 (Issue #109): resolveCliExecutable 支持从自定义 Antigravity 安装目录解析 agy', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-custom-install-'));
+  try {
+    const emptyHome = path.join(tmpDir, 'empty-home');
+    fs.mkdirSync(emptyHome, { recursive: true });
+    const installRoot = path.join(tmpDir, 'FDrive', 'Antigravity');
+    const resDir = path.join(installRoot, 'resources');
+    const binDir = path.join(installRoot, 'bin');
+    fs.mkdirSync(resDir, { recursive: true });
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(resDir, 'app.asar'), 'stub', 'utf8');
+    const cliFile = path.join(binDir, process.platform === 'win32' ? 'agy.exe' : 'agy');
+    fs.writeFileSync(cliFile, 'stub', { mode: 0o755 });
+
+    const res = resolveCliExecutable(null, {
+      platform: process.platform === 'darwin' ? 'linux' : process.platform,
+      homeDir: emptyHome,
+      env: { USERPROFILE: emptyHome, LOCALAPPDATA: emptyHome, APPDATA: emptyHome, PATH: '' },
+      customInstallPath: installRoot
+    });
+    assert.equal(res.ok, true);
+    assert.equal(path.resolve(res.cliPath), path.resolve(cliFile));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
