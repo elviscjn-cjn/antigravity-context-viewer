@@ -9602,6 +9602,22 @@
     return text.slice(0, limit);
   }
 
+  function summarizeCliReportedUsage(calls, cascadeId) {
+    const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalTokens: 0 };
+    let hasUsage = false;
+    for (const call of calls) {
+      if (call.cascadeId !== cascadeId || call.source !== 'cli') continue;
+      if (call.inputTokens == null && (call.totalTokens || 0) > (call.outputTokens || 0)) return null;
+      if (call.inputTokens == null && call.outputTokens == null) continue;
+      hasUsage = true;
+      usage.inputTokens += call.inputTokens || 0;
+      usage.outputTokens += call.outputTokens || 0;
+      usage.cacheReadTokens += call.cacheReadTokens || 0;
+    }
+    usage.totalTokens = usage.inputTokens + usage.outputTokens;
+    return hasUsage ? usage : null;
+  }
+
   /**
    * 按用户轮次（Turn）将当前会话主代理调用与可验证的子代理调用分组汇总。
    * 绝不凭时间接近猜测父子归属：未关联到父步骤的子代理调用放入独立 unlinkedSubagentCalls 列表。
@@ -10616,6 +10632,8 @@
     };
 
     const overallCacheSummary = summarizeCacheReadStats(allCalls);
+    // agy reports input + output. The existing processed totals include cache reads.
+    const cliReportedUsage = options.sessionSource === 'cli' ? summarizeCliReportedUsage(allCalls, cascadeId) : null;
     return {
       cascadeId,
       turns: resultTurns,
@@ -10625,6 +10643,7 @@
       subagentCallsCount: totalSubAll,
       modelBreakdown,
       sessionTokenTotals,
+      ...(cliReportedUsage ? { cliReportedUsage } : {}),
       cacheSummary: overallCacheSummary,
       contextDeltaSummary,
       timingSummary,

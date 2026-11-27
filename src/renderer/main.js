@@ -24447,6 +24447,14 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         cache: cacheText
       });
       sumEl.appendChild(sLine);
+      if (tl.cliReportedUsage) {
+        const usageLine = document.createElement('div');
+        usageLine.textContent = t('session.timeline.cliReportedUsage', {
+          total: tl.cliReportedUsage.totalTokens.toLocaleString(),
+          cache: tl.cliReportedUsage.cacheReadTokens.toLocaleString()
+        });
+        sumEl.appendChild(usageLine);
+      }
       if (tl.contextDeltaSummary?.latestContextTokens != null) {
         const dSum = tl.contextDeltaSummary;
         const netTxt = dSum.netDeltaTokens != null
@@ -24492,7 +24500,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           const st = tl.sessionTokenTotals;
           const totLine = document.createElement('div');
           totLine.className = 'timeline-turn-meta';
-          totLine.textContent = t('session.timeline.modelTotalsLine', {
+          totLine.textContent = t(tl.cliReportedUsage ? 'session.timeline.processedTotalsLine' : 'session.timeline.modelTotalsLine', {
             calls: st.callCount || 0,
             total: short(st.totalTokens || 0),
             inp: short(st.inputTokens || 0),

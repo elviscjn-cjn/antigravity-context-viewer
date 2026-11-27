@@ -9902,6 +9902,7 @@ async function collectSessionTimelineCoreAsync(cascadeId, options = {}) {
 
   const grouped = groupSessionCallsByTurns(allTurns, allCalls, {
     cascadeId: cid,
+    sessionSource: mainFile?.source || ledgerCalls.find(call => call?.cascadeId === cid && call.source)?.source,
     cascadeModelConfigs: cascadeConfigs,
     userStatus: options.userStatus || null,
     budgetTokens: options.budgetTokens || null,
