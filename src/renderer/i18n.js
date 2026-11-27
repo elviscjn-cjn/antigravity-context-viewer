@@ -609,6 +609,8 @@ const PANEL_I18N = {
   'turnFooter.cache': { 'zh-CN': '缓存', 'zh-TW': '快取', en: 'Cache' },
   'turnFooter.in': { 'zh-CN': '入', 'zh-TW': '入', en: 'In' },
   'turnFooter.out': { 'zh-CN': '出', 'zh-TW': '出', en: 'Out' },
+  'turnFooter.syncing': { 'zh-CN': '统计同步中', 'zh-TW': '統計同步中', en: 'Syncing stats' },
+  'turnFooter.multiModel': { 'zh-CN': '多模型', 'zh-TW': '多模型', en: 'Multi-model' },
   'turnFooter.tipMulti': { 'zh-CN': '点击在本次请求与本轮汇总之间切换 · 双击查看详细看板', 'zh-TW': '點擊在本次請求與本輪彙總之間切換 · 雙擊查看詳細看板', en: 'Click to toggle between request and turn · Double-click to view dashboard' },
   'turnFooter.tipSingle': { 'zh-CN': '点击查看详细看板', 'zh-TW': '點擊查看詳細看板', en: 'Click to view dashboard' },
   'composer.card.tokenUsage': { 'zh-CN': 'Token 用量', 'zh-TW': 'Token 用量', en: 'Token Usage' },

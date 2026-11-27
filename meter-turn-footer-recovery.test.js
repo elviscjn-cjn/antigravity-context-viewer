@@ -636,3 +636,177 @@ test('Issue #140: 时间线滞后(M=2, T=1)绝不将 turn-1 错绑到第二条�
     h.sandbox.__AGContextMeter.dispose();
   }
 });
+
+test('Issue #140: 可核验标识防串轮——双回复可见、滚动只剩新回复、新请求统计未到达、错误轮次跳过与多模型汇总', () => {
+  const h = harness();
+  try {
+    const makeTb = (attrs = {}, fiber = null) => {
+      const row = h.sandbox.document.createElement('div');
+      row.clientWidth = 560;
+      const tb = h.sandbox.document.createElement('div');
+      tb.clientWidth = 560;
+      for (const [k, v] of Object.entries(attrs)) {
+        tb.setAttribute(k, String(v));
+      }
+      if (fiber) {
+        tb.__reactFiber$test = fiber;
+      }
+      tb.appendChild(row);
+      tb.firstElementChild = row;
+      tb.row = row;
+      return tb;
+    };
+
+    let activeToolbars = [];
+    const origQsa = h.sandbox.document.querySelectorAll;
+    h.sandbox.document.querySelectorAll = (sel) => {
+      if (sel && sel.includes('cascade-system-message-toolbar')) return activeToolbars;
+      if (sel && sel.includes('.ag-cm-turn-footer')) {
+        return activeToolbars
+          .map(tb => tb.row.children.find(c => c.className === 'ag-cm-turn-footer'))
+          .filter(Boolean);
+      }
+      return origQsa ? origQsa(sel) : [];
+    };
+
+    const api = h.sandbox.__AGContextMeter;
+    api.setTurnFooterStatsEnabledForTest(true);
+    const routeId = '5746859c-1394-4d83-a9ba-b86f9d0b6c62';
+
+    const call1 = { callId: 'c-1', stepIndex: 1, modelLabel: 'Gemini 3.8 Flash', inputTokens: 1000, cacheReadTokens: 0, outputTokens: 100, streamingTps: 80, status: 'final' };
+    const call2Pending = { callId: 'c-2', stepIndex: 4, modelLabel: 'Claude Sonnet 4.6', inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, status: 'streaming' };
+    const call2Ready = { callId: 'c-2', stepIndex: 4, modelLabel: 'Claude Sonnet 4.6', inputTokens: 1500, cacheReadTokens: 500, outputTokens: 150, streamingTps: 120, status: 'final' };
+
+    // 场景 1：两条回复都可见，第二条归属未确认时显示「统计同步中」，不显示第一条的模型或 Token
+    const tb1 = makeTb({ 'data-cascade-id': routeId, 'data-step-indices': '0,1' });
+    const tb2 = makeTb({ 'data-cascade-id': routeId, 'data-step-indices': '2,3,4', 'data-turn-latest': 'true' });
+    activeToolbars = [tb1, tb2];
+
+    api.setComposerStateForTest({
+      route: routeId,
+      sessionCalls: [call1],
+      sessionTimeline: {
+        cascadeId: routeId,
+        turns: [{ turnIndex: 1, stepIndex: 0, calls: [call1] }]
+      }
+    });
+    const f1A = tb1.row.children.find(c => c.className === 'ag-cm-turn-footer');
+    const f2A = tb2.row.children.find(c => c.className === 'ag-cm-turn-footer');
+    assert.ok(f1A && f2A);
+    assert.equal(f1A.getAttribute('data-turn-key'), 'turn-1');
+    assert.match(f1A.textContent, /Gemini 3\.8 Flash/);
+    assert.equal(f2A.textContent, '统计同步中');
+    assert.equal(f2A.getAttribute('data-sync-state'), 'syncing');
+    assert.equal(f2A.getAttribute('data-turn-key'), null);
+    assert.doesNotMatch(f2A.textContent, /Gemini|1\.0K|100/);
+
+    // 场景 2：新请求统计尚未到达（call2 为 streaming 且 0 token）时，tb1 保持显示，tb2 仍为「统计同步中」
+    api.setComposerStateForTest({
+      route: routeId,
+      sessionCalls: [call1, call2Pending],
+      sessionTimeline: {
+        cascadeId: routeId,
+        turns: [
+          { turnIndex: 1, stepIndex: 0, calls: [call1] },
+          { turnIndex: 2, stepIndex: 2, calls: [call2Pending] }
+        ]
+      }
+    });
+    assert.match(tb1.row.children.find(c => c.className === 'ag-cm-turn-footer').textContent, /Gemini 3\.8 Flash/);
+    assert.equal(tb2.row.children.find(c => c.className === 'ag-cm-turn-footer').textContent, '统计同步中');
+
+    // 场景 3：滚动后只剩新回复可见（M=1, T=1 且仅有 turn-1），绝不能把 turn-1 错绑给 tb2
+    activeToolbars = [tb2];
+    api.setComposerStateForTest({
+      route: routeId,
+      sessionCalls: [call1],
+      sessionTimeline: {
+        cascadeId: routeId,
+        turns: [{ turnIndex: 1, stepIndex: 0, calls: [call1] }]
+      }
+    });
+    const f2ScrolledLag = tb2.row.children.find(c => c.className === 'ag-cm-turn-footer');
+    assert.equal(f2ScrolledLag.textContent, '统计同步中');
+    assert.equal(f2ScrolledLag.getAttribute('data-turn-key'), null);
+
+    // 统计到齐后，只更新对应回复 tb2，且回到双回复视图时两条各自对账正确
+    api.setComposerStateForTest({
+      route: routeId,
+      sessionCalls: [call1, call2Ready],
+      sessionTimeline: {
+        cascadeId: routeId,
+        turns: [
+          { turnIndex: 1, stepIndex: 0, calls: [call1] },
+          { turnIndex: 2, stepIndex: 2, calls: [call2Ready] }
+        ]
+      }
+    });
+    assert.match(tb2.row.children.find(c => c.className === 'ag-cm-turn-footer').textContent, /Claude Sonnet 4\.6.*Out 150/);
+
+    activeToolbars = [tb1, tb2];
+    api.setComposerStateForTest({
+      route: routeId,
+      sessionCalls: [call1, call2Ready],
+      sessionTimeline: {
+        cascadeId: routeId,
+        turns: [
+          { turnIndex: 1, stepIndex: 0, calls: [call1] },
+          { turnIndex: 2, stepIndex: 2, calls: [call2Ready] }
+        ]
+      }
+    });
+    assert.match(tb1.row.children.find(c => c.className === 'ag-cm-turn-footer').textContent, /Gemini 3\.8 Flash.*Out 100/);
+    assert.match(tb2.row.children.find(c => c.className === 'ag-cm-turn-footer').textContent, /Claude Sonnet 4\.6.*Out 150/);
+
+    // 场景 4：React Fiber trajectorySteps 真实结构 + 中间夹杂错误轮次(type=17) + 同轮多模型汇总标明「多模型」
+    const traj = [
+      { type: 14, status: 3 },
+      { type: 15, status: 3 },
+      { type: 14, status: 3 },
+      { type: 17, status: 3 },
+      { type: 14, status: 3 },
+      { type: 101, status: 3 },
+      { type: 15, status: 3 }
+    ];
+    const makeFiber = (key, isLatest, steps) => ({
+      memoizedProps: {
+        cascadeId: routeId,
+        trajectorySteps: traj,
+        container: { key: String(key), isLatest, steps }
+      }
+    });
+    const fTb1 = makeTb({}, makeFiber(0, false, [traj[0], traj[1]]));
+    const fTbErr = makeTb({}, makeFiber(1, false, [traj[2], traj[3]]));
+    const fTb2 = makeTb({}, makeFiber(2, true, [traj[4], traj[5], traj[6]]));
+    activeToolbars = [fTb1, fTbErr, fTb2];
+
+    const multiCallA = { callId: 'mc-1', stepIndex: 5, modelLabel: 'Gemini 3.8 Flash', inputTokens: 800, cacheReadTokens: 200, outputTokens: 40, streamingTps: 60, status: 'final' };
+    const multiCallB = { callId: 'mc-2', stepIndex: 6, modelLabel: 'Claude Sonnet 4.6', inputTokens: 1200, cacheReadTokens: 800, outputTokens: 60, streamingTps: 90, status: 'final' };
+    api.setComposerStateForTest({
+      route: routeId,
+      sessionCalls: [call1, multiCallA, multiCallB],
+      sessionTimeline: {
+        cascadeId: routeId,
+        turns: [
+          { turnIndex: 1, stepIndex: 0, calls: [call1] },
+          { turnIndex: 2, stepIndex: 4, calls: [multiCallA, multiCallB] }
+        ]
+      }
+    });
+
+    const fb1 = fTb1.row.children.find(c => c.className === 'ag-cm-turn-footer');
+    const fbErr = fTbErr.row.children.find(c => c.className === 'ag-cm-turn-footer');
+    const fb2 = fTb2.row.children.find(c => c.className === 'ag-cm-turn-footer');
+    assert.ok(fb1, '正常旧轮次应绑定');
+    assert.equal(fb1.getAttribute('data-turn-key'), 'turn-1');
+    assert.equal(fbErr, undefined, '错误轮次(type=17)不得挂载任何尾标，且不得顶替后续轮次');
+    assert.ok(fb2, '跳过错误轮次后，后续多模型轮次应精确绑定');
+    assert.equal(fb2.getAttribute('data-turn-key'), 'turn-2');
+    assert.equal(fb2.getAttribute('data-multi-model'), 'true');
+    assert.match(fb2.textContent, /本轮汇总 · 多模型/);
+    assert.match(fb2.title, /Gemini 3\.8 Flash/);
+    assert.match(fb2.title, /Claude Sonnet 4\.6/);
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+});

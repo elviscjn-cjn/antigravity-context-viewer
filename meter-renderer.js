@@ -22132,6 +22132,8 @@ const PANEL_I18N = {
   'turnFooter.cache': { 'zh-CN': '缓存', 'zh-TW': '快取', en: 'Cache' },
   'turnFooter.in': { 'zh-CN': '入', 'zh-TW': '入', en: 'In' },
   'turnFooter.out': { 'zh-CN': '出', 'zh-TW': '出', en: 'Out' },
+  'turnFooter.syncing': { 'zh-CN': '统计同步中', 'zh-TW': '統計同步中', en: 'Syncing stats' },
+  'turnFooter.multiModel': { 'zh-CN': '多模型', 'zh-TW': '多模型', en: 'Multi-model' },
   'turnFooter.tipMulti': { 'zh-CN': '点击在本次请求与本轮汇总之间切换 · 双击查看详细看板', 'zh-TW': '點擊在本次請求與本輪彙總之間切換 · 雙擊查看詳細看板', en: 'Click to toggle between request and turn · Double-click to view dashboard' },
   'turnFooter.tipSingle': { 'zh-CN': '点击查看详细看板', 'zh-TW': '點擊查看詳細看板', en: 'Click to view dashboard' },
   'composer.card.tokenUsage': { 'zh-CN': 'Token 用量', 'zh-TW': 'Token 用量', en: 'Token Usage' },
@@ -37994,12 +37996,166 @@ let activeCnyTimerId = null;
   const turnFooterScopeState = new Map();
   let lastTurnFooterTimelineSyncAt = 0;
 
+  function parseStepIndexList(raw) {
+    if (Array.isArray(raw)) {
+      return raw.map(v => Number(v)).filter(n => Number.isInteger(n) && n >= 0);
+    }
+    if (typeof raw !== 'string' || !raw.trim()) return [];
+    return raw.split(/[,\s]+/).map(v => Number(v.trim())).filter(n => Number.isInteger(n) && n >= 0);
+  }
+
+  function extractToolbarIdentity(tb) {
+    const out = {
+      cascadeId: '',
+      containerKey: null,
+      isLatest: false,
+      stepIndices: [],
+      stepTypes: [],
+      isErrorOnly: false,
+      hasAssistantStep: false,
+      turnIndex: null,
+      turnKey: '',
+      callId: '',
+      hasVerifiableId: false
+    };
+    if (!tb) return out;
+
+    const attrHost = tb.closest?.('[data-step-index], [data-step-indices], [data-turn-index], [data-turn-key], [data-call-id], [data-cascade-id], [data-turn-error], [data-turn-latest]') || tb;
+    const readAttr = (name) => tb.getAttribute?.(name) ?? attrHost?.getAttribute?.(name) ?? null;
+
+    const attrCid = readAttr('data-cascade-id');
+    if (attrCid) out.cascadeId = String(attrCid).trim();
+
+    const attrSteps = parseStepIndexList(readAttr('data-step-indices'));
+    const attrSingleStep = readAttr('data-step-index');
+    if (attrSteps.length > 0) {
+      out.stepIndices = attrSteps;
+    } else if (attrSingleStep != null && attrSingleStep !== '' && Number.isInteger(Number(attrSingleStep)) && Number(attrSingleStep) >= 0) {
+      out.stepIndices = [Number(attrSingleStep)];
+    }
+
+    const attrTurnIdx = readAttr('data-turn-index');
+    if (attrTurnIdx != null && attrTurnIdx !== '' && Number.isInteger(Number(attrTurnIdx)) && Number(attrTurnIdx) >= 0) {
+      out.turnIndex = Number(attrTurnIdx);
+    }
+    const attrTurnKey = readAttr('data-turn-key');
+    if (attrTurnKey) out.turnKey = String(attrTurnKey).trim();
+    const attrCallId = readAttr('data-call-id');
+    if (attrCallId) out.callId = String(attrCallId).trim();
+    if (readAttr('data-turn-error') === 'true') out.isErrorOnly = true;
+    if (readAttr('data-turn-latest') === 'true') out.isLatest = true;
+
+    // 真实 Antigravity DOM 从 React Fiber 读取 container.steps 在 trajectorySteps 中的权威索引与 cascadeId
+    try {
+      let cur = tb;
+      for (let hop = 0; hop < 10 && cur; hop++, cur = cur.parentElement) {
+        const fk = Object.keys(cur).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+        if (!fk) continue;
+        let f = cur[fk];
+        for (let depth = 0; depth < 15 && f; depth++, f = f.return) {
+          const p = f.memoizedProps;
+          if (p?.container && Array.isArray(p.container.steps)) {
+            if (!out.cascadeId && p.cascadeId) out.cascadeId = String(p.cascadeId).trim();
+            if (p.container.key != null) out.containerKey = String(p.container.key);
+            if (p.container.isLatest) out.isLatest = true;
+            const traj = Array.isArray(p.trajectorySteps) ? p.trajectorySteps : null;
+            const stepIdxs = [];
+            const stepTypes = [];
+            for (const s of p.container.steps) {
+              if (!s) continue;
+              if (s.type != null) stepTypes.push(s.type);
+              if (Number.isInteger(s.stepIndex) && s.stepIndex >= 0) {
+                stepIdxs.push(s.stepIndex);
+              } else if (Number.isInteger(s.index) && s.index >= 0) {
+                stepIdxs.push(s.index);
+              } else if (traj) {
+                const idx = traj.indexOf(s);
+                if (idx >= 0) stepIdxs.push(idx);
+              }
+            }
+            if (out.stepIndices.length === 0 && stepIdxs.length > 0) {
+              out.stepIndices = stepIdxs;
+            }
+            out.stepTypes = stepTypes;
+            if (stepTypes.includes(17) && !stepTypes.includes(15)) {
+              out.isErrorOnly = true;
+            }
+            if (stepTypes.includes(15)) {
+              out.hasAssistantStep = true;
+            }
+            break;
+          }
+        }
+        if (out.stepIndices.length > 0 || out.cascadeId || out.isErrorOnly) break;
+      }
+    } catch { }
+
+    out.hasVerifiableId = Boolean(out.callId || out.stepIndices.length > 0 || out.turnKey || out.turnIndex != null);
+    return out;
+  }
+
+  function matchTurnByIdentity(identity, turns, boundTurnKeys) {
+    if (!identity || !identity.hasVerifiableId || !Array.isArray(turns) || turns.length === 0) return null;
+    const isUnbound = (tr) => {
+      if (!tr) return false;
+      const k = tr.turnKey;
+      return !k || !boundTurnKeys.has(k);
+    };
+
+    if (identity.callId) {
+      const byCall = turns.find(tr => isUnbound(tr) && Array.isArray(tr.calls) && tr.calls.some(c => c && c.callId === identity.callId));
+      if (byCall) return byCall;
+    }
+
+    if (identity.stepIndices.length > 0) {
+      const idStepSet = new Set(identity.stepIndices);
+      const minStep = Math.min(...identity.stepIndices);
+      const maxStep = Math.max(...identity.stepIndices);
+      const byStep = turns.find(tr => {
+        if (!isUnbound(tr)) return false;
+        const trSteps = [];
+        if (Number.isInteger(tr.stepIndex) && tr.stepIndex >= 0) trSteps.push(tr.stepIndex);
+        if (Array.isArray(tr.calls)) {
+          for (const c of tr.calls) {
+            if (Number.isInteger(c?.stepIndex) && c.stepIndex >= 0) trSteps.push(c.stepIndex);
+          }
+        }
+        return trSteps.some(s => idStepSet.has(s) || (s >= minStep && s <= maxStep));
+      });
+      if (byStep) return byStep;
+      return null;
+    }
+
+    if (identity.turnKey) {
+      const byKey = turns.find(tr => isUnbound(tr) && tr.turnKey === identity.turnKey);
+      if (byKey) return byKey;
+    }
+
+    if (identity.turnIndex != null) {
+      const byTurnIdx = turns.find(tr => isUnbound(tr) && tr.turnIndex === identity.turnIndex);
+      if (byTurnIdx) return byTurnIdx;
+    }
+
+    return null;
+  }
+
+  function hasTurnConfirmedUsage(turnObj) {
+    if (!turnObj || !Array.isArray(turnObj.calls) || turnObj.calls.length === 0) return false;
+    return turnObj.calls.some(c => {
+      if (!c) return false;
+      const inTok = Math.max(0, Number(c.inputTokens || 0)) + Math.max(0, Number(c.cacheCreationInputTokens ?? 0));
+      const cacheTok = Math.max(0, Number(c.cacheReadTokens ?? c.cacheTokens ?? 0));
+      const outTok = Math.max(0, Number(c.outputTokens || 0));
+      return inTok > 0 || cacheTok > 0 || outTok > 0 || String(c.status || '').toLowerCase() === 'final';
+    });
+  }
+
   function renderTurnFooterStats() {
     try {
       if (typeof document?.querySelectorAll !== 'function') return;
       const existing = document.querySelectorAll('.ag-cm-turn-footer');
       const rawCalls = Array.isArray(state.sessionCalls) ? state.sessionCalls : [];
-      if (!showTurnFooterStats || rawCalls.length === 0) {
+      if (!showTurnFooterStats) {
         existing.forEach(n => n.remove?.());
         return;
       }
@@ -38022,14 +38178,25 @@ let activeCnyTimerId = null;
         return;
       }
 
+      const mainIdentities = mainToolbars.map(extractToolbarIdentity);
+      const anyVerifiable = mainIdentities.some(id => id.hasVerifiableId);
+      if (rawCalls.length === 0 && !anyVerifiable) {
+        existing.forEach(n => n.remove?.());
+        return;
+      }
+
       const { source, turns } = buildAuthoritativeMainTurns();
       // 若主区回复条数多于已分段轮次数（或时间线滞后），后台静默拉取时间线做精确归属，绝不把旧轮次错绑到新回复
-      if (mainToolbars.length > turns.length && state.route && !state.timelineLoading && !state.timelineError && typeof fetchSessionTimeline === 'function') {
+      const triggerTimelineSync = (forceSync = false) => {
+        if (!state.route || state.timelineLoading || state.timelineError || typeof fetchSessionTimeline !== 'function') return;
         const nowTs = Date.now();
-        if (source !== 'timeline' || (nowTs - lastTurnFooterTimelineSyncAt > 3000)) {
+        if (!forceSync || (nowTs - lastTurnFooterTimelineSyncAt > 2000)) {
           lastTurnFooterTimelineSyncAt = nowTs;
-          void fetchSessionTimeline(state.route, { force: source === 'timeline' });
+          void fetchSessionTimeline(state.route, { force: forceSync });
         }
+      };
+      if (mainToolbars.length > turns.length) {
+        triggerTimelineSync(source === 'timeline');
       }
 
       const cacheFn = typeof computeCacheHitSummary === 'function' ? computeCacheHitSummary : core?.computeCacheHitSummary;
@@ -38046,6 +38213,32 @@ let activeCnyTimerId = null;
         const row = tb.firstElementChild || tb;
         toolbarWidths.set(tb, Number(row.clientWidth || tb.clientWidth || 0));
       }
+      const applySyncingToToolbar = (tb) => {
+        const row = tb.firstElementChild || tb;
+        const syncText = t('turnFooter.syncing');
+        let badge = row.querySelector?.('.ag-cm-turn-footer') || null;
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'ag-cm-turn-footer';
+          badge.setAttribute('data-ag-turn-footer', '1');
+          badge.setAttribute('role', 'status');
+          badge.tabIndex = 0;
+          row.prepend ? row.prepend(badge) : row.appendChild?.(badge);
+        }
+        badge.setAttribute('data-font-size', composerStatusFontSize);
+        badge.setAttribute('data-high-contrast', turnFooterHighContrast ? 'true' : 'false');
+        badge.setAttribute('data-sync-state', 'syncing');
+        badge.removeAttribute?.('data-turn-key');
+        badge.removeAttribute?.('data-call-id');
+        badge.removeAttribute?.('data-scope');
+        badge.removeAttribute?.('data-multi-call');
+        badge.removeAttribute?.('data-multi-model');
+        badge.__turnObj = null;
+        badge.__tb = tb;
+        if (badge.textContent !== syncText) badge.textContent = syncText;
+        if (badge.title !== syncText) badge.title = syncText;
+        if (badge.getAttribute('aria-label') !== syncText) badge.setAttribute('aria-label', syncText);
+      };
       const applyFooterToToolbar = (tb, turnObj, forceFallbackScope = false) => {
         const row = tb.firstElementChild || tb;
         const removeOld = () => {
@@ -38088,7 +38281,19 @@ let activeCnyTimerId = null;
         const rawHitPct = cs.hitPct ?? cs.cacheHitPct ?? null;
         const scopeLabel = isTurnAggregate ? t('turnFooter.scopeTurn') : t('turnFooter.scopeReq');
         const hitStr = rawHitPct !== null ? `${rawHitPct}%` : '—';
-        const mName = lastCall.attributedModelLabel || lastCall.modelLabel || lastCall.model || '';
+        const activeModels = [];
+        const seenActiveModels = new Set();
+        for (const c of activeCalls) {
+          const lbl = String(c?.attributedModelLabel || c?.modelLabel || c?.model || '').trim();
+          if (lbl && !seenActiveModels.has(lbl)) {
+            seenActiveModels.add(lbl);
+            activeModels.push(lbl);
+          }
+        }
+        const isMultiModelTurn = isTurnAggregate && activeModels.length > 1;
+        const mName = isMultiModelTurn
+          ? t('turnFooter.multiModel')
+          : (lastCall.attributedModelLabel || lastCall.modelLabel || lastCall.model || '');
         const tpsNum = typeof pickCallDisplayTps === 'function'
           ? pickCallDisplayTps(lastCall, speedDisplayMode)
           : (speedDisplayMode === 'e2e' ? (lastCall.tps ?? lastCall.streamingTps) : (lastCall.streamingTps ?? lastCall.tps));
@@ -38122,6 +38327,8 @@ let activeCnyTimerId = null;
           badge.setAttribute('role', 'button');
           badge.tabIndex = 0;
           row.prepend ? row.prepend(badge) : row.appendChild?.(badge);
+        } else if (badge.getAttribute?.('role') !== 'button') {
+          badge.setAttribute?.('role', 'button');
         }
         badge.setAttribute('data-font-size', composerStatusFontSize);
         badge.setAttribute('data-high-contrast', turnFooterHighContrast ? 'true' : 'false');
@@ -38166,13 +38373,22 @@ let activeCnyTimerId = null;
         if (badge.getAttribute('data-multi-call') !== (isMultiCall ? 'true' : 'false')) {
           badge.setAttribute('data-multi-call', isMultiCall ? 'true' : 'false');
         }
+        if (badge.getAttribute('data-multi-model') !== (isMultiModelTurn ? 'true' : 'false')) {
+          badge.setAttribute('data-multi-model', isMultiModelTurn ? 'true' : 'false');
+        }
+        if (badge.getAttribute('data-sync-state') !== 'ready') {
+          badge.setAttribute('data-sync-state', 'ready');
+        }
 
         const tp = lastCall.timestamp ? formatReqTimeParts(lastCall) : null;
         const reqTimeStr = tp?.tooltip || tp?.text || (lastCall.date || '—');
         const safeCallId = desensitizeTurnCallId(lastCall.callId);
         const tipAction = isMultiCall ? t('turnFooter.tipMulti') : t('turnFooter.tipSingle');
+        const modelTipLabel = isMultiModelTurn
+          ? `${t('turnFooter.multiModel')} · ${activeModels.join(' / ')}`
+          : (mName || '未知');
         const titleLines = [
-          `${scopeLabel}${isTurnAggregate ? ` · ${turnCalls.length} 次请求` : ''} · 模型: ${mName || '未知'}`,
+          `${scopeLabel}${isTurnAggregate ? ` · ${turnCalls.length} 次请求` : ''} · 模型: ${modelTipLabel}`,
           `请求 ID: ${safeCallId} · 时间: ${reqTimeStr}`,
           `未缓存输入: ${cs.uncachedInput.toLocaleString()} · 缓存读取: ${cs.cacheRead.toLocaleString()} · 总输入: ${cs.totalInput.toLocaleString()} · 命中 ${hitStr}`,
           `输出: ${cs.output.toLocaleString()}${tpsStr ? ` · 速度: ${tpsStr}` : ''}`,
@@ -38187,7 +38403,47 @@ let activeCnyTimerId = null;
       const M = mainToolbars.length;
       const T = turns.length;
       if (M > 0) {
-        if (M <= T) {
+        if (anyVerifiable) {
+          // Issue #140: DOM 具备可核验的回复/轮次标识（stepIndices/turnIndex/callId/cascadeId）时，
+          // 严格按标识一对一归属，绝不按数组下标错绑（杜绝错误轮次、滚动裁剪、时间线滞后导致串轮）。
+          let hasUnmatchedPending = false;
+          for (let i = 0; i < M; i++) {
+            const tb = mainToolbars[i];
+            const id = mainIdentities[i];
+            if (!id || !id.hasVerifiableId) {
+              applyFooterToToolbar(tb, null);
+              continue;
+            }
+            if (id.cascadeId && state.route && typeof sameRouteId === 'function' && !sameRouteId(id.cascadeId, state.route)) {
+              applyFooterToToolbar(tb, null);
+              continue;
+            }
+            if (id.isErrorOnly) {
+              applyFooterToToolbar(tb, null);
+              continue;
+            }
+            const tr = matchTurnByIdentity(id, turns, boundTurnKeys);
+            if (!tr) {
+              if (id.isLatest || id.hasAssistantStep || i === M - 1) {
+                hasUnmatchedPending = true;
+                applySyncingToToolbar(tb);
+              } else {
+                applyFooterToToolbar(tb, null);
+              }
+              continue;
+            }
+            if (!hasTurnConfirmedUsage(tr)) {
+              hasUnmatchedPending = true;
+              applySyncingToToolbar(tb);
+              continue;
+            }
+            if (tr.turnKey) boundTurnKeys.add(tr.turnKey);
+            applyFooterToToolbar(tb, tr);
+          }
+          if (hasUnmatchedPending) {
+            triggerTimelineSync(true);
+          }
+        } else if (M <= T) {
           // DOM 仅挂载末尾 M 条已生成回复时（如长对话虚拟滚动裁剪），从时间线尾部一对一精确对齐
           const offset = T - M;
           for (let i = 0; i < M; i++) {
@@ -72695,7 +72951,7 @@ function initCrossSessionInsightsControls() {
   }
 
   globalThis.__AGContextMeter = {
-    buildId: 'b0a64312d7920f33',
+    buildId: 'cae591d335752932',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;
