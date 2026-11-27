@@ -22521,6 +22521,8 @@ const PANEL_I18N = {
   'settings.dock.openStandaloneListOk': { 'zh-CN': '未识别到当前会话，已在外部浏览器打开看板列表.', 'zh-TW': '未識別到目前工作階段，已在外部瀏覽器開啟看板清單.', en: 'Session ID unavailable; opened dashboard list in external browser.' },
   'settings.dock.wakeAria': { 'zh-CN': '唤醒插件菜单与设置', 'zh-TW': '喚醒外掛選單與設定', en: 'Open extension menu and settings' },
   'settings.dock.wakeTitle': { 'zh-CN': '顶栏已隐藏 · 点击打开快捷菜单或恢复显示', 'zh-TW': '頂欄已隱藏 · 點擊開啟捷徑選單或恢復顯示', en: 'Topbar hidden · Click to open menu or restore' },
+  'ns.dep.topbarHidden': { 'zh-CN': '顶栏已隐藏', 'zh-TW': '頂欄已隱藏', en: 'Topbar hidden' },
+  'ns.dep.bottombarHidden': { 'zh-CN': '底栏已关闭', 'zh-TW': '底欄已關閉', en: 'Bottombar off' },
   'settings.quickSettings': { 'zh-CN': '⚙️ 配置', 'zh-TW': '⚙️ 設定', en: '⚙️ Settings' },
   'settings.backToSession': { 'zh-CN': '‹ 返回会话', 'zh-TW': '‹ 返回會話', en: '‹ Back to Session' },
   'settings.nav.appearance': { 'zh-CN': '🎨 外观与停靠', 'zh-TW': '🎨 外觀與停靠', en: '🎨 Appearance & Dock' },
@@ -56052,6 +56054,15 @@ const {
   cursor: wait;
 }
 
+.ag-ns-switch:disabled:not([aria-busy="true"]) {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ag-ns-row.is-disabled .ag-ns-row-text {
+  opacity: 0.68;
+}
+
 .ag-ns-btn,
 .ag-ns-select,
 .ag-ns-input {
@@ -58068,11 +58079,22 @@ const {
       var fb = swFbMap[swKey] || null;
       var isOn = Boolean(settings[swKey]);
       var isBusy = Boolean(fb && fb.busy);
+      var isDisabled = Boolean(isBusy || (fb && fb.disabled));
       sw.classList?.toggle?.('is-on', isOn);
       sw.setAttribute?.('aria-checked', isOn ? 'true' : 'false');
-      sw.disabled = Boolean(isBusy || (fb && fb.disabled));
+      sw.disabled = isDisabled;
       if (isBusy) sw.setAttribute?.('aria-busy', 'true');
       else sw.removeAttribute?.('aria-busy');
+
+      var rowEl = sw.closest ? sw.closest('.ag-ns-row') : null;
+      if (rowEl && rowEl.classList && typeof rowEl.classList.toggle === 'function') {
+        rowEl.classList.toggle('is-disabled', Boolean(!isBusy && fb && fb.disabled));
+      }
+      var titleEl = rowEl && rowEl.querySelector ? rowEl.querySelector('.ag-ns-row-title') : null;
+      var titleTxt = titleEl && titleEl.textContent ? String(titleEl.textContent).trim() : '';
+      if (titleTxt && sw.getAttribute?.('aria-label') !== titleTxt) {
+        sw.setAttribute?.('aria-label', titleTxt);
+      }
 
       var stEl = container.querySelector ? container.querySelector('[data-ag-ns-sw-status="' + swKey + '"]') : null;
       if (stEl) {
@@ -59761,10 +59783,16 @@ function createHostSettingsController(deps = {}) {
           },
           status: {
             switchFeedback: {
-              autoHideTopbarOnDock: buildSwFb('autoHideTopbarOnDockedPanel', autoHideTopbarOnDockedPanel),
+              autoHideTopbarOnDock: topbarMode === 'hidden'
+                ? { busy: false, tone: 'idle', text: t('ns.dep.topbarHidden'), disabled: true }
+                : buildSwFb('autoHideTopbarOnDockedPanel', autoHideTopbarOnDockedPanel),
               radialOrb: buildSwFb('radialOrbEnabled', !radialOrbHidden && radialOrbEnabled),
-              radialTopbar: buildSwFb('radialTopbarEnabled', radialTopbarEnabled),
-              radialBottombar: buildSwFb('radialBottombarEnabled', radialBottombarEnabled),
+              radialTopbar: topbarMode === 'hidden'
+                ? { busy: false, tone: 'idle', text: t('ns.dep.topbarHidden'), disabled: true }
+                : buildSwFb('radialTopbarEnabled', radialTopbarEnabled),
+              radialBottombar: !showComposerQuotaSummary
+                ? { busy: false, tone: 'idle', text: t('ns.dep.bottombarHidden'), disabled: true }
+                : buildSwFb('radialBottombarEnabled', radialBottombarEnabled),
               showComposerBar: buildSwFb('showComposerQuotaSummary', showComposerQuotaSummary),
               showTurnFooter: buildSwFb('showTurnFooterStats', showTurnFooterStats),
               turnFooterHighContrast: buildSwFb('turnFooterHighContrast', turnFooterHighContrast),
@@ -72951,7 +72979,7 @@ function initCrossSessionInsightsControls() {
   }
 
   globalThis.__AGContextMeter = {
-    buildId: 'cae591d335752932',
+    buildId: '5a400caee2a65764',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;

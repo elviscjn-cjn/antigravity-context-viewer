@@ -21728,10 +21728,16 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           },
           status: {
             switchFeedback: {
-              autoHideTopbarOnDock: buildSwFb('autoHideTopbarOnDockedPanel', autoHideTopbarOnDockedPanel),
+              autoHideTopbarOnDock: topbarMode === 'hidden'
+                ? { busy: false, tone: 'idle', text: t('ns.dep.topbarHidden'), disabled: true }
+                : buildSwFb('autoHideTopbarOnDockedPanel', autoHideTopbarOnDockedPanel),
               radialOrb: buildSwFb('radialOrbEnabled', !radialOrbHidden && radialOrbEnabled),
-              radialTopbar: buildSwFb('radialTopbarEnabled', radialTopbarEnabled),
-              radialBottombar: buildSwFb('radialBottombarEnabled', radialBottombarEnabled),
+              radialTopbar: topbarMode === 'hidden'
+                ? { busy: false, tone: 'idle', text: t('ns.dep.topbarHidden'), disabled: true }
+                : buildSwFb('radialTopbarEnabled', radialTopbarEnabled),
+              radialBottombar: !showComposerQuotaSummary
+                ? { busy: false, tone: 'idle', text: t('ns.dep.bottombarHidden'), disabled: true }
+                : buildSwFb('radialBottombarEnabled', radialBottombarEnabled),
               showComposerBar: buildSwFb('showComposerQuotaSummary', showComposerQuotaSummary),
               showTurnFooter: buildSwFb('showTurnFooterStats', showTurnFooterStats),
               turnFooterHighContrast: buildSwFb('turnFooterHighContrast', turnFooterHighContrast),

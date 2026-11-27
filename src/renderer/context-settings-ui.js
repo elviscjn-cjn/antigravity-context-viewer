@@ -439,6 +439,15 @@ const {
   cursor: wait;
 }
 
+.ag-ns-switch:disabled:not([aria-busy="true"]) {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ag-ns-row.is-disabled .ag-ns-row-text {
+  opacity: 0.68;
+}
+
 .ag-ns-btn,
 .ag-ns-select,
 .ag-ns-input {
@@ -2455,11 +2464,22 @@ const {
       var fb = swFbMap[swKey] || null;
       var isOn = Boolean(settings[swKey]);
       var isBusy = Boolean(fb && fb.busy);
+      var isDisabled = Boolean(isBusy || (fb && fb.disabled));
       sw.classList?.toggle?.('is-on', isOn);
       sw.setAttribute?.('aria-checked', isOn ? 'true' : 'false');
-      sw.disabled = Boolean(isBusy || (fb && fb.disabled));
+      sw.disabled = isDisabled;
       if (isBusy) sw.setAttribute?.('aria-busy', 'true');
       else sw.removeAttribute?.('aria-busy');
+
+      var rowEl = sw.closest ? sw.closest('.ag-ns-row') : null;
+      if (rowEl && rowEl.classList && typeof rowEl.classList.toggle === 'function') {
+        rowEl.classList.toggle('is-disabled', Boolean(!isBusy && fb && fb.disabled));
+      }
+      var titleEl = rowEl && rowEl.querySelector ? rowEl.querySelector('.ag-ns-row-title') : null;
+      var titleTxt = titleEl && titleEl.textContent ? String(titleEl.textContent).trim() : '';
+      if (titleTxt && sw.getAttribute?.('aria-label') !== titleTxt) {
+        sw.setAttribute?.('aria-label', titleTxt);
+      }
 
       var stEl = container.querySelector ? container.querySelector('[data-ag-ns-sw-status="' + swKey + '"]') : null;
       if (stEl) {
