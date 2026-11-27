@@ -330,17 +330,143 @@ function getMeterSource() {
   }
 }
 
+function isLoopbackHostname(hostname) {
+  return hostname === '127.0.0.1' || hostname === 'localhost';
+}
+
 function isLocalMainFrameSender(event) {
   try {
     const rawUrl = event?.senderFrame?.url || event?.sender?.getURL?.() || '';
     const url = new URL(rawUrl);
     const portNum = url.port ? Number(url.port) : (url.protocol === 'https:' ? 443 : (url.protocol === 'http:' ? 80 : 0));
-    if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.hostname !== '127.0.0.1' || !Number.isInteger(portNum) || portNum < 1 || portNum > 65535) return null;
+    if ((url.protocol !== 'https:' && url.protocol !== 'http:') || !isLoopbackHostname(url.hostname) || !Number.isInteger(portNum) || portNum < 1 || portNum > 65535) return null;
     if (event.senderFrame && event.sender?.mainFrame && event.senderFrame !== event.sender.mainFrame) return null;
     return url;
   } catch {
     return null;
   }
+}
+
+async function readRendererCsrfTokenFromSender(sender, expectedOrigin) {
+  if (!sender || sender.isDestroyed?.() || typeof sender.executeJavaScript !== 'function' || !expectedOrigin) {
+    return null;
+  }
+  try {
+    const curUrl = typeof sender.getURL === 'function' ? String(sender.getURL() || '') : '';
+    if (curUrl) {
+      const curOrigin = new URL(curUrl).origin;
+      if (curOrigin !== expectedOrigin) return null;
+    }
+  } catch {
+    return null;
+  }
+  const script = `(() => {
+    try {
+      if (window.location && window.location.origin !== ${JSON.stringify(expectedOrigin)}) return '';
+      const cfg = window.__APP_CONFIG__;
+      const direct = typeof cfg?.csrfToken === 'string' ? cfg.csrfToken.trim() : '';
+      if (direct) return direct;
+      for (const store of [window.localStorage, window.sessionStorage]) {
+        try {
+          const v = String(store?.getItem?.('agy_session_csrf_token') || '').trim();
+          if (v) return v;
+        } catch {}
+      }
+      return '';
+    } catch { return ''; }
+  })()`;
+  try {
+    const res = await Promise.race([
+      sender.executeJavaScript(script, true),
+      new Promise(resolve => setTimeout(() => resolve(''), 1000))
+    ]);
+    const clean = typeof res === 'string' ? res.trim() : '';
+    return clean || null;
+  } catch {
+    return null;
+  }
+}
+
+function createSenderCsrfResolver(event, expectedOrigin) {
+  const sender = event?.sender;
+  if (!sender || sender.isDestroyed?.() || typeof sender.executeJavaScript !== 'function' || !expectedOrigin) {
+    return undefined;
+  }
+  return async (targetOrigin) => {
+    if (targetOrigin && targetOrigin !== expectedOrigin) return null;
+    return readRendererCsrfTokenFromSender(sender, expectedOrigin);
+  };
+}
+
+function createSenderQuotaRpcFetcher(event, expectedOrigin) {
+  const sender = event?.sender;
+  if (!sender || sender.isDestroyed?.() || typeof sender.executeJavaScript !== 'function' || !expectedOrigin) {
+    return undefined;
+  }
+  return async (targetOrigin) => {
+    if (targetOrigin && targetOrigin !== expectedOrigin) return null;
+    if (sender.isDestroyed?.()) return null;
+    try {
+      const curUrl = typeof sender.getURL === 'function' ? String(sender.getURL() || '') : '';
+      if (curUrl && new URL(curUrl).origin !== expectedOrigin) return null;
+    } catch {
+      return null;
+    }
+    const script = `(async () => {
+      try {
+        if (window.location && window.location.origin !== ${JSON.stringify(expectedOrigin)}) return null;
+        if (typeof fetch !== 'function') return null;
+        const cfg = window.__APP_CONFIG__;
+        let csrf = typeof cfg?.csrfToken === 'string' ? cfg.csrfToken.trim() : '';
+        if (!csrf) {
+          for (const store of [window.localStorage, window.sessionStorage]) {
+            try {
+              const v = String(store?.getItem?.('agy_session_csrf_token') || '').trim();
+              if (v) { csrf = v; break; }
+            } catch {}
+          }
+        }
+        const headers = { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1' };
+        if (csrf) headers['x-codeium-csrf-token'] = csrf;
+        const callRpc = async (method) => {
+          const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+          const timer = ctrl ? setTimeout(() => ctrl.abort(), 10000) : null;
+          try {
+            const resp = await fetch('/exa.language_server_pb.LanguageServerService/' + method, {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers,
+              body: '{}',
+              ...(ctrl ? { signal: ctrl.signal } : {})
+            });
+            if (!resp || !resp.ok) return null;
+            return await resp.json();
+          } catch {
+            return null;
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
+        };
+        const [userStatusRes, quotaSummaryRes] = await Promise.all([
+          callRpc('GetUserStatus'),
+          callRpc('RetrieveUserQuotaSummary')
+        ]);
+        if (!userStatusRes && !quotaSummaryRes) return null;
+        return { userStatusRes: userStatusRes || null, quotaSummaryRes: quotaSummaryRes || null };
+      } catch {
+        return null;
+      }
+    })()`;
+    try {
+      const out = await Promise.race([
+        sender.executeJavaScript(script, true),
+        new Promise(resolve => setTimeout(() => resolve(null), 12000))
+      ]);
+      return (out && typeof out === 'object') ? out : null;
+    } catch {
+      return null;
+    }
+  };
 }
 
 function resolveTargetWindow(sender) {
@@ -732,14 +858,33 @@ function registerMeterIpcHandlers(ipcMain) {
   ipcMain.handle('context-meter:scan', async (event, id, force) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
-    try { return { ok: true, data: await collect(url.origin, id, { force: force === true, supersedePrevious: true }) }; }
+    try {
+      const resolveCsrfToken = createSenderCsrfResolver(event, url.origin);
+      const fallbackOrigins = getActiveHubWindowOrigins().filter(o => o !== url.origin);
+      return {
+        ok: true,
+        data: await collect(url.origin, id, {
+          force: force === true,
+          supersedePrevious: true,
+          ...(resolveCsrfToken ? { resolveCsrfToken } : {}),
+          allowHostOriginFallback: true,
+          fallbackOrigins
+        })
+      };
+    }
     catch (e) { return { ok: false, error: e.message }; }
   });
 
   ipcMain.handle('context-meter:turn-state', async (event, id) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
-    try { return { ok: true, data: await collectTurnState(url.origin, id) }; }
+    try {
+      const resolveCsrfToken = createSenderCsrfResolver(event, url.origin);
+      return {
+        ok: true,
+        data: await collectTurnState(url.origin, id, resolveCsrfToken ? { resolveCsrfToken } : {})
+      };
+    }
     catch (e) { return { ok: false, error: e.message }; }
   });
 
@@ -823,19 +968,30 @@ function registerMeterIpcHandlers(ipcMain) {
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
       const collector = require('./meter-collector');
+      const resolveCsrfToken = createSenderCsrfResolver(event, url.origin);
+      const rendererRpcFetcher = createSenderQuotaRpcFetcher(event, url.origin);
+      const fallbackOrigins = getActiveHubWindowOrigins().filter(o => o !== url.origin);
       const opts = {
         force: options === true || options?.force === true,
         currentModel: typeof options?.currentModel === 'string' ? options.currentModel : null,
         browsePoolKey: typeof options?.browsePoolKey === 'string' ? options.browsePoolKey : null,
         origin: url.origin,
-        backendSource: 'electron-ipc'
+        backendSource: 'electron-ipc',
+        ...(resolveCsrfToken ? { resolveCsrfToken } : {}),
+        ...(rendererRpcFetcher ? { rendererRpcFetcher } : {}),
+        allowHostOriginFallback: true,
+        fallbackOrigins
       };
       const res = await collector.fetchQuotaSnapshotFromHost(opts);
       const { _raw, ...safePayload } = res || {};
       let accountSyncResult = null;
       try {
         const { getSharedAccountsManager, deriveTrustedAutoSwitchQuotaContext } = require('./meter-accounts');
-        const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
+        const mgr = getSharedAccountsManager({
+          origin: url.origin,
+          getLiveOrigins: getActiveHubWindowOrigins,
+          ...(resolveCsrfToken ? { resolveCsrfToken } : {})
+        });
         const switchInFlight = Boolean(mgr.isSwitchInFlight?.());
         const sourceEmail = !switchInFlight
           ? (res?.email || _raw?.planStatus?.email || _raw?.userStatus?.email || _raw?.email || res?.planStatus?.email || null)
@@ -1294,7 +1450,12 @@ function registerMeterIpcHandlers(ipcMain) {
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
       const { getSharedAccountsManager } = require('./meter-accounts');
-      const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
+      const resolveCsrfToken = createSenderCsrfResolver(event, url.origin);
+      const mgr = getSharedAccountsManager({
+        origin: url.origin,
+        getLiveOrigins: getActiveHubWindowOrigins,
+        ...(resolveCsrfToken ? { resolveCsrfToken } : {})
+      });
       await mgr.detectCurrentActiveAccount();
       return mgr.getOverviewState();
     } catch (e) {
@@ -1307,7 +1468,12 @@ function registerMeterIpcHandlers(ipcMain) {
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
       const { getSharedAccountsManager, dispatchAccountsAction } = require('./meter-accounts');
-      const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
+      const resolveCsrfToken = createSenderCsrfResolver(event, url.origin);
+      const mgr = getSharedAccountsManager({
+        origin: url.origin,
+        getLiveOrigins: getActiveHubWindowOrigins,
+        ...(resolveCsrfToken ? { resolveCsrfToken } : {})
+      });
       let restartClient;
       const requiresClientRestart = isHostVersionAtLeast('2.34.0');
       if (payload?.action === 'switch' && requiresClientRestart
@@ -1435,11 +1601,11 @@ function getWindowWebContents(win) {
   try {
     const children = win.contentView?.children;
     if (Array.isArray(children)) {
-      // 优先：明确匹配本地主聊天服务地址 (http:// 或 https://127.0.0.1:<port>/)
+      // 优先：明确匹配本地主聊天服务地址 (http:// 或 https://127.0.0.1:<port>/ 或 localhost)
       for (const child of children) {
         if (child?.webContents && !child.webContents.isDestroyed?.()) {
           const url = child.webContents.getURL?.() || '';
-          if (/^https?:\/\/127\.0\.0\.1:\d+\//.test(url)) return child.webContents;
+          if (/^https?:\/\/(?:127\.0\.0\.1|localhost):\d+\//i.test(url)) return child.webContents;
         }
       }
       // 次优：若正在加载中尚未完成导航，排除明确的 data: 遮罩页 (curtainView)
@@ -1462,7 +1628,7 @@ function getActiveHubWindowOrigins() {
   const pushUrl = (rawUrl) => {
     if (!rawUrl || typeof rawUrl !== 'string') return;
     try {
-      const m = rawUrl.trim().match(/^https?:\/\/127\.0\.0\.1:\d+/i);
+      const m = rawUrl.trim().match(/^https?:\/\/(?:127\.0\.0\.1|localhost):\d+/i);
       if (!m) return;
       const o = new URL(rawUrl.trim()).origin;
       if (o && !origins.includes(o)) origins.push(o);
@@ -1509,7 +1675,7 @@ function countOpenHostWindows() {
       const wc = getWindowWebContents(win);
       if (wc && !wc.isDestroyed?.()) {
         const url = String(wc.getURL?.() || '').trim();
-        if (url && !/^https?:\/\/127\.0\.0\.1:\d+/i.test(url)) return;
+        if (url && !/^https?:\/\/(?:127\.0\.0\.1|localhost):\d+/i.test(url)) return;
         const wcId = wc.id;
         if (wcId != null) {
           if (seenWcIds.has(wcId)) return;
@@ -1568,7 +1734,7 @@ async function runEnsureMeterInjected(win, options = {}) {
       return false;
     }
     const url = wc.getURL?.() || '';
-    if (!/^https?:\/\/127\.0\.0\.1:\d+\//.test(url)) {
+    if (!/^https?:\/\/(?:127\.0\.0\.1|localhost):\d+\//i.test(url)) {
       const attempt = Number(options.attempt || 0);
       const delays = [300, 600, 1000, 1500, 2500];
       if (attempt < delays.length && win && !win.isDestroyed?.()) {
@@ -1965,7 +2131,7 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
     const wc = getWindowWebContents(w);
     if (!wc || wc.isDestroyed?.() || typeof wc.executeJavaScript !== 'function') continue;
     const rawUrl = wc.getURL?.() || '';
-    if (!/^https?:\/\/127\.0\.0\.1:\d+\//.test(rawUrl)) continue;
+    if (!/^https?:\/\/(?:127\.0\.0\.1|localhost):\d+\//i.test(rawUrl)) continue;
     try {
       activeTargets.push({ win: w, wc, origin: new URL(rawUrl).origin });
     } catch { }

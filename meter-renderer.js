@@ -3,7 +3,7 @@
   const METER_DISPLAY_VERSION = '0.9.3';
 
   'use strict';
-  if ((location.protocol !== 'https:' && location.protocol !== 'http:') || location.hostname !== '127.0.0.1') return;
+  if ((location.protocol !== 'https:' && location.protocol !== 'http:') || (location.hostname !== '127.0.0.1' && location.hostname !== 'localhost')) return;
 
   const HOT_RELOAD_SCROLL_IDS = ['panel', 'panel-tokens', 'panel-quota', 'ctx-model-list', 'view-quota', 'quota-view-body'];
 
@@ -39502,8 +39502,9 @@ let activeCnyTimerId = null;
     autoCompactCheckInFlight = true;
     lastAutoCompactCheckAt = Date.now();
     try {
+      const liveCsrf = getRendererCsrfToken();
       const ipcFn = window.contextMeterAPI?.getTurnState ? () => window.contextMeterAPI.getTurnState(route) : null;
-      const { result } = await callBackendWithPriority({ ipcCall: ipcFn, liveRoute: '/turn-state', liveBody: { id: route } });
+      const { result } = await callBackendWithPriority({ ipcCall: ipcFn, liveRoute: '/turn-state', liveBody: { id: route, ...(liveCsrf ? { csrfToken: liveCsrf } : {}) } });
       const status = String(result?.data?.cascadeStatus || '');
       if (result?.ok && result.data.conversation === route && /(?:^|_)(?:IDLE|COMPLETED|DONE|FINISHED)$/i.test(status)
         && !state.disposed && state.route === route && autoCompactEnabled) await requestOfficialCompact(true);
@@ -65500,6 +65501,10 @@ function initCrossSessionInsightsControls() {
       const stored = typeof window !== 'undefined' ? window.localStorage?.getItem?.('agy_session_csrf_token') : null;
       if (typeof stored === 'string' && stored.trim()) return stored.trim();
     } catch { }
+    try {
+      const sessStored = typeof window !== 'undefined' ? window.sessionStorage?.getItem?.('agy_session_csrf_token') : null;
+      if (typeof sessStored === 'string' && sessStored.trim()) return sessStored.trim();
+    } catch { }
     return '';
   }
 
@@ -65836,10 +65841,11 @@ function initCrossSessionInsightsControls() {
       state.controllers.add(controller);
       const timeout = setTimeout(() => controller.abort(), 180000);
       try {
+        const liveCsrf = getRendererCsrfToken();
         const out = await callBackendWithPriority({
           ipcCall: hasIpcScan ? () => window.contextMeterAPI.scan(id, force) : null,
           liveRoute: '/scan',
-          liveBody: { id, force },
+          liveBody: { id, force, ...(liveCsrf ? { csrfToken: liveCsrf } : {}) },
           liveFetchOpts: { signal: controller.signal }
         });
         result = out.result;
@@ -68824,6 +68830,7 @@ function initCrossSessionInsightsControls() {
           quotaAbortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
           const isGeneratingNow = hasActiveCompactionOrGeneration();
           const hasDraftNow = Boolean(autoSwitchDraftDirty || accountsUiState.autoSwitchDraft?.dirty || hasUnsavedChatComposerDraft());
+          const liveCsrf = getRendererCsrfToken();
           const out = await callBackendWithPriority({
             ipcCall: hasIpcGetQuota ? () => window.contextMeterAPI.getQuota({ force: Boolean(force), isGenerating: isGeneratingNow, hasUnsavedDraft: hasDraftNow }) : null,
             liveRoute: '/quota',
@@ -68831,7 +68838,8 @@ function initCrossSessionInsightsControls() {
               force: Boolean(force),
               isGenerating: isGeneratingNow,
               hasUnsavedDraft: hasDraftNow,
-              origin: typeof window !== 'undefined' ? (window.location?.origin || undefined) : undefined
+              origin: typeof window !== 'undefined' ? (window.location?.origin || undefined) : undefined,
+              ...(liveCsrf ? { csrfToken: liveCsrf } : {})
             },
             liveFetchOpts: { signal: quotaAbortController?.signal }
           });
@@ -71152,7 +71160,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   }
 
   globalThis.__AGContextMeter = {
-    buildId: '6fa9255b969466ee',
+    buildId: '0cc558362e5fb873',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;

@@ -8,7 +8,7 @@ const net = require('net');
 const crypto = require('crypto');
 const { getAppDataDir, isIsolatedTestPath } = require('./asar-engine');
 
-const LOOPBACK_ORIGIN_RE = /^https?:\/\/127\.0\.0\.1:(\d+)$/;
+const LOOPBACK_ORIGIN_RE = /^https?:\/\/(?:127\.0\.0\.1|localhost):(\d+)$/i;
 
 /**
  * 常用本地调试候选端口（兼容 antigravity-hans / 手动 --remote-debugging-port 启动场景）
@@ -599,7 +599,7 @@ function defaultIsPidAlive(pid) {
 }
 
 /**
- * 扫描本地 ~/.gemini/antigravity/daemon/hub_*.json，返回存活进程对应的回环原点与 CSRF 凭据（按最新修改时间排序）。
+ * 扫描本地 ~/.gemini/antigravity/daemon/hub_*.json 与 ls_*.json，返回存活进程对应的回环原点与 CSRF 凭据（按最新修改时间排序，同时间优先 hub_）。
  * 测试隔离环境下除非显式提供 daemonDir / homeDir，否则拒绝读取宿主机真实 daemon 目录。
  */
 function discoverLiveDaemonHubs(options = {}) {
@@ -614,7 +614,9 @@ function discoverLiveDaemonHubs(options = {}) {
     if (!fs.existsSync(daemonDir)) return out;
     const files = fs.readdirSync(daemonDir);
     for (const name of files) {
-      if (!/^hub_.*\.json$/i.test(name)) continue;
+      const isHubFile = /^hub_.*\.json$/i.test(name);
+      const isLsFile = /^ls_.*\.json$/i.test(name);
+      if (!isHubFile && !isLsFile) continue;
       const filePath = path.join(daemonDir, name);
       try {
         const st = fs.statSync(filePath);
@@ -641,12 +643,13 @@ function discoverLiveDaemonHubs(options = {}) {
           csrfToken,
           pid,
           filePath,
+          kind: isHubFile ? 'hub' : 'ls',
           mtimeMs: Number(st.mtimeMs) || 0
         });
       } catch {}
     }
   } catch {}
-  out.sort((a, b) => (b.mtimeMs - a.mtimeMs) || ((b.httpsPort || 0) - (a.httpsPort || 0)));
+  out.sort((a, b) => (b.mtimeMs - a.mtimeMs) || ((b.kind === 'hub' ? 1 : 0) - (a.kind === 'hub' ? 1 : 0)) || ((b.httpsPort || 0) - (a.httpsPort || 0)));
   return out;
 }
 
@@ -692,6 +695,20 @@ function loadHostAuthBootstrap(options = {}) {
   return { origin: activeOrigin, csrfToken: token };
 }
 
+function isSameLoopbackEndpoint(rawOriginA, rawOriginB) {
+  const normA = normalizeLoopbackOrigin(rawOriginA);
+  const normB = normalizeLoopbackOrigin(rawOriginB);
+  if (!normA || !normB) return false;
+  if (normA === normB) return true;
+  try {
+    const uA = new URL(normA);
+    const uB = new URL(normB);
+    return uA.protocol === uB.protocol && uA.port === uB.port;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 在请求原点与当前宿主 Language Server 回环原点严格一致时，返回主进程内存中的 CSRF Token。
  * 绝不跨端口或对非回环地址返回凭据，也不落盘或打印日志。
@@ -700,19 +717,19 @@ function resolveAuthBootstrapForOrigin(rawOrigin, options = {}) {
   const safeOrigin = normalizeLoopbackOrigin(rawOrigin);
   if (!safeOrigin) return null;
   const auth = loadHostAuthBootstrap(options);
-  if (!auth || auth.origin !== safeOrigin) return null;
+  if (!auth || !isSameLoopbackEndpoint(auth.origin, safeOrigin)) return null;
   return auth.csrfToken;
 }
 
 /**
- * 从存活的 daemon/hub_*.json 中按精确回环原点匹配 CSRF Token。
+ * 从存活的 daemon/hub_*.json 与 ls_*.json 中按精确回环端口匹配 CSRF Token。
  */
 function resolveDaemonHubForOrigin(rawOrigin, options = {}) {
   const safeOrigin = normalizeLoopbackOrigin(rawOrigin);
   if (!safeOrigin) return null;
   const hubs = discoverLiveDaemonHubs(options);
   for (const hub of hubs) {
-    if (hub.httpsOrigin === safeOrigin || hub.httpOrigin === safeOrigin) {
+    if (isSameLoopbackEndpoint(hub.httpsOrigin, safeOrigin) || isSameLoopbackEndpoint(hub.httpOrigin, safeOrigin)) {
       return hub.csrfToken;
     }
   }
@@ -720,7 +737,7 @@ function resolveDaemonHubForOrigin(rawOrigin, options = {}) {
 }
 
 /**
- * 为指定回环原点解析非 HTML 来源的 Antigravity 2.34.0+ 本地 CSRF Token（优先主进程 authBootstrap，其次精确匹配的存活 daemon/hub_*.json）。
+ * 为指定回环原点解析非 HTML 来源的 Antigravity 2.34.0+ 本地 CSRF Token（优先主进程 authBootstrap，其次精确匹配的存活 daemon/hub_*.json 或 ls_*.json）。
  */
 function resolveOriginCsrfToken(rawOrigin, options = {}) {
   const safeOrigin = normalizeLoopbackOrigin(rawOrigin);
@@ -737,7 +754,7 @@ async function extractAppConfigViaCdp(page) {
       'Runtime.evaluate',
       {
         expression:
-          '(() => { try { const cfg = window.__APP_CONFIG__; const direct = typeof cfg?.csrfToken === "string" ? cfg.csrfToken.trim() : ""; let stored = ""; try { stored = String(window.localStorage?.getItem?.("agy_session_csrf_token") || "").trim(); } catch {} if (!cfg && !stored) return null; return { hasConfig: Boolean(cfg || stored), csrfToken: direct || stored }; } catch (e) { return null; } })()',
+          '(() => { try { const cfg = window.__APP_CONFIG__; const direct = typeof cfg?.csrfToken === "string" ? cfg.csrfToken.trim() : ""; let stored = ""; try { stored = String(window.localStorage?.getItem?.("agy_session_csrf_token") || "").trim(); } catch {} if (!stored) { try { stored = String(window.sessionStorage?.getItem?.("agy_session_csrf_token") || "").trim(); } catch {} } if (!cfg && !stored) return null; return { hasConfig: Boolean(cfg || stored), csrfToken: direct || stored }; } catch (e) { return null; } })()',
         returnByValue: true
       },
       3000
@@ -787,6 +804,7 @@ async function connectOrigin(rawOrigin, page = null, origins = null, extraMeta =
     }
 
     const canUseHostAuthFallback = !htmlFetchErr || /^HTTP 40[13]\b/.test(String(htmlFetchErr.message || ''));
+    const canUseExplicitOriginAuth = canUseHostAuthFallback || /^HTTP 404\b/.test(String(htmlFetchErr?.message || ''));
     if (!token && canUseHostAuthFallback) {
       const bootstrapToken = resolveAuthBootstrapForOrigin(origin, mergedMeta);
       if (bootstrapToken) {
@@ -800,6 +818,20 @@ async function connectOrigin(rawOrigin, page = null, origins = null, extraMeta =
         token = daemonToken;
         hasConfig = true;
       }
+    }
+    if (!token && canUseExplicitOriginAuth && typeof mergedMeta.resolveCsrfToken === 'function') {
+      try {
+        const resolvedToken = await mergedMeta.resolveCsrfToken(origin);
+        const cleanResolved = typeof resolvedToken === 'string' ? resolvedToken.trim() : '';
+        if (cleanResolved) {
+          token = cleanResolved;
+          hasConfig = true;
+        }
+      } catch {}
+    }
+    if (!token && canUseExplicitOriginAuth && typeof mergedMeta.csrfToken === 'string' && mergedMeta.csrfToken.trim()) {
+      token = mergedMeta.csrfToken.trim();
+      hasConfig = true;
     }
 
     if (!hasConfig && !token && htmlFetchErr) {
@@ -911,10 +943,12 @@ async function connect(options = {}) {
 module.exports = {
   connect,
   connectOrigin,
+  loadHostAuthBootstrap,
   resolveOriginCsrfToken,
   resolveAuthBootstrapForOrigin,
   resolveDaemonHubForOrigin,
   discoverLiveDaemonHubs,
+  isSameLoopbackEndpoint,
   normalizeLoopbackOrigin,
   parseExplicitPort,
   getAppDataDir,

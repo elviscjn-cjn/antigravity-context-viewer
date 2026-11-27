@@ -672,12 +672,19 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
         if (req.url === '/quota') {
           const reqTargetOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
           const targetOrigin = allowedSet.has(reqTargetOrigin) ? reqTargetOrigin : reqOrigin;
+          const safeCsrfToken = (targetOrigin === reqOrigin && typeof request?.csrfToken === 'string' && request.csrfToken.trim())
+            ? request.csrfToken.trim()
+            : undefined;
+          const fallbackOrigins = Array.from(allowedSet).filter(o => o !== targetOrigin);
           const resData = await fetchQuotaSnapshotFromHost({
             force: request.force === true,
             origin: targetOrigin,
             backendSource: 'live-host',
             currentModel: request.currentModel || null,
-            browsePoolKey: request.browsePoolKey || null
+            browsePoolKey: request.browsePoolKey || null,
+            ...(safeCsrfToken ? { csrfToken: safeCsrfToken } : {}),
+            allowHostOriginFallback: true,
+            fallbackOrigins
           });
           const { _raw, ...safeData } = resData || {};
           let accountSyncResult = null;
@@ -748,8 +755,11 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
         }
         const scanOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
         const effectiveOrigin = allowedSet.has(scanOrigin) ? scanOrigin : reqOrigin;
+        const effectiveCsrfToken = (effectiveOrigin === reqOrigin && typeof request?.csrfToken === 'string' && request.csrfToken.trim())
+          ? request.csrfToken.trim()
+          : undefined;
         if (req.url === '/turn-state') {
-          const data = await collectTurnState(effectiveOrigin, request.id);
+          const data = await collectTurnState(effectiveOrigin, request.id, effectiveCsrfToken ? { csrfToken: effectiveCsrfToken } : {});
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({
             ok: true,
@@ -787,7 +797,12 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           res.end(JSON.stringify({ ...predRes, backendVersion: PROJECT_VERSION, backendSource: 'live-host' }));
           return;
         }
-        const data = await collect(effectiveOrigin, request.id, { force: request.force === true });
+        const data = await collect(effectiveOrigin, request.id, {
+          force: request.force === true,
+          ...(effectiveCsrfToken ? { csrfToken: effectiveCsrfToken } : {}),
+          allowHostOriginFallback: true,
+          fallbackOrigins: Array.from(allowedSet).filter(o => o !== effectiveOrigin)
+        });
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({
           ok: true,
@@ -844,7 +859,7 @@ function discoverCdpPageOrigins() {
             const pages = JSON.parse(d);
             const list = Array.from(new Set(
               (Array.isArray(pages) ? pages : [])
-                .filter(item => item && item.type === 'page' && /^https?:\/\/127\.0\.0\.1:\d+\//.test(item.url))
+                .filter(item => item && item.type === 'page' && /^https?:\/\/(?:127\.0\.0\.1|localhost):\d+\//i.test(item.url))
                 .map(item => normalizeLoopbackOrigin(item.url))
                 .filter(Boolean)
             ));
