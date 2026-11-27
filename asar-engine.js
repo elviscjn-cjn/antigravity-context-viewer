@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const { execFileSync } = require('child_process');
 
 function getRawFs() {
   if (typeof process !== 'undefined' && process.versions && process.versions.electron) {
@@ -43,20 +44,26 @@ function getNode(header, relPath) {
   return cur;
 }
 
+function resolveUnpackedSource(archivePath, relPath, rawFs, options = {}) {
+  const direct = path.join(archivePath + '.unpacked', relPath);
+  if (rawFs.existsSync(direct)) return direct;
+  const sibling = path.join(path.dirname(archivePath), 'app.asar.unpacked', relPath);
+  if (rawFs.existsSync(sibling)) return sibling;
+  try {
+    const mainAsar = findAsarPath(options.fallbackAsarPath || undefined, options);
+    const candidate = path.join(mainAsar + '.unpacked', relPath);
+    if (rawFs.existsSync(candidate)) return candidate;
+  } catch {}
+  return direct;
+}
+
 const builtinAsar = {
-  extractFile(archivePath, relPath) {
+  extractFile(archivePath, relPath, options = {}) {
     const rawFs = getRawFs();
     const { header, baseOffset } = readHeader(archivePath);
     const node = getNode(header, relPath);
     if (node.unpacked) {
-      let unpackedSrc = path.join(archivePath + '.unpacked', relPath);
-      if (!rawFs.existsSync(unpackedSrc)) {
-        try {
-          const mainAsar = findAsarPath();
-          const candidate = path.join(mainAsar + '.unpacked', relPath);
-          if (rawFs.existsSync(candidate)) unpackedSrc = candidate;
-        } catch {}
-      }
+      const unpackedSrc = resolveUnpackedSource(archivePath, relPath, rawFs, options);
       if (rawFs.existsSync(unpackedSrc)) {
         return rawFs.readFileSync(unpackedSrc);
       }
@@ -91,7 +98,7 @@ const builtinAsar = {
     return list;
   },
 
-  extractAll(archivePath, destDir) {
+  extractAll(archivePath, destDir, options = {}) {
     const rawFs = getRawFs();
     const { header, baseOffset } = readHeader(archivePath);
     const fd = rawFs.openSync(archivePath, 'r');
@@ -104,14 +111,7 @@ const builtinAsar = {
           if (info.files) {
             walk(info, targetPath, relPath);
           } else if (info.unpacked) {
-            let unpackedSrc = path.join(archivePath + '.unpacked', relPath);
-            if (!rawFs.existsSync(unpackedSrc)) {
-              try {
-                const mainAsar = findAsarPath();
-                const candidate = path.join(mainAsar + '.unpacked', relPath);
-                if (rawFs.existsSync(candidate)) unpackedSrc = candidate;
-              } catch {}
-            }
+            const unpackedSrc = resolveUnpackedSource(archivePath, relPath, rawFs, options);
             if (rawFs.existsSync(unpackedSrc)) {
               fs.mkdirSync(path.dirname(targetPath), { recursive: true });
               rawFs.copyFileSync(unpackedSrc, targetPath);
@@ -293,22 +293,142 @@ function isIsolatedTestPath(targetPath) {
 }
 
 /**
+ * 将用户传入或系统探测到的安装目录、可执行文件或 app.asar 路径规范化为真实存在的 app.asar 文件路径
+ */
+function normalizeAsarPathCandidate(inputPath, rawFs = getRawFs()) {
+  if (!inputPath || typeof inputPath !== 'string') return null;
+  const cleaned = inputPath
+    .trim()
+    .replace(/,\s*-?\d+$/, '')
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .trim();
+  if (!cleaned) return null;
+  const resolved = path.resolve(cleaned);
+  try {
+    if (!rawFs.existsSync(resolved)) return null;
+    const st = rawFs.statSync(resolved);
+    if (st.isDirectory()) {
+      const dirCandidates = [
+        path.join(resolved, 'Contents', 'Resources', 'app.asar'),
+        path.join(resolved, 'resources', 'app.asar'),
+        path.join(resolved, 'Resources', 'app.asar'),
+        path.join(resolved, 'app.asar')
+      ];
+      for (const p of dirCandidates) {
+        if (rawFs.existsSync(p) && !rawFs.statSync(p).isDirectory()) return path.resolve(p);
+      }
+      return null;
+    }
+    if (resolved.toLowerCase().endsWith('.asar')) {
+      return resolved;
+    }
+    const exeDir = path.dirname(resolved);
+    const exeCandidates = [
+      path.join(exeDir, 'resources', 'app.asar'),
+      path.join(exeDir, '..', 'Resources', 'app.asar'),
+      path.join(exeDir, 'app.asar')
+    ];
+    for (const p of exeCandidates) {
+      if (rawFs.existsSync(p) && !rawFs.statSync(p).isDirectory()) return path.resolve(p);
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * 只读读取持久化配置中保存的自定义 Antigravity 安装路径（损坏或缺失时静默返回 null）
+ */
+function getSavedCustomAsarPath(options = {}) {
+  const rawFs = getRawFs();
+  try {
+    const home = options.homeDir || process.env.USERPROFILE || os.homedir();
+    const agDir = options.agDir
+      || (process.env.AG_DIR ? path.resolve(process.env.AG_DIR) : path.join(home, '.gemini', 'antigravity'));
+    const cfgPath = agDir.endsWith('.json') ? agDir : path.join(agDir, 'custom_plan_v1.json');
+    if (!rawFs.existsSync(cfgPath)) return null;
+    const raw = JSON.parse(rawFs.readFileSync(cfgPath, 'utf8'));
+    const saved = raw?.uiPreferences?.customInstallPath || raw?.customInstallPath || '';
+    if (typeof saved !== 'string' || !saved.trim()) return null;
+    return normalizeAsarPathCandidate(saved, rawFs);
+  } catch {}
+  return null;
+}
+
+/**
+ * 兜底探测运行中的 Antigravity 进程路径、系统注册表或标准可执行入口
+ */
+function probeInstalledAsarPaths(options = {}) {
+  const rawFs = getRawFs();
+  const platform = options.platform || process.platform;
+  if (typeof options._probeSystemPaths === 'function') {
+    try {
+      const probed = options._probeSystemPaths(platform);
+      const list = Array.isArray(probed) ? probed : (probed ? [probed] : []);
+      for (const item of list) {
+        const norm = normalizeAsarPathCandidate(item, rawFs);
+        if (norm) return norm;
+      }
+    } catch {}
+    return null;
+  }
+  if (
+    options.disableSystemProbe === true ||
+    process.env.AG_METER_DISABLE_SYSTEM_PROBE === '1' ||
+    process.env.AG_METER_TEST_MODE === '1' ||
+    process.env.NODE_ENV === 'test'
+  ) {
+    return null;
+  }
+  const candidates = [];
+  try {
+    if (platform === 'win32') {
+      const psScript = [
+        "$p = @(Get-Process -Name 'Antigravity' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path -Unique);",
+        "$r = @('HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*') | ForEach-Object { Get-ItemProperty $_ -ErrorAction SilentlyContinue } | Where-Object { $_.DisplayName -like '*Antigravity*' } | ForEach-Object { $_.InstallLocation; $_.DisplayIcon };",
+        "@($p + $r) | Where-Object { $_ } | Select-Object -Unique"
+      ].join(' ');
+      const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psScript], {
+        timeout: 2500,
+        encoding: 'utf8',
+        windowsHide: true
+      });
+      for (const line of String(out || '').split(/\r?\n/)) {
+        if (line.trim()) candidates.push(line.trim());
+      }
+    } else if (platform === 'darwin') {
+      const out = execFileSync('ps', ['-axo', 'comm='], { timeout: 2000, encoding: 'utf8' });
+      for (const line of String(out || '').split(/\r?\n/)) {
+        if (/antigravity(?:\s+ide)?\.app\/contents\/macos\//i.test(line)) {
+          candidates.push(line.trim());
+        }
+      }
+    } else {
+      const out = execFileSync('which', ['antigravity'], { timeout: 2000, encoding: 'utf8' });
+      for (const line of String(out || '').split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        candidates.push(trimmed);
+        try { candidates.push(rawFs.realpathSync(trimmed)); } catch {}
+      }
+    }
+  } catch {}
+  for (const item of candidates) {
+    const norm = normalizeAsarPathCandidate(item, rawFs);
+    if (norm) return norm;
+  }
+  return null;
+}
+
+/**
  * 探测本机 Antigravity 宿主 app.asar 安装路径（纯路径定位，无安装副作用）
  */
-function findAsarPath(customPath) {
+function findAsarPath(customPath, options = {}) {
   const rawFs = getRawFs();
   const explicitPath = customPath || (process.env.AG_ASAR_PATH ? String(process.env.AG_ASAR_PATH).trim() : '');
   if (explicitPath) {
-    let resolved = path.resolve(explicitPath);
-    if (rawFs.existsSync(resolved) && rawFs.statSync(resolved).isDirectory()) {
-      const inMacBundle = path.join(resolved, 'Contents', 'Resources', 'app.asar');
-      if (rawFs.existsSync(inMacBundle)) return inMacBundle;
-      const inRes = path.join(resolved, 'resources', 'app.asar');
-      if (rawFs.existsSync(inRes)) return inRes;
-      const direct = path.join(resolved, 'app.asar');
-      if (rawFs.existsSync(direct)) return direct;
-    }
-    if (rawFs.existsSync(resolved)) return resolved;
+    const normalized = normalizeAsarPathCandidate(explicitPath, rawFs);
+    if (normalized) return normalized;
     throw new Error(`Could not find app.asar at specified path: ${explicitPath}`);
   }
   // 若在 Electron 宿主运行时内部被调用，优先定位宿主自身捆绑的 resources/app.asar 或 Contents/Resources/app.asar
@@ -322,9 +442,13 @@ function findAsarPath(customPath) {
       if (rawFs.existsSync(hostAsar)) return path.resolve(hostAsar);
     }
   }
-  const home = os.homedir();
+  const savedCustom = getSavedCustomAsarPath(options);
+  if (savedCustom) return savedCustom;
+
+  const home = options.homeDir || os.homedir();
+  const platform = options.platform || process.platform;
   const candidates = [];
-  if (process.platform === 'win32') {
+  if (platform === 'win32') {
     const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
     const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
     candidates.push(
@@ -333,7 +457,7 @@ function findAsarPath(customPath) {
       path.join(programFiles, 'Google Antigravity', 'resources', 'app.asar'),
       path.join(home, 'AppData', 'Roaming', 'antigravity', 'resources', 'app.asar')
     );
-  } else if (process.platform === 'darwin') {
+  } else if (platform === 'darwin') {
     candidates.push(
       '/Applications/Antigravity.app/Contents/Resources/app.asar',
       path.join(home, 'Applications', 'Antigravity.app', 'Contents', 'Resources', 'app.asar'),
@@ -353,6 +477,8 @@ function findAsarPath(customPath) {
   for (const p of candidates) {
     if (rawFs.existsSync(p)) return p;
   }
+  const probed = probeInstalledAsarPaths(options);
+  if (probed) return probed;
   throw new Error('Could not auto-detect Antigravity installation (app.asar). Use --path <path-to-app.asar>.');
 }
 
@@ -375,4 +501,16 @@ function collectUnpackedPaths(asarLib, archivePath) {
   return unpacked;
 }
 
-module.exports = { loadAsarEngine, builtinAsar, collectUnpackedPaths, getRawFs, getStateDir, getAppDataDir, isIsolatedTestPath, findAsarPath };
+module.exports = {
+  loadAsarEngine,
+  builtinAsar,
+  collectUnpackedPaths,
+  getRawFs,
+  getStateDir,
+  getAppDataDir,
+  isIsolatedTestPath,
+  normalizeAsarPathCandidate,
+  getSavedCustomAsarPath,
+  probeInstalledAsarPaths,
+  findAsarPath
+};

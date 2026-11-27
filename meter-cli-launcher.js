@@ -420,7 +420,36 @@ function resolveCliExecutable(customCliPath, options = {}) {
 
   const candidates = [];
   if (env.AG_CLI_PATH) candidates.push({ p: env.AG_CLI_PATH, src: 'env_AG_CLI_PATH' });
+
+  // 透传自定义或探测到的 Antigravity 安装路径，避免非 C 盘安装时漏检 CLI
+  let resolvedInstallRoot = null;
+  try {
+    const { normalizeAsarPathCandidate, getSavedCustomAsarPath, findAsarPath } = require('./asar-engine');
+    const explicitInstall = options.customInstallPath || env.AG_ASAR_PATH || null;
+    const asarFile = explicitInstall
+      ? normalizeAsarPathCandidate(String(explicitInstall))
+      : (getSavedCustomAsarPath({ homeDir: home, agDir: options.agDir }) || findAsarPath(null, { homeDir: home, agDir: options.agDir, disableSystemProbe: true }));
+    if (asarFile) {
+      const parent = path.dirname(asarFile);
+      const base = path.basename(parent).toLowerCase();
+      if (base === 'resources') {
+        const up = path.dirname(parent);
+        resolvedInstallRoot = path.basename(up).toLowerCase() === 'contents' ? path.dirname(up) : up;
+      } else {
+        resolvedInstallRoot = parent;
+      }
+    }
+  } catch {}
+
   if (platform === 'win32') {
+    if (resolvedInstallRoot) {
+      candidates.push(
+        { p: path.join(resolvedInstallRoot, 'bin', 'agy.exe'), src: 'install_root_bin_exe' },
+        { p: path.join(resolvedInstallRoot, 'bin', 'agy.cmd'), src: 'install_root_bin_cmd' },
+        { p: path.join(resolvedInstallRoot, 'resources', 'bin', 'agy.exe'), src: 'install_resources_bin_exe' },
+        { p: path.join(resolvedInstallRoot, 'resources', 'app', 'bin', 'agy.exe'), src: 'install_app_bin_exe' }
+      );
+    }
     candidates.push(
       { p: path.join(home, '.gemini', 'antigravity', 'bin', 'agy.exe'), src: 'gemini_bin_exe' },
       { p: path.join(home, '.gemini', 'bin', 'agy.exe'), src: 'gemini_cli_bin_exe' },
@@ -434,7 +463,7 @@ function resolveCliExecutable(customCliPath, options = {}) {
     );
   } else if (platform === 'darwin') {
     const appRoots = Array.isArray(options.macAppRoots)
-      ? options.macAppRoots
+      ? [...options.macAppRoots]
       : [
           '/Applications/Antigravity.app',
           path.join(home, 'Applications', 'Antigravity.app'),
@@ -443,6 +472,9 @@ function resolveCliExecutable(customCliPath, options = {}) {
           '/Applications/Google Antigravity.app',
           path.join(home, 'Applications', 'Google Antigravity.app')
         ];
+    if (resolvedInstallRoot && !appRoots.includes(resolvedInstallRoot)) {
+      appRoots.unshift(resolvedInstallRoot);
+    }
     for (const appRoot of appRoots) {
       candidates.push(
         { p: path.join(appRoot, 'Contents', 'Resources', 'app', 'bin', 'agy'), src: 'mac_app_bin' },
@@ -457,6 +489,12 @@ function resolveCliExecutable(customCliPath, options = {}) {
       { p: '/usr/local/bin/agy', src: 'usr_local_bin' }
     );
   } else {
+    if (resolvedInstallRoot) {
+      candidates.push(
+        { p: path.join(resolvedInstallRoot, 'bin', 'agy'), src: 'install_root_bin' },
+        { p: path.join(resolvedInstallRoot, 'resources', 'bin', 'agy'), src: 'install_resources_bin' }
+      );
+    }
     candidates.push(
       { p: path.join(home, '.gemini', 'antigravity', 'bin', 'agy'), src: 'gemini_bin' },
       { p: path.join(home, '.gemini', 'bin', 'agy'), src: 'gemini_cli_bin' },

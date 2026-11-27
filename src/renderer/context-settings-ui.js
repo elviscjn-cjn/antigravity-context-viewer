@@ -1730,6 +1730,19 @@ const {
         <div id="ag-hs-diag-summary" class="ag-ns-note-box"></div>
       </div>
 
+      <div class="ag-ns-row ag-ns-row-stack">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="ns.installPath.title">Antigravity 安装路径</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.installPath.desc">非默认目录安装时，填写安装根目录或 resources/app.asar 路径，留空恢复自动探测</div>
+        </div>
+        <div class="ag-ns-control ag-ns-control-wide">
+          <input type="text" id="ag-ns-input-customInstallPath" class="ag-ns-input" data-ag-ns-input="customInstallPath" data-i18n-placeholder="ns.installPath.placeholder" placeholder="自动探测（可填如 F:\Apps\Antigravity）" />
+          <button type="button" class="ag-ns-btn is-primary" data-ag-ns-action="applyCustomInstallPath" data-i18n="ns.installPath.save">保存路径</button>
+          <button type="button" class="ag-ns-btn" data-ag-ns-action="clearCustomInstallPath" data-i18n="ns.installPath.clear">恢复自动探测</button>
+        </div>
+        <div id="ag-ns-install-path-feedback" class="ag-ns-note-box" hidden></div>
+      </div>
+
       <div class="ag-ns-row">
         <div class="ag-ns-row-text">
           <div class="ag-ns-row-title" data-i18n="ns.clearCache.title">清理本地统计缓存</div>
@@ -2372,6 +2385,11 @@ const {
           if (actionName === 'applyProxy' || actionName === 'testProxy') {
             var proxyInput = byId(root, 'ag-ns-input-proxyUrl');
             payload = { proxyUrl: proxyInput ? String(proxyInput.value || '').trim() : '' };
+          } else if (actionName === 'applyCustomInstallPath') {
+            var pathInput = byId(root, 'ag-ns-input-customInstallPath');
+            payload = { customInstallPath: pathInput ? String(pathInput.value || '').trim() : '' };
+          } else if (actionName === 'clearCustomInstallPath') {
+            payload = { customInstallPath: '' };
           }
           if (typeof cbs.onAction === 'function') {
             cbs.onAction(actionName, payload);
@@ -2448,6 +2466,21 @@ const {
     var proxyInput = byId(root, 'ag-ns-input-proxyUrl');
     if (proxyInput && typeof settings.proxyUrl === 'string' && root.activeElement !== proxyInput) {
       if (proxyInput.value !== settings.proxyUrl) proxyInput.value = settings.proxyUrl;
+    }
+
+    var installPathInput = byId(root, 'ag-ns-input-customInstallPath');
+    if (installPathInput && typeof settings.customInstallPath === 'string' && root.activeElement !== installPathInput) {
+      if (installPathInput.value !== settings.customInstallPath) installPathInput.value = settings.customInstallPath;
+    }
+    var installPathFb = byId(root, 'ag-ns-install-path-feedback');
+    if (installPathFb) {
+      if (status.customInstallPathFeedback) {
+        installPathFb.hidden = false;
+        installPathFb.textContent = status.customInstallPathFeedback;
+        installPathFb.className = 'ag-ns-note-box ' + (status.customInstallPathFeedbackOk === false ? 'is-error' : (status.customInstallPathFeedbackOk === true ? 'is-ok' : ''));
+      } else {
+        installPathFb.hidden = true;
+      }
     }
 
     var thInput = byId(root, 'ag-ns-inp-autoSwitchThreshold');

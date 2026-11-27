@@ -1118,4 +1118,91 @@ test('meter-main IPC 与 live-host 兼容 localhost 远程回环窗口并安全�
   assert.equal(typeof capturedOpts.rendererRpcFetcher, 'function');
   assert.equal(await capturedOpts.resolveCsrfToken(remoteOrigin), 'sender-live-csrf-token');
   assert.equal(await capturedOpts.resolveCsrfToken('http://127.0.0.1:41234'), null, 'resolveCsrfToken 严禁跨 origin 返回令牌');
+test('Issues #109 & #116: 非默认安装路径探测、自定义路径持久化校验、.unpacked 透传与原生设置入口', async (t) => {
+  const {
+    normalizeAsarPathCandidate,
+    getSavedCustomAsarPath,
+    probeInstalledAsarPaths,
+    findAsarPath
+  } = require('./asar-engine');
+  const collector = require('./meter-collector');
+  const contextSettingsUi = require('./src/renderer/context-settings-ui');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-custom-path-'));
+  const prevAgAsar = process.env.AG_ASAR_PATH;
+  delete process.env.AG_ASAR_PATH;
+  t.after(() => {
+    if (prevAgAsar === undefined) delete process.env.AG_ASAR_PATH;
+    else process.env.AG_ASAR_PATH = prevAgAsar;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // 1. 构造非默认盘/自定义安装目录及 .unpacked 文件
+  const customRoot = path.join(tmpDir, 'CustomDriveApps', 'Antigravity');
+  const customRes = path.join(customRoot, 'resources');
+  const customUnpacked = path.join(customRes, 'app.asar.unpacked', 'node_modules', 'native.txt');
+  fs.mkdirSync(path.dirname(customUnpacked), { recursive: true });
+  fs.writeFileSync(customUnpacked, 'NATIVE_UNPACKED_OK', 'utf8');
+  const fakeExe = path.join(customRoot, 'Antigravity.exe');
+  fs.writeFileSync(fakeExe, 'stub', 'utf8');
+
+  const packSrc = path.join(tmpDir, 'pack-src');
+  fs.mkdirSync(path.join(packSrc, 'node_modules'), { recursive: true });
+  fs.writeFileSync(path.join(packSrc, 'package.json'), '{"name":"antigravity","version":"2.35.2"}', 'utf8');
+  fs.writeFileSync(path.join(packSrc, 'node_modules', 'native.txt'), 'NATIVE_UNPACKED_OK', 'utf8');
+  const customAsar = path.join(customRes, 'app.asar');
+  await builtinAsar.createPackageWithOptions(packSrc, customAsar, {
+    unpackedPaths: new Set(['node_modules/native.txt'])
+  });
+  // 将备份复制到独立目录，验证 .unpacked 回退可透传 fallbackAsarPath / 已保存自定义路径
+  const bakDir = path.join(tmpDir, 'backups');
+  fs.mkdirSync(bakDir, { recursive: true });
+  const bakAsar = path.join(bakDir, 'app.asar.bak');
+  fs.copyFileSync(customAsar, bakAsar);
+
+  assert.equal(normalizeAsarPathCandidate(customRoot), customAsar);
+  assert.equal(normalizeAsarPathCandidate(customRes), customAsar);
+  assert.equal(normalizeAsarPathCandidate(fakeExe), customAsar);
+  assert.equal(normalizeAsarPathCandidate(customAsar), customAsar);
+  assert.equal(normalizeAsarPathCandidate(path.join(tmpDir, 'missing-dir')), null);
+
+  // 2. .unpacked 透传 fallbackAsarPath 与 AG_ASAR_PATH
+  const extractedViaOpt = builtinAsar.extractFile(bakAsar, 'node_modules/native.txt', { fallbackAsarPath: customAsar });
+  assert.equal(extractedViaOpt.toString('utf8'), 'NATIVE_UNPACKED_OK');
+
+  // 3. 系统进程/注册表兜底探测（当默认路径不存在时）
+  const emptyHome = path.join(tmpDir, 'empty-home');
+  fs.mkdirSync(emptyHome, { recursive: true });
+  const probedPath = probeInstalledAsarPaths({ _probeSystemPaths: () => [`"${fakeExe}",0`] });
+  assert.equal(probedPath, customAsar);
+  const foundViaProbe = findAsarPath(null, {
+    homeDir: emptyHome,
+    agDir: emptyHome,
+    platform: 'linux',
+    _probeSystemPaths: () => [customRoot]
+  });
+  assert.equal(foundViaProbe, customAsar);
+
+  // 4. collector 持久化校验与清除
+  const agDir = path.join(tmpDir, 'ag-state');
+  fs.mkdirSync(agDir, { recursive: true });
+  const badSave = collector.savePluginSettings({ customInstallPath: path.join(tmpDir, 'not-exist') }, { targetDir: agDir });
+  assert.equal(badSave.ok, false);
+
+  const okSave = collector.savePluginSettings({ customInstallPath: customRoot }, { targetDir: agDir });
+  assert.equal(okSave.ok, true);
+  assert.equal(collector.getPluginSettings({ targetDir: agDir }).customInstallPath, customAsar);
+  assert.equal(getSavedCustomAsarPath({ agDir }), customAsar);
+  assert.equal(findAsarPath(null, { homeDir: emptyHome, agDir, platform: 'linux', disableSystemProbe: true }), customAsar);
+
+  const clearSave = collector.savePluginSettings({ customInstallPath: '' }, { targetDir: agDir });
+  assert.equal(clearSave.ok, true);
+  assert.equal(collector.getPluginSettings({ targetDir: agDir }).customInstallPath, '');
+  assert.equal(getSavedCustomAsarPath({ agDir }), null);
+
+  // 5. 原生宿主设置页渲染与保存/清除动作载荷
+  const nsHtml = contextSettingsUi.buildNativeSettingsPageHtml();
+  assert.match(nsHtml, /id="ag-ns-input-customInstallPath"/);
+  assert.match(nsHtml, /data-ag-ns-action="applyCustomInstallPath"/);
+  assert.match(nsHtml, /data-ag-ns-action="clearCustomInstallPath"/);
 });

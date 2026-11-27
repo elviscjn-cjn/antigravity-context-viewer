@@ -4450,6 +4450,7 @@ function getPluginSettings(options = {}) {
     simplifiedModelPickerEnabled: uiPrefs.simplifiedModelPickerEnabled !== false,
     nextPromptEnabled: uiPrefs.nextPromptEnabled === true,
     cliAccountEmail: uiPrefs.cliAccountEmail || null,
+    customInstallPath: typeof uiPrefs.customInstallPath === 'string' ? uiPrefs.customInstallPath : '',
     accounts: settings.accounts || {},
     updatedAt: settings.updatedAt || '',
     recoveredFromCorruption: Boolean(settings.recoveredFromCorruption)
@@ -4657,6 +4658,23 @@ function savePluginSettings(payload = {}, options = {}) {
     topLevelUiPrefs.cliAccountEmail = payload.cliAccountEmail.trim() || null;
   } else if (payload.cliAccountEmail === null) {
     topLevelUiPrefs.cliAccountEmail = null;
+  }
+  const rawInstallPath = payload.customInstallPath !== undefined
+    ? payload.customInstallPath
+    : payload.uiPreferences?.customInstallPath;
+  if (rawInstallPath !== undefined) {
+    if (rawInstallPath === null || String(rawInstallPath).trim() === '') {
+      topLevelUiPrefs.customInstallPath = '';
+    } else if (typeof rawInstallPath === 'string') {
+      const { normalizeAsarPathCandidate } = require('./asar-engine');
+      const resolvedAsar = normalizeAsarPathCandidate(rawInstallPath);
+      if (!resolvedAsar) {
+        return { ok: false, error: '未在指定路径找到 Antigravity 的 app.asar，请填写安装根目录或 resources/app.asar 路径' };
+      }
+      topLevelUiPrefs.customInstallPath = resolvedAsar;
+    } else {
+      return { ok: false, error: '无效的 Antigravity 安装路径参数' };
+    }
   }
   if (payload.auxViewTab === 'plugin' || payload.auxViewTab === 'browser') {
     topLevelUiPrefs.auxViewTab = payload.auxViewTab;
