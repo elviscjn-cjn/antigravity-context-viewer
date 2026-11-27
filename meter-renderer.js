@@ -47520,6 +47520,14 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       }
       if (btnToggleProxyModule) {
         btnToggleProxyModule.setAttribute('aria-checked', String(currentProxyEnabled));
+        btnToggleProxyModule.textContent = currentProxyEnabled ? t('mod.proxy.btnDisable') : t('mod.proxy.btnEnable');
+        if (currentProxyEnabled) {
+          btnToggleProxyModule.classList.remove('btn-primary');
+          btnToggleProxyModule.classList.add('btn-secondary');
+        } else {
+          btnToggleProxyModule.classList.remove('btn-secondary');
+          btnToggleProxyModule.classList.add('btn-primary');
+        }
       }
       syncProxySaveButtonState();
       syncHostSettingsUi();
@@ -47665,8 +47673,11 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
   async function applyProxyModuleUpdate(enableTarget) {
     if (isProxyBusy) return { ok: false, busy: true };
     isProxyBusy = true;
-    const rawUrl = String(inputProxyUrl?.value ?? '').trim();
-    const rawBypass = String(inputProxyBypass?.value ?? '').trim();
+    const hsRoot = hostSettingsCtrl?.getPageRoot?.();
+    const hsProxyInp = hsRoot?.getElementById?.('ag-ns-input-proxyUrl');
+    const rawUrl = String(inputProxyUrl?.value || hsProxyInp?.value || savedProxyUrl || '').trim();
+    const hsBypassInp = hsRoot?.getElementById?.('ag-ns-input-proxyBypass');
+    const rawBypass = String(inputProxyBypass?.value || hsBypassInp?.value || savedProxyBypass || '').trim();
     if (btnToggleProxyModule) {
       btnToggleProxyModule.disabled = true;
       btnToggleProxyModule.setAttribute('aria-busy', 'true');
@@ -71943,7 +71954,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   }
 
   globalThis.__AGContextMeter = {
-    buildId: 'e423d5953f6fa7c5',
+    buildId: '936d937d843a6e82',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;

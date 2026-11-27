@@ -447,7 +447,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
       if (moduleName === 'chinese') {
         return Boolean(disk.chineseReady);
       } else if (moduleName === 'proxy') {
-        return Boolean(disk.proxyReady);
+        return Boolean(disk.proxyReady || (process.platform === 'darwin' && !extraOpts?.asarPath));
       } else if (moduleName === 'meter') {
         return Boolean(disk.meterReady);
       }
@@ -1275,7 +1275,8 @@ function registerMeterIpcHandlers(ipcMain) {
       language: options?.language,
       brandTitle: options?.brandTitle,
       proxyUrl: options?.proxyUrl,
-      bypassList: options?.bypassList
+      bypassList: options?.bypassList,
+      asarPath: options?.asarPath
     }));
 
   ipcMain.handle('context-meter:test-proxy', async (event, proxyUrl) => {

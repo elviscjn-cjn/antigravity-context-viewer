@@ -118,6 +118,9 @@ function normalizeClientLanguage(val, enabledHint) {
 }
 
 function resolveModulesStateDir(options = {}) {
+  if (typeof options === 'string' && options.trim()) {
+    return path.resolve(options.trim());
+  }
   if (options && typeof options.stateDir === 'string' && options.stateDir.trim()) {
     return path.resolve(options.stateDir.trim());
   }

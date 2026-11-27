@@ -2104,12 +2104,15 @@ async function runMacDockLauncher(customPath = null, cdpOptions = {}, options = 
     } else {
       let mounted = Boolean(initialLive.active);
       let i18nActive = Boolean(initialLive.i18nActive);
-      if (!mounted) {
+      const { loadModulesConfig } = require('./modules-config');
+      const modCfg = loadModulesConfig(stateDir);
+      const desiredChineseEnabled = Boolean(modCfg?.modules?.chinese?.enabled && String(modCfg?.modules?.chinese?.language || '').toLowerCase() !== 'en');
+      if (!mounted || (desiredChineseEnabled && !i18nActive)) {
         try {
-          const rep = await runLiveFn(customPath, cdpOptions, { ...options, source: 'cli-launcher' });
+          const rep = await runLiveFn({ ...cdpOptions, port: effectiveCdpPort, stateDir }, customPath, { ...options, source: 'cli-launcher' });
           mounted = Boolean(rep?.ok);
           if (mounted) {
-            const snapAfter = await queryFn(cdpOptions).catch(() => null);
+            const snapAfter = await queryFn({ ...cdpOptions, port: effectiveCdpPort, stateDir }).catch(() => null);
             if (snapAfter) i18nActive = Boolean(snapAfter.i18nActive);
           }
         } catch { }
@@ -2137,16 +2140,6 @@ async function runMacDockLauncher(customPath = null, cdpOptions = {}, options = 
 
   let mode = 'launched_with_cdp';
   if (hostRunning) {
-    if (isRunningInsideAntigravitySession(options.env || process.env)) {
-      return {
-        ok: false,
-        reason: 'inside_antigravity_session',
-        error: '当前位于 Antigravity 内部会话中，禁止自动重启宿主；请在外部终端执行或在 Dock 外部单击启动器。',
-        watcherRunning,
-        watcherPid: watchPid || null,
-        hostPath: target?.execPath || null
-      };
-    }
     if (options.relaunch === false) {
       const portHint = effectiveCdpPort || DEFAULT_LAUNCH_CDP_PORT;
       return {
@@ -2156,6 +2149,16 @@ async function runMacDockLauncher(customPath = null, cdpOptions = {}, options = 
           ? '检测到当前 Antigravity 宿主未携带免 TUN 代理或 CDP 调试参数；请先彻底退出 Antigravity（Cmd + Q），再点击 Antigravity (No-TUN) 重新启动。'
           : 'Antigravity 正在运行但未开启 CDP 调试端口（已指定 --no-relaunch）。',
         manualCmd: formatManualCdpLaunchCommand(target, portHint),
+        watcherRunning,
+        watcherPid: watchPid || null,
+        hostPath: target?.execPath || null
+      };
+    }
+    if (isRunningInsideAntigravitySession(options.env || process.env)) {
+      return {
+        ok: false,
+        reason: 'inside_antigravity_session',
+        error: '当前位于 Antigravity 内部会话中，禁止自动重启宿主；请在外部终端执行或在 Dock 外部单击启动器。',
         watcherRunning,
         watcherPid: watchPid || null,
         hostPath: target?.execPath || null
@@ -2207,22 +2210,27 @@ async function runMacDockLauncher(customPath = null, cdpOptions = {}, options = 
   // 4. 确保挂载：先短等常驻 watch 自动注入，如尚未注入则立即主动补挂
   let mounted = Boolean(ready.active);
   let i18nActive = Boolean(ready.i18nActive);
+  const { loadModulesConfig } = require('./modules-config');
+  const modCfg = loadModulesConfig(stateDir);
+  const desiredChineseEnabled = Boolean(modCfg?.modules?.chinese?.enabled && String(modCfg?.modules?.chinese?.language || '').toLowerCase() !== 'en');
   const settleDeadline = Date.now() + (options.mountWaitMs ?? 6000);
-  while (!mounted && Date.now() < settleDeadline) {
+  while ((!mounted || (desiredChineseEnabled && !i18nActive)) && Date.now() < settleDeadline) {
     await new Promise(r => setTimeout(r, options.mountPollMs ?? 300));
-    const snap = await queryFn({ ...cdpOptions, port });
+    const snap = await queryFn({ ...cdpOptions, port, stateDir });
     if (snap && snap.running && snap.pageFound && snap.active) {
       mounted = true;
       i18nActive = Boolean(snap.i18nActive);
-      break;
+      if (!desiredChineseEnabled || i18nActive) {
+        break;
+      }
     }
   }
-  if (!mounted) {
+  if (!mounted || (desiredChineseEnabled && !i18nActive)) {
     try {
-      const rep = await runLiveFn(customPath, { ...cdpOptions, port }, { ...options, source: 'cli-launcher' });
+      const rep = await runLiveFn({ ...cdpOptions, port, stateDir }, customPath, { ...options, source: 'cli-launcher' });
       mounted = Boolean(rep?.ok);
       if (mounted) {
-        const snapAfter = await queryFn({ ...cdpOptions, port }).catch(() => null);
+        const snapAfter = await queryFn({ ...cdpOptions, port, stateDir }).catch(() => null);
         if (snapAfter) i18nActive = Boolean(snapAfter.i18nActive);
       }
     } catch { }
@@ -2503,6 +2511,11 @@ async function cmdLive(customPath = null, cdpOptions = {}, options = {}) {
 }
 
 async function runLiveCommand(cdpOptions = {}, customPath = null) {
+  if (typeof cdpOptions === 'string' || (cdpOptions === null && typeof customPath === 'object' && customPath !== null)) {
+    const tmp = cdpOptions;
+    cdpOptions = customPath || {};
+    customPath = typeof tmp === 'string' ? tmp : null;
+  }
   const queryFn = typeof cdpOptions._queryLiveWindow === 'function' ? cdpOptions._queryLiveWindow : queryLiveWindow;
   const liveBefore = await queryFn(cdpOptions);
   if (liveBefore.running && liveBefore.cdpEnabled === false && !liveBefore.pageFound) {

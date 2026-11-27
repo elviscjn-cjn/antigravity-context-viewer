@@ -1011,7 +1011,7 @@ function generateWindowsNoTunVbs({ exePath, proxyUrl, noProxy, recoverCliPath = 
 /**
  * 生成 macOS / Linux 免改盘独立免 TUN 启动脚本 (.sh)。
  */
-function generatePosixNoTunLauncher({ exePath, proxyUrl, noProxy, recoverCliPath = null }) {
+function generatePosixNoTunLauncher({ exePath, proxyUrl, noProxy, recoverCliPath = null, cdpPort = 58321 }) {
   const checked = parseAndValidateProxyUrl(proxyUrl);
   if (!checked.ok) throw new Error(checked.error || '无效的代理地址');
   if (!exePath || typeof exePath !== 'string' || !exePath.trim()) {
@@ -1045,8 +1045,8 @@ function generatePosixNoTunLauncher({ exePath, proxyUrl, noProxy, recoverCliPath
     'export NODE_USE_ENV_PROXY=1',
     'export AG_METER_NO_TUN_LAUNCH=1',
     bypass
-      ? `exec ${escapePosixSingleQuote(exePath.trim())} --proxy-server=${escapePosixSingleQuote(chromiumProxy)} --proxy-bypass-list=${escapePosixSingleQuote(bypass)} "$@"`
-      : `exec ${escapePosixSingleQuote(exePath.trim())} --proxy-server=${escapePosixSingleQuote(chromiumProxy)} "$@"`,
+      ? `exec ${escapePosixSingleQuote(exePath.trim())} --proxy-server=${escapePosixSingleQuote(chromiumProxy)} --proxy-bypass-list=${escapePosixSingleQuote(bypass)} --remote-debugging-port=${escapePosixSingleQuote(String(cdpPort))} "$@"`
+      : `exec ${escapePosixSingleQuote(exePath.trim())} --proxy-server=${escapePosixSingleQuote(chromiumProxy)} --remote-debugging-port=${escapePosixSingleQuote(String(cdpPort))} "$@"`,
     ''
   ];
   return lines.join('\n');
@@ -1071,7 +1071,7 @@ function createStandaloneNoTunLauncher(options = {}) {
   const launcherPath = path.join(outDir, scriptName);
   const content = platform === 'win32'
     ? generateWindowsNoTunVbs({ exePath, proxyUrl: spec.proxyUrl, noProxy: spec.noProxy, recoverCliPath: options.recoverCliPath || null })
-    : generatePosixNoTunLauncher({ exePath, proxyUrl: spec.proxyUrl, noProxy: spec.noProxy, recoverCliPath: options.recoverCliPath || null });
+    : generatePosixNoTunLauncher({ exePath, proxyUrl: spec.proxyUrl, noProxy: spec.noProxy, recoverCliPath: options.recoverCliPath || null, cdpPort: options.cdpPort || 58321 });
 
   const tmpPath = `${launcherPath}.${process.pid}.${Date.now()}.tmp`;
   fsImpl.writeFileSync(tmpPath, content, 'utf8');
