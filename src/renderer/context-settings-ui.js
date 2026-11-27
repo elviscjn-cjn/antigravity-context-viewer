@@ -1362,6 +1362,33 @@ const {
 
       <div class="ag-ns-row">
         <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="settings.statusFontSize.label">底栏与尾标字号</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.statusFontSize.desc">调节底栏状态摘要与每轮回复尾标的字体大小</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-seg" role="radiogroup" data-ag-ns-seg="composerStatusFontSize">
+            <button type="button" class="ag-ns-seg-btn" data-val="compact" data-i18n="settings.statusFontSize.compact">紧凑 11px</button>
+            <button type="button" class="ag-ns-seg-btn" data-val="comfortable" data-i18n="settings.statusFontSize.comfortable">舒适 13px</button>
+            <button type="button" class="ag-ns-seg-btn" data-val="large" data-i18n="settings.statusFontSize.large">大号 14px</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="settings.turnFooterContrast.label">尾标与底栏高对比度</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.turnFooterContrast.desc">取消透明度淡化并加深或提亮前景色，增强小字辨识度</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-switch-wrap">
+            <span class="ag-ns-switch-state" data-ag-ns-sw-status="turnFooterHighContrast" aria-live="polite"></span>
+            <button type="button" id="ag-ns-sw-turnFooterHighContrast" class="ag-ns-switch" role="switch" aria-checked="false" data-ag-ns-switch="turnFooterHighContrast"></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
           <div class="ag-ns-row-title" data-i18n="settings.nextPrompt.label">下一句预测建议</div>
           <div class="ag-ns-row-desc" data-i18n="ns.nextPrompt.desc">默认关闭 · 开启后每轮结束会调用当前账号模型并消耗额外额度，按 Tab 填入草稿</div>
         </div>

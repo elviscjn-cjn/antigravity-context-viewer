@@ -3,10 +3,13 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 
 const core = require('./meter-core');
+const collector = require('./meter-collector');
+const contextSettingsUi = require('./src/renderer/context-settings-ui');
 
 const source = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
 
@@ -311,4 +314,254 @@ test('回复底部单次请求遥测微标：默认开启、多步汇总自动�
   } finally {
     h.sandbox.__AGContextMeter.dispose();
   }
+});
+
+test('Issue #117: collector 持久化校验底栏与尾标字号和高对比度开关', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-issue117-'));
+  try {
+    const initial = collector.getPluginSettings({ targetDir: tmpDir });
+    assert.equal(initial.composerStatusFontSize, 'compact');
+    assert.equal(initial.turnFooterHighContrast, false);
+
+    const saved = collector.savePluginSettings({
+      composerStatusFontSize: 'comfortable',
+      turnFooterHighContrast: true
+    }, { targetDir: tmpDir });
+    assert.equal(saved.ok, true);
+
+    const reloaded = collector.getPluginSettings({ targetDir: tmpDir });
+    assert.equal(reloaded.composerStatusFontSize, 'comfortable');
+    assert.equal(reloaded.turnFooterHighContrast, true);
+
+    const updatedLarge = collector.savePluginSettings({
+      composerStatusFontSize: 'large'
+    }, { targetDir: tmpDir });
+    assert.equal(updatedLarge.ok, true);
+    assert.equal(collector.getPluginSettings({ targetDir: tmpDir }).composerStatusFontSize, 'large');
+
+    // 非法值和 nested uiPreferences 清洗
+    collector.savePluginSettings({
+      composerStatusFontSize: 'huge',
+      turnFooterHighContrast: 'yes',
+      uiPreferences: {
+        composerStatusFontSize: 'invalid-size',
+        turnFooterHighContrast: 123
+      }
+    }, { targetDir: tmpDir });
+    const afterInvalid = collector.getPluginSettings({ targetDir: tmpDir });
+    assert.equal(afterInvalid.composerStatusFontSize, 'large');
+    assert.equal(afterInvalid.turnFooterHighContrast, true);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Issue #117: 状态栏与回复尾标字号切换、高对比度开关、冷启动恢复及宿主样式契约', () => {
+  const savedPayloads = [];
+  const h = harness();
+  h.sandbox.window.contextMeterAPI.saveSettings = async (payload) => {
+    savedPayloads.push(payload);
+    return { ok: true };
+  };
+  try {
+    const api = h.sandbox.__AGContextMeter;
+    api.setComposerStateForTest({
+      sessionCalls: [{
+        callId: 'call-117',
+        attributedModelLabel: 'Claude Opus 4.6',
+        inputTokens: 12000,
+        cacheCreationInputTokens: 0,
+        cacheReadTokens: 8000,
+        outputTokens: 600,
+        streamingTps: 88,
+        date: '2026-11-26 10:00:00'
+      }],
+      sessionStats: { usedTokens: 20000, limitTokens: 200000, turnCount: 1, stepCount: 1 }
+    });
+
+    const badge = h.tbMain.row.children[0];
+    assert.ok(badge, '必须渲染 .ag-cm-turn-footer');
+
+    // 1. 默认状态
+    let topo = api.getStatusTypographyForTest();
+    assert.equal(topo.fontSize, 'compact');
+    assert.equal(topo.highContrast, false);
+    assert.equal(topo.barFontSize, 'compact');
+    assert.equal(topo.barHighContrast, 'false');
+    assert.equal(topo.docFontSize, 'compact');
+    assert.equal(topo.docContrast, 'normal');
+    assert.equal(badge.getAttribute('data-font-size'), 'compact');
+    assert.equal(badge.getAttribute('data-high-contrast'), 'false');
+
+    // 2. 切换舒适与大号字号
+    api.setComposerStatusFontSizeForTest('comfortable', { persist: false });
+    topo = api.getStatusTypographyForTest();
+    assert.equal(topo.fontSize, 'comfortable');
+    assert.equal(topo.barFontSize, 'comfortable');
+    assert.equal(topo.docFontSize, 'comfortable');
+    assert.equal(badge.getAttribute('data-font-size'), 'comfortable');
+
+    const largeBtn = h.elements.get('btn-status-font-large');
+    largeBtn.setAttribute('data-status-font-size', 'large');
+    largeBtn.click();
+    topo = api.getStatusTypographyForTest();
+    assert.equal(topo.fontSize, 'large');
+    assert.equal(topo.barFontSize, 'large');
+    assert.equal(topo.docFontSize, 'large');
+    assert.equal(badge.getAttribute('data-font-size'), 'large');
+    assert.ok(savedPayloads.some(p => p && p.composerStatusFontSize === 'large'), '点击字号按钮应持久化保存设置');
+
+    // 3. 高对比度开关
+    api.setTurnFooterHighContrastForTest(true);
+    topo = api.getStatusTypographyForTest();
+    assert.equal(topo.highContrast, true);
+    assert.equal(topo.barHighContrast, 'true');
+    assert.equal(topo.docContrast, 'high');
+    assert.equal(badge.getAttribute('data-high-contrast'), 'true');
+
+    // 4. 验证宿主注入样式表包含字号与 opacity: 1 高对比规则
+    const styleEl = h.sandbox.document.head.children.find(n => n.id === 'ag-csb-host-styles');
+    assert.ok(styleEl && typeof styleEl.textContent === 'string', '必须注入 #ag-csb-host-styles');
+    assert.match(styleEl.textContent, /\[data-font-size="comfortable"\]/);
+    assert.match(styleEl.textContent, /12\.5px/);
+    assert.match(styleEl.textContent, /\[data-font-size="large"\]/);
+    assert.match(styleEl.textContent, /14px/);
+    assert.match(styleEl.textContent, /\[data-high-contrast="true"\]/);
+    assert.match(styleEl.textContent, /opacity:\s*1\s*!important/);
+
+    const cssText = fs.readFileSync(path.join(__dirname, 'src/renderer/styles.css'), 'utf8');
+    assert.match(cssText, /\.composer-status-bar\[data-font-size="comfortable"\]/);
+    assert.match(cssText, /\.composer-status-bar\[data-font-size="large"\]/);
+    assert.match(cssText, /\.composer-status-bar\[data-high-contrast="true"\]/);
+
+    // 5. 验证新增三语文案严格零括号
+    const i18nSrc = fs.readFileSync(path.join(__dirname, 'src/renderer/i18n.js'), 'utf8');
+    for (const key of [
+      'settings.statusFontSize.label',
+      'settings.statusFontSize.desc',
+      'settings.statusFontSize.compact',
+      'settings.statusFontSize.comfortable',
+      'settings.statusFontSize.large',
+      'settings.turnFooterContrast.label',
+      'settings.turnFooterContrast.desc',
+      'ns.statusFontSize.desc',
+      'ns.turnFooterContrast.desc'
+    ]) {
+      const m = i18nSrc.match(new RegExp(`'${key.replace(/\./g, '\\.')}':\\s*\\{[^}]+\\}`));
+      assert.ok(m, `${key} 三语词条必须存在`);
+      assert.doesNotMatch(m[0], /[（）()]/, `${key} 词条禁止包含中英文括号`);
+    }
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+
+  // 6. 冷启动恢复 localStorage 偏好
+  const cold = harness({
+    ag_composer_status_font_size: 'large',
+    ag_turn_footer_high_contrast: 'true'
+  });
+  try {
+    const topoCold = cold.sandbox.__AGContextMeter.getStatusTypographyForTest();
+    assert.equal(topoCold.fontSize, 'large');
+    assert.equal(topoCold.highContrast, true);
+    assert.equal(topoCold.docFontSize, 'large');
+    assert.equal(topoCold.docContrast, 'high');
+  } finally {
+    cold.sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('Issue #117: 原生设置页 UI 构建与双向同步底栏字号和高对比度控件', () => {
+  const html = contextSettingsUi.buildNativeSettingsPageHtml({});
+  assert.match(html, /data-ag-ns-seg="composerStatusFontSize"/);
+  assert.match(html, /data-val="compact"/);
+  assert.match(html, /data-val="comfortable"/);
+  assert.match(html, /data-val="large"/);
+  assert.match(html, /data-ag-ns-switch="turnFooterHighContrast"/);
+
+  const makeMockNode = () => {
+    const attrs = new Map();
+    const listeners = new Map();
+    const cls = new Set();
+    return {
+      children: [],
+      dataset: {},
+      classList: {
+        add(c) { cls.add(c); },
+        remove(c) { cls.delete(c); },
+        toggle(c, on) { if (on) cls.add(c); else cls.delete(c); },
+        contains(c) { return cls.has(c); }
+      },
+      setAttribute(k, v) { attrs.set(k, String(v)); },
+      getAttribute(k) { return attrs.get(k) ?? null; },
+      removeAttribute(k) { attrs.delete(k); },
+      addEventListener(t, fn) { listeners.set(t, fn); },
+      querySelectorAll() { return []; },
+      querySelector() { return null; },
+      click() { listeners.get('click')?.({ target: this, stopPropagation() {} }); }
+    };
+  };
+
+  const compactBtn = makeMockNode();
+  compactBtn.setAttribute('data-val', 'compact');
+  const comfortableBtn = makeMockNode();
+  comfortableBtn.setAttribute('data-val', 'comfortable');
+  const largeBtn = makeMockNode();
+  largeBtn.setAttribute('data-val', 'large');
+
+  const segGroup = makeMockNode();
+  segGroup.setAttribute('data-ag-ns-seg', 'composerStatusFontSize');
+  segGroup.querySelectorAll = (s) => (s === '.ag-ns-seg-btn' ? [compactBtn, comfortableBtn, largeBtn] : []);
+  segGroup.contains = (node) => [compactBtn, comfortableBtn, largeBtn].includes(node);
+  segGroup.addEventListener = (t, fn) => {
+    if (t === 'click') {
+      for (const b of [compactBtn, comfortableBtn, largeBtn]) {
+        b.closest = () => b;
+        b.addEventListener('click', (ev) => fn({ ...ev, target: b }));
+      }
+    }
+  };
+
+  const swBtn = makeMockNode();
+  swBtn.setAttribute('data-ag-ns-switch', 'turnFooterHighContrast');
+  const swStatus = makeMockNode();
+  swStatus.setAttribute('data-ag-ns-sw-status', 'turnFooterHighContrast');
+
+  const container = makeMockNode();
+  container.querySelectorAll = (sel) => {
+    if (sel === '[data-ag-ns-seg]') return [segGroup];
+    if (sel === '[data-ag-ns-switch]') return [swBtn];
+    return [];
+  };
+  container.querySelector = (sel) => {
+    if (sel === '[data-ag-ns-sw-status="turnFooterHighContrast"]') return swStatus;
+    return null;
+  };
+  const root = {
+    getElementById: (id) => (id === 'ag-ns-root' ? container : null)
+  };
+
+  const changes = [];
+  contextSettingsUi.initContextSettingsUI(root, {
+    onChange: (key, val) => changes.push([key, val])
+  });
+  contextSettingsUi.renderContextSettingsUI(root, {
+    settings: { composerStatusFontSize: 'large', turnFooterHighContrast: true },
+    colors: {},
+    status: { switchFeedback: { turnFooterHighContrast: { busy: false, tone: 'idle', text: '已开启' } } }
+  });
+
+  assert.equal(largeBtn.classList.contains('is-active'), true);
+  assert.equal(largeBtn.getAttribute('aria-checked'), 'true');
+  assert.equal(compactBtn.classList.contains('is-active'), false);
+  assert.equal(swBtn.classList.contains('is-on'), true);
+  assert.equal(swBtn.getAttribute('aria-checked'), 'true');
+  assert.equal(swStatus.textContent, '已开启');
+
+  comfortableBtn.click();
+  swBtn.click();
+  assert.deepStrictEqual(changes, [
+    ['composerStatusFontSize', 'comfortable'],
+    ['turnFooterHighContrast', false]
+  ]);
 });
