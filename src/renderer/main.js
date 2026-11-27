@@ -10656,7 +10656,7 @@
       try {
         if (!req || typeof req !== 'object' || typeof budgetEngine.transformOutgoingSendRequest !== 'function') return null;
         const compactCmd = detectOutgoingCompactCommand(req, 'client_object', 'SendUserCascadeMessage');
-        if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggestion(true);
+        if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggestion(true, { clearCache: true });
         const tx = budgetEngine.transformOutgoingSendRequest(req, buildInterceptorContext(channel, 'SendUserCascadeMessage'));
         if (compactCmd?.isCompact) {
           const cRec = registerCompactDispatch(compactCmd);
@@ -30958,7 +30958,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       const sameScreenSwitch = isSameScreenSessionSwitch(prevLayout, nextLayout, prevRoute, id);
       const cachedSnap = (sameScreenSwitch && id) ? readSessionSnapshotFromCache(id) : null;
       for (const controller of state.controllers) controller.abort(); state.controllers.clear(); state.generation++;
-if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggestion(true);
+      if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggestion(true, { clearCache: true });
       if (timelineFetchController) {
         try { timelineFetchController.abort(); } catch { }
         timelineFetchController = null;
@@ -31014,6 +31014,9 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
       syncAuxContextBar();
     }
     if (id && !document.hidden) checkHostDomCompactionSignals();
+    if (id && !document.hidden && nextPromptEnabled && !state.compacting && !nextPromptState.inFlight && typeof maybeRequestNextPromptPrediction === 'function') {
+      void maybeRequestNextPromptPrediction({ routeId: id });
+    }
     if (id && !state.requestBusy && Date.now() >= state.requestNext) void requestPoll(state.generation, id);
     if (id && !state.scanBusy && Date.now() >= state.scanNext) void scan(state.generation, id);
     if (!state.disposed && state.pendingFinalCalls?.size && !state.flushFinalsBusy && Date.now() >= (state.nextFlushRetryAt || 0)) {
