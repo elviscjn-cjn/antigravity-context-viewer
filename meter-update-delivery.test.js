@@ -200,8 +200,9 @@ test('交付验证 2: 隔离环境模拟更新检查 (checkUpdateAsync)', async 
   assert.doesNotMatch(res.releaseNotes, /<\/?(?:details|summary)|English notes|简体中文/);
 });
 
-test('交付验证 3: 隔离环境更新下载、校验与解压安装完整演练', async () => {
+test('交付验证 3: 隔离环境更新下载、校验与解压安装完整演练', async (t) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'update-delivery-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
   // 1. 构建模拟新版本文件
   const mockPackageJson = JSON.stringify({ name: 'antigravity-context-viewer', version: '0.9.0' });
@@ -280,6 +281,8 @@ test('交付验证 3: 隔离环境更新下载、校验与解压安装完整演�
   const updateRes = await applyUpdateAsync({
     version: '0.9.0',
     currentVersion: '0.8.10',
+    allowBetaUpdates: false,
+    targetPath: path.join(tmpDir, 'app.asar'),
     _requestGithubUrl: mockFetcher,
     _spawn: mockSpawn
   });
@@ -294,8 +297,6 @@ test('交付验证 3: 隔离环境更新下载、校验与解压安装完整演�
 
   // 检查解压包中确实包含了 meter-context-unlock.js！
   assert.equal(inspectedExtractedFile, mockUnlock, '发布更新包解压后必须包含 meter-context-unlock.js');
-
-  fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
 test('交付验证 4: 版本升级识别矩阵（0.8.0 识别 0.8.1 为新版本，0.8.1 不误报更新）', async () => {

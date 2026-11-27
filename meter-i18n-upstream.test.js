@@ -120,7 +120,7 @@ test('上游词典合并一致性、版权署名及 2.34.0 核心界面翻译与
   assert.ok(noticeDoc.includes('Permission is hereby granted, free of charge'));
   assert.ok(readmeZh.includes('aabbWei') && readmeZh.includes('antigravity-cn-community'));
   assert.ok(readmeEn.includes('aabbWei') && readmeEn.includes('antigravity-cn-community'));
-  assert.ok(relNotes.includes(creditZh));
+  assert.match(relNotes, /Antigravity 界面汉化基于 Antigravity-Chinese-Localization[，。,.]\s*感谢 aabbWei 与 antigravity-cn-community 贡献者/);
   assert.ok(pkgScript.includes("'THIRD_PARTY_NOTICES.md'"));
 
   const engine = createI18nEngine(dict);
