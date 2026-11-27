@@ -11996,6 +11996,52 @@
       overflow: hidden;
     }
 
+    .composer-status-bar[data-font-size="comfortable"],
+    .composer-status-bar[data-font-size="comfortable"] .csb-pill,
+    .composer-status-bar[data-font-size="comfortable"] .csb-text {
+      font-size: 12.5px;
+    }
+
+    .composer-status-bar[data-font-size="comfortable"] .csb-pill {
+      height: 24px;
+    }
+
+    .composer-status-bar[data-font-size="comfortable"] #csb-context-text {
+      max-width: 86px;
+    }
+
+    .composer-status-bar[data-font-size="large"],
+    .composer-status-bar[data-font-size="large"] .csb-pill,
+    .composer-status-bar[data-font-size="large"] .csb-text {
+      font-size: 14px;
+    }
+
+    .composer-status-bar[data-font-size="large"] .csb-pill {
+      height: 26px;
+    }
+
+    .composer-status-bar[data-font-size="large"] #csb-context-text {
+      max-width: 98px;
+    }
+
+    .composer-status-bar[data-high-contrast="true"],
+    .composer-status-bar[data-high-contrast="true"] .csb-pill,
+    .composer-status-bar[data-high-contrast="true"] .csb-text {
+      opacity: 1;
+      font-weight: 500;
+      color: var(--ag-text-primary, #f1f5f9);
+    }
+
+    :host([data-theme="light"]) .composer-status-bar[data-high-contrast="true"],
+    :host([data-theme="light"]) .composer-status-bar[data-high-contrast="true"] .csb-pill,
+    :host([data-theme="light"]) .composer-status-bar[data-high-contrast="true"] .csb-text,
+    :host([data-panel-tone="light"]) .composer-status-bar[data-high-contrast="true"],
+    :host([data-panel-tone="light"]) .composer-status-bar[data-high-contrast="true"] .csb-pill,
+    :host([data-panel-tone="light"]) .composer-status-bar[data-high-contrast="true"] .csb-text {
+      opacity: 1;
+      color: #0f172a;
+    }
+
     .csb-pill:not(#csb-group-tokens) {
       cursor: default !important;
     }

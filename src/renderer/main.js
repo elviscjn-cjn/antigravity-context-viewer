@@ -233,6 +233,19 @@
       return saved === 'false' ? false : true;
     } catch { return true; }
   })();
+  const VALID_STATUS_FONT_SIZES = ['compact', 'comfortable', 'large'];
+  let composerStatusFontSize = (() => {
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_composer_status_font_size') : null;
+      return VALID_STATUS_FONT_SIZES.includes(saved) ? saved : 'compact';
+    } catch { return 'compact'; }
+  })();
+  let turnFooterHighContrast = (() => {
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_turn_footer_high_contrast') : null;
+      return saved === 'true';
+    } catch { return false; }
+  })();
   let showComposerQuotaSummary = (() => {
     try {
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_show_composer_quota') : null;
@@ -3059,6 +3072,76 @@
         .ag-cm-turn-footer ~ button,
         .ag-cm-turn-footer ~ [role="button"] {
           flex-shrink: 0 !important;
+        }
+        #composer-status-bar[data-font-size="comfortable"],
+        #composer-status-bar[data-font-size="comfortable"] .csb-pill,
+        #composer-status-bar[data-font-size="comfortable"] .csb-text {
+          font-size: 12.5px !important;
+        }
+        #composer-status-bar[data-font-size="comfortable"] .csb-pill {
+          height: 24px !important;
+        }
+        #composer-status-bar[data-font-size="comfortable"] .csb-svg-icon svg {
+          width: 13.5px !important;
+          height: 13.5px !important;
+        }
+        #composer-status-bar[data-font-size="comfortable"] .csb-ring-morph-wrap {
+          width: 14.5px !important;
+          height: 14.5px !important;
+        }
+        #composer-status-bar[data-font-size="comfortable"] #csb-context-text {
+          max-width: 86px !important;
+        }
+        #composer-status-bar[data-font-size="large"],
+        #composer-status-bar[data-font-size="large"] .csb-pill,
+        #composer-status-bar[data-font-size="large"] .csb-text {
+          font-size: 14px !important;
+        }
+        #composer-status-bar[data-font-size="large"] .csb-pill {
+          height: 26px !important;
+        }
+        #composer-status-bar[data-font-size="large"] .csb-svg-icon svg {
+          width: 15px !important;
+          height: 15px !important;
+        }
+        #composer-status-bar[data-font-size="large"] .csb-ring-morph-wrap {
+          width: 16px !important;
+          height: 16px !important;
+        }
+        #composer-status-bar[data-font-size="large"] #csb-context-text {
+          max-width: 98px !important;
+        }
+        .ag-cm-turn-footer[data-font-size="comfortable"],
+        html[data-ag-tf-size="comfortable"] .ag-cm-turn-footer {
+          font-size: 12.5px !important;
+          line-height: 1.25 !important;
+          max-width: min(100%, 620px) !important;
+        }
+        .ag-cm-turn-footer[data-font-size="large"],
+        html[data-ag-tf-size="large"] .ag-cm-turn-footer {
+          font-size: 14px !important;
+          line-height: 1.28 !important;
+          max-width: min(100%, 680px) !important;
+        }
+        #composer-status-bar[data-high-contrast="true"],
+        #composer-status-bar[data-high-contrast="true"] .csb-pill,
+        #composer-status-bar[data-high-contrast="true"] .csb-text,
+        .ag-cm-turn-footer[data-high-contrast="true"],
+        html[data-ag-tf-contrast="high"] .ag-cm-turn-footer {
+          opacity: 1 !important;
+          font-weight: 500 !important;
+          color: var(--foreground, #ececef) !important;
+        }
+        #composer-status-bar[data-theme="light"][data-high-contrast="true"],
+        #composer-status-bar[data-theme="light"][data-high-contrast="true"] .csb-pill,
+        #composer-status-bar[data-theme="light"][data-high-contrast="true"] .csb-text,
+        :is(html.light, html[data-theme="light"], body.light, body.vscode-light, body[data-theme="light"]) .ag-cm-turn-footer[data-high-contrast="true"],
+        :is(html.light, html[data-theme="light"], body.light, body.vscode-light, body[data-theme="light"])[data-ag-tf-contrast="high"] .ag-cm-turn-footer,
+        :is(html.light, html[data-theme="light"], body.light, body.vscode-light, body[data-theme="light"]) #composer-status-bar[data-high-contrast="true"],
+        :is(html.light, html[data-theme="light"], body.light, body.vscode-light, body[data-theme="light"]) #composer-status-bar[data-high-contrast="true"] .csb-pill,
+        :is(html.light, html[data-theme="light"], body.light, body.vscode-light, body[data-theme="light"]) #composer-status-bar[data-high-contrast="true"] .csb-text {
+          opacity: 1 !important;
+          color: #0f172a !important;
         }
         #composer-status-bar .csb-quota-pill {
           gap: 6px !important;
@@ -5915,6 +5998,92 @@
     });
   };
   el('chk-show-turn-footer-stats')?.addEventListener('change', onShowTurnFooterToggle);
+  function syncStatusTypographyUi() {
+    ensureComposerStatusBarStyles?.();
+    const size = VALID_STATUS_FONT_SIZES.includes(composerStatusFontSize) ? composerStatusFontSize : 'compact';
+    const hcStr = turnFooterHighContrast ? 'true' : 'false';
+    const docContrast = turnFooterHighContrast ? 'high' : 'normal';
+    try {
+      document.documentElement?.setAttribute?.('data-ag-tf-size', size);
+      document.documentElement?.setAttribute?.('data-ag-tf-contrast', docContrast);
+    } catch { }
+    try {
+      host?.setAttribute?.('data-status-font-size', size);
+      host?.setAttribute?.('data-turn-footer-high-contrast', hcStr);
+    } catch { }
+    try {
+      if (composerSummary) {
+        composerSummary.setAttribute?.('data-font-size', size);
+        composerSummary.setAttribute?.('data-high-contrast', hcStr);
+      }
+      const docBar = typeof document !== 'undefined' ? document.getElementById?.('composer-status-bar') : null;
+      if (docBar && docBar !== composerSummary) {
+        docBar.setAttribute?.('data-font-size', size);
+        docBar.setAttribute?.('data-high-contrast', hcStr);
+      }
+    } catch { }
+    try {
+      const badges = document.querySelectorAll?.('.ag-cm-turn-footer') || [];
+      for (const node of badges) {
+        node?.setAttribute?.('data-font-size', size);
+        node?.setAttribute?.('data-high-contrast', hcStr);
+      }
+    } catch { }
+    const seg = el('status-font-size-segmented');
+    if (seg) {
+      for (const btn of Array.from(seg.children || [])) {
+        const val = btn.getAttribute?.('data-status-font-size');
+        const active = val === size;
+        btn.classList?.toggle?.('active', active);
+        btn.setAttribute?.('aria-pressed', active ? 'true' : 'false');
+      }
+    }
+    const chkHc = el('chk-turn-footer-high-contrast');
+    if (chkHc) chkHc.checked = Boolean(turnFooterHighContrast);
+  }
+  function setComposerStatusFontSize(size, opts = {}) {
+    const next = VALID_STATUS_FONT_SIZES.includes(size) ? size : 'compact';
+    composerStatusFontSize = next;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_composer_status_font_size', next);
+    } catch { }
+    syncStatusTypographyUi();
+    syncHostSettingsUi();
+    if (opts.persist !== false && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({ composerStatusFontSize: next });
+    }
+    return composerStatusFontSize;
+  }
+  const onTurnFooterHighContrastToggle = (e) => {
+    const chk = el('chk-turn-footer-high-contrast');
+    const prev = turnFooterHighContrast;
+    const next = e?.target ? Boolean(e.target.checked) : (chk ? Boolean(chk.checked) : prev);
+    void persistBooleanPreferenceToggle({
+      payloadKey: 'turnFooterHighContrast',
+      next,
+      prev,
+      checkboxEl: chk,
+      statusId: '',
+      localStorageKey: 'ag_turn_footer_high_contrast',
+      onApplyState: (val) => { turnFooterHighContrast = val; },
+      onUiSync: () => { syncStatusTypographyUi(); }
+    });
+  };
+  el('chk-turn-footer-high-contrast')?.addEventListener('change', onTurnFooterHighContrastToggle);
+  el('status-font-size-segmented')?.addEventListener('click', e => {
+    const target = e?.target;
+    const btn = target?.getAttribute?.('data-status-font-size')
+      ? target
+      : target?.closest?.('[data-status-font-size]');
+    const val = btn?.getAttribute?.('data-status-font-size');
+    if (val) setComposerStatusFontSize(val, { persist: true });
+  });
+  for (const btnId of ['btn-status-font-compact', 'btn-status-font-comfortable', 'btn-status-font-large']) {
+    el(btnId)?.addEventListener?.('click', () => {
+      const val = el(btnId)?.getAttribute?.('data-status-font-size');
+      if (val) setComposerStatusFontSize(val, { persist: true });
+    });
+  }
   const onShowComposerQuotaToggle = (e) => {
     const chk = el('chk-show-composer-quota');
     const prev = showComposerQuotaSummary;
@@ -8427,6 +8596,8 @@
           badge.tabIndex = 0;
           row.prepend ? row.prepend(badge) : row.appendChild?.(badge);
         }
+        badge.setAttribute('data-font-size', composerStatusFontSize);
+        badge.setAttribute('data-high-contrast', turnFooterHighContrast ? 'true' : 'false');
         badge.__turnObj = turnObj;
         badge.__forceFallback = forceFallbackScope;
         badge.__tb = tb;
@@ -19933,6 +20104,17 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           setToggleFeedbackUi('status-turn-footer', 'idle', showTurnFooterStats ? t('prefs.stateOn') : t('prefs.stateOff'));
           renderTurnFooterStats();
         }
+        const savedStatusFontSize = settingsRes.composerStatusFontSize ?? settingsRes.uiPreferences?.composerStatusFontSize;
+        if (typeof savedStatusFontSize === 'string' && VALID_STATUS_FONT_SIZES.includes(savedStatusFontSize)) {
+          composerStatusFontSize = savedStatusFontSize;
+          try { if (typeof localStorage !== 'undefined') localStorage.setItem('ag_composer_status_font_size', savedStatusFontSize); } catch { }
+        }
+        const savedTurnFooterContrast = settingsRes.turnFooterHighContrast ?? settingsRes.uiPreferences?.turnFooterHighContrast;
+        if (typeof savedTurnFooterContrast === 'boolean') {
+          turnFooterHighContrast = savedTurnFooterContrast;
+          try { if (typeof localStorage !== 'undefined') localStorage.setItem('ag_turn_footer_high_contrast', savedTurnFooterContrast ? 'true' : 'false'); } catch { }
+        }
+        syncStatusTypographyUi();
         const savedComposerQuota = settingsRes.showComposerQuotaSummary ?? settingsRes.uiPreferences?.showComposerQuotaSummary;
         if (savedComposerQuota !== undefined) {
           showComposerQuotaSummary = savedComposerQuota !== false;
@@ -20770,6 +20952,8 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
             radialBottombar: Boolean(radialBottombarEnabled),
             showComposerBar: Boolean(showComposerQuotaSummary),
             showTurnFooter: Boolean(showTurnFooterStats),
+            composerStatusFontSize,
+            turnFooterHighContrast: Boolean(turnFooterHighContrast),
             nextPromptEnabled: Boolean(nextPromptEnabled),
             autoSwitchEnabled: Boolean(asCfg.enabled),
             autoSwitchTarget: encodeAutoSwitchTargetKey(asCfg.poolKey, asCfg.windowKey),
@@ -20805,6 +20989,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
               radialBottombar: buildSwFb('radialBottombarEnabled', radialBottombarEnabled),
               showComposerBar: buildSwFb('showComposerQuotaSummary', showComposerQuotaSummary),
               showTurnFooter: buildSwFb('showTurnFooterStats', showTurnFooterStats),
+              turnFooterHighContrast: buildSwFb('turnFooterHighContrast', turnFooterHighContrast),
               nextPromptEnabled: buildSwFb('nextPromptEnabled', nextPromptEnabled),
               autoCheckUpdate: buildSwFb('autoCheckUpdate', autoCheckUpdate),
               betaChannel: buildSwFb('allowBetaUpdates', allowBetaUpdates)
@@ -20920,6 +21105,8 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         }
         if (key === 'showComposerBar') { onShowComposerQuotaToggle({ target: { checked: Boolean(value) } }); return; }
         if (key === 'showTurnFooter') { onShowTurnFooterToggle({ target: { checked: Boolean(value) } }); return; }
+        if (key === 'composerStatusFontSize') { setComposerStatusFontSize(value, { persist: true }); return; }
+        if (key === 'turnFooterHighContrast') { onTurnFooterHighContrastToggle({ target: { checked: Boolean(value) } }); return; }
         if (key === 'nextPromptEnabled') { void setNextPromptEnabledState(Boolean(value), { persist: true }); return; }
         if (key === 'autoCheckUpdate') {
           const prev = autoCheckUpdate;
@@ -31833,6 +32020,23 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
       renderTurnFooterStats();
       return showTurnFooterStats;
     },
+    getStatusTypographyForTest: () => ({
+      fontSize: composerStatusFontSize,
+      highContrast: turnFooterHighContrast,
+      barFontSize: composerSummary?.getAttribute?.('data-font-size') || null,
+      barHighContrast: composerSummary?.getAttribute?.('data-high-contrast') || null,
+      docFontSize: document.documentElement?.getAttribute?.('data-ag-tf-size') || null,
+      docContrast: document.documentElement?.getAttribute?.('data-ag-tf-contrast') || null
+    }),
+    setComposerStatusFontSizeForTest: (size, opts) => setComposerStatusFontSize(size, opts || { persist: false }),
+    setTurnFooterHighContrastForTest: (enabled) => {
+      turnFooterHighContrast = Boolean(enabled);
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem('ag_turn_footer_high_contrast', turnFooterHighContrast ? 'true' : 'false');
+      } catch { }
+      syncStatusTypographyUi();
+      return turnFooterHighContrast;
+    },
     getCumulativeViewStateForTest: () => ({
       summary: _lastCumSummary,
       lockedKey: cumLockedKey,
@@ -32260,6 +32464,10 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
       try { document.getElementById('ag-wco-spacer')?.remove?.(); } catch { }
       try { document.getElementById('ag-topbar-host-fix')?.remove?.(); } catch { }
       turnFooterScopeState.clear();
+      try {
+        document.documentElement?.removeAttribute?.('data-ag-tf-size');
+        document.documentElement?.removeAttribute?.('data-ag-tf-contrast');
+      } catch { }
       cleanupLegacyModelPickerArtifacts();
       if (typeof disposeNextPrompt === 'function') disposeNextPrompt();
       disposeRadialTopLayer();
@@ -32277,6 +32485,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   cleanupLegacyModelPickerArtifacts();
   if (el('chk-next-prompt-enabled')) el('chk-next-prompt-enabled').checked = nextPromptEnabled;
   if (el('chk-show-turn-footer-stats')) el('chk-show-turn-footer-stats').checked = showTurnFooterStats;
+  syncStatusTypographyUi();
   if (typeof bindNextPromptComposerListeners === 'function') bindNextPromptComposerListeners();
   applyStaticPanelTranslations(shadow);
   if (radialShadow) {
