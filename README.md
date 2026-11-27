@@ -25,6 +25,7 @@
 
 - **2.34.0 窗口加载锚点 (`loadHubWindowUrl`)**: 已同步适配并通过跨平台安装/升级/还原自动化测试验证.
 - **macOS `ElectronAsarIntegrity` 与应用包签名**: `node cli.js check` 会预检签名和 ASAR 完整性. 对启用 `ElectronAsarIntegrity` 或带发行方签名的 `.app`，`install` 和 `recover` 默认拦截改盘并推荐免改盘 **`node cli.js watch`**. 改写 `app.asar` 会影响签名验证，可能导致客户端或定时任务的 `language_server` 无法启动.
+- **CDP 免改盘运行时汉化限制**: 通过 `watch` / `live --chinese` / `chinese:enable --live` 或免改盘模式下的 Context Meter 设置面板开关注入的运行时汉化完全运行于本机回环 CDP 渲染层，不修改 `app.asar` 与 `language_server`。默认仅注入主渲染窗口与 Antigravity 内置白名单 `plugin://` 子框架（不波及第三方 Marketplace UI 插件与自定义 MCP App）；**Electron 原生顶栏菜单（File/Edit/View）、系统托盘菜单与 OS 原生弹窗** 无法通过 CDP 汉化；关闭免改盘汉化后需刷新（`Cmd/Ctrl+R`）或重启窗口以恢复英文原版 DOM；停用/卸载时运行 `node cli.js chinese:disable --live && node cli.js stop-watch && node cli.js autostart:disable` 即可完整移除，官方签名始终保持未修改状态.
 - **实机未覆盖说明**: 本版构建期无 macOS 物理实机, macOS 上真实冷启动、Keychain/TCC 系统签名表现与真机 `watch` 交互仍待社区实际反馈核实. IDE 专属支持正在规划开发.
 
 ## 界面语言
@@ -83,8 +84,14 @@ node cli.js live
 node cli.js live --relaunch
 
 # 3b. 免改盘后台守护模式（macOS 推荐，保留官方原始签名；随窗口刷新自动重挂，关闭后自动退出）
+#     若已执行 chinese:enable --live 持久化开启（或追加单次参数 --chinese），会自动通过本机 CDP 运行时注入客户端简体中文界面（含内置 plugin:// 子框架）
 node cli.js watch
+node cli.js watch --chinese
 node cli.js stop-watch
+
+# 3d. 免改盘开启/关闭客户端简体中文（macOS 签名保护下自动走 CDP 运行时模式，不修改 app.asar）
+node cli.js chinese:enable --live
+node cli.js chinese:disable --live
 
 # 3c. 检查并下载免改盘更新，watch 会接手验证后的新版本
 node cli.js update --check-only

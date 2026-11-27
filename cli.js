@@ -37,6 +37,14 @@ const { compareVersions } = require('./meter-core');
 const { PROJECT_VERSION } = require('./modules-config');
 const { redactProxyUrl } = require('./meter-proxy');
 const { analyzeBinary, analyzeBinaryAsync, applyUnlock, restoreUnlock, detectCliBinary, AUTHOR_INFO } = require('./meter-context-unlock');
+const {
+  isAllowedPluginIframeUrl,
+  buildEmptyRuntimeI18nProbe,
+  resolveRuntimeChineseConfig,
+  buildRuntimeI18nBundle,
+  injectRuntimeI18nIntoTargets,
+  probeRuntimeI18nTargets
+} = require('./live-i18n');
 
 const asar = loadAsarEngine();
 
@@ -773,9 +781,12 @@ async function queryLiveWindow(options = {}) {
     }
     const discovered = await discoverAntigravityCdp(options);
     const matchedTargets = Array.isArray(discovered.pages) ? discovered.pages : [];
+    const pluginIframes = (Array.isArray(discovered.allPages) ? discovered.allPages : [])
+      .filter(p => p && p.type === 'iframe' && isAllowedPluginIframeUrl(p.url, options))
+      .map(p => ({ id: p.id || null, url: p.url, hasWs: Boolean(p.webSocketDebuggerUrl) }));
     const target = discovered.page || matchedTargets[0];
     const port = discovered.port;
-    if (!target) return { running: true, cdpEnabled: true, cdpPort: port, pageFound: false, origins: [] };
+    if (!target) return { running: true, cdpEnabled: true, cdpPort: port, pageFound: false, origins: [], pluginIframes, pluginIframeCount: pluginIframes.length };
     const origin = normalizeLoopbackOrigin(target.url) || new URL(target.url).origin;
     const origins = Array.from(new Set(matchedTargets.map(p => normalizeLoopbackOrigin(p.url)).filter(Boolean)));
     const lightProbe = Boolean(options.lightProbe);
@@ -815,10 +826,14 @@ async function queryLiveWindow(options = {}) {
           effectiveBackendVersion: backendStatus?.backendVersion || quotaState?.state?.collectorVersion || ipcRuntimeInfo?.backendVersion || null,
           badgeText: root?.getElementById('amount')?.textContent || null,
           route: s?.route || null,
-          latest: s?.latest || null
+          latest: s?.latest || null,
+          runtimeI18nActive: Boolean(window.__AGY_I18N_INITIALIZED__),
+          runtimeI18nMode: window.__AGY_RUNTIME_I18N_META__?.mode || null,
+          runtimeI18nBuildHash: window.__AGY_RUNTIME_I18N_META__?.buildHash || null,
+          runtimeI18nConfigSig: window.__AGY_RUNTIME_I18N_META__?.configSig || null
         };
       })()`, { timeoutMs: 4000 });
-      return { running: true, cdpEnabled: true, cdpPort: port, pageFound: true, origin, origins, windowCount: matchedTargets.length, ...(status || {}) };
+      return { running: true, cdpEnabled: true, cdpPort: port, pageFound: true, origin, origins, windowCount: matchedTargets.length, pluginIframes, pluginIframeCount: pluginIframes.length, ...(status || {}) };
     } finally {
       client.close();
     }
@@ -962,15 +977,19 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null, options = {}) {
   };
 
   const expectedHostBuildId = getHostCoreBuildId(__dirname);
+  const bridgeCdpPort = parseExplicitPort(liveSnapshot?.cdpPort ?? options.port ?? process.env.AG_CDP_PORT);
   if (existingInfo && existingInfo.pid) {
     const info = existingInfo;
     let pidAlive = false;
     try { process.kill(info.pid, 0); pidAlive = true; } catch {}
     const infoBuildMatch = !expectedHostBuildId || !info.hostBuildId || info.hostBuildId === expectedHostBuildId;
-    if (pidAlive && coversAllOrigins(info) && info.hasQuota && (!currentPkgVersion || info.version === currentPkgVersion) && infoBuildMatch) {
+    const infoCdpPort = parseExplicitPort(info.cdpPort);
+    const cdpPortMatch = !bridgeCdpPort || infoCdpPort === bridgeCdpPort;
+    if (pidAlive && coversAllOrigins(info) && info.hasQuota && (!currentPkgVersion || info.version === currentPkgVersion) && infoBuildMatch && cdpPortMatch) {
       const probe = await probeFn(info, expectedOrigins[0]);
       const probeBuildMatch = !expectedHostBuildId || !probe?.hostBuildId || probe?.hostBuildId === expectedHostBuildId;
-      if (probe && probe.ok && hasRehydrateCapability(probe.capabilities) && (!currentPkgVersion || probe.backendVersion === currentPkgVersion) && probeBuildMatch) {
+      const probeCdpPortMatch = !bridgeCdpPort || !probe?.cdpPort || parseExplicitPort(probe.cdpPort) === bridgeCdpPort;
+      if (probe && probe.ok && hasRehydrateCapability(probe.capabilities) && (!currentPkgVersion || probe.backendVersion === currentPkgVersion) && probeBuildMatch && probeCdpPortMatch) {
         return {
           needed: true,
           ready: true,
@@ -1007,6 +1026,7 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null, options = {}) {
     ...process.env,
     ...(options.stateDir ? { AG_METER_STATE_DIR: stateDir } : {}),
     ...(options.appDataDir ? { APPDATA: options.appDataDir } : {}),
+    ...(bridgeCdpPort ? { AG_CDP_PORT: String(bridgeCdpPort) } : {}),
     AG_LIVE_STAMP_PATH: stagingStamp,
     ...(expectedOrigins.length ? { AG_LIVE_ORIGINS: JSON.stringify(expectedOrigins) } : {})
   };
@@ -1018,6 +1038,7 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null, options = {}) {
   const hostArgs = [hostEntryScript, '--stamp', stagingStamp];
   if (originsB64) hostArgs.push('--origins-b64', originsB64);
   if (options.stateDir) hostArgs.push('--state-dir', stateDir);
+  if (bridgeCdpPort) hostArgs.push('--cdp-port', String(bridgeCdpPort));
 
   let spawnedChild = null;
   let spawnedPid = null;
@@ -1346,6 +1367,7 @@ async function runWatchDaemon(options = {}) {
   let windowEverSeen = false;
   let consecutiveMisses = 0;
   let injectedCount = 0;
+  let runtimeI18nInjectedCount = 0;
   let disposedCount = 0;
   let cycles = 0;
   let exitReason = 'stopped';
@@ -1353,6 +1375,10 @@ async function runWatchDaemon(options = {}) {
   let cdpPromptCount = 0;
   let warnedMissingCdp = false;
   let prefetchedLive = null;
+  const seenPluginIframes = new Map();
+  const i18nFailureState = new Map();
+  const iframeReverifyIntervalMs = Number.isFinite(options.iframeReverifyIntervalMs) ? options.iframeReverifyIntervalMs : 15000;
+  const i18nRetryBaseMs = Number.isFinite(options.i18nRetryBaseMs) ? options.i18nRetryBaseMs : Math.max(pollIntervalMs, 1000);
 
   const ensureBridgeFn = typeof options._ensureBridge === 'function'
     ? options._ensureBridge
@@ -1363,6 +1389,9 @@ async function runWatchDaemon(options = {}) {
   const hotDisposeFn = typeof options._hotDispose === 'function'
     ? options._hotDispose
     : () => tryHotDispose(options);
+  const injectRuntimeI18nFn = typeof options._injectRuntimeI18n === 'function'
+    ? options._injectRuntimeI18n
+    : (i18nOpts) => injectRuntimeI18nIntoTargets({ ...options, ...i18nOpts, stateDir });
 
   if (options.autoBootstrapHost) {
     const bootstrapped = await ensureLiveWindowAvailable(options.customPath || null, options, {
@@ -1431,6 +1460,8 @@ async function runWatchDaemon(options = {}) {
           const reloadArgs = [stagedScript || expectedScript, 'watch', '--no-launch'];
           if (options.port) reloadArgs.push('--port', String(options.port));
           if (options.customPath) reloadArgs.push('--path', options.customPath);
+          if (options.chinese === true) reloadArgs.push('--chinese');
+          else if (options.chinese === false) reloadArgs.push('--no-chinese');
           const reloadSpawner = options._spawnSelfReload || spawn;
           const child = reloadSpawner(process.execPath, reloadArgs, {
             detached: true,
@@ -1507,9 +1538,10 @@ async function runWatchDaemon(options = {}) {
       consecutiveMisses = 0;
 
       let meterEnabled = true;
+      let modCfgSnapshot = null;
       try {
-        const cfg = loadModulesConfig({ stateDir });
-        if (cfg?.modules?.meter?.enabled === false) {
+        modCfgSnapshot = loadModulesConfig({ stateDir });
+        if (modCfgSnapshot?.modules?.meter?.enabled === false) {
           meterEnabled = false;
         }
       } catch {}
@@ -1568,6 +1600,108 @@ async function runWatchDaemon(options = {}) {
         }
       }
 
+      const canRunRuntimeI18n = typeof options._injectRuntimeI18n === 'function' || !options._discoverWindow || Boolean(options.port);
+      if (canRunRuntimeI18n) {
+        const i18nCfg = resolveRuntimeChineseConfig({
+          stateDir,
+          modulesConfig: modCfgSnapshot,
+          ...(typeof options.chinese === 'boolean' ? { enabled: options.chinese } : {})
+        });
+        if (i18nCfg.shouldInject) {
+          const i18nBundle = buildRuntimeI18nBundle({ rootDir, chineseConfig: i18nCfg });
+          const expectedIframeSig = `${i18nBundle.buildHash}|${i18nBundle.configSig}`;
+          const pluginIframes = Array.isArray(live.pluginIframes) ? live.pluginIframes : [];
+          const activeIframeKeys = new Set();
+          for (const pf of pluginIframes) {
+            const key = pf.id || pf.url;
+            if (key) activeIframeKeys.add(key);
+          }
+          for (const key of seenPluginIframes.keys()) {
+            if (!activeIframeKeys.has(key)) seenPluginIframes.delete(key);
+          }
+          for (const key of i18nFailureState.keys()) {
+            if (key !== '__main__' && !activeIframeKeys.has(key)) i18nFailureState.delete(key);
+          }
+          if (!live.runtimeI18nActive) {
+            seenPluginIframes.clear();
+            i18nFailureState.delete('__main__');
+          }
+
+          const nowMs = Date.now();
+          const isReadyForRetry = (key) => {
+            const st = i18nFailureState.get(key);
+            if (!st) return true;
+            if (st.reloadRequiredSig === expectedIframeSig) return false;
+            return nowMs >= st.nextRetryAt;
+          };
+          const recordFailure = (key, reloadRequired) => {
+            const prev = i18nFailureState.get(key) || { count: 0, nextRetryAt: 0, reloadRequiredSig: null };
+            const count = prev.count + 1;
+            const delay = Math.min(30000, i18nRetryBaseMs * Math.pow(2, Math.min(count - 1, 4)));
+            i18nFailureState.set(key, {
+              count,
+              nextRetryAt: Date.now() + delay,
+              reloadRequiredSig: reloadRequired ? expectedIframeSig : prev.reloadRequiredSig
+            });
+          };
+
+          const rawMainNeeds = Boolean(
+            !live.runtimeI18nActive ||
+            live.runtimeI18nBuildHash !== i18nBundle.buildHash ||
+            live.runtimeI18nConfigSig !== i18nBundle.configSig
+          );
+          const mainNeedsI18n = rawMainNeeds && isReadyForRetry('__main__');
+          const iframeNeedsI18n = pluginIframes.some(pf => {
+            if (pf.hasWs === false) return false;
+            const key = pf.id || pf.url;
+            if (!key || !isReadyForRetry(key)) return false;
+            const seen = seenPluginIframes.get(key);
+            if (!seen) return true;
+            if (seen.sig !== expectedIframeSig || seen.url !== (pf.url || '')) return true;
+            return (nowMs - seen.checkedAt) >= iframeReverifyIntervalMs;
+          });
+
+          if (mainNeedsI18n || iframeNeedsI18n) {
+            try {
+              const i18nRes = await injectRuntimeI18nFn({
+                rootDir,
+                chineseConfig: i18nCfg,
+                port: live.cdpPort || options.port
+              });
+              if (i18nRes && typeof i18nRes.injectedCount === 'number') {
+                runtimeI18nInjectedCount += i18nRes.injectedCount;
+              }
+              const targetResults = Array.isArray(i18nRes?.targets) ? i18nRes.targets : [];
+              if (targetResults.length > 0) {
+                for (const t of targetResults) {
+                  const key = t.type === 'page' ? '__main__' : (t.id || t.url);
+                  if (t.ok) {
+                    if (t.type === 'iframe' && key) {
+                      seenPluginIframes.set(key, {
+                        sig: expectedIframeSig,
+                        url: t.url || '',
+                        checkedAt: Date.now()
+                      });
+                    }
+                    if (key) i18nFailureState.delete(key);
+                  } else if (key) {
+                    if (t.type === 'iframe') seenPluginIframes.delete(key);
+                    recordFailure(key, Boolean(t.reloadRequired));
+                  }
+                }
+              } else if (!i18nRes?.ok && !i18nRes?.skipped) {
+                recordFailure('__main__', Boolean(i18nRes?.reloadRequired));
+              }
+            } catch {
+              recordFailure('__main__', false);
+            }
+          }
+        } else {
+          seenPluginIframes.clear();
+          i18nFailureState.clear();
+        }
+      }
+
       if (cycles >= maxCycles) {
         exitReason = 'max_cycles';
         break;
@@ -1594,6 +1728,7 @@ async function runWatchDaemon(options = {}) {
     exitReason,
     cycles,
     injectedCount,
+    runtimeI18nInjectedCount,
     disposedCount,
     cdpPromptCount,
     selfReloaded
@@ -1631,6 +1766,7 @@ async function stopWatchDaemon(options = {}) {
 }
 
 async function cmdStatus(customPath, cdpOptions = {}) {
+  const stateDir = cdpOptions.stateDir || getStateDir();
   let asarPath = null;
   let version = null;
   let asarPatched = false;
@@ -1650,7 +1786,7 @@ async function cmdStatus(customPath, cdpOptions = {}) {
       if (mObj?.version) diskVersion = mObj.version;
     } catch {}
     if (!diskVersion && asarPatched) {
-      const mPath = path.join(getStateDir(), 'installation.json');
+      const mPath = path.join(stateDir, 'installation.json');
       if (fs.existsSync(mPath)) {
         const inst = JSON.parse(fs.readFileSync(mPath, 'utf8'));
         if (inst?.meterVersion) diskVersion = inst.meterVersion;
@@ -1668,18 +1804,24 @@ async function cmdStatus(customPath, cdpOptions = {}) {
   }
   let liveSessionInfo = null;
   try {
-    const lp = path.join(getStateDir(), '.live-session.json');
+    const lp = path.join(stateDir, '.live-session.json');
     if (fs.existsSync(lp)) {
       const raw = JSON.parse(fs.readFileSync(lp, 'utf8'));
       liveSessionInfo = { port: raw.port, pid: raw.pid, version: raw.version, backendSource: raw.backendSource || 'live-host', origins: raw.origins || (raw.origin ? [raw.origin] : []) };
     }
   } catch {}
-  const watchPid = readWatchPid();
+  const watchPid = readWatchPid(stateDir);
   const py = resolvePython();
+  let runtimeI18n = null;
+  try {
+    runtimeI18n = live?.cdpEnabled
+      ? await probeRuntimeI18nTargets({ ...cdpOptions, stateDir, port: live.cdpPort || cdpOptions.port })
+      : buildEmptyRuntimeI18nProbe({ stateDir });
+  } catch {}
   let hostRecovery = null;
   try {
     const { inspectHostRecoveryState } = require('./host-recovery');
-    const rec = inspectHostRecoveryState({ asarPath: asarPath || customPath, stateDir: cdpOptions.stateDir || getStateDir(), ...cdpOptions });
+    const rec = inspectHostRecoveryState({ asarPath: asarPath || customPath, stateDir, ...cdpOptions });
     hostRecovery = {
       state: rec.state,
       needsRecovery: Boolean(rec.needsRecovery),
@@ -1710,6 +1852,7 @@ async function cmdStatus(customPath, cdpOptions = {}) {
     },
     liveSession: liveSessionInfo,
     liveWindow: live,
+    ...(runtimeI18n ? { runtimeI18n } : {}),
     pythonAttachmentScanner: py || 'unavailable (optional)'
   };
   console.log(JSON.stringify(report, null, 2));
@@ -1850,10 +1993,31 @@ async function cmdLive(customPath = null, cdpOptions = {}, options = {}) {
   if (bridgePrep.previousLiveInfo) {
     await shutdownLiveHostGracefully(bridgePrep.previousLiveInfo);
   }
+  let runtimeI18nReport = null;
+  const canRunRuntimeI18n = typeof options._injectRuntimeI18n === 'function' || !options._hotInject;
+  if (canRunRuntimeI18n) {
+    const i18nCfg = resolveRuntimeChineseConfig({
+      stateDir: options.stateDir,
+      ...(typeof options.chinese === 'boolean' ? { enabled: options.chinese } : {})
+    });
+    if (i18nCfg.shouldInject) {
+      const injectFn = typeof options._injectRuntimeI18n === 'function'
+        ? options._injectRuntimeI18n
+        : injectRuntimeI18nIntoTargets;
+      runtimeI18nReport = await injectFn({
+        ...effectiveCdpOptions,
+        stateDir: options.stateDir,
+        chineseConfig: i18nCfg
+      });
+    }
+  }
   if (!options.silent) {
     console.log(`✅ 已通过 CDP 热注入当前运行的 ${report.injectedCount}/${report.windowCount} 个 Antigravity 窗口！`);
+    if (runtimeI18nReport?.ok && runtimeI18nReport.targetCount > 0) {
+      console.log(`🇨🇳 已同步通过 CDP 注入运行时简体中文界面 (${runtimeI18nReport.injectedCount} 新注入 / ${runtimeI18nReport.skippedCount} 已激活，共 ${runtimeI18nReport.targetCount} 个目标)`);
+    }
   }
-  return { ...report, action: ensured.action, port: ensured.port };
+  return { ...report, ...(runtimeI18nReport ? { runtimeI18n: runtimeI18nReport } : {}), action: ensured.action, port: ensured.port };
 }
 
 async function runLiveCommand(cdpOptions = {}, customPath = null) {
@@ -1920,7 +2084,7 @@ const CLI_BOOLEAN_FLAGS = new Set([
   '--force', '--all', '--cli', '--no-cli-sync', '--no-sync', '--previous', '--in-place', '--no-shortcut',
   '--today', '--week', '--month', '--json', '--compact', '--once', '--dry-run',
   '--clear', '--sync-cli-settings', '--no-open', '--relaunch', '--no-launch', '--force-mac-asar', '--disk-only',
-  '--check-only', '--beta', '--silent'
+  '--check-only', '--beta', '--silent', '--chinese', '--no-chinese', '--live'
 ]);
 
 const CLI_KNOWN_COMMANDS = new Set([
@@ -1956,12 +2120,14 @@ function printUsage() {
                                             配置 CLI 按模型自定义上下文偏好
   node cli.js context-status [--model <id>] [--json]
                                             查看 CLI 按模型上下文偏好与二进制门禁状态
-  node cli.js watch [--port <port>] [--relaunch] [--no-launch]  免改盘后台守护模式（未启动则自动拉起，关闭后自动退出）
+  node cli.js watch [--port <port>] [--relaunch] [--no-launch] [--chinese]  免改盘后台守护模式（未启动则自动拉起，关闭后自动退出）
   node cli.js stop-watch                    停止正在运行的 watch 守护进程与本地桥接服务
   node cli.js autostart-status              查看登录自启状态 · macOS LaunchAgent 与 Windows Run 键
   node cli.js autostart:enable [--port <port>]   写入登录自启项，登录后自动执行 watch 免改盘挂载
   node cli.js autostart:disable             移除登录自启项 · 不影响当前正在运行的 watch
-  node cli.js live [--port <port>] [--relaunch] [--no-launch]   免改盘 CDP 热挂载（未开启调试端口时支持自动拉起/重开）
+  node cli.js live [--port <port>] [--relaunch] [--no-launch] [--chinese]   免改盘 CDP 热挂载（未开启调试端口时支持自动拉起/重开）
+  node cli.js chinese:enable [--live]       开启客户端简体中文界面（--live 或 macOS 签名保护下自动走 CDP 免改盘注入）
+  node cli.js chinese:disable [--live]      关闭客户端简体中文界面（免改盘模式下刷新或重启窗口恢复英文）
   node cli.js update [--check-only] [--beta] [--json]          检查或下载免改盘更新，供 live / watch 加载
   node cli.js install [--path <app.asar>] [--force-mac-asar]    一键持久化安装并热注入当前运行窗口
   node cli.js recover [--path <app.asar>] [--check-only] [--json]  检测并在宿主更新覆盖后自动备份恢复插件配置
@@ -2058,7 +2224,16 @@ async function main() {
   if (portIdx >= 0 && !explicitPort) {
     throw new Error(`无效的 --port 参数: ${args[portIdx + 1]}`);
   }
-  const cdpOptions = explicitPort ? { port: explicitPort, strictPort: true } : {};
+  const stateDirIdx = args.indexOf('--state-dir');
+  const customStateDir = stateDirIdx >= 0 ? args[stateDirIdx + 1] : null;
+  const resolvedStateDir = customStateDir ? path.resolve(customStateDir) : null;
+  if (resolvedStateDir && !process.env.AG_METER_STATE_DIR) {
+    process.env.AG_METER_STATE_DIR = resolvedStateDir;
+  }
+  const cdpOptions = {
+    ...(explicitPort ? { port: explicitPort, strictPort: true } : {}),
+    ...(resolvedStateDir ? { stateDir: resolvedStateDir } : {})
+  };
   const isForce = args.includes('--force');
   const isRelaunch = args.includes('--relaunch');
   const isNoLaunch = args.includes('--no-launch');
@@ -2176,14 +2351,12 @@ async function main() {
     }
   } else if (cmd === 'recover') {
     const { recoverHostInstallation } = require('./host-recovery');
-    const stateDirIdx = args.indexOf('--state-dir');
-    const customStateDir = stateDirIdx >= 0 ? args[stateDirIdx + 1] : null;
     const isCheckOnly = args.includes('--check-only');
     const wantJson = args.includes('--json');
     const isSilent = args.includes('--silent');
     const res = await recoverHostInstallation({
       asarPath: customPath,
-      stateDir: customStateDir || undefined,
+      stateDir: resolvedStateDir || undefined,
       checkOnly: isCheckOnly,
       force: isForce,
       forceMacAsar: isForceMacAsar,
@@ -2231,12 +2404,16 @@ async function main() {
     else if (result.hasUpdate) console.log(`发现可用版本 v${result.latestVersion}`);
     else console.log(`已是最新版本 v${result.installedVersion}`);
   } else if (cmd === 'live') {
+    const chineseOpt = args.includes('--chinese') ? true : (args.includes('--no-chinese') ? false : undefined);
     await cmdLive(customPath, cdpOptions, {
       relaunch: isRelaunch,
       autoRecover: getStagedLiveRuntime()?.dir !== __dirname,
-      autoLaunch: !isNoLaunch
+      autoLaunch: !isNoLaunch,
+      ...(resolvedStateDir ? { stateDir: resolvedStateDir } : {}),
+      ...(typeof chineseOpt === 'boolean' ? { chinese: chineseOpt } : {})
     });
   } else if (cmd === 'watch') {
+    const chineseOpt = args.includes('--chinese') ? true : (args.includes('--no-chinese') ? false : undefined);
     console.log('👀 [Antigravity 对话上下文查看器] 免改盘守护模式启动中（不修改 app.asar，保留官方原始签名）...');
     const res = await runWatchDaemon({
       ...cdpOptions,
@@ -2244,13 +2421,14 @@ async function main() {
       autoRecover: getStagedLiveRuntime()?.dir !== __dirname,
       autoBootstrapHost: !isNoLaunch,
       autoLaunch: !isNoLaunch,
-      relaunch: isRelaunch
+      relaunch: isRelaunch,
+      ...(typeof chineseOpt === 'boolean' ? { chinese: chineseOpt } : {})
     });
     if (!res.alreadyRunning && !res.selfReloaded) {
       console.log(`👋 守护模式已停止 (${res.exitReason})，已清理临时桥接状态。`);
     }
   } else if (cmd === 'stop-watch') {
-    const res = await stopWatchDaemon();
+    const res = await stopWatchDaemon(resolvedStateDir ? { stateDir: resolvedStateDir } : {});
     if (res.watchStopped || res.liveBridgeStopped) {
       console.log(`✅ 已停止守护进程与本地桥接服务 (watch: ${res.watchStopped ? res.watchPid : '未运行'}, live-host: ${res.liveBridgeStopped ? res.liveBridgePid : '未运行'})`);
     } else {
@@ -2498,14 +2676,76 @@ async function main() {
     }
   } else if (cmd === 'chinese:enable' || cmd === 'chinese:disable') {
     const { loadModulesConfig, saveModulesConfig } = require('./modules-config');
-    const cfg = loadModulesConfig();
+    const stateOpt = resolvedStateDir ? { stateDir: resolvedStateDir } : {};
+    const cfg = loadModulesConfig(stateOpt);
     const enable = cmd === 'chinese:enable';
-    cfg.modules.chinese.enabled = enable;
-    cfg.modules.chinese.language = enable ? 'zh-CN' : 'en';
-    cfg.modules.chinese.lastUpdated = new Date().toISOString();
-    saveModulesConfig(cfg);
-    await install({ path: customPath, modules: { chinese: { enabled: enable, language: cfg.modules.chinese.language } } });
-    console.log(`✅ 客户端界面汉化模块已${enable ? '开启' : '关闭'}并完成 ASAR 注入同步！`);
+    const nextLang = enable ? 'zh-CN' : 'en';
+    const nextUpdatedAt = new Date().toISOString();
+
+    let useRuntimeOnly = args.includes('--live');
+    let fallbackNotice = null;
+    if (!useRuntimeOnly && process.platform === 'darwin' && !isForceMacAsar) {
+      try {
+        const targetAsar = findAsarPath(customPath);
+        const macIntegrity = inspectMacAsarIntegrity(targetAsar);
+        if (macIntegrity.isMacAppBundle) {
+          if (macIntegrity.patchRisk === 'blocked_integrity') {
+            useRuntimeOnly = true;
+            fallbackNotice = '🛡️ 检测到 macOS ElectronAsarIntegrity 保护，已自动切换为免改盘 CDP 运行时模式（不修改 app.asar）。';
+          } else if (macIntegrity.patchRisk === 'blocked_signature') {
+            useRuntimeOnly = true;
+            fallbackNotice = '🛡️ 检测到 macOS 官方应用签名保护，已自动切换为免改盘 CDP 运行时模式（不修改 app.asar）。';
+          } else if (macIntegrity.patchRisk === 'unknown_signature') {
+            useRuntimeOnly = true;
+            fallbackNotice = '🛡️ 未能读取完整 macOS 签名/完整性信息，为保护应用包完整性已自动切换为免改盘 CDP 运行时模式（不修改 app.asar）。';
+          }
+        }
+      } catch {
+        if (!customPath) {
+          try {
+            const liveProbe = await queryLiveWindow(cdpOptions);
+            if (liveProbe?.running && liveProbe.cdpEnabled !== false) {
+              useRuntimeOnly = true;
+              fallbackNotice = '🛡️ 未定位到默认安装路径但检测到运行中的 CDP 窗口，已自动切换为免改盘 CDP 运行时模式。';
+            }
+          } catch {}
+        }
+      }
+    }
+
+    if (useRuntimeOnly) {
+      if (fallbackNotice) console.log(fallbackNotice);
+      cfg.modules.chinese.enabled = enable;
+      cfg.modules.chinese.language = nextLang;
+      cfg.modules.chinese.lastUpdated = nextUpdatedAt;
+      saveModulesConfig(cfg, stateOpt);
+      if (enable) {
+        const liveRes = await injectRuntimeI18nIntoTargets({ ...cdpOptions, force: true });
+        if (liveRes.ok) {
+          console.log(`✅ 已开启简体中文配置并立即通过 CDP 注入 ${liveRes.targetCount} 个运行中目标（未修改 app.asar）。`);
+        } else if (liveRes.reloadRequired) {
+          console.log('✅ 已保存简体中文配置（免改盘模式）。检测到窗口存在旧版或外部汉化运行时，请刷新窗口（Cmd/Ctrl+R）后生效。');
+        } else {
+          console.log('✅ 已保存简体中文配置（免改盘模式）。请运行 `node cli.js watch` 或 `node cli.js live` 启动/挂载客户端即可生效。');
+        }
+      } else {
+        console.log('✅ 已关闭简体中文配置（未修改 app.asar）。请刷新（Cmd/Ctrl+R）或重启客户端恢复官方英文界面。');
+      }
+    } else {
+      await install({
+        path: customPath,
+        ...(resolvedStateDir ? { stateDir: resolvedStateDir } : {}),
+        allowIntegrityOverride: isForceMacAsar,
+        modules: { chinese: { enabled: enable, language: nextLang, lastUpdated: nextUpdatedAt } }
+      });
+      if (enable) {
+        const liveRes = await injectRuntimeI18nIntoTargets({ ...cdpOptions, force: true });
+        if (liveRes.ok && liveRes.targetCount > 0) {
+          console.log(`🇨🇳 已同步通过 CDP 注入当前运行的 ${liveRes.targetCount} 个目标！`);
+        }
+      }
+      console.log(`✅ 客户端界面汉化模块已${enable ? '开启' : '关闭'}并完成 ASAR 注入同步！`);
+    }
   } else if (cmd === 'proxy:enable' || cmd === 'proxy:disable') {
     const { loadModulesConfig, saveModulesConfig } = require('./modules-config');
     const cfg = loadModulesConfig();

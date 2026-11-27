@@ -719,14 +719,25 @@
     };
   }
 
-  if (root && root.__AGY_I18N_INITIALIZED__) return;
+  if (root && root.__AGY_I18N_INITIALIZED__) {
+    if (typeof root.__AGY_I18N_HOT_UPDATE__ === 'function') {
+      root.__AGY_I18N_HOT_UPDATE__(
+        root.__AGY_I18N_DATA__ || root.__AGY_I18N_DICT__,
+        root.__AGY_I18N_CONFIG__
+      );
+    }
+    return;
+  }
   if (root) root.__AGY_I18N_INITIALIZED__ = true;
 
   var doc = root ? (root.document || (typeof document !== 'undefined' ? document : null)) : null;
 
   var I18N_DATA = (root && (root.__AGY_I18N_DATA__ || root.__AGY_I18N_DICT__)) || { exact: {}, patterns: [] };
   var I18N_CONFIG = (root && root.__AGY_I18N_CONFIG__) || { enabled: true, language: 'zh-CN', brandTitle: 'english' };
-  var i18nEnabled = I18N_CONFIG.enabled !== false && I18N_CONFIG.language !== 'en';
+  function isI18nEnabled() {
+    var cfg = (root && root.__AGY_I18N_CONFIG__) || I18N_CONFIG;
+    return Boolean(cfg && cfg.enabled !== false && cfg.language !== 'en');
+  }
   function getBrandTitleMode() {
     var cfg = (root && root.__AGY_I18N_CONFIG__) || I18N_CONFIG;
     if (cfg && (cfg.brandTitle === 'hidden' || cfg.brandTitle === 'translated')) {
@@ -784,6 +795,10 @@
   var PROTECTED_ID_SET = {
     'context-meter-root': 1,
     'ag-context-meter': 1,
+    'ag-context-meter-radial-host': 1,
+    'ag-context-meter-modal-host': 1,
+    'ag-cm-host-settings-nav': 1,
+    'ag-cm-host-settings-page': 1,
     'ag-composer-status-bar': 1,
     'token-five-line-card': 1
   };
@@ -1031,7 +1046,11 @@
     '#ag-context-meter',
     '#context-meter-root',
     '#ag-context-meter-radial-host',
+    '#ag-context-meter-modal-host',
     '[data-ag-radial-top-layer]',
+    '[data-ag-modal-top-layer]',
+    '#ag-cm-host-settings-nav',
+    '#ag-cm-host-settings-page',
     '#ag-composer-status-bar',
     '#token-five-line-card',
     '#cli-launch-toast'
@@ -1101,24 +1120,23 @@
     return rawTitle;
   }
 
-  function applyBrandTitleToText(trimmed, parentEl) {
+  function isBrandTitleLocation(trimmed, parentEl) {
     if (
       trimmed !== 'Antigravity' &&
       trimmed !== 'Google Antigravity' &&
       trimmed !== '反重力' &&
       trimmed !== 'Google 反重力'
     ) {
-      return null;
+      return false;
     }
-    var mode = getBrandTitleMode();
-    if (!parentEl || !parentEl.tagName) return null;
+    if (!parentEl || !parentEl.tagName) return false;
     var tag = parentEl.tagName;
-    if (tag === 'CODE' || tag === 'PRE' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SCRIPT' || tag === 'STYLE') return null;
+    if (tag === 'CODE' || tag === 'PRE' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SCRIPT' || tag === 'STYLE') return false;
 
     if (parentEl.closest) {
       try {
         if (parentEl.closest('p, pre, code, blockquote, [class*="message"], [class*="chat"], [class*="content"], [class*="markdown"], [class*="artifact"]')) {
-          return null;
+          return false;
         }
       } catch (e) { }
     }
@@ -1139,7 +1157,7 @@
       }
     } catch (e) { }
 
-    var isTitleOrDragBar = Boolean(
+    return Boolean(
       isExactBrandItem ||
       isTopLeftViewport ||
       cls.indexOf('window-title') !== -1 ||
@@ -1153,9 +1171,11 @@
         '.window-title, .titlebar-container, .part.titlebar, .titlebar-left, .titlebar-center, .titlebar-right, .titlebar, [class*="titlebar"], [class*="top-bar"], [class*="app-bar"], [class*="sidebar-header"], [style*="-webkit-app-region: drag"], [style*="-webkit-app-region:drag"]'
       ))
     );
+  }
 
-    if (!isTitleOrDragBar) return null;
-
+  function applyBrandTitleToText(trimmed, parentEl) {
+    if (!isBrandTitleLocation(trimmed, parentEl)) return null;
+    var mode = getBrandTitleMode();
     if (trimmed === 'Antigravity' || trimmed === 'Google Antigravity') {
       if (mode === 'hidden') return '';
       if (mode === 'translated') return trimmed === 'Google Antigravity' ? 'Google 反重力' : '反重力';
@@ -1251,7 +1271,11 @@
       return;
     }
 
-    if (!i18nEnabled) {
+    if (isBrandTitleLocation(trimmed, parent)) {
+      node._agyIsBrandNode = true;
+    }
+
+    if (!isI18nEnabled()) {
       node._agyOriginal = original;
       return;
     }
@@ -1310,7 +1334,8 @@
     if (ignoreState === 1) return;
     if (scanId) el._agyScanId = scanId;
 
-    if (i18nEnabled && el.getAttribute && el.getAttribute('data-testid') === 'plan-command-fyi-alert') {
+    var enabledNow = isI18nEnabled();
+    if (enabledNow && el.getAttribute && el.getAttribute('data-testid') === 'plan-command-fyi-alert') {
       var alertSpan = el.querySelector ? el.querySelector('span') : null;
       if (alertSpan && !alertSpan._agyAlertDone) {
         var alertChild = alertSpan.firstChild;
@@ -1325,7 +1350,7 @@
       }
     }
 
-    if (i18nEnabled) {
+    if (enabledNow) {
       for (var i = 0; i < TRANSLATABLE_ATTRS.length; i++) {
         var attr = TRANSLATABLE_ATTRS[i];
         if (el.hasAttribute && el.hasAttribute(attr)) {
@@ -1353,7 +1378,7 @@
     }
 
     // 空状态多节点混合残片收敛 (如 "No 自动化 yet" -> "暂无自动化")
-    if (i18nEnabled && el.childNodes && el.childNodes.length >= 2 && el.childNodes.length <= 5) {
+    if (enabledNow && el.childNodes && el.childNodes.length >= 2 && el.childNodes.length <= 5) {
       var leafTexts = [];
       var allSimple = true;
       for (var li = 0; li < el.childNodes.length; li++) {
@@ -1390,7 +1415,7 @@
     }
 
     var first = el.firstChild;
-    if (i18nEnabled && first && first.nextSibling) {
+    if (enabledNow && first && first.nextSibling) {
       var allText = true;
       var cur = first;
       while (cur) {
@@ -1497,6 +1522,63 @@
       translateElement(doc.documentElement, currentScanId);
     } catch (e) { }
     reconnectObserver();
+  }
+
+  function clearCachedScanMarks(rootEl) {
+    if (!rootEl) return;
+    var clearNode = function (node) {
+      if (!node) return;
+      if (node.nodeType === 3) {
+        delete node._agyOriginal;
+      } else if (node.nodeType === 1) {
+        for (var i = 0; i < TRANSLATABLE_ATTRS.length; i++) {
+          delete node[MARK_ATTR + '_' + TRANSLATABLE_ATTRS[i]];
+        }
+      }
+    };
+    if (doc && typeof doc.createTreeWalker === 'function' && typeof NodeFilter !== 'undefined') {
+      var mask = (NodeFilter.SHOW_TEXT || 4) | (NodeFilter.SHOW_ELEMENT || 1);
+      var walker = doc.createTreeWalker(rootEl, mask);
+      var cur;
+      while ((cur = walker.nextNode())) {
+        clearNode(cur);
+      }
+      return;
+    }
+    var stack = [rootEl];
+    while (stack.length > 0) {
+      var node = stack.pop();
+      clearNode(node);
+      if (node && node.childNodes && node.childNodes.length) {
+        for (var j = node.childNodes.length - 1; j >= 0; j--) {
+          stack.push(node.childNodes[j]);
+        }
+      }
+    }
+  }
+
+  function reloadRuntimeState(nextData, nextConfig) {
+    if (nextConfig && typeof nextConfig === 'object') {
+      I18N_CONFIG = nextConfig;
+      if (root) {
+        root.__AGY_I18N_CONFIG__ = nextConfig;
+        root.__AGY_CHINESE_CONFIG__ = nextConfig;
+      }
+    }
+    if (nextData && typeof nextData === 'object') {
+      I18N_DATA = nextData;
+      defaultEngine = createI18nEngine(I18N_DATA);
+      translateSingleUnit = defaultEngine.translate;
+      if (root) {
+        root.__AGY_I18N_DATA__ = nextData;
+        root.__AGY_TRANSLATE_UNIT__ = translateSingleUnit;
+        root.__AGY_CACHE__ = defaultEngine.cache;
+      }
+    }
+    if (doc && doc.documentElement) {
+      clearCachedScanMarks(doc.documentElement);
+      safeFullScan();
+    }
   }
 
   var pendingNodes = [];
@@ -1730,6 +1812,7 @@
     root.__AGY_TRANSLATE_UNIT__ = translateSingleUnit;
     root.__AGY_TRANSLATE_EL__ = translateElement;
     root.__AGY_RUN_FULL_SCAN__ = safeFullScan;
+    root.__AGY_I18N_HOT_UPDATE__ = reloadRuntimeState;
     root.__AGY_CACHE__ = defaultEngine.cache;
     root.__AGY_IS_FLOATING__ = isFloatingElement;
     root.__AGY_IS_CHAT_OR_MARKDOWN__ = isChatOrMarkdownContent;

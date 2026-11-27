@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
-const { connect, normalizeLoopbackOrigin, getAppDataDir } = require('./local-api');
+const { connect, normalizeLoopbackOrigin, getAppDataDir, parseExplicitPort } = require('./local-api');
 const {
   collect,
   collectTurnState,
@@ -168,6 +168,16 @@ const ALLOWED_ROUTES = [
 
 const LIVE_HOST_STARTED_AT = Date.now();
 const LIVE_HOST_BUILD_ID = getHostCoreBuildId(__dirname);
+
+function hasBundledRuntimeI18nAssets(baseDir = __dirname) {
+  const root = baseDir || __dirname;
+  if (!fs.existsSync(path.join(root, 'live-i18n.js'))) return false;
+  const hasDict = fs.existsSync(path.join(root, 'i18n', 'zh-CN.json')) ||
+    fs.existsSync(path.join(root, 'src', 'i18n', 'zh-CN.json'));
+  const hasRuntime = fs.existsSync(path.join(root, 'i18n', 'i18n-runtime.js')) ||
+    fs.existsSync(path.join(root, 'src', 'i18n', 'i18n-runtime.js'));
+  return hasDict && hasRuntime;
+}
 const LIVE_CAPABILITIES = {
   scan: true,
   turnState: true,
@@ -197,9 +207,33 @@ function timingSafeTokenEqual(provided, expected) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
-function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShutdown = null, startedAt = LIVE_HOST_STARTED_AT, _applyUpdateAsync = applyUpdateAsync }) {
+function createLiveRequestHandler({
+  api,
+  secret,
+  getAllowedOrigins = null,
+  onShutdown = null,
+  startedAt = LIVE_HOST_STARTED_AT,
+  _applyUpdateAsync = applyUpdateAsync,
+  cdpPort = null,
+  rootDir = __dirname,
+  _injectRuntimeI18n = null,
+  _probeRuntimeI18n = null
+}) {
   let activeApplyUpdateCount = 0;
   let deferredShutdownRequested = false;
+  const boundCdpPort = parseExplicitPort(cdpPort);
+  const buildRuntimeI18nOpts = () => ({
+    rootDir,
+    stateDir: getStateDir(),
+    ...(boundCdpPort ? { port: boundCdpPort, strictPort: true } : {})
+  });
+  const getRuntimeI18nFns = () => {
+    const liveI18n = (_injectRuntimeI18n && _probeRuntimeI18n) ? null : require('./live-i18n');
+    return {
+      injectFn: _injectRuntimeI18n || liveI18n.injectRuntimeI18nIntoTargets,
+      probeFn: _probeRuntimeI18n || liveI18n.probeRuntimeI18nTargets
+    };
+  };
   const resolveAllowedSet = () => {
     const set = new Set();
     const addAllowed = (raw) => {
@@ -411,12 +445,27 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
         if (req.url === '/modules-status') {
           const { loadModulesConfig, inspectDiskModules } = require('./modules-config');
           const cfg = loadModulesConfig();
+          const disk = inspectDiskModules(request?.asarPath || null);
+          const runtime = buildLiveRuntimeModulesMeta(cfg, request?.asarPath || null);
+          if (!disk.chineseReady && hasBundledRuntimeI18nAssets(rootDir)) {
+            const diskZhActive = Boolean(cfg.modules?.chinese?.enabled && String(cfg.modules?.chinese?.language || '').toLowerCase() !== 'en');
+            let runtimeChineseActive = false;
+            try {
+              const { probeFn } = getRuntimeI18nFns();
+              const probeRes = await probeFn(buildRuntimeI18nOpts());
+              runtimeChineseActive = Boolean(probeRes && probeRes.chineseActiveTargets > 0);
+            } catch { }
+            runtime.chineseActive = runtimeChineseActive;
+            runtime.chineseMode = 'cdp-runtime';
+            runtime.chineseRuntimeAvailable = true;
+            runtime.chineseNeedsRestart = diskZhActive !== runtimeChineseActive;
+          }
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({
             ok: true,
             data: cfg,
-            disk: inspectDiskModules(request?.asarPath || null),
-            runtime: buildLiveRuntimeModulesMeta(cfg, request?.asarPath || null),
+            disk,
+            runtime,
             configCorrupted: Boolean(cfg.__configCorrupted),
             configError: cfg.__configError || null,
             corruptedConfigPath: cfg.__corruptedConfigPath || null
@@ -438,6 +487,81 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           const hasDiskCapability = mod === 'chinese'
             ? Boolean(disk.chineseReady)
             : (mod === 'proxy' ? Boolean(disk.proxyReady) : Boolean(disk.meterReady));
+
+          // 免改盘模式下（app.asar 未注入 chinese），若内置 CDP 运行时资产完整，支持设置面板直接实时切换与注入
+          if (mod === 'chinese' && !hasDiskCapability && hasBundledRuntimeI18nAssets(rootDir)) {
+            const nextLang = normalizeClientLanguage(extra.language, targetEnable);
+            const nextEnabled = nextLang === 'zh-CN';
+            const nextBrand = extra.brandTitle !== undefined
+              ? normalizeBrandTitle(extra.brandTitle)
+              : normalizeBrandTitle(cfg.modules.chinese?.brandTitle);
+            cfg.modules.chinese.language = nextLang;
+            cfg.modules.chinese.enabled = nextEnabled;
+            cfg.modules.chinese.brandTitle = nextBrand;
+            cfg.modules.chinese.lastUpdated = new Date().toISOString();
+            saveModulesConfig(cfg);
+
+            const { injectFn, probeFn } = getRuntimeI18nFns();
+            const runtime = buildLiveRuntimeModulesMeta(cfg, extra.asarPath || null);
+            runtime.chineseMode = 'cdp-runtime';
+            runtime.chineseRuntimeAvailable = true;
+
+            if (nextEnabled || nextBrand !== 'english') {
+              let injectRes = null;
+              try {
+                injectRes = await injectFn({
+                  ...buildRuntimeI18nOpts(),
+                  chineseConfig: { enabled: nextEnabled, language: nextLang, brandTitle: nextBrand, shouldInject: true },
+                  force: true
+                });
+              } catch (err) {
+                injectRes = { ok: false, error: err?.message || String(err) };
+              }
+              const activeNow = Boolean(injectRes?.ok && nextEnabled);
+              runtime.chineseActive = activeNow;
+              runtime.chineseNeedsRestart = injectRes?.ok ? false : Boolean(nextEnabled);
+              const msg = injectRes?.ok
+                ? (nextEnabled ? '已通过免改盘 CDP 实时启用简体中文界面，无需重启' : '已实时更新免改盘品牌标题配置，无需重启')
+                : (injectRes?.reloadRequired
+                  ? '配置已保存，当前窗口存在旧版或外部汉化运行时，请按 Cmd/Ctrl+R 刷新后生效'
+                  : '配置已保存（免改盘模式），未能通过 CDP 即时注入当前窗口，请等待 watch 自动挂载或刷新窗口生效');
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({
+                ok: true,
+                status: 'config_toggled',
+                mode: 'cdp-runtime',
+                data: cfg,
+                disk,
+                runtime,
+                restartRequired: Boolean(runtime.chineseNeedsRestart),
+                runtimeI18n: injectRes,
+                message: msg
+              }));
+              return;
+            }
+
+            let wasActive = false;
+            try {
+              const probeRes = await probeFn(buildRuntimeI18nOpts());
+              wasActive = Boolean(probeRes && probeRes.chineseActiveTargets > 0);
+            } catch { }
+            runtime.chineseActive = wasActive;
+            runtime.chineseNeedsRestart = wasActive;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({
+              ok: true,
+              status: 'config_toggled',
+              mode: 'cdp-runtime',
+              data: cfg,
+              disk,
+              runtime,
+              restartRequired: wasActive,
+              message: wasActive
+                ? '已关闭免改盘简体中文配置，请按 Cmd/Ctrl+R 刷新或重启窗口恢复官方英文界面'
+                : '已保持官方英文界面，无需重启'
+            }));
+            return;
+          }
 
           // 在热挂载模式或未持久化注入下尝试开启未注入模块时，给出可执行的外部补装指引，不假报切换成功
           if (targetEnable && !hasDiskCapability) {
@@ -523,6 +647,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
             backendSource: 'live-host',
             pid: process.pid,
             startedAt,
+            cdpPort: boundCdpPort || null,
             capabilities: { ...LIVE_CAPABILITIES },
             origins: Array.from(resolveAllowedSet())
           }));
@@ -811,6 +936,12 @@ function getCliArgValue(flagName) {
   return '';
 }
 
+function resolveLiveHostCdpPort(explicitPort = null) {
+  return parseExplicitPort(
+    explicitPort ?? (getCliArgValue('--cdp-port') || process.env.AG_CDP_PORT)
+  );
+}
+
 function parseInitialOriginsEnv() {
   const cliOriginsB64 = getCliArgValue('--origins-b64');
   let raw = String(process.env.AG_LIVE_ORIGINS || '').trim();
@@ -829,12 +960,15 @@ function parseInitialOriginsEnv() {
   return Array.from(new Set(raw.split(/[,;\s]+/).map(normalizeLoopbackOrigin).filter(Boolean)));
 }
 
-function discoverCdpPageOrigins() {
+function discoverCdpPageOrigins(explicitCdpPort = null) {
   return new Promise((resolve) => {
     try {
-      const portFile = path.join(getAppDataDir(), 'Antigravity', 'DevToolsActivePort');
-      if (!fs.existsSync(portFile)) return resolve([]);
-      const port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
+      let port = parseExplicitPort(explicitCdpPort);
+      if (!port) {
+        const portFile = path.join(getAppDataDir(), 'Antigravity', 'DevToolsActivePort');
+        if (!fs.existsSync(portFile)) return resolve([]);
+        port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
+      }
       if (!Number.isFinite(port) || port <= 0) return resolve([]);
       const req = http.get(`http://127.0.0.1:${port}/json/list`, { agent: false }, res => {
         let d = '';
@@ -884,6 +1018,7 @@ async function startLiveHost() {
   if (cliStateDir) {
     process.env.AG_METER_STATE_DIR = path.resolve(cliStateDir);
   }
+  const cdpPort = resolveLiveHostCdpPort();
   const envOrigins = parseInitialOriginsEnv();
   let currentOrigins = envOrigins;
   let api = null;
@@ -904,7 +1039,7 @@ async function startLiveHost() {
       ? currentOrigins
       : [api.origin, ...currentOrigins];
   } else {
-    api = await connect();
+    api = await connect(cdpPort ? { port: cdpPort, strictPort: true } : {});
     currentOrigins = Array.isArray(api.origins) && api.origins.length ? api.origins : [api.origin];
   }
   const secret = crypto.randomBytes(32).toString('hex');
@@ -952,7 +1087,8 @@ async function startLiveHost() {
     secret,
     getAllowedOrigins: () => currentOrigins,
     onShutdown: shutdownGracefully,
-    startedAt: LIVE_HOST_STARTED_AT
+    startedAt: LIVE_HOST_STARTED_AT,
+    cdpPort
   }));
 
   server.listen(0, '127.0.0.1', () => {
@@ -962,6 +1098,7 @@ async function startLiveHost() {
       pid: process.pid,
       origin: api.origin,
       origins: currentOrigins,
+      ...(cdpPort ? { cdpPort } : {}),
       version: PROJECT_VERSION,
       hostBuildId: LIVE_HOST_BUILD_ID,
       backendSource: 'live-host',
@@ -988,7 +1125,7 @@ async function startLiveHost() {
           return;
         }
       }
-      const cdpOrigins = await discoverCdpPageOrigins();
+      const cdpOrigins = await discoverCdpPageOrigins(cdpPort);
       if (cdpOrigins.length > 0) {
         currentOrigins = Array.from(new Set([...cdpOrigins, ...envOrigins]));
         misses = 0;
@@ -1020,6 +1157,8 @@ module.exports = {
   LIVE_HOST_BUILD_ID,
   buildLiveRuntimeModulesMeta,
   createLiveRequestHandler,
+  discoverCdpPageOrigins,
   parseInitialOriginsEnv,
+  resolveLiveHostCdpPort,
   startLiveHost
 };
