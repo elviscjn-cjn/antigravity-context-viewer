@@ -165,16 +165,48 @@ function resolveLiveBootChineseSnapshot(customAsarPath = null) {
 }
 try { resolveLiveBootChineseSnapshot(); } catch { }
 
+function detectRunningHostProxyArgs() {
+  if (process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test') return null;
+  try {
+    const { execFileSync } = require('child_process');
+    const uid = typeof process.getuid === 'function' ? String(process.getuid()) : '';
+    const psArgs = uid ? ['-ww', '-U', uid, '-o', 'command='] : ['-ww', '-eo', 'command='];
+    const out = execFileSync('ps', psArgs, {
+      encoding: 'utf8',
+      timeout: 3000,
+      env: { ...process.env, LC_ALL: 'C' }
+    });
+    for (const rawLine of String(out || '').split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || / --type=/.test(line)) continue;
+      if (!/(?:^|\/)Antigravity(?:\.exe)?(?:\s|$)/i.test(line)) continue;
+      const mProxy = line.match(/\s--proxy-server=([^\s]+)/);
+      if (mProxy && mProxy[1]) {
+        const mBypass = line.match(/\s--proxy-bypass-list=([^\s]+)/);
+        return {
+          enabled: true,
+          proxyUrl: normalizeProxyUrl(mProxy[1]),
+          bypassList: mBypass && mBypass[1] ? mBypass[1] : null
+        };
+      }
+    }
+  } catch { }
+  return null;
+}
+
 function buildLiveRuntimeModulesMeta(cfg, customAsarPath = null, diskOverride = null) {
   const diskProxy = cfg?.modules?.proxy || {};
   const diskEnabled = Boolean(diskProxy.enabled);
   const diskUrl = normalizeProxyUrl(diskProxy.proxyUrl || '');
   const diskBypass = normalizeBypassListForCompare(diskProxy.bypassList || '');
-  const runtimeEnabled = Boolean(liveBootProxySnapshot.enabled);
-  const runtimeUrl = normalizeProxyUrl(liveBootProxySnapshot.proxyUrl || '');
-  const runtimeBypass = normalizeBypassListForCompare(liveBootProxySnapshot.bypassList || '');
+  const hostProxy = liveBootProxySnapshot.injectedAtStartup
+    ? liveBootProxySnapshot
+    : (liveBootProxySnapshot.enabled ? liveBootProxySnapshot : (detectRunningHostProxyArgs() || liveBootProxySnapshot));
+  const runtimeEnabled = Boolean(hostProxy.enabled);
+  const runtimeUrl = normalizeProxyUrl(hostProxy.proxyUrl || '');
+  const runtimeBypass = normalizeBypassListForCompare(hostProxy.bypassList || '');
   const proxyNeedsRestart = runtimeEnabled !== diskEnabled ||
-    (diskEnabled && runtimeEnabled && (diskUrl !== runtimeUrl || diskBypass !== runtimeBypass));
+    (diskEnabled && runtimeEnabled && (diskUrl !== runtimeUrl || (hostProxy.bypassList !== null && diskBypass !== runtimeBypass)));
   const bootZh = resolveLiveBootChineseSnapshot(customAsarPath);
   const diskCh = cfg?.modules?.chinese || {};
   const diskZhActive = Boolean(diskCh.enabled && String(diskCh.language || '').toLowerCase() !== 'en');
@@ -192,7 +224,7 @@ function buildLiveRuntimeModulesMeta(cfg, customAsarPath = null, diskOverride = 
     injectedAtStartup: Boolean(liveBootProxySnapshot.injectedAtStartup),
     proxyActive: runtimeEnabled,
     runtimeProxyUrl: redactProxyUrl(runtimeUrl) || null,
-    runtimeBypassList: typeof liveBootProxySnapshot.bypassList === 'string' ? liveBootProxySnapshot.bypassList : null,
+    runtimeBypassList: typeof hostProxy.bypassList === 'string' ? hostProxy.bypassList : null,
     proxyNeedsRestart,
     proxyLiveLaunchSupported,
     proxyMode: diskProxyReady ? 'disk-asar' : (proxyLiveLaunchSupported ? 'live-launch' : 'unavailable'),
