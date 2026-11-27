@@ -6,12 +6,56 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
-const { startCliUiServer, getCliUiLockFilePath } = require('./meter-cli-ui');
-const { scanCliSessions, formatCliStatusLine } = require('./meter-cli-monitor');
+const { startCliUiServer, getCliUiLockFilePath, getCliSessionTimeline } = require('./meter-cli-ui');
+const { scanCliSessions, formatCliStatusLine, getSessionDetail, queryCliUsage } = require('./meter-cli-monitor');
+const { collectSessionTimelineAsync } = require('./meter-collector');
 
 function makeTempDir(prefix = 'acm-cli-ui-test-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
+
+test('CLI session detail matches agy totals and keeps cache reads separate from usage totals', async (t) => {
+  const root = makeTempDir();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const agDir = path.join(root, 'desktop');
+  const agCliDir = path.join(root, 'cli');
+  const stateDir = path.join(root, 'state');
+  const cliId = '11111111-1111-4111-8111-111111111111';
+  const desktopId = '22222222-2222-4222-8222-222222222222';
+  const createdAt = '2026-11-01T08:00:00.000Z';
+  const call = { type: 'PLANNER_RESPONSE', model: 'gemini-4-neon', created_at: createdAt };
+  const writeTranscript = (dir, id, rows) => {
+    const logs = path.join(dir, 'brain', id, '.system_generated', 'logs');
+    fs.mkdirSync(logs, { recursive: true });
+    fs.writeFileSync(path.join(logs, 'transcript.jsonl'), rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+  };
+  writeTranscript(agCliDir, cliId, [
+    { ...call, step_index: 1, input_tokens: 15356, output_tokens: 268 },
+    { ...call, step_index: 2, input_tokens: 2464, output_tokens: 162, cache_read_tokens: 13299 }
+  ]);
+  writeTranscript(agDir, desktopId, [{ ...call, step_index: 1, input_tokens: 100, output_tokens: 20, cache_read_tokens: 500 }]);
+
+  const dirs = { agDir, agCliDir, stateDir, wslRoots: [] };
+  const expected = { inputTokens: 17820, outputTokens: 430, cacheReadTokens: 13299, totalTokens: 18250 };
+  const detail = getSessionDetail({ ...dirs, sessionId: cliId, source: 'cli' });
+  const standalone = getCliSessionTimeline({ ...dirs, sessionId: cliId, source: 'cli' });
+  const desktopTimeline = await collectSessionTimelineAsync(cliId, dirs);
+  for (const timeline of [detail.timeline, standalone, desktopTimeline]) {
+    assert.deepEqual(timeline.cliReportedUsage, expected);
+    assert.equal(timeline.sessionTokenTotals.totalTokens, 31549);
+  }
+  assert.deepEqual(detail.cliReportedUsage, expected);
+  assert.equal(detail.contextUsedTokens, 15925);
+  const desktopDetail = getSessionDetail({ ...dirs, sessionId: desktopId, source: 'desktop' });
+  assert.equal(desktopDetail.cliReportedUsage, undefined);
+  assert.equal(desktopDetail.sessionTotalTokens, 620);
+  assert.equal(getCliSessionTimeline({ ...dirs, sessionId: desktopId, source: 'cli' }).cliReportedUsage, undefined);
+
+  const global = await queryCliUsage({ ...dirs, period: 'all' });
+  assert.equal(global.sourceBreakdown.cli, 31549);
+  assert.equal(global.sourceBreakdown.desktop, 620);
+  assert.equal(global.totals.totalTokens, 32169);
+});
 
 test('CLI 独立看板: 仅监听 127.0.0.1, 正常返回 /api/status, /api/sessions 与单例复用', { timeout: 10000 }, async () => {
   const stateDir = makeTempDir('acm-ui-st-');

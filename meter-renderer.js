@@ -22180,6 +22180,8 @@ const PANEL_I18N = {
   'session.timeline.modelBreakdownTitle': { 'zh-CN': '按实际执行模型汇总（已去重校验，与请求明细一致）', 'zh-TW': '依實際執行模型彙總（已去重校驗，與請求明細一致）', en: 'By Model (Deduplicated, Matches Call Log)' },
   'session.timeline.unknownModel': { 'zh-CN': '未知模型', 'zh-TW': '未知模型', en: 'Unknown Model' },
   'session.timeline.modelTotalsLine': { 'zh-CN': '会话合计 {calls} 次 · {total} tok（入 {inp} / 缓 {cap} / 出 {out}）', 'zh-TW': '工作階段合計 {calls} 次 · {total} tok（入 {inp} / 快 {cap} / 出 {out}）', en: 'Session total {calls} calls · {total} tok (In {inp} / Cache {cap} / Out {out})' },
+  'session.timeline.cliReportedUsage': { 'zh-CN': 'CLI 报告总量 {total} tok · 缓存读取 {cache} tok', 'zh-TW': 'CLI 回報總量 {total} tok · 快取讀取 {cache} tok', en: 'CLI-reported total {total} tok · Cache reads {cache} tok' },
+  'session.timeline.processedTotalsLine': { 'zh-CN': '累计处理 {calls} 次 · {total} tok（入 {inp} / 缓 {cap} / 出 {out}）', 'zh-TW': '累計處理 {calls} 次 · {total} tok（入 {inp} / 快 {cap} / 出 {out}）', en: 'Processed {calls} calls · {total} tok (In {inp} / Cache {cap} / Out {out})' },
   'tokens.heat.title': { 'zh-CN': 'Token 活动', 'zh-TW': 'Token 活動', en: 'Token Activity' },
   'tokens.heat.daily': { 'zh-CN': '每天', 'zh-TW': '每天', en: 'Daily' },
   'tokens.heat.weekly': { 'zh-CN': '每周', 'zh-TW': '每週', en: 'Weekly' },
@@ -64327,6 +64329,14 @@ function initCrossSessionInsightsControls() {
         cache: cacheText
       });
       sumEl.appendChild(sLine);
+      if (tl.cliReportedUsage) {
+        const usageLine = document.createElement('div');
+        usageLine.textContent = t('session.timeline.cliReportedUsage', {
+          total: tl.cliReportedUsage.totalTokens.toLocaleString(),
+          cache: tl.cliReportedUsage.cacheReadTokens.toLocaleString()
+        });
+        sumEl.appendChild(usageLine);
+      }
       if (tl.contextDeltaSummary?.latestContextTokens != null) {
         const dSum = tl.contextDeltaSummary;
         const netTxt = dSum.netDeltaTokens != null
@@ -64372,7 +64382,7 @@ function initCrossSessionInsightsControls() {
           const st = tl.sessionTokenTotals;
           const totLine = document.createElement('div');
           totLine.className = 'timeline-turn-meta';
-          totLine.textContent = t('session.timeline.modelTotalsLine', {
+          totLine.textContent = t(tl.cliReportedUsage ? 'session.timeline.processedTotalsLine' : 'session.timeline.modelTotalsLine', {
             calls: st.callCount || 0,
             total: short(st.totalTokens || 0),
             inp: short(st.inputTokens || 0),
@@ -71152,7 +71162,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   }
 
   globalThis.__AGContextMeter = {
-    buildId: '6fa9255b969466ee',
+    buildId: '2ca14cf19973bb04',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;

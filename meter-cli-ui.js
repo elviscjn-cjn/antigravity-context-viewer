@@ -718,6 +718,10 @@ function renderDashboardHtml(initialData = {}) {
       return String(Math.round(num));
     }
 
+    function formatCliReportedUsage(usage) {
+      return 'CLI 报告总量: <b>' + Number(usage.totalTokens).toLocaleString() + '</b> · 缓存读取: <b>' + Number(usage.cacheReadTokens).toLocaleString() + '</b>';
+    }
+
     function escAttr(str) {
       return String(str || '')
         .replace(/&/g, '&amp;')
@@ -859,7 +863,7 @@ function renderDashboardHtml(initialData = {}) {
             </div>
             <div class="context-stats-row">
               <span>已用: <b>\${usedStr}</b> / 上限: <b>\${limitStr}</b> · 剩余: <b>\${remainStr}</b></span>
-              <span>累计: <b>\${formatTokens(s.sessionTotalTokens)}</b> · 缓存命中: <b>\${cacheHit}</b> · 速度: <b>\${speed}</b> · \${s.turnCount || 0} 轮 \${s.stepCount || 0} 步</span>
+              <span>\${s.cliReportedUsage ? formatCliReportedUsage(s.cliReportedUsage) : '累计: <b>' + formatTokens(s.sessionTotalTokens) + '</b>'} · 缓存命中: <b>\${cacheHit}</b> · 速度: <b>\${speed}</b> · \${s.turnCount || 0} 轮 \${s.stepCount || 0} 步</span>
             </div>
           </div>
         </div>\`;
@@ -1080,13 +1084,15 @@ function renderDashboardHtml(initialData = {}) {
           : '';
         const mbList = Array.isArray(data.modelBreakdown) ? data.modelBreakdown : [];
         const mbTot = data.sessionTokenTotals;
+        const cliUsage = data.cliReportedUsage;
+        const cliUsageHtml = cliUsage ? '<div class="timeline-turn-box">' + formatCliReportedUsage(cliUsage) + '</div>' : '';
         const mbHtml = mbList.length > 0
           ? '<div class="timeline-turn-box">' +
-            '<div class="timeline-turn-hdr"><span>按实际执行模型汇总</span><span>' + (mbTot ? (mbTot.callCount + ' 次 · ' + formatTokens(mbTot.totalTokens) + (mbTot.isConsistent ? ' · 守恒✓' : '')) : '') + '</span></div>' +
+            '<div class="timeline-turn-hdr"><span>按实际执行模型汇总' + (cliUsage ? '（含缓存读取）' : '') + '</span><span>' + (mbTot ? (mbTot.callCount + ' 次 · ' + formatTokens(mbTot.totalTokens) + (mbTot.isConsistent ? ' · 守恒✓' : '')) : '') + '</span></div>' +
             mbList.map(m => '<div class="timeline-call-row"><span><b>' + escAttr(m.modelLabel || m.modelKey || '未知模型') + '</b> (' + m.callCount + ' 次 · ' + (m.pct ?? 0) + '%)</span><span>In ' + formatTokens(m.inputTokens) + ' / Cache ' + formatTokens(m.cacheReadTokens) + ' / Out ' + formatTokens(m.outputTokens) + ' · 总 <b>' + formatTokens(m.totalTokens) + '</b></span></div>').join('') +
             '</div>'
           : '';
-        bodyEl.innerHTML = deltaHdr + mbHtml + turns.map(t => {
+        bodyEl.innerHTML = cliUsageHtml + deltaHdr + mbHtml + turns.map(t => {
           const rows = (t.calls || []).map(c => {
             const modelName = escAttr(c.attributedModelLabel || c.modelLabel || (c.model && !/^unknown$/i.test(c.model) ? c.model : '') || '未知模型');
             const speedVal = c.streamingTps ?? c.speedTokPerSec ?? c.tps;
@@ -1296,8 +1302,10 @@ function getCliSessionTimeline({ sessionId, source = null, agCliDir = null, agDi
   const cliTranscript = path.join(resolvedCliDir, 'brain', cleanSid, '.system_generated', 'logs', 'transcript.jsonl');
   const desktopTranscript = path.join(resolvedAgDir, 'brain', cleanSid, '.system_generated', 'logs', 'transcript.jsonl');
   const reqSrc = source ? String(source).trim().toLowerCase() : '';
-  const useDesktop = reqSrc === 'desktop' || (reqSrc !== 'cli' && !fs.existsSync(cliTranscript) && fs.existsSync(desktopTranscript));
-  const transcriptPath = useDesktop ? desktopTranscript : (fs.existsSync(cliTranscript) ? cliTranscript : desktopTranscript);
+  const hasCliTranscript = fs.existsSync(cliTranscript);
+  const hasDesktopTranscript = fs.existsSync(desktopTranscript);
+  const useDesktop = reqSrc === 'desktop' || (reqSrc !== 'cli' && !hasCliTranscript && hasDesktopTranscript);
+  const transcriptPath = useDesktop ? desktopTranscript : (hasCliTranscript ? cliTranscript : desktopTranscript);
   const actualSource = useDesktop ? 'desktop' : 'cli';
   const convDir = path.join(path.dirname(path.dirname(path.dirname(path.dirname(transcriptPath)))), 'conversations');
   const parsed = typeof collector.parseTranscriptForSessionTimeline === 'function'
@@ -1309,6 +1317,7 @@ function getCliSessionTimeline({ sessionId, source = null, agCliDir = null, agDi
     ? Object.values(ledger.calls).filter(c => c && typeof c === 'object')
     : [];
   const ledgerCalls = allLedgerCalls.filter(c => String(c.cascadeId || '').trim() === cleanSid);
+  const isCliUsage = !useDesktop && (hasCliTranscript || (!hasDesktopTranscript && ledgerCalls.some(c => c.source === 'cli')));
 
   const subagentInfo = typeof collector.collectVerifiedSubagentCallsForSessionSync === 'function'
     ? collector.collectVerifiedSubagentCallsForSessionSync({
@@ -1332,6 +1341,7 @@ function getCliSessionTimeline({ sessionId, source = null, agCliDir = null, agDi
   const grouped = typeof core.groupSessionCallsByTurns === 'function'
     ? core.groupSessionCallsByTurns(parsed.turns || [], rawMergedCalls, {
         cascadeId: cleanSid,
+        sessionSource: isCliUsage ? 'cli' : 'desktop',
         toolExecEvents: toolInsights.toolExecEvents,
         taskEvents: toolInsights.taskEvents
       })
@@ -1354,6 +1364,7 @@ function getCliSessionTimeline({ sessionId, source = null, agCliDir = null, agDi
     calls: flatCalls,
     modelBreakdown: grouped.modelBreakdown || [],
     sessionTokenTotals: grouped.sessionTokenTotals || null,
+    ...(grouped.cliReportedUsage ? { cliReportedUsage: grouped.cliReportedUsage } : {}),
     contextChangeEvents,
     contextDeltaSummary: grouped.contextDeltaSummary || null,
     timingSummary: grouped.timingSummary || null,
