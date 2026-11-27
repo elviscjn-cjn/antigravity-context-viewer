@@ -10991,6 +10991,7 @@ const LIVE_RUNTIME_FILES = [
   'install.js',
   'restore.js',
   'live-host.js',
+  'live-i18n.js',
   'host-recovery.js',
   'local-api.js',
   'meter-main.js',

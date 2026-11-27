@@ -53,7 +53,11 @@ node cli.js status
 node cli.js check
 node cli.js install
 node cli.js live              # Patch-free CDP injection (auto-launches with CDP port; pass --relaunch outside host if already running without CDP on v2.33.0+)
+node cli.js live --chinese    # Include patch-free runtime Simplified Chinese localization for the client UI
 node cli.js watch             # Patch-free background watcher (recommended on macOS to preserve Apple code signatures)
+node cli.js watch --chinese   # Watch mode with runtime Simplified Chinese localization (session-only flag; run `node cli.js chinese:enable --live` to persist for future watch/autostart runs)
+node cli.js chinese:enable --live
+node cli.js chinese:disable --live
 node cli.js stop-watch
 node cli.js update --check-only
 node cli.js update            # Stage a verified plugin release for watch or live to load
@@ -70,6 +74,7 @@ If your plugin copy does not recognize `update`, download a plugin package with 
 > **Antigravity v2.34.0 & macOS `ElectronAsarIntegrity` Support Scope**:
 > - **Window-loader anchor (`loadHubWindowUrl`)**: Verified across clean install, upgrade (`v2.33.0 -> v2.34.0`), and lossless restore tests.
 > - **macOS `ElectronAsarIntegrity` and code signing**: `node cli.js check` reports signing and ASAR integrity status. `install` and `recover` block patching when `ElectronAsarIntegrity` is enabled or the application bundle has a publisher signature. Use patch-free **`node cli.js watch`** on these bundles. Modifying `app.asar` can invalidate the signature and prevent the app or its scheduled-task `language_server` from launching.
+> - **Patch-free runtime localization scope**: `chinese:enable --live` and `watch --chinese` inject `i18n/i18n-runtime.js` and `i18n/zh-CN.json` solely over loopback CDP into verified Antigravity renderer windows and built-in allowlisted `plugin://` subframes (excluding third-party Marketplace UI plugins and custom MCP Apps) without modifying `app.asar` or `language_server`. Under `watch` / `live`, you can also toggle Simplified Chinese and brand title directly inside the Context Meter Settings panel. Native Electron main-process menus (macOS top menu bar, tray menu, OS dialogs) cannot be localized over CDP without disk patching. Reload (`Cmd/Ctrl+R`) or restart after running `node cli.js chinese:disable --live` to restore stock English DOM text; run `node cli.js stop-watch && node cli.js autostart:disable` to cleanly stop and remove background autostart.
 > - **Unverified on real Mac hardware**: No physical macOS host was available during this release cycle; real macOS cold-boot signature behavior and desktop UI interactions await community hardware feedback.
 
 ---
