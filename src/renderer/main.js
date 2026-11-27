@@ -8450,9 +8450,9 @@
       }
 
       const { source, turns } = buildAuthoritativeMainTurns();
-      // 若主区回复条数多于已分段轮次数（或尚无时间线），后台静默拉取时间线做精确归属，绝不把 turns[0] 复制到每条回复
-      if (mainToolbars.length > turns.length && source !== 'timeline' && state.route && !state.timelineLoading && !state.timelineError && typeof fetchSessionTimeline === 'function') {
-        void fetchSessionTimeline(state.route, { force: false });
+      // 若主区回复条数多于已分段轮次数（或时间线滞后），后台静默拉取时间线做精确归属，绝不把旧轮次错绑到新回复
+      if (mainToolbars.length > turns.length && state.route && !state.timelineLoading && !state.timelineError && typeof fetchSessionTimeline === 'function') {
+        void fetchSessionTimeline(state.route, { force: source === 'timeline' });
       }
 
       const cacheFn = typeof computeCacheHitSummary === 'function' ? computeCacheHitSummary : core?.computeCacheHitSummary;
@@ -8609,7 +8609,7 @@
       const T = turns.length;
       if (M > 0) {
         if (M <= T) {
-          // DOM 仅挂载末尾 M 条已生成回复时，从时间线尾部一对一精确对齐
+          // DOM 仅挂载末尾 M 条已生成回复时（如长对话虚拟滚动裁剪），从时间线尾部一对一精确对齐
           const offset = T - M;
           for (let i = 0; i < M; i++) {
             const tr = turns[offset + i];
@@ -8622,14 +8622,14 @@
             applyFooterToToolbar(mainToolbars[i], tr);
           }
         } else {
-          // 缺历史轮次边界时仅匹配最后 T 条，前置未匹配条目绝不复用 turns[0]
-          const startToolbarIdx = M - T;
+          // Issue #140: DOM 回复条数多于时间线已落盘轮次数（典型为新回复刚出现、时间线滞后），
+          // 从头部按轮次顺序对齐前 T 条，尾部尚未同步的回复隐藏尾标，绝不把前序轮次（如 turn-1）错绑到最新回复。
           for (let i = 0; i < M; i++) {
-            if (i < startToolbarIdx) {
+            if (i >= T) {
               applyFooterToToolbar(mainToolbars[i], null);
               continue;
             }
-            const tr = turns[i - startToolbarIdx];
+            const tr = turns[i];
             const k = tr?.turnKey;
             if (!tr || (k && boundTurnKeys.has(k))) {
               applyFooterToToolbar(mainToolbars[i], null);
