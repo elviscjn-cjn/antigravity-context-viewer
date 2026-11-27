@@ -295,3 +295,213 @@ test('Phase 6 UI: 默认关闭、8 项门禁、Tab 仅填入草稿不自动发�
     api.dispose();
   }
 });
+
+test('Phase 6 fixes: live-host 白名单、OAuth 过期刷新、Lexical 单次写入、删空恢复与主动 Esc 保持隐藏', async () => {
+  const { ALLOWED_ROUTES } = require('./live-host');
+  assert.ok(ALLOWED_ROUTES.includes('/predict-next-prompt'), 'live-host ALLOWED_ROUTES 必须放行 /predict-next-prompt');
+
+  const accounts = require('./meter-accounts');
+  const realMgr = accounts.getSharedAccountsManager({});
+  assert.equal(typeof realMgr.ensureFreshTokenForAccount, 'function', 'accounts manager 必须暴露 ensureFreshTokenForAccount');
+
+  // 验证未传 accessToken 时会先调用 ensureFreshTokenForAccount 刷新凭据
+  const npPath = require.resolve('./meter-next-prompt');
+  const accPath = require.resolve('./meter-accounts');
+  const origAcc = require.cache[accPath].exports;
+  let refreshedEmail = null;
+  let capturedAuth = null;
+  try {
+    delete require.cache[npPath];
+    require.cache[accPath].exports = {
+      ...origAcc,
+      getSharedAccountsManager: () => ({
+        getOverviewState: () => ({ activeAccountEmail: 'fresh@example.com' }),
+        loadStore: () => ({
+          activeAccountEmail: 'fresh@example.com',
+          accounts: { 'fresh@example.com': { credential: { accessToken: 'stale-token' }, projectId: 'proj-1' } }
+        }),
+        ensureFreshTokenForAccount: async (email) => {
+          refreshedEmail = email;
+          return { accessToken: 'refreshed-token-ok' };
+        }
+      }),
+      fetchJsonWithProxy: async (_url, init) => {
+        capturedAuth = init.headers.Authorization;
+        return {
+          ok: true,
+          status: 200,
+          json: { response: { candidates: [{ content: { parts: [{ text: '验证线上状态' }] } }] } }
+        };
+      }
+    };
+    const npReloaded = require('./meter-next-prompt');
+    const r = await npReloaded.callCloudCodeGenerateContent({ systemPrompt: 's', userPrompt: 'u' });
+    assert.equal(r.ok, true);
+    assert.equal(refreshedEmail, 'fresh@example.com');
+    assert.equal(capturedAuth, 'Bearer refreshed-token-ok');
+  } finally {
+    require.cache[accPath].exports = origAcc;
+    delete require.cache[npPath];
+  }
+
+  // 验证渲染端：live HTTP 桥、inline 挂载、execCommand 单次写入、删空恢复与 Esc 持久化关闭
+  const source = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+  function makeEl(tag) {
+    const attrs = new Map(), listeners = new Map(), classes = new Set();
+    const el = {
+      tagName: String(tag || 'DIV').toUpperCase(),
+      children: [], hidden: false, disabled: false, textContent: '', value: undefined, parentElement: null,
+      style: { display: '', setProperty() {}, removeProperty() {}, getPropertyValue: () => '' },
+      classList: {
+        add: (...cs) => cs.forEach(c => classes.add(c)),
+        remove: (...cs) => cs.forEach(c => classes.delete(c)),
+        contains: c => classes.has(c)
+      },
+      get className() { return Array.from(classes).join(' '); },
+      set className(v) { classes.clear(); String(v || '').split(/\s+/).filter(Boolean).forEach(c => classes.add(c)); },
+      get id() { return attrs.get('id') || ''; },
+      set id(v) { attrs.set('id', String(v)); },
+      setAttribute(k, v) { attrs.set(k, String(v)); },
+      getAttribute(k) { return attrs.get(k) ?? null; },
+      hasAttribute(k) { return attrs.has(k); },
+      removeAttribute(k) { attrs.delete(k); },
+      appendChild(c) { c.parentElement = el; el.children.push(c); return c; },
+      replaceChildren(...items) { el.children = []; items.forEach(x => el.appendChild(x)); },
+      getBoundingClientRect() { return { left: 100, top: 100, width: 10, height: 10, right: 110, bottom: 110 }; },
+      cloneNode() { const cl = makeEl(tag); cl.textContent = el.textContent; return cl; },
+      remove() {
+        if (el.parentElement) {
+          const i = el.parentElement.children.indexOf(el);
+          if (i >= 0) el.parentElement.children.splice(i, 1);
+        }
+        el.parentElement = null;
+      },
+      closest(sel) {
+        if (sel.includes('.surface-composer') && classes.has('surface-composer')) return el;
+        return el.parentElement?.closest?.(sel) || null;
+      },
+      querySelectorAll(sel) {
+        const out = [];
+        for (const ch of el.children) {
+          if (sel.includes('.surface-composer') && ch.classList?.contains?.('surface-composer')) out.push(ch);
+          if (sel.includes('[data-lexical-editor="true"]') && ch.getAttribute?.('data-lexical-editor') === 'true') out.push(ch);
+          if (sel.includes('[data-ag-next-prompt-ghost]') && ch.getAttribute?.('data-ag-next-prompt-ghost') === 'true') out.push(ch);
+          if (sel.includes('.ag-np-ghost-text') && ch.classList?.contains?.('ag-np-ghost-text')) out.push(ch);
+          out.push(...ch.querySelectorAll(sel));
+        }
+        return out;
+      },
+      querySelector(sel) { return el.querySelectorAll(sel)[0] || null; },
+      addEventListener(t, fn) { if (!listeners.has(t)) listeners.set(t, []); listeners.get(t).push(fn); },
+      removeEventListener(t, fn) { const a = listeners.get(t); if (a) { const i = a.indexOf(fn); if (i >= 0) a.splice(i, 1); } },
+      dispatchEvent(ev) { for (const fn of (listeners.get(ev.type) || [])) fn(ev); },
+      focus() {}
+    };
+    return el;
+  }
+
+  const head = makeEl('HEAD'), body = makeEl('BODY'), doc = makeEl('HTML');
+  doc.appendChild(head); doc.appendChild(body);
+  const comp = makeEl('DIV'); comp.classList.add('surface-composer');
+  const edWrap = makeEl('DIV');
+  const ed = makeEl('DIV'); ed.setAttribute('data-lexical-editor', 'true'); ed.setAttribute('contenteditable', 'true');
+  edWrap.appendChild(ed); comp.appendChild(edWrap); body.appendChild(comp);
+
+  let syntheticInputCount = 0;
+  ed.addEventListener('input', () => { syntheticInputCount++; });
+
+  const elements = new Map(), docListeners = new Map(), fetchCalls = [];
+  let execInsertCount = 0;
+  const sandbox = {
+    location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/cccccccc-cccc-cccc-cccc-cccccccccccc' },
+    document: {
+      head, body, documentElement: doc, hidden: false,
+      activeElement: ed,
+      createElement: t => makeEl(t),
+      getElementById: id => head.children.find(c => c.id === id) || doc.children.find(c => c.id === id) || null,
+      querySelector: sel => (sel.includes('.surface-composer') && !sel.includes('stop-button') && !sel.includes('input-cancel-button') ? comp : null),
+      querySelectorAll: sel => (sel.includes('.surface-composer') ? [comp] : []),
+      addEventListener: (t, fn) => { if (!docListeners.has(t)) docListeners.set(t, new Set()); docListeners.get(t).add(fn); },
+      removeEventListener: (t, fn) => docListeners.get(t)?.delete(fn),
+      dispatchEvent: ev => { for (const fn of (docListeners.get(ev.type) || [])) fn(ev); },
+      execCommand: (cmd, _ui, val) => {
+        if (cmd === 'insertText') {
+          execInsertCount++;
+          ed.textContent += String(val || '');
+          return true;
+        }
+        return false;
+      }
+    },
+    window: {
+      __APP_CONFIG__: { csrfToken: 'test' },
+      __AGContextMeterLive: { port: 61234, token: 'live-secret-token', capabilities: { predictNextPrompt: true } }
+    },
+    __AGContextMeterCore: core,
+    AbortController, Date,
+    setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
+    fetch: async (url, init) => {
+      if (String(url).endsWith('/predict-next-prompt')) {
+        fetchCalls.push({ url, headers: init.headers });
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ ok: true, suggestion: '检查一下线上日志', model: 'gemini-3-flash' })
+        };
+      }
+      return new Promise(() => {});
+    }
+  };
+  let first = true;
+  sandbox.document.createElement = (t) => {
+    if (first) {
+      first = false;
+      const host = makeEl('DIV');
+      host.attachShadow = () => ({ innerHTML: '', getElementById: id => { if (!elements.has(id)) { const d = makeEl('DIV'); d.id = id; elements.set(id, d); } return elements.get(id); } });
+      return host;
+    }
+    return makeEl(t);
+  };
+
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox);
+  const api = sandbox.__AGContextMeter;
+  try {
+    api.setNextPromptEnabledForTest(true);
+    const res = await api.maybeRequestNextPromptForTest({
+      routeId: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+      composer: comp,
+      turnKey: 'turn-live-http-1',
+      turns: [{ role: 'user', text: '发布完成没' }, { role: 'assistant', text: '已发布上线' }]
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.suggestion, '检查一下线上日志');
+    assert.equal(fetchCalls.length, 1, '应走 live-host HTTP 桥');
+    assert.equal(fetchCalls[0].headers['X-AG-Context-Token'], 'live-secret-token');
+    assert.equal(edWrap.getAttribute('data-ag-np-active'), 'true', 'inline 模式下应隐藏原生占位符');
+
+    // Tab 填入：execCommand 成功时不得再派发重复 InputEvent
+    sandbox.document.dispatchEvent({ type: 'keydown', key: 'Tab', target: ed, preventDefault() {} });
+    assert.equal(execInsertCount, 1);
+    assert.equal(syntheticInputCount, 0, 'execCommand 成功时不得重复派发合成 input 事件');
+    assert.equal(ed.textContent, '检查一下线上日志');
+    assert.equal(api.getNextPromptStateForTest().ghostHidden, true);
+    assert.equal(edWrap.hasAttribute('data-ag-np-active'), false);
+
+    // 删空输入框：应立即从缓存恢复，不发第 2 次网络请求
+    ed.textContent = '';
+    sandbox.document.dispatchEvent({ type: 'input', target: ed });
+    assert.equal(fetchCalls.length, 1, '删空恢复不应产生额外模型请求');
+    assert.equal(api.getNextPromptStateForTest().ghostHidden, false);
+    assert.equal(api.getNextPromptStateForTest().suggestion, '检查一下线上日志');
+    assert.equal(edWrap.getAttribute('data-ag-np-active'), 'true');
+
+    // 主动 Esc 关闭后再清空输入：不再恢复
+    sandbox.document.dispatchEvent({ type: 'keydown', key: 'Escape', target: ed, preventDefault() {} });
+    assert.equal(api.getNextPromptStateForTest().ghostHidden, true);
+    sandbox.document.dispatchEvent({ type: 'input', target: ed });
+    assert.equal(api.getNextPromptStateForTest().ghostHidden, true);
+  } finally {
+    api.dispose();
+  }
+});

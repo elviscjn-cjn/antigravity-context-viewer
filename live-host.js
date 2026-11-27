@@ -162,6 +162,7 @@ const ALLOWED_ROUTES = [
   '/accounts-action',
   '/sync-pricing',
   '/open-dashboard-browser',
+  '/predict-next-prompt',
   '/shutdown',
   '/restart-host'
 ];
@@ -186,7 +187,8 @@ const LIVE_CAPABILITIES = {
   applyUpdate: true,
   restartHost: false,
   hotReload: true,
-  syncPricing: true
+  syncPricing: true,
+  predictNextPrompt: true
 };
 
 function timingSafeTokenEqual(provided, expected) {
