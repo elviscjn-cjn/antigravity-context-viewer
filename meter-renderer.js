@@ -19540,6 +19540,26 @@
           </div>
         </div>
 
+        <!-- 6.5 自定义 Antigravity 安装路径 -->
+        <div class="ctx-settings-card" id="settings-install-path-card">
+          <div class="ctx-settings-card-hdr">
+            <div class="ctx-settings-card-title" data-i18n="ns.installPath.title">Antigravity 安装路径</div>
+          </div>
+          <div class="ctx-settings-card-desc" data-i18n="ns.installPath.desc">
+            非默认目录安装时，填写安装根目录或 resources/app.asar 路径，留空恢复自动探测</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px">
+            <input id="input-custom-install-path" class="ctx-input" type="text"
+              style="flex:1;min-width:180px;font-size:11px;padding:5px 8px"
+              data-i18n-placeholder="ns.installPath.placeholder"
+              placeholder="自动探测（可填如 F:\\Apps\\Antigravity）" />
+            <button id="btn-apply-custom-install-path" class="unlock-btn unlock-btn-primary" type="button"
+              data-i18n="ns.installPath.save">保存路径</button>
+            <button id="btn-clear-custom-install-path" class="unlock-btn unlock-btn-secondary" type="button"
+              data-i18n="ns.installPath.clear">恢复自动探测</button>
+          </div>
+          <div id="status-custom-install-path" class="ctx-result-manual-note" style="margin-top:6px" hidden></div>
+        </div>
+
         <!-- 7. 版本更新与项目链接 -->
         <div class="ctx-settings-card" id="settings-about-update-card">
           <div class="ctx-settings-card-hdr">
@@ -23993,7 +24013,15 @@ const PANEL_I18N = {
   'ns.clearCache.title': { 'zh-CN': '清理本地统计缓存', 'zh-TW': '清理本機統計快取', en: 'Clear Local Stats Cache' },
   'ns.clearCache.btn': { 'zh-CN': '清理缓存', 'zh-TW': '清理快取', en: 'Clear Cache' },
   'ns.clearCache.desc': { 'zh-CN': '当前占用 {kb} KB · 清理不影响原有配置项', 'zh-TW': '目前佔用 {kb} KB · 清理不影響原有設定項', en: 'Using {kb} KB · preserves your settings' },
-  'ns.clearCache.done': { 'zh-CN': '已清理 {count} 项本地临时缓存，原有配置已保留', 'zh-TW': '已清理 {count} 項本機暫存快取，原有設定已保留', en: 'Cleared {count} cache entries; settings preserved' }
+  'ns.clearCache.done': { 'zh-CN': '已清理 {count} 项本地临时缓存，原有配置已保留', 'zh-TW': '已清理 {count} 項本機暫存快取，原有設定已保留', en: 'Cleared {count} cache entries; settings preserved' },
+  'ns.installPath.title': { 'zh-CN': 'Antigravity 安装路径', 'zh-TW': 'Antigravity 安裝路徑', en: 'Antigravity Install Path' },
+  'ns.installPath.desc': { 'zh-CN': '非默认目录安装时，填写安装根目录或 resources/app.asar 路径，留空恢复自动探测', 'zh-TW': '非預設目錄安裝時，填寫安裝根目錄或 resources/app.asar 路徑，留空恢復自動偵測', en: 'Specify install root or resources/app.asar path for custom locations; clear to auto-detect' },
+  'ns.installPath.placeholder': { 'zh-CN': '自动探测（可填如 F:\\Apps\\Antigravity）', 'zh-TW': '自動偵測（可填如 F:\\Apps\\Antigravity）', en: 'Auto-detect (e.g. F:\\Apps\\Antigravity)' },
+  'ns.installPath.save': { 'zh-CN': '保存路径', 'zh-TW': '儲存路徑', en: 'Save Path' },
+  'ns.installPath.clear': { 'zh-CN': '恢复自动探测', 'zh-TW': '恢復自動偵測', en: 'Reset Auto' },
+  'ns.installPath.saved': { 'zh-CN': '已保存自定义路径：{path}', 'zh-TW': '已儲存自訂路徑：{path}', en: 'Saved custom path: {path}' },
+  'ns.installPath.cleared': { 'zh-CN': '已恢复自动探测安装路径', 'zh-TW': '已恢復自動偵測安裝路徑', en: 'Restored automatic install path detection' },
+  'ns.installPath.saveFail': { 'zh-CN': '保存失败：{err}', 'zh-TW': '儲存失敗：{err}', en: 'Save failed: {err}' }
 };
 
 function t(key, vars = null) {
@@ -45371,6 +45399,9 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
   let currentProxyEnabled = false;
   let proxyInputDirty = false;
   let savedProxyUrl = '';
+  let savedCustomInstallPath = '';
+  let customInstallPathDirty = false;
+  let customInstallPathFeedbackState = { text: '', ok: null };
   let savedProxyBypass = '';
   let isProxyBusy = false;
   let modulesStatusReqSeq = 0;
@@ -47271,6 +47302,58 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     void applyProxyModuleUpdate(true);
   });
 
+  function syncCustomInstallPathUi() {
+    const inp = el('input-custom-install-path');
+    if (inp && !customInstallPathDirty && document?.activeElement !== inp) {
+      inp.value = savedCustomInstallPath || '';
+    }
+    const statusEl = el('status-custom-install-path');
+    if (statusEl) {
+      if (customInstallPathFeedbackState.text) {
+        statusEl.hidden = false;
+        statusEl.textContent = customInstallPathFeedbackState.text;
+        statusEl.style.color = customInstallPathFeedbackState.ok === false ? '#f87171' : (customInstallPathFeedbackState.ok === true ? '#34d399' : '');
+      } else {
+        statusEl.hidden = true;
+        statusEl.textContent = '';
+      }
+    }
+  }
+
+  async function applyCustomInstallPathSetting(rawVal) {
+    const trimmed = String(rawVal ?? '').trim();
+    const res = await saveSettingsPayloadBridge({ customInstallPath: trimmed });
+    if (!res || !res.ok) {
+      const errText = res?.error || t('msg.unknownErr');
+      customInstallPathFeedbackState = { text: t('ns.installPath.saveFail', { err: errText }), ok: false };
+      syncCustomInstallPathUi();
+      syncHostSettingsUi();
+      return { ok: false, error: errText };
+    }
+    const resolved = String(res.uiPreferences?.customInstallPath ?? trimmed);
+    savedCustomInstallPath = resolved;
+    customInstallPathDirty = false;
+    customInstallPathFeedbackState = {
+      text: resolved ? t('ns.installPath.saved', { path: resolved }) : t('ns.installPath.cleared'),
+      ok: true
+    };
+    syncCustomInstallPathUi();
+    syncHostSettingsUi();
+    return { ok: true, customInstallPath: resolved };
+  }
+
+  el('input-custom-install-path')?.addEventListener('input', () => {
+    customInstallPathDirty = true;
+  });
+  el('btn-apply-custom-install-path')?.addEventListener('click', () => {
+    const val = el('input-custom-install-path')?.value ?? '';
+    void applyCustomInstallPathSetting(val);
+  });
+  el('btn-clear-custom-install-path')?.addEventListener('click', () => {
+    if (el('input-custom-install-path')) el('input-custom-install-path').value = '';
+    void applyCustomInstallPathSetting('');
+  });
+
   btnTestProxy?.addEventListener('click', async () => {
     if (isProxyBusy) return;
     try {
@@ -49159,6 +49242,12 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         const savedNextPrompt = settingsRes.nextPromptEnabled ?? settingsRes.uiPreferences?.nextPromptEnabled;
         if (savedNextPrompt !== undefined) {
           setNextPromptEnabledState(savedNextPrompt === true, { persist: false });
+        }
+        const savedInstallPath = settingsRes.customInstallPath ?? settingsRes.uiPreferences?.customInstallPath;
+        if (typeof savedInstallPath === 'string') {
+          savedCustomInstallPath = savedInstallPath;
+          customInstallPathDirty = false;
+          syncCustomInstallPathUi();
         }
         const savedCockpitLayout = settingsRes.sessionCockpitLayout || settingsRes.uiPreferences?.sessionCockpitLayout;
         if (savedCockpitLayout && typeof persistCockpitLayout === 'function') {
@@ -55949,6 +56038,19 @@ const {
         <div id="ag-hs-diag-summary" class="ag-ns-note-box"></div>
       </div>
 
+      <div class="ag-ns-row ag-ns-row-stack">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="ns.installPath.title">Antigravity 安装路径</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.installPath.desc">非默认目录安装时，填写安装根目录或 resources/app.asar 路径，留空恢复自动探测</div>
+        </div>
+        <div class="ag-ns-control ag-ns-control-wide">
+          <input type="text" id="ag-ns-input-customInstallPath" class="ag-ns-input" data-ag-ns-input="customInstallPath" data-i18n-placeholder="ns.installPath.placeholder" placeholder="自动探测（可填如 F:\Apps\Antigravity）" />
+          <button type="button" class="ag-ns-btn is-primary" data-ag-ns-action="applyCustomInstallPath" data-i18n="ns.installPath.save">保存路径</button>
+          <button type="button" class="ag-ns-btn" data-ag-ns-action="clearCustomInstallPath" data-i18n="ns.installPath.clear">恢复自动探测</button>
+        </div>
+        <div id="ag-ns-install-path-feedback" class="ag-ns-note-box" hidden></div>
+      </div>
+
       <div class="ag-ns-row">
         <div class="ag-ns-row-text">
           <div class="ag-ns-row-title" data-i18n="ns.clearCache.title">清理本地统计缓存</div>
@@ -56524,6 +56626,11 @@ const {
           if (actionName === 'applyProxy' || actionName === 'testProxy') {
             var proxyInput = byId(root, 'ag-ns-input-proxyUrl');
             payload = { proxyUrl: proxyInput ? String(proxyInput.value || '').trim() : '' };
+          } else if (actionName === 'applyCustomInstallPath') {
+            var pathInput = byId(root, 'ag-ns-input-customInstallPath');
+            payload = { customInstallPath: pathInput ? String(pathInput.value || '').trim() : '' };
+          } else if (actionName === 'clearCustomInstallPath') {
+            payload = { customInstallPath: '' };
           }
           if (typeof cbs.onAction === 'function') {
             cbs.onAction(actionName, payload);
@@ -56600,6 +56707,21 @@ const {
     var proxyInput = byId(root, 'ag-ns-input-proxyUrl');
     if (proxyInput && typeof settings.proxyUrl === 'string' && root.activeElement !== proxyInput) {
       if (proxyInput.value !== settings.proxyUrl) proxyInput.value = settings.proxyUrl;
+    }
+
+    var installPathInput = byId(root, 'ag-ns-input-customInstallPath');
+    if (installPathInput && typeof settings.customInstallPath === 'string' && root.activeElement !== installPathInput) {
+      if (installPathInput.value !== settings.customInstallPath) installPathInput.value = settings.customInstallPath;
+    }
+    var installPathFb = byId(root, 'ag-ns-install-path-feedback');
+    if (installPathFb) {
+      if (status.customInstallPathFeedback) {
+        installPathFb.hidden = false;
+        installPathFb.textContent = status.customInstallPathFeedback;
+        installPathFb.className = 'ag-ns-note-box ' + (status.customInstallPathFeedbackOk === false ? 'is-error' : (status.customInstallPathFeedbackOk === true ? 'is-ok' : ''));
+      } else {
+        installPathFb.hidden = true;
+      }
     }
 
     var thInput = byId(root, 'ag-ns-inp-autoSwitchThreshold');
@@ -58189,6 +58311,9 @@ function createHostSettingsController(deps = {}) {
             enhanceChineseTitle: Boolean(enhanceTitleDraft),
             proxyEnabled: Boolean(currentProxyEnabled),
             proxyUrl: proxyInputDirty ? proxyInputElVal : (savedProxyUrl || proxyInputElVal || ''),
+            customInstallPath: customInstallPathDirty
+              ? String(hostSettingsCtrl?.getPageRoot?.()?.getElementById?.('ag-ns-input-customInstallPath')?.value ?? el('input-custom-install-path')?.value ?? '')
+              : (savedCustomInstallPath || ''),
             planTier: curPlanTier,
             billingRegion: curBillingRegion,
             displayCurrency: curDisplayCurrency,
@@ -58244,6 +58369,8 @@ function createHostSettingsController(deps = {}) {
             proxyBadgeText: proxyBadge?.textContent || (currentProxyEnabled ? t('mod.proxy.badgeOk') : t('mod.proxy.badgeOff')),
             proxyBadgeClass: currentProxyEnabled ? 'is-accent' : '',
             proxyDescText: proxyDescLive,
+            customInstallPathFeedback: customInstallPathFeedbackState.text || '',
+            customInstallPathFeedbackOk: customInstallPathFeedbackState.ok,
             billingHint,
             version: formatDisplayVersion(METER_RENDERER_VERSION),
             checkingUpdate: strictUpd.stage === 'checking' || strictUpd.stage === 'downloading',
@@ -58446,6 +58573,11 @@ function createHostSettingsController(deps = {}) {
           if (inputProxyUrl) inputProxyUrl.value = String(value || '');
           return;
         }
+        if (key === 'customInstallPath') {
+          customInstallPathDirty = true;
+          if (el('input-custom-install-path')) el('input-custom-install-path').value = String(value || '');
+          return;
+        }
         if (key === 'planTier') {
           applyDirectPlanTierSelection(value || 'auto');
           syncHostSettingsUi();
@@ -58586,6 +58718,11 @@ function createHostSettingsController(deps = {}) {
           const urlVal = payload?.proxyUrl ?? inputProxyUrl?.value ?? '';
           if (inputProxyUrl) inputProxyUrl.value = String(urlVal);
           void applyProxyModuleUpdate(true).then(() => showNativeSettingsToast(t('prefs.saved')));
+        } else if (actionName === 'applyCustomInstallPath' || actionName === 'clearCustomInstallPath') {
+          const rawVal = actionName === 'clearCustomInstallPath' ? '' : (payload?.customInstallPath ?? '');
+          void applyCustomInstallPathSetting(rawVal).then((res) => {
+            showNativeSettingsToast(res?.ok ? (res.customInstallPath ? t('prefs.saved') : t('ns.installPath.cleared')) : (res?.error || t('msg.unknownErr')));
+          });
         } else if (actionName === 'copyDiag') {
           const strict = recomputeStrictUpdateState();
           const diagPayload = JSON.stringify({
@@ -71152,7 +71289,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   }
 
   globalThis.__AGContextMeter = {
-    buildId: '6fa9255b969466ee',
+    buildId: '718fc652010db1a7',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;
@@ -72070,6 +72207,8 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
     },
     getHostSettingsStateForTest: () => (hostSettingsCtrl ? hostSettingsCtrl.getStateForTest() : null),
     syncHostSettingsForTest: () => (hostSettingsCtrl ? hostSettingsCtrl.syncModalMount() : false),
+    getCustomInstallPathForTest: () => savedCustomInstallPath,
+    applyCustomInstallPathForTest: (p) => applyCustomInstallPathSetting(p),
     applyInheritedHotReloadStateForTest: (saved) => applyInheritedHotReloadState(saved),
     maybeRequestNextPromptForTest: (opts = {}) => (typeof maybeRequestNextPromptPrediction === 'function' ? maybeRequestNextPromptPrediction(opts) : Promise.resolve({ skipped: true })),
     acceptNextPromptForTest: (comp = null) => (typeof acceptNextPromptIntoComposer === 'function' ? acceptNextPromptIntoComposer(comp) : false),

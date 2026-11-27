@@ -2694,6 +2694,26 @@
           </div>
         </div>
 
+        <!-- 6.5 自定义 Antigravity 安装路径 -->
+        <div class="ctx-settings-card" id="settings-install-path-card">
+          <div class="ctx-settings-card-hdr">
+            <div class="ctx-settings-card-title" data-i18n="ns.installPath.title">Antigravity 安装路径</div>
+          </div>
+          <div class="ctx-settings-card-desc" data-i18n="ns.installPath.desc">
+            非默认目录安装时，填写安装根目录或 resources/app.asar 路径，留空恢复自动探测</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px">
+            <input id="input-custom-install-path" class="ctx-input" type="text"
+              style="flex:1;min-width:180px;font-size:11px;padding:5px 8px"
+              data-i18n-placeholder="ns.installPath.placeholder"
+              placeholder="自动探测（可填如 F:\Apps\Antigravity）" />
+            <button id="btn-apply-custom-install-path" class="unlock-btn unlock-btn-primary" type="button"
+              data-i18n="ns.installPath.save">保存路径</button>
+            <button id="btn-clear-custom-install-path" class="unlock-btn unlock-btn-secondary" type="button"
+              data-i18n="ns.installPath.clear">恢复自动探测</button>
+          </div>
+          <div id="status-custom-install-path" class="ctx-result-manual-note" style="margin-top:6px" hidden></div>
+        </div>
+
         <!-- 7. 版本更新与项目链接 -->
         <div class="ctx-settings-card" id="settings-about-update-card">
           <div class="ctx-settings-card-hdr">

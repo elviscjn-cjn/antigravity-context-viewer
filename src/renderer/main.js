@@ -16160,6 +16160,9 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
   let currentProxyEnabled = false;
   let proxyInputDirty = false;
   let savedProxyUrl = '';
+  let savedCustomInstallPath = '';
+  let customInstallPathDirty = false;
+  let customInstallPathFeedbackState = { text: '', ok: null };
   let savedProxyBypass = '';
   let isProxyBusy = false;
   let modulesStatusReqSeq = 0;
@@ -18060,6 +18063,58 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     void applyProxyModuleUpdate(true);
   });
 
+  function syncCustomInstallPathUi() {
+    const inp = el('input-custom-install-path');
+    if (inp && !customInstallPathDirty && document?.activeElement !== inp) {
+      inp.value = savedCustomInstallPath || '';
+    }
+    const statusEl = el('status-custom-install-path');
+    if (statusEl) {
+      if (customInstallPathFeedbackState.text) {
+        statusEl.hidden = false;
+        statusEl.textContent = customInstallPathFeedbackState.text;
+        statusEl.style.color = customInstallPathFeedbackState.ok === false ? '#f87171' : (customInstallPathFeedbackState.ok === true ? '#34d399' : '');
+      } else {
+        statusEl.hidden = true;
+        statusEl.textContent = '';
+      }
+    }
+  }
+
+  async function applyCustomInstallPathSetting(rawVal) {
+    const trimmed = String(rawVal ?? '').trim();
+    const res = await saveSettingsPayloadBridge({ customInstallPath: trimmed });
+    if (!res || !res.ok) {
+      const errText = res?.error || t('msg.unknownErr');
+      customInstallPathFeedbackState = { text: t('ns.installPath.saveFail', { err: errText }), ok: false };
+      syncCustomInstallPathUi();
+      syncHostSettingsUi();
+      return { ok: false, error: errText };
+    }
+    const resolved = String(res.uiPreferences?.customInstallPath ?? trimmed);
+    savedCustomInstallPath = resolved;
+    customInstallPathDirty = false;
+    customInstallPathFeedbackState = {
+      text: resolved ? t('ns.installPath.saved', { path: resolved }) : t('ns.installPath.cleared'),
+      ok: true
+    };
+    syncCustomInstallPathUi();
+    syncHostSettingsUi();
+    return { ok: true, customInstallPath: resolved };
+  }
+
+  el('input-custom-install-path')?.addEventListener('input', () => {
+    customInstallPathDirty = true;
+  });
+  el('btn-apply-custom-install-path')?.addEventListener('click', () => {
+    const val = el('input-custom-install-path')?.value ?? '';
+    void applyCustomInstallPathSetting(val);
+  });
+  el('btn-clear-custom-install-path')?.addEventListener('click', () => {
+    if (el('input-custom-install-path')) el('input-custom-install-path').value = '';
+    void applyCustomInstallPathSetting('');
+  });
+
   btnTestProxy?.addEventListener('click', async () => {
     if (isProxyBusy) return;
     try {
@@ -19949,6 +20004,12 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         if (savedNextPrompt !== undefined) {
           setNextPromptEnabledState(savedNextPrompt === true, { persist: false });
         }
+        const savedInstallPath = settingsRes.customInstallPath ?? settingsRes.uiPreferences?.customInstallPath;
+        if (typeof savedInstallPath === 'string') {
+          savedCustomInstallPath = savedInstallPath;
+          customInstallPathDirty = false;
+          syncCustomInstallPathUi();
+        }
         const savedCockpitLayout = settingsRes.sessionCockpitLayout || settingsRes.uiPreferences?.sessionCockpitLayout;
         if (savedCockpitLayout && typeof persistCockpitLayout === 'function') {
           persistCockpitLayout(savedCockpitLayout, { persistHost: false });
@@ -20782,6 +20843,9 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
             enhanceChineseTitle: Boolean(enhanceTitleDraft),
             proxyEnabled: Boolean(currentProxyEnabled),
             proxyUrl: proxyInputDirty ? proxyInputElVal : (savedProxyUrl || proxyInputElVal || ''),
+            customInstallPath: customInstallPathDirty
+              ? String(hostSettingsCtrl?.getPageRoot?.()?.getElementById?.('ag-ns-input-customInstallPath')?.value ?? el('input-custom-install-path')?.value ?? '')
+              : (savedCustomInstallPath || ''),
             planTier: curPlanTier,
             billingRegion: curBillingRegion,
             displayCurrency: curDisplayCurrency,
@@ -20837,6 +20901,8 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
             proxyBadgeText: proxyBadge?.textContent || (currentProxyEnabled ? t('mod.proxy.badgeOk') : t('mod.proxy.badgeOff')),
             proxyBadgeClass: currentProxyEnabled ? 'is-accent' : '',
             proxyDescText: proxyDescLive,
+            customInstallPathFeedback: customInstallPathFeedbackState.text || '',
+            customInstallPathFeedbackOk: customInstallPathFeedbackState.ok,
             billingHint,
             version: formatDisplayVersion(METER_RENDERER_VERSION),
             checkingUpdate: strictUpd.stage === 'checking' || strictUpd.stage === 'downloading',
@@ -21039,6 +21105,11 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           if (inputProxyUrl) inputProxyUrl.value = String(value || '');
           return;
         }
+        if (key === 'customInstallPath') {
+          customInstallPathDirty = true;
+          if (el('input-custom-install-path')) el('input-custom-install-path').value = String(value || '');
+          return;
+        }
         if (key === 'planTier') {
           applyDirectPlanTierSelection(value || 'auto');
           syncHostSettingsUi();
@@ -21179,6 +21250,11 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           const urlVal = payload?.proxyUrl ?? inputProxyUrl?.value ?? '';
           if (inputProxyUrl) inputProxyUrl.value = String(urlVal);
           void applyProxyModuleUpdate(true).then(() => showNativeSettingsToast(t('prefs.saved')));
+        } else if (actionName === 'applyCustomInstallPath' || actionName === 'clearCustomInstallPath') {
+          const rawVal = actionName === 'clearCustomInstallPath' ? '' : (payload?.customInstallPath ?? '');
+          void applyCustomInstallPathSetting(rawVal).then((res) => {
+            showNativeSettingsToast(res?.ok ? (res.customInstallPath ? t('prefs.saved') : t('ns.installPath.cleared')) : (res?.error || t('msg.unknownErr')));
+          });
         } else if (actionName === 'copyDiag') {
           const strict = recomputeStrictUpdateState();
           const diagPayload = JSON.stringify({
@@ -32190,6 +32266,8 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
     },
     getHostSettingsStateForTest: () => (hostSettingsCtrl ? hostSettingsCtrl.getStateForTest() : null),
     syncHostSettingsForTest: () => (hostSettingsCtrl ? hostSettingsCtrl.syncModalMount() : false),
+    getCustomInstallPathForTest: () => savedCustomInstallPath,
+    applyCustomInstallPathForTest: (p) => applyCustomInstallPathSetting(p),
     applyInheritedHotReloadStateForTest: (saved) => applyInheritedHotReloadState(saved),
     maybeRequestNextPromptForTest: (opts = {}) => (typeof maybeRequestNextPromptPrediction === 'function' ? maybeRequestNextPromptPrediction(opts) : Promise.resolve({ skipped: true })),
     acceptNextPromptForTest: (comp = null) => (typeof acceptNextPromptIntoComposer === 'function' ? acceptNextPromptIntoComposer(comp) : false),
