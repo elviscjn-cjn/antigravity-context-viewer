@@ -1086,12 +1086,26 @@ test('免改盘独立免 TUN 启动器: 环境变量/Chromium 参数构造、防
       exePath: fakeExe,
       proxyUrl: 'http://127.0.0.1:7897',
       noProxy: 'localhost',
-      outDir: path.join(tempDir, 'out-mac')
+      outDir: path.join(tempDir, 'out-mac'),
+      appDir: path.join(tempDir, 'apps-mac'),
+      _execFileSync: () => ''
     });
     assert.equal(macRes.ok, true);
     assert.equal(macRes.launcherPath.endsWith('launch-antigravity-no-tun.sh'), true);
-    assert.equal(macRes.shortcutPath, null);
+    assert.equal(macRes.shortcutPath, path.join(tempDir, 'apps-mac', 'Antigravity (No-TUN).app'));
     assert.equal(fs.existsSync(macRes.launcherPath), true);
+    assert.equal(fs.existsSync(path.join(macRes.shortcutPath, 'Contents', 'Info.plist')), true);
+    assert.equal(fs.existsSync(path.join(macRes.shortcutPath, 'Contents', 'MacOS', 'launch-antigravity-no-tun')), true);
+
+    const macNoShortcut = createStandaloneNoTunLauncher({
+      platform: 'darwin',
+      exePath: fakeExe,
+      proxyUrl: 'http://127.0.0.1:7897',
+      noProxy: 'localhost',
+      outDir: path.join(tempDir, 'out-mac-none'),
+      createShortcut: false
+    });
+    assert.equal(macNoShortcut.shortcutPath, null);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

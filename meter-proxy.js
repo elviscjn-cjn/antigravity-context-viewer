@@ -1113,6 +1113,130 @@ function createStandaloneNoTunLauncher(options = {}) {
       })
     });
     shortcutPath = String(out || '').trim() || null;
+  } else if (platform === 'darwin' && options.createShortcut !== false) {
+    const rawName = String(options.shortcutName || 'Antigravity (No-TUN)').replace(/[<>:"/\\|?*\r\n\0]/g, '').trim() || 'Antigravity (No-TUN)';
+    const appDir = options.appDir ? path.resolve(options.appDir) : path.join(os.homedir(), 'Applications');
+    const appName = rawName.toLowerCase().endsWith('.app') ? rawName : `${rawName}.app`;
+    const bundleName = appName.replace(/\.app$/i, '');
+    const appPath = path.join(appDir, appName);
+    const contentsDir = path.join(appPath, 'Contents');
+    const macosDir = path.join(contentsDir, 'MacOS');
+    const resourcesDir = path.join(contentsDir, 'Resources');
+    const execName = 'launch-antigravity-no-tun';
+    const execPath = path.join(macosDir, execName);
+    const plistPath = path.join(contentsDir, 'Info.plist');
+    const iconDest = path.join(resourcesDir, 'AppIcon.icns');
+
+    fsImpl.mkdirSync(macosDir, { recursive: true });
+    fsImpl.mkdirSync(resourcesDir, { recursive: true });
+
+    const escapeXml = (s) => String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+
+    const plistContent = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+      '<plist version="1.0">',
+      '<dict>',
+      '  <key>CFBundleDevelopmentRegion</key>',
+      '  <string>en</string>',
+      '  <key>CFBundleDisplayName</key>',
+      `  <string>${escapeXml(bundleName)}</string>`,
+      '  <key>CFBundleExecutable</key>',
+      `  <string>${execName}</string>`,
+      '  <key>CFBundleIconFile</key>',
+      '  <string>AppIcon</string>',
+      '  <key>CFBundleIdentifier</key>',
+      '  <string>com.elviscjn.antigravity-context-meter.no-tun</string>',
+      '  <key>CFBundleInfoDictionaryVersion</key>',
+      '  <string>6.0</string>',
+      '  <key>CFBundleName</key>',
+      `  <string>${escapeXml(bundleName)}</string>`,
+      '  <key>CFBundlePackageType</key>',
+      '  <string>APPL</string>',
+      '  <key>CFBundleShortVersionString</key>',
+      '  <string>0.9.4</string>',
+      '  <key>CFBundleVersion</key>',
+      '  <string>0.9.4</string>',
+      '  <key>LSMinimumSystemVersion</key>',
+      '  <string>12.0</string>',
+      '  <key>LSUIElement</key>',
+      '  <true/>',
+      '  <key>NSHighResolutionCapable</key>',
+      '  <true/>',
+      '</dict>',
+      '</plist>',
+      ''
+    ].join('\n');
+    fsImpl.writeFileSync(plistPath, plistContent, 'utf8');
+
+    const cliEntryPath = (typeof options.recoverCliPath === 'string' && options.recoverCliPath.trim())
+      ? options.recoverCliPath.trim()
+      : path.join(__dirname, 'cli.js');
+    const cdpPort = Number(options.cdpPort) || 58321;
+    const nodeExecPath = options.nodePath || process.execPath || 'node';
+    const launcherLogPath = path.join(os.homedir(), 'Library', 'Logs', 'antigravity-context-meter-no-tun.log');
+    const wrapperScript = [
+      '#!/bin/sh',
+      'set -u',
+      'export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/node/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"',
+      `SCRIPT_PATH=${escapePosixSingleQuote(launcherPath)}`,
+      `CLI_PATH=${escapePosixSingleQuote(cliEntryPath)}`,
+      `NODE_BIN=${escapePosixSingleQuote(nodeExecPath)}`,
+      `LOG_FILE=${escapePosixSingleQuote(launcherLogPath)}`,
+      'mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true',
+      'if [ ! -x "$NODE_BIN" ]; then',
+      '  for cand in /opt/homebrew/bin/node /usr/local/bin/node "$HOME/.local/node/bin/node" "$(command -v node 2>/dev/null || true)"; do',
+      '    if [ -n "$cand" ] && [ -x "$cand" ]; then NODE_BIN="$cand"; break; fi',
+      '  done',
+      'fi',
+      'if [ -x "$NODE_BIN" ] && [ -f "$CLI_PATH" ]; then',
+      `  out=$("$NODE_BIN" "$CLI_PATH" launcher:run --port ${cdpPort} --no-tun --no-relaunch 2>&1)`,
+      '  rc=$?',
+      '  printf \'[%s] %s\\n\' "$(date \'+%Y-%m-%d %H:%M:%S\')" "$out" >> "$LOG_FILE"',
+      '  if [ "$rc" -eq 0 ]; then',
+      '    exit 0',
+      '  fi',
+      '  printf \'%s\\n\' "$out" >&2',
+      '  /usr/bin/osascript -e \'display alert "Antigravity (No-TUN)" message "检测到旧 Antigravity 宿主未携带免 TUN 或看板调试参数，请先彻底退出 Antigravity（Cmd + Q），再重新点击 Antigravity (No-TUN) 启动。" as informational\' >/dev/null 2>&1 || true',
+      '  exit "$rc"',
+      'fi',
+      'if [ ! -f "$SCRIPT_PATH" ]; then',
+      '  /usr/bin/osascript -e \'display alert "Antigravity (No-TUN)" message "未找到免 TUN 启动脚本，请重新运行 node cli.js proxy:launcher。" as critical\' >/dev/null 2>&1 || true',
+      '  exit 1',
+      'fi',
+      'nohup /bin/sh "$SCRIPT_PATH" "$@" >/dev/null 2>&1 </dev/null &',
+      'exit 0',
+      ''
+    ].join('\n');
+    fsImpl.writeFileSync(execPath, wrapperScript, 'utf8');
+    if (typeof fsImpl.chmodSync === 'function') {
+      fsImpl.chmodSync(execPath, 0o755);
+    }
+
+    const iconCandidates = [
+      path.resolve(path.dirname(exePath), '..', 'Resources', 'AppIcon.icns'),
+      '/Applications/Antigravity.app/Contents/Resources/AppIcon.icns'
+    ];
+    for (const cand of iconCandidates) {
+      try {
+        if (fsImpl.existsSync(cand)) {
+          fsImpl.copyFileSync(cand, iconDest);
+          break;
+        }
+      } catch { }
+    }
+
+    const execFileSyncFn = options._execFileSync || require('child_process').execFileSync;
+    try { execFileSyncFn('xattr', ['-dr', 'com.apple.quarantine', appPath], { stdio: 'ignore', timeout: 5000 }); } catch { }
+    if (options.sign !== false) {
+      try { execFileSyncFn('codesign', ['--force', '--sign', '-', appPath], { stdio: 'ignore', timeout: 10000 }); } catch { }
+    }
+    shortcutPath = appPath;
   }
 
   return {

@@ -434,6 +434,52 @@ function buildCleanHostLaunchEnv(baseEnv = process.env) {
   return cleanEnv;
 }
 
+function resolveSavedProxyLaunchSpec(options = {}) {
+  try {
+    const { loadModulesConfig } = require('./modules-config');
+    const { buildHostProxyLaunchSpec } = require('./meter-proxy');
+    const cfg = loadModulesConfig(options.stateDir || null);
+    const proxyCfg = cfg?.modules?.proxy || {};
+    const shouldEnable = options.noTun === true || Boolean(proxyCfg.enabled);
+    if (!shouldEnable) return { enabled: false, spec: null };
+    const spec = buildHostProxyLaunchSpec({
+      proxyUrl: options.proxyUrl || proxyCfg.proxyUrl || undefined,
+      noProxy: options.noProxy !== undefined ? options.noProxy : proxyCfg.bypassList,
+      baseEnv: options.baseEnv
+    });
+    return { enabled: true, spec };
+  } catch {
+    return { enabled: false, spec: null };
+  }
+}
+
+function isHostRunningWithProxyArg(target, options = {}) {
+  if (!target || !target.execPath || process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test') {
+    return false;
+  }
+  if (typeof options._isHostRunningWithProxy === 'function') {
+    return Boolean(options._isHostRunningWithProxy(target));
+  }
+  try {
+    const uid = typeof process.getuid === 'function' ? String(process.getuid()) : '';
+    const psArgs = uid ? ['-ww', '-U', uid, '-o', 'command='] : ['-ww', '-eo', 'command='];
+    const out = execFileSync('ps', psArgs, {
+      encoding: 'utf8',
+      timeout: 4000,
+      env: { ...process.env, LC_ALL: 'C' }
+    });
+    const exe = String(target.execPath).trim();
+    for (const rawLine of String(out || '').split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      if ((line === exe || line.startsWith(`${exe} `)) && !/ --type=/.test(line)) {
+        if (line.includes(' --proxy-server=')) return true;
+      }
+    }
+  } catch { }
+  return false;
+}
+
 async function launchAntigravityHostWithCdp(target, port, options = {}) {
   if (options && typeof options._launchHost === 'function') {
     return options._launchHost(target, port);
@@ -445,30 +491,34 @@ async function launchAntigravityHostWithCdp(target, port, options = {}) {
     throw new Error('未找到 Antigravity 客户端安装路径');
   }
   const cleanEnv = buildCleanHostLaunchEnv(options.env || process.env);
+  const proxyLaunch = resolveSavedProxyLaunchSpec({ ...options, baseEnv: cleanEnv });
+  const launchEnv = proxyLaunch.enabled && proxyLaunch.spec?.env ? proxyLaunch.spec.env : cleanEnv;
+  const proxyArgs = proxyLaunch.enabled && Array.isArray(proxyLaunch.spec?.args) ? proxyLaunch.spec.args : [];
+  const launchArgs = [`--remote-debugging-port=${port}`, ...proxyArgs];
   // Issue #111: macOS 27+ 上 `open -a <app> --args --remote-debugging-port=...` 会丢失启动参数，
   // 因此优先直接 spawn 可执行文件（与 proxy:launch 一致），仅在可执行文件缺失时回退 `open -n -a`。
   if (target.platform === 'darwin' && target.execPath && fs.existsSync(target.execPath)) {
-    const child = spawn(target.execPath, [`--remote-debugging-port=${port}`], {
+    const child = spawn(target.execPath, launchArgs, {
       detached: true,
       stdio: 'ignore',
-      env: cleanEnv
+      env: launchEnv
     });
     child.unref();
     return;
   }
   if (target.platform === 'darwin' && target.appBundlePath) {
-    execFileSync('open', ['-n', '-a', target.appBundlePath, '--args', `--remote-debugging-port=${port}`], {
+    execFileSync('open', ['-n', '-a', target.appBundlePath, '--args', ...launchArgs], {
       stdio: 'ignore',
       timeout: 10000,
-      env: cleanEnv
+      env: launchEnv
     });
     return;
   }
-  const child = spawn(target.execPath, [`--remote-debugging-port=${port}`], {
+  const child = spawn(target.execPath, launchArgs, {
     detached: true,
     stdio: 'ignore',
     windowsHide: false,
-    env: cleanEnv
+    env: launchEnv
   });
   child.unref();
 }
@@ -2036,29 +2086,48 @@ async function runMacDockLauncher(customPath = null, cdpOptions = {}, options = 
 
   // 2. 检测当前窗口状态
   const forceRelaunch = options.forceRelaunch === true;
+  const noTunMode = options.noTun === true;
   const initialLive = await queryFn(cdpOptions);
   const effectiveCdpPort = cdpOptions.port || initialLive?.cdpPort || initialLive?.port || null;
   if (!forceRelaunch && initialLive && initialLive.running && initialLive.pageFound) {
-    let mounted = Boolean(initialLive.active);
-    if (!mounted) {
-      try {
-        const rep = await runLiveFn(customPath, cdpOptions, { ...options, source: 'cli-launcher' });
-        mounted = Boolean(rep?.ok);
-      } catch { }
+    if (noTunMode && !isHostRunningWithProxyArg(target, options)) {
+      if (options.relaunch === false) {
+        return {
+          ok: false,
+          reason: 'host_missing_notun_args',
+          error: '检测到当前 Antigravity 宿主未携带免 TUN 代理参数；请先彻底退出 Antigravity（Cmd + Q），再点击 Antigravity (No-TUN) 重新启动。',
+          watcherRunning,
+          watcherPid: watchPid || null,
+          hostPath: target?.execPath || null
+        };
+      }
+    } else {
+      let mounted = Boolean(initialLive.active);
+      let i18nActive = Boolean(initialLive.i18nActive);
+      if (!mounted) {
+        try {
+          const rep = await runLiveFn(customPath, cdpOptions, { ...options, source: 'cli-launcher' });
+          mounted = Boolean(rep?.ok);
+          if (mounted) {
+            const snapAfter = await queryFn(cdpOptions).catch(() => null);
+            if (snapAfter) i18nActive = Boolean(snapAfter.i18nActive);
+          }
+        } catch { }
+      }
+      activateHost();
+      return {
+        ok: true,
+        mode: 'focused_existing_cdp',
+        port: effectiveCdpPort,
+        mounted,
+        i18nActive,
+        watcherRunning,
+        watcherStarted,
+        watcherPid: watchPid || null,
+        hostPath: target?.execPath || null,
+        appBundlePath: target?.appBundlePath || null
+      };
     }
-    activateHost();
-    return {
-      ok: true,
-      mode: 'focused_existing_cdp',
-      port: effectiveCdpPort,
-      mounted,
-      i18nActive: Boolean(initialLive.i18nActive),
-      watcherRunning,
-      watcherStarted,
-      watcherPid: watchPid || null,
-      hostPath: target?.execPath || null,
-      appBundlePath: target?.appBundlePath || null
-    };
   }
 
   const hostRunning = Boolean(
@@ -2082,8 +2151,10 @@ async function runMacDockLauncher(customPath = null, cdpOptions = {}, options = 
       const portHint = effectiveCdpPort || DEFAULT_LAUNCH_CDP_PORT;
       return {
         ok: false,
-        reason: 'cdp_not_enabled',
-        error: 'Antigravity 正在运行但未开启 CDP 调试端口（已指定 --no-relaunch）。',
+        reason: noTunMode ? 'host_missing_notun_args' : 'cdp_not_enabled',
+        error: noTunMode
+          ? '检测到当前 Antigravity 宿主未携带免 TUN 代理或 CDP 调试参数；请先彻底退出 Antigravity（Cmd + Q），再点击 Antigravity (No-TUN) 重新启动。'
+          : 'Antigravity 正在运行但未开启 CDP 调试端口（已指定 --no-relaunch）。',
         manualCmd: formatManualCdpLaunchCommand(target, portHint),
         watcherRunning,
         watcherPid: watchPid || null,
@@ -2496,7 +2567,7 @@ const CLI_BOOLEAN_FLAGS = new Set([
   '--today', '--week', '--month', '--json', '--compact', '--once', '--dry-run',
   '--clear', '--sync-cli-settings', '--no-open', '--relaunch', '--force-relaunch', '--no-launch', '--persistent', '--force-mac-asar', '--disk-only',
   '--check-only', '--beta', '--silent', '--add-to-dock', '--keep-dock', '--no-relaunch',
-  '--chinese', '--no-chinese', '--live'
+  '--chinese', '--no-chinese', '--live', '--no-tun'
 ]);
 
 const CLI_KNOWN_COMMANDS = new Set([
@@ -2965,7 +3036,8 @@ async function main() {
     } else if (cmd === 'launcher:run') {
       const res = await runMacDockLauncher(customPath, cdpOptions, {
         relaunch: !args.includes('--no-relaunch'),
-        forceRelaunch: args.includes('--force-relaunch') || args.includes('--relaunch')
+        forceRelaunch: args.includes('--force-relaunch') || args.includes('--relaunch'),
+        noTun: args.includes('--no-tun')
       });
       if (wantJson) {
         console.log(JSON.stringify(res, null, 2));
@@ -3342,7 +3414,7 @@ async function main() {
       });
       console.log('✅ 已生成独立免 TUN 启动器（零改 app.asar，跨客户端升级有效）：');
       console.log(`   - 启动脚本: ${res.launcherPath}`);
-      if (res.shortcutPath) console.log(`   - 桌面快捷方式: ${res.shortcutPath}`);
+      if (res.shortcutPath) console.log(`   - ${process.platform === 'darwin' ? '启动应用' : '桌面快捷方式'}: ${res.shortcutPath}`);
       console.log(`   - 目标程序: ${res.exePath}`);
       console.log(`   - 本地代理: ${redactProxyUrl(res.proxyUrl)}`);
     }

@@ -47394,7 +47394,12 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       isChineseLiveModeSupported = isChineseLiveReady;
       const isChinesePartial = Boolean(disk.chinese && disk.chineseReady === false && !isChineseLiveReady);
       const isProxyDiskReady = disk.proxyReady !== undefined ? Boolean(disk.proxyReady) : Boolean(disk.proxy);
-      const isProxyPartial = Boolean(disk.proxy && disk.proxyReady === false);
+      const isProxyLiveReady = Boolean(
+        !isProxyDiskReady &&
+        (runtimeMeta?.proxyLiveLaunchSupported === true || disk.proxyLiveLaunchReady === true)
+      );
+      const isProxyCapable = isProxyDiskReady || isProxyLiveReady;
+      const isProxyPartial = Boolean(disk.proxy && disk.proxyReady === false && !isProxyLiveReady);
 
       if (chineseBadge) {
         if (!currentChineseEnabled) {
@@ -47473,7 +47478,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
 
       if (proxyBadge) {
         if (currentProxyEnabled) {
-          if (!isProxyDiskReady) {
+          if (!isProxyCapable) {
             proxyBadge.textContent = t('mod.proxy.badgeNotInjected');
             proxyBadge.className = 'key-pill pill-warn';
           } else if (runtimeMeta?.proxyNeedsRestart) {
@@ -47496,7 +47501,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       }
       if (proxyStatusDesc) {
         if (currentProxyEnabled) {
-          if (!isProxyDiskReady) {
+          if (!isProxyCapable) {
             proxyStatusDesc.textContent = isProxyPartial && disk.proxyReason
               ? t('mod.proxy.descPartialInject', { reason: translateBackendText(disk.proxyReason) })
               : t('mod.proxy.descNeedInject');
@@ -47655,8 +47660,10 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     void setClientLanguageTarget(nextLang, { triggerRestartIfSupported: true });
   });
 
+  let lastProxyActionFeedback = null;
+
   async function applyProxyModuleUpdate(enableTarget) {
-    if (isProxyBusy) return;
+    if (isProxyBusy) return { ok: false, busy: true };
     isProxyBusy = true;
     const rawUrl = String(inputProxyUrl?.value ?? '').trim();
     const rawBypass = String(inputProxyBypass?.value ?? '').trim();
@@ -47665,6 +47672,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       btnToggleProxyModule.setAttribute('aria-busy', 'true');
     }
     syncProxySaveButtonState();
+    let actionResult = { ok: false };
     try {
       await yieldForSettingsPaint();
       const res = await invokeModulesApi('toggle', 'proxy', Boolean(enableTarget), {
@@ -47673,23 +47681,38 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       });
       if (!res || !res.ok) {
         const errPayload = res;
-        showEnhanceResultBox(false, () => resolveSettingsErrorText(errPayload, 'mod.proxy.toggleFail'));
+        const errText = resolveSettingsErrorText(errPayload, 'mod.proxy.toggleFail');
+        lastProxyActionFeedback = { ok: false, text: errText };
+        showEnhanceResultBox(false, () => errText);
+        showNativeSettingsToast(errText);
+        actionResult = { ok: false, error: errText };
       } else {
         proxyInputDirty = false;
         const needRestart = Boolean(res.runtime?.proxyNeedsRestart ?? res.restartRequired);
         if (needRestart) needsRestartAfterApply = true;
         const appliedUrl = res.data?.modules?.proxy?.proxyUrl || rawUrl;
+        let okText = '';
         if (enableTarget) {
           const msgKey = needRestart ? 'mod.proxy.savedPendingRestart' : 'mod.proxy.savedAlreadyActive';
-          showEnhanceResultBox(true, () => t(msgKey, { url: appliedUrl }), { needsHostRestart: needRestart });
+          okText = t(msgKey, { url: appliedUrl });
+          showEnhanceResultBox(true, () => okText, { needsHostRestart: needRestart });
         } else {
           const msgKey = needRestart ? 'mod.proxy.disabledPendingRestart' : 'mod.proxy.disabledSaved';
-          showEnhanceResultBox(true, () => t(msgKey), { needsHostRestart: needRestart });
+          okText = t(msgKey);
+          showEnhanceResultBox(true, () => okText, { needsHostRestart: needRestart });
         }
+        lastProxyActionFeedback = { ok: true, text: okText };
+        showNativeSettingsToast(okText);
+        actionResult = { ok: true, needRestart, message: okText };
       }
       await refreshModulesDisplay({ forceProxySync: true });
+      return actionResult;
     } catch (e) {
-      showEnhanceResultBox(false, () => `${t('mod.proxy.toggleFail')}: ${resolveSettingsErrorText(e, 'msg.unknownErr')}`);
+      const errText = `${t('mod.proxy.toggleFail')}: ${resolveSettingsErrorText(e, 'msg.unknownErr')}`;
+      lastProxyActionFeedback = { ok: false, text: errText };
+      showEnhanceResultBox(false, () => errText);
+      showNativeSettingsToast(errText);
+      return { ok: false, error: errText };
     } finally {
       isProxyBusy = false;
       if (btnToggleProxyModule) {
@@ -58714,7 +58737,7 @@ function createHostSettingsController(deps = {}) {
         const strictUpd = recomputeStrictUpdateState();
         const proxyDescLive = proxyTestResult && lastProxyTestState
           ? (lastProxyTestState.pending ? t('settings.proxy.testingDetail') : (lastProxyTestState.res?.ok ? t('settings.proxy.resReachable') : (lastProxyTestState.res?.error || lastProxyTestState.thrownErr || (proxyStatusDesc?.textContent || ''))))
-          : (proxyStatusDesc?.textContent || t('ns.proxyEnabled.desc'));
+          : (lastProxyActionFeedback?.text || proxyStatusDesc?.textContent || t('ns.proxyEnabled.desc'));
 
         return {
           settings: {
@@ -59140,7 +59163,7 @@ function createHostSettingsController(deps = {}) {
         } else if (actionName === 'applyProxy') {
           const urlVal = payload?.proxyUrl ?? inputProxyUrl?.value ?? '';
           if (inputProxyUrl) inputProxyUrl.value = String(urlVal);
-          void applyProxyModuleUpdate(true).then(() => showNativeSettingsToast(t('prefs.saved')));
+          void applyProxyModuleUpdate(true).then(() => syncHostSettingsUi());
         } else if (actionName === 'copyDiag') {
           const strict = recomputeStrictUpdateState();
           const diagPayload = JSON.stringify({
@@ -71920,7 +71943,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   }
 
   globalThis.__AGContextMeter = {
-    buildId: '18a21df2883712bc',
+    buildId: 'e423d5953f6fa7c5',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;

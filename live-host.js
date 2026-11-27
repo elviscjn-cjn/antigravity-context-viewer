@@ -182,6 +182,10 @@ function buildLiveRuntimeModulesMeta(cfg, customAsarPath = null, diskOverride = 
   const diskChineseReady = diskOverride
     ? (diskOverride.chineseReady !== undefined ? Boolean(diskOverride.chineseReady) : Boolean(diskOverride.chinese))
     : false;
+  const diskProxyReady = diskOverride
+    ? (diskOverride.proxyReady !== undefined ? Boolean(diskOverride.proxyReady) : Boolean(diskOverride.proxy))
+    : false;
+  const proxyLiveLaunchSupported = process.platform === 'darwin';
   const chineseLiveSupported = Boolean(liveAssets.ready);
   const chineseViaLiveRuntime = Boolean(!diskChineseReady && chineseLiveSupported);
   return {
@@ -190,6 +194,8 @@ function buildLiveRuntimeModulesMeta(cfg, customAsarPath = null, diskOverride = 
     runtimeProxyUrl: redactProxyUrl(runtimeUrl) || null,
     runtimeBypassList: typeof liveBootProxySnapshot.bypassList === 'string' ? liveBootProxySnapshot.bypassList : null,
     proxyNeedsRestart,
+    proxyLiveLaunchSupported,
+    proxyMode: diskProxyReady ? 'disk-asar' : (proxyLiveLaunchSupported ? 'live-launch' : 'unavailable'),
     chineseActive: chineseViaLiveRuntime ? diskZhActive : Boolean(bootZh.enabled),
     chineseBootLanguage: chineseViaLiveRuntime ? (diskZhActive ? 'zh-CN' : 'en') : bootZh.language,
     chineseNeedsRestart: chineseViaLiveRuntime ? false : (diskZhActive !== Boolean(bootZh.enabled)),
@@ -673,7 +679,8 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           const liveAssets = resolveLiveChineseAssets(__dirname);
           const disk = {
             ...diskRaw,
-            chineseLiveReady: Boolean(liveAssets.ready)
+            chineseLiveReady: Boolean(liveAssets.ready),
+            proxyLiveLaunchReady: process.platform === 'darwin'
           };
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({
@@ -700,14 +707,16 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           const targetEnable = Boolean(request?.enable);
           const diskRaw = inspectDiskModules(extra.asarPath || null);
           const liveAssets = resolveLiveChineseAssets(__dirname);
+          const proxyLiveLaunchSupported = process.platform === 'darwin';
           const disk = {
             ...diskRaw,
-            chineseLiveReady: Boolean(liveAssets.ready)
+            chineseLiveReady: Boolean(liveAssets.ready),
+            proxyLiveLaunchReady: proxyLiveLaunchSupported
           };
           const chineseLiveFallback = mod === 'chinese' && !disk.chineseReady && Boolean(liveAssets.ready);
           const hasDiskCapability = mod === 'chinese'
             ? Boolean(disk.chineseReady || liveAssets.ready)
-            : (mod === 'proxy' ? Boolean(disk.proxyReady) : Boolean(disk.meterReady));
+            : (mod === 'proxy' ? Boolean(disk.proxyReady || proxyLiveLaunchSupported) : Boolean(disk.meterReady));
 
           // 在热挂载模式或未持久化注入下尝试开启未注入模块时，给出可执行的外部补装指引，不假报切换成功
           // 注：客户端汉化在免改盘 watch/live 模式下优先复用 live-runtime 自带 i18n 资源，不再被磁盘 ASAR 门禁拦截
