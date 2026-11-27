@@ -4072,10 +4072,10 @@ function discoverDaemonHubOrigins(opts = {}) {
       isPidAlive: typeof opts.isPidAlive === 'function' ? opts.isPidAlive : defaultIsPidAlive
     });
     return hubs
-      .filter(h => h && h.httpsOrigin && h.httpsPort)
+      .filter(h => h && (h.httpsOrigin || h.httpOrigin || h.origin))
       .map(h => ({
-        origin: h.httpsOrigin,
-        httpsPort: h.httpsPort,
+        origin: h.httpsOrigin || h.httpOrigin || h.origin,
+        httpsPort: h.httpsPort || h.httpPort || null,
         csrfToken: h.csrfToken,
         pid: h.pid,
         filePath: h.filePath || null,
@@ -4148,7 +4148,9 @@ const sharedMgrRuntime = {
   daemonDir: undefined,
   homeDir: undefined,
   isPidAlive: undefined,
-  directRequestFn: null
+  directRequestFn: null,
+  resolveCsrfToken: null,
+  resolveCsrfTokenOrigin: ''
 };
 
 function getSharedAccountsManager(opts = {}) {
@@ -4174,6 +4176,12 @@ function getSharedAccountsManager(opts = {}) {
     if (typeof srcOpts.directRequestFn === 'function') {
       targetRuntime.directRequestFn = srcOpts.directRequestFn;
     }
+    if (typeof srcOpts.resolveCsrfToken === 'function') {
+      targetRuntime.resolveCsrfToken = srcOpts.resolveCsrfToken;
+      targetRuntime.resolveCsrfTokenOrigin = (srcOpts.origin && typeof srcOpts.origin === 'string')
+        ? srcOpts.origin.trim()
+        : targetRuntime.currentOrigin;
+    }
   };
 
   const stateDirDiffers = Boolean(opts.stateDir && opts.stateDir !== sharedMgrStateDir);
@@ -4188,7 +4196,9 @@ function getSharedAccountsManager(opts = {}) {
           daemonDir: undefined,
           homeDir: undefined,
           isPidAlive: undefined,
-          directRequestFn: null
+          directRequestFn: null,
+          resolveCsrfToken: null,
+          resolveCsrfTokenOrigin: ''
         }
       : sharedMgrRuntime;
     applyRuntimeOpts(localRuntime, opts);
@@ -4202,7 +4212,7 @@ function getSharedAccountsManager(opts = {}) {
         // 严格按非 CDP 优先级收集候选：
         // 1) Electron 主进程活跃窗口 webContents URL（最新实况）
         // 2) 最近已确认的 currentOrigin
-        // 3) daemon/hub_*.json 后备（校验 pid 存活 + mtimeMs 最新）
+        // 3) 同进程 authBootstrap 本机主语言服务与 daemon/(hub|ls)_*.json 后备（校验 pid 存活 + mtimeMs 最新）
         const candidates = [];
         const seen = new Set();
         const pushCandidate = (origin, csrfToken = '', fromSource = '') => {
@@ -4222,6 +4232,15 @@ function getSharedAccountsManager(opts = {}) {
             if (Array.isArray(rawLive)) liveOrigins = rawLive;
           } catch { }
         }
+        let bootstrapAuth = null;
+        try {
+          if (typeof localApi?.loadHostAuthBootstrap === 'function') {
+            bootstrapAuth = localApi.loadHostAuthBootstrap({
+              daemonDir: localRuntime.daemonDir,
+              homeDir: localRuntime.homeDir
+            });
+          }
+        } catch { }
         const hubBackups = discoverDaemonHubOrigins({
           daemonDir: localRuntime.daemonDir,
           homeDir: localRuntime.homeDir,
@@ -4231,10 +4250,12 @@ function getSharedAccountsManager(opts = {}) {
         if (callOpts?.force) {
           for (const lo of liveOrigins) pushCandidate(lo, '', 'electron_window');
           if (localRuntime.currentOrigin) pushCandidate(localRuntime.currentOrigin, '', 'current_origin');
+          if (bootstrapAuth?.origin && bootstrapAuth?.csrfToken) pushCandidate(bootstrapAuth.origin, bootstrapAuth.csrfToken, 'auth_bootstrap');
           for (const hub of hubBackups) pushCandidate(hub.origin, hub.csrfToken, 'daemon_hub');
         } else {
           if (localRuntime.currentOrigin) pushCandidate(localRuntime.currentOrigin, '', 'current_origin');
           for (const lo of liveOrigins) pushCandidate(lo, '', 'electron_window');
+          if (bootstrapAuth?.origin && bootstrapAuth?.csrfToken) pushCandidate(bootstrapAuth.origin, bootstrapAuth.csrfToken, 'auth_bootstrap');
           for (const hub of hubBackups) pushCandidate(hub.origin, hub.csrfToken, 'daemon_hub');
         }
 
@@ -4248,7 +4269,11 @@ function getSharedAccountsManager(opts = {}) {
               } catch { }
             }
             if (typeof localApi?.connect === 'function') {
-              const api = await localApi.connect({ origin: cand.origin });
+              const connectOpts = { origin: cand.origin };
+              if (typeof localRuntime.resolveCsrfToken === 'function' && localRuntime.resolveCsrfTokenOrigin && cand.origin === localRuntime.resolveCsrfTokenOrigin) {
+                connectOpts.resolveCsrfToken = localRuntime.resolveCsrfToken;
+              }
+              const api = await localApi.connect(connectOpts);
               if (api?.origin) localRuntime.currentOrigin = api.origin;
               const u = await api.call('GetUserStatus', {});
               return {

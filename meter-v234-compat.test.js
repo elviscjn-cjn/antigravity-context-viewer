@@ -721,3 +721,274 @@ async function createWindow(url, storageManager, options) {
   assert.equal(process.exitCode, 1, '结构预检阻塞时 cmdCheck 不得返回 0');
   process.exitCode = prevExitCode;
 });
+
+// ============================================================================
+// 5. 远程服务器（SSH Hub）连接场景下的额度获取、会话扫描与多级回退
+// ============================================================================
+
+test('远程 SSH 窗口：空 HTML csrfToken 且与本机 authBootstrap 端口不同时，通过渲染层令牌解析与 401 轮换自愈完成额度与扫描', async (t) => {
+  let remoteToken = 'remote-ssh-tok-1';
+  let remoteQuotaHits = 0;
+  const cascadeId = '22222222-3333-4444-5555-666666666666';
+
+  const remoteServer = http.createServer((req, res) => {
+    if (req.url === '/') {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<script>window.__APP_CONFIG__ = {"productName":"antigravity","csrfToken":"","appVersion":"2.35.2"};</script>');
+      return;
+    }
+    if (req.headers['x-codeium-csrf-token'] !== remoteToken) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+    if (req.url.includes('/GetUserStatus')) {
+      remoteQuotaHits++;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        userStatus: {
+          email: 'remote-user@example.com',
+          userTier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
+          planStatus: { planInfo: { planName: 'Pro', teamsTier: 'TEAMS_TIER_PRO' } },
+          cascadeModelConfigData: {
+            clientModelConfigs: [{
+              label: 'Gemini 4 Neon (High)',
+              modelOrAlias: { model: 'MODEL_PLACEHOLDER_M701' },
+              quotaInfo: { remainingFraction: 0.76, resetTime: '2026-12-01T00:00:00Z' }
+            }]
+          }
+        }
+      }));
+      return;
+    }
+    if (req.url.includes('/RetrieveUserQuotaSummary')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ response: { groups: [] } }));
+      return;
+    }
+    if (req.url.endsWith('/GetCascadeTrajectory')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        numTotalSteps: 1,
+        trajectory: {
+          metadata: { workspaceUris: ['vscode-remote://ssh-remote+dev-box/data/repo'] },
+          steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: 'hello remote' }] } }]
+        }
+      }));
+      return;
+    }
+    if (req.url.endsWith('/GetCascadeTrajectoryGeneratorMetadata')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ generatorMetadata: [] }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise(r => remoteServer.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => remoteServer.close(r)));
+  const remotePort = remoteServer.address().port;
+  const remoteOrigin = `http://127.0.0.1:${remotePort}`;
+
+  // 模拟本机 authBootstrap 指向另一个完全不同的本地端口
+  const localOnlyAuthBootstrap = {
+    getActiveLsBaseUrl: () => `http://127.0.0.1:${remotePort + 10}`,
+    getActiveLsCsrfToken: () => 'local-machine-token-must-not-leak'
+  };
+
+  collector.resetQuotaHostCacheForTest();
+  const quotaRes = await collector.fetchQuotaSnapshotFromHost({
+    force: true,
+    origin: remoteOrigin,
+    authBootstrap: localOnlyAuthBootstrap,
+    allowDaemonFallback: false,
+    resolveCsrfToken: async (origin) => (origin === remoteOrigin ? remoteToken : null)
+  });
+  assert.equal(quotaRes.ok, true);
+  assert.equal(quotaRes.error, null);
+  assert.equal(quotaRes.email, 'remote-user@example.com');
+  assert.equal(remoteQuotaHits, 1);
+
+  // 令牌轮换后，collect 也应通过 resolveCsrfToken 正常扫描并标注 isRemote=true
+  remoteToken = 'remote-ssh-tok-2';
+  const scanRes = await collector.collect(remoteOrigin, cascadeId, {
+    force: true,
+    authBootstrap: localOnlyAuthBootstrap,
+    allowDaemonFallback: false,
+    resolveCsrfToken: async (origin) => (origin === remoteOrigin ? remoteToken : null)
+  });
+  assert.equal(scanRes.conversation, cascadeId);
+  assert.equal(scanRes.session.isRemote, true);
+});
+
+test('远程 SSH 窗口：远端 LS 无法返回额度或需同源 Cookie 时，依次通过 rendererRpcFetcher 与本机宿主/ls_*.json 安全回退且不跨端口泄露令牌', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-remote-fallback-'));
+  const daemonDir = path.join(tmpDir, 'daemon');
+  fs.mkdirSync(daemonDir, { recursive: true });
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const observedLocalTokens = [];
+  const observedRemoteTokens = [];
+
+  // 1) 远程服务器模拟：返回 200 但 GetUserStatus/RetrieveUserQuotaSummary 均返回空配额（或 401）
+  let remoteMode = 'empty';
+  const remoteServer = http.createServer((req, res) => {
+    if (req.url === '/') {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<script>window.__APP_CONFIG__ = {"csrfToken":""};</script>');
+      return;
+    }
+    observedRemoteTokens.push(req.headers['x-codeium-csrf-token'] || '');
+    if (remoteMode === 'unauthorized') {
+      res.writeHead(401);
+      res.end('unauthorized');
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({}));
+  });
+  await new Promise(r => remoteServer.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => remoteServer.close(r)));
+  const remoteOrigin = `http://127.0.0.1:${remoteServer.address().port}`;
+
+  // 2) 本机宿主 daemon ls_*.json 模拟（携带本机完整额度）
+  const localServer = http.createServer((req, res) => {
+    if (req.url === '/') {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<script>window.__APP_CONFIG__ = {"csrfToken":""};</script>');
+      return;
+    }
+    observedLocalTokens.push(req.headers['x-codeium-csrf-token'] || '');
+    if (req.headers['x-codeium-csrf-token'] !== 'local-ls-daemon-csrf') {
+      res.writeHead(401);
+      res.end('unauthorized');
+      return;
+    }
+    if (req.url.includes('/GetUserStatus')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        userStatus: {
+          email: 'local-host-fallback@example.com',
+          userTier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
+          planStatus: { planInfo: { planName: 'Pro', teamsTier: 'TEAMS_TIER_PRO' } },
+          cascadeModelConfigData: {
+            clientModelConfigs: [{
+              label: 'Gemini 4 Neon (High)',
+              modelOrAlias: { model: 'MODEL_PLACEHOLDER_M701' },
+              quotaInfo: { remainingFraction: 0.91, resetTime: '2026-12-01T00:00:00Z' }
+            }]
+          }
+        }
+      }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ response: { groups: [] } }));
+  });
+  await new Promise(r => localServer.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => localServer.close(r)));
+  const localPort = localServer.address().port;
+
+  fs.writeFileSync(
+    path.join(daemonDir, 'ls_14b5b8b4e06bc747.json'),
+    JSON.stringify({ pid: 556677, httpPort: localPort, csrfToken: 'local-ls-daemon-csrf' })
+  );
+
+  // 验证 discoverLiveDaemonHubs 识别 ls_*.json
+  const discovered = localApi.discoverLiveDaemonHubs({ daemonDir, isPidAlive: pid => pid === 556677 });
+  assert.equal(discovered.length, 1);
+  assert.equal(discovered[0].origin, `http://127.0.0.1:${localPort}`);
+  assert.equal(discovered[0].kind, 'ls');
+
+  // 场景 A：远端返回空对象 -> 自动回退本机 ls_*.json 并成功获取真实额度，且远程 Token 绝不发送给本机端口
+  collector.resetQuotaHostCacheForTest();
+  const fallbackRes = await collector.fetchQuotaSnapshotFromHost({
+    force: true,
+    origin: remoteOrigin,
+    csrfToken: 'remote-only-secret-token',
+    authBootstrap: null,
+    daemonDir,
+    isPidAlive: pid => pid === 556677,
+    allowHostOriginFallback: true
+  });
+  assert.equal(fallbackRes.ok, true);
+  assert.equal(fallbackRes.email, 'local-host-fallback@example.com');
+  assert.ok(fallbackRes.cascadeModelConfigs.length === 1);
+  assert.ok(observedLocalTokens.every(tok => tok === 'local-ls-daemon-csrf'), '本机端口绝不得收到远程窗口令牌');
+  assert.ok(observedRemoteTokens.every(tok => tok !== 'local-ls-daemon-csrf'), '远程端口绝不得收到本机宿主令牌');
+
+  // 场景 B：Node 直连远端 401（如仅浏览器携带 HttpOnly Cookie），rendererRpcFetcher 同源拉取成功
+  remoteMode = 'unauthorized';
+  collector.resetQuotaHostCacheForTest();
+  const rendererRes = await collector.fetchQuotaSnapshotFromHost({
+    force: true,
+    origin: remoteOrigin,
+    csrfToken: 'stale-or-cookie-only',
+    authBootstrap: null,
+    allowDaemonFallback: false,
+    allowHostOriginFallback: false,
+    rendererRpcFetcher: async (origin) => {
+      assert.equal(origin, remoteOrigin);
+      return {
+        userStatusRes: {
+          userStatus: {
+            email: 'cookie-session@example.com',
+            cascadeModelConfigData: {
+              clientModelConfigs: [{
+                label: 'Gemini 4 Neon (High)',
+                modelOrAlias: { model: 'MODEL_PLACEHOLDER_M701' },
+                quotaInfo: { remainingFraction: 0.64, resetTime: '2026-12-01T00:00:00Z' }
+              }]
+            }
+          }
+        },
+        quotaSummaryRes: { response: { groups: [] } }
+      };
+    }
+  });
+  assert.equal(rendererRes.ok, true);
+  assert.equal(rendererRes.email, 'cookie-session@example.com');
+});
+
+test('meter-main IPC 与 live-host 兼容 localhost 远程回环窗口并安全注入渲染层鉴权与宿主回退选项', async (t) => {
+  const { registerMeterIpcHandlers } = require('./meter-main');
+  const handlers = new Map();
+  registerMeterIpcHandlers({ handle: (channel, handler) => handlers.set(channel, handler) });
+  const getQuota = handlers.get('context-meter:get-quota');
+
+  let capturedOpts = null;
+  t.mock.method(collector, 'fetchQuotaSnapshotFromHost', async (opts) => {
+    capturedOpts = opts;
+    return { ok: true, error: null, email: 'ssh@example.com', fetchedAtMs: Date.now(), snapshot: { pools: [] } };
+  });
+  t.mock.method(require('./meter-accounts'), 'getSharedAccountsManager', () => ({
+    syncActiveHostQuotaSnapshot: () => {},
+    detectCurrentActiveAccount: async () => ({ email: 'ssh@example.com' }),
+    getOverviewState: () => ({})
+  }));
+
+  const remoteOrigin = 'http://localhost:59123';
+  const frame = { url: `${remoteOrigin}/c/11111111-2222-3333-4444-555555555555` };
+  const event = {
+    senderFrame: frame,
+    sender: {
+      mainFrame: frame,
+      getURL: () => frame.url,
+      isDestroyed: () => false,
+      executeJavaScript: async (code) => {
+        if (code.includes('RetrieveUserQuotaSummary')) return null;
+        return 'sender-live-csrf-token';
+      }
+    }
+  };
+
+  const res = await getQuota(event, { force: true, origin: 'http://127.0.0.1:9999', userStatus: { fake: true } });
+  assert.equal(res.ok, true);
+  assert.equal(capturedOpts.origin, remoteOrigin);
+  assert.equal('userStatus' in capturedOpts, false);
+  assert.equal(capturedOpts.allowHostOriginFallback, true);
+  assert.equal(typeof capturedOpts.resolveCsrfToken, 'function');
+  assert.equal(typeof capturedOpts.rendererRpcFetcher, 'function');
+  assert.equal(await capturedOpts.resolveCsrfToken(remoteOrigin), 'sender-live-csrf-token');
+  assert.equal(await capturedOpts.resolveCsrfToken('http://127.0.0.1:41234'), null, 'resolveCsrfToken 严禁跨 origin 返回令牌');
+});

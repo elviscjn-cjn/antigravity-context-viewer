@@ -3,7 +3,7 @@
   const METER_DISPLAY_VERSION = '0.9.0';
 
   'use strict';
-  if ((location.protocol !== 'https:' && location.protocol !== 'http:') || location.hostname !== '127.0.0.1') return;
+  if ((location.protocol !== 'https:' && location.protocol !== 'http:') || (location.hostname !== '127.0.0.1' && location.hostname !== 'localhost')) return;
 
   const HOT_RELOAD_SCROLL_IDS = ['panel', 'panel-tokens', 'panel-quota', 'ctx-model-list', 'view-quota', 'quota-view-body'];
 
@@ -10291,8 +10291,9 @@
     autoCompactCheckInFlight = true;
     lastAutoCompactCheckAt = Date.now();
     try {
+      const liveCsrf = getRendererCsrfToken();
       const ipcFn = window.contextMeterAPI?.getTurnState ? () => window.contextMeterAPI.getTurnState(route) : null;
-      const { result } = await callBackendWithPriority({ ipcCall: ipcFn, liveRoute: '/turn-state', liveBody: { id: route } });
+      const { result } = await callBackendWithPriority({ ipcCall: ipcFn, liveRoute: '/turn-state', liveBody: { id: route, ...(liveCsrf ? { csrfToken: liveCsrf } : {}) } });
       const status = String(result?.data?.cascadeStatus || '');
       if (result?.ok && result.data.conversation === route && /(?:^|_)(?:IDLE|COMPLETED|DONE|FINISHED)$/i.test(status)
         && !state.disposed && state.route === route && autoCompactEnabled) await requestOfficialCompact(true);
@@ -25620,6 +25621,10 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       const stored = typeof window !== 'undefined' ? window.localStorage?.getItem?.('agy_session_csrf_token') : null;
       if (typeof stored === 'string' && stored.trim()) return stored.trim();
     } catch { }
+    try {
+      const sessStored = typeof window !== 'undefined' ? window.sessionStorage?.getItem?.('agy_session_csrf_token') : null;
+      if (typeof sessStored === 'string' && sessStored.trim()) return sessStored.trim();
+    } catch { }
     return '';
   }
 
@@ -25956,10 +25961,11 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       state.controllers.add(controller);
       const timeout = setTimeout(() => controller.abort(), 180000);
       try {
+        const liveCsrf = getRendererCsrfToken();
         const out = await callBackendWithPriority({
           ipcCall: hasIpcScan ? () => window.contextMeterAPI.scan(id, force) : null,
           liveRoute: '/scan',
-          liveBody: { id, force },
+          liveBody: { id, force, ...(liveCsrf ? { csrfToken: liveCsrf } : {}) },
           liveFetchOpts: { signal: controller.signal }
         });
         result = out.result;
@@ -28944,6 +28950,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           quotaAbortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
           const isGeneratingNow = hasActiveCompactionOrGeneration();
           const hasDraftNow = Boolean(autoSwitchDraftDirty || accountsUiState.autoSwitchDraft?.dirty || hasUnsavedChatComposerDraft());
+          const liveCsrf = getRendererCsrfToken();
           const out = await callBackendWithPriority({
             ipcCall: hasIpcGetQuota ? () => window.contextMeterAPI.getQuota({ force: Boolean(force), isGenerating: isGeneratingNow, hasUnsavedDraft: hasDraftNow }) : null,
             liveRoute: '/quota',
@@ -28951,7 +28958,8 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
               force: Boolean(force),
               isGenerating: isGeneratingNow,
               hasUnsavedDraft: hasDraftNow,
-              origin: typeof window !== 'undefined' ? (window.location?.origin || undefined) : undefined
+              origin: typeof window !== 'undefined' ? (window.location?.origin || undefined) : undefined,
+              ...(liveCsrf ? { csrfToken: liveCsrf } : {})
             },
             liveFetchOpts: { signal: quotaAbortController?.signal }
           });
