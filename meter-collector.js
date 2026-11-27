@@ -701,8 +701,8 @@ function setBoundedMap(map, key, val, maxEntries) {
   }
 }
 
-const _collectorHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 8, rejectUnauthorized: false });
-const _collectorHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 8 });
+const _collectorHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 8, rejectUnauthorized: false, proxyEnv: {} });
+const _collectorHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 8, proxyEnv: {} });
 
 function request(origin, method, body, token, signal = null) {
   const url = method ? `${origin}/exa.language_server_pb.LanguageServerService/${method}` : origin + '/';
@@ -1004,6 +1004,7 @@ async function resolveCollectCsrfToken(origin, signal, options = {}, isSupersede
   }
 
   const canFallback = !htmlFetchErr || /HTTP 40[13]\b/.test(String(htmlFetchErr.message || ''));
+  const canUseExplicitOriginAuth = canFallback || /HTTP 404\b/.test(String(htmlFetchErr?.message || ''));
   if (!token && canFallback) {
     try {
       const { resolveOriginCsrfToken } = require('./local-api');
@@ -1013,6 +1014,21 @@ async function resolveCollectCsrfToken(origin, signal, options = {}, isSupersede
         hasConfig = true;
       }
     } catch { }
+  }
+  if (!token && canUseExplicitOriginAuth && typeof options?.resolveCsrfToken === 'function') {
+    try {
+      const resolved = await options.resolveCsrfToken(origin);
+      if (typeof isSuperseded === 'function' && isSuperseded()) return '';
+      const cleanResolved = typeof resolved === 'string' ? resolved.trim() : '';
+      if (cleanResolved) {
+        token = cleanResolved;
+        hasConfig = true;
+      }
+    } catch { }
+  }
+  if (!token && canUseExplicitOriginAuth && typeof options?.csrfToken === 'string' && options.csrfToken.trim()) {
+    token = options.csrfToken.trim();
+    hasConfig = true;
   }
 
   if (!token && htmlFetchErr) throw htmlFetchErr;
@@ -1130,7 +1146,18 @@ async function collect(origin, id, options = {}) {
       const hasAnyCap = knownCascadeConfigs.some(c => Number.isFinite(c?.maxTokens) && c.maxTokens > 0);
       if (!knownCascadeConfigs.length || !hasAnyCap) {
         try {
-          const freshStatus = await fetchUserStatusFromHost({ origin });
+          const freshStatus = await fetchUserStatusFromHost({
+            origin,
+            ...(options.csrfToken ? { csrfToken: options.csrfToken } : {}),
+            ...(typeof options.resolveCsrfToken === 'function' ? { resolveCsrfToken: options.resolveCsrfToken } : {}),
+            ...(options.authBootstrap !== undefined ? { authBootstrap: options.authBootstrap } : {}),
+            ...(options.daemonDir ? { daemonDir: options.daemonDir } : {}),
+            ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+            ...(typeof options.isPidAlive === 'function' ? { isPidAlive: options.isPidAlive } : {}),
+            ...(options.allowDaemonFallback !== undefined ? { allowDaemonFallback: options.allowDaemonFallback } : {}),
+            ...(options.allowHostOriginFallback !== undefined ? { allowHostOriginFallback: options.allowHostOriginFallback } : {}),
+            ...(Array.isArray(options.fallbackOrigins) ? { fallbackOrigins: options.fallbackOrigins } : {})
+          });
           if (freshStatus) cachedHostUserStatus = freshStatus;
           if (Array.isArray(freshStatus?.cascadeModelConfigs) && freshStatus.cascadeModelConfigs.length) {
             knownCascadeConfigs = freshStatus.cascadeModelConfigs;
@@ -4894,9 +4921,52 @@ function classifyQuotaFetchError(err) {
   return { kind: 'network', message: msg || '额度数据获取失败' };
 }
 
+function hasUsableQuotaData(userStatusRes, quotaSummaryRes) {
+  const configs = userStatusRes?.userStatus?.cascadeModelConfigData?.clientModelConfigs
+    || userStatusRes?.cascadeModelConfigData?.clientModelConfigs
+    || [];
+  const groups = quotaSummaryRes?.response?.groups
+    || quotaSummaryRes?.groups
+    || [];
+  return (Array.isArray(configs) && configs.length > 0) || (Array.isArray(groups) && groups.length > 0);
+}
+
+function collectHostFallbackOrigins(primaryOrigin, options = {}) {
+  const localApi = require('./local-api');
+  const normPrimary = normalizeLoopbackOrigin(primaryOrigin);
+  const out = [];
+  const pushOrigin = (cand) => {
+    const norm = normalizeLoopbackOrigin(cand);
+    if (!norm) return;
+    if (normPrimary && localApi.isSameLoopbackEndpoint?.(norm, normPrimary)) return;
+    if (out.some(existing => localApi.isSameLoopbackEndpoint?.(existing, norm) || existing === norm)) return;
+    out.push(norm);
+  };
+  try {
+    const auth = typeof localApi.loadHostAuthBootstrap === 'function'
+      ? localApi.loadHostAuthBootstrap(options)
+      : null;
+    if (auth?.origin) pushOrigin(auth.origin);
+  } catch { }
+  if (Array.isArray(options.fallbackOrigins)) {
+    for (const fb of options.fallbackOrigins) pushOrigin(fb);
+  }
+  try {
+    const hubs = typeof localApi.discoverLiveDaemonHubs === 'function'
+      ? localApi.discoverLiveDaemonHubs(options)
+      : [];
+    for (const hub of hubs) {
+      if (hub?.httpsOrigin) pushOrigin(hub.httpsOrigin);
+      if (hub?.httpOrigin) pushOrigin(hub.httpOrigin);
+      if (hub?.origin) pushOrigin(hub.origin);
+    }
+  } catch { }
+  return out;
+}
+
 /**
- * 并发拉取宿主模型额度池与可用模型详情，带多窗口 origin 隔离、并发去重、短缓存、失败分级及账号切换检测
- * @param {Object} options - 支持 force / origin / backendSource / userStatus / quotaSummary / connect 等参数
+ * 并发拉取宿主模型额度池与可用模型详情，带多窗口 origin 隔离、远程回退、并发去重、短缓存、失败分级及账号切换检测
+ * @param {Object} options - 支持 force / origin / backendSource / userStatus / quotaSummary / connect / resolveCsrfToken / rendererRpcFetcher / allowHostOriginFallback 等参数
  */
 async function fetchQuotaSnapshotFromHost(options = {}) {
   const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now();
@@ -4942,36 +5012,106 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
       userStatusRes = options.userStatus || null;
       quotaSummaryRes = options.quotaSummary || null;
     } else {
-      try {
-        const connector = typeof options.connect === 'function' ? options.connect : require('./local-api').connect;
-        const connectOpts = {};
-        if (options.origin) connectOpts.origin = options.origin;
-        if (options.authBootstrap !== undefined) connectOpts.authBootstrap = options.authBootstrap;
-        if (options.daemonDir) connectOpts.daemonDir = options.daemonDir;
-        if (options.homeDir) connectOpts.homeDir = options.homeDir;
-        if (typeof options.isPidAlive === 'function') connectOpts.isPidAlive = options.isPidAlive;
-        if (options.allowDaemonFallback !== undefined) connectOpts.allowDaemonFallback = options.allowDaemonFallback;
+      const connector = typeof options.connect === 'function' ? options.connect : require('./local-api').connect;
+      let primaryErr = null;
+      let bestPartial = null;
+
+      const buildBaseConnectOpts = () => {
+        const base = {};
+        if (options.authBootstrap !== undefined) base.authBootstrap = options.authBootstrap;
+        if (options.daemonDir) base.daemonDir = options.daemonDir;
+        if (options.homeDir) base.homeDir = options.homeDir;
+        if (typeof options.isPidAlive === 'function') base.isPidAlive = options.isPidAlive;
+        if (options.allowDaemonFallback !== undefined) base.allowDaemonFallback = options.allowDaemonFallback;
+        return base;
+      };
+
+      const fetchPairFromConnectOpts = async (connectOpts) => {
         const api = await connector(Object.keys(connectOpts).length ? connectOpts : undefined);
         const [uRes, qRes] = await Promise.allSettled([
           api.call('GetUserStatus', {}),
           api.call('RetrieveUserQuotaSummary', {})
         ]);
-        if (uRes.status === 'fulfilled' && uRes.value) {
-          userStatusRes = uRes.value;
+        const uVal = (uRes.status === 'fulfilled' && uRes.value) ? uRes.value : null;
+        const qVal = (qRes.status === 'fulfilled' && qRes.value) ? qRes.value : null;
+        if (!uVal && !qVal) {
+          const err = uRes.status === 'rejected'
+            ? uRes.reason
+            : (qRes.status === 'rejected' ? qRes.reason : new Error('宿主未返回额度数据'));
+          throw err;
         }
-        if (qRes.status === 'fulfilled' && qRes.value) {
-          quotaSummaryRes = qRes.value;
+        return { userStatusRes: uVal, quotaSummaryRes: qVal };
+      };
+
+      // Tier 1: 直接连接当前窗口 origin（支持渲染层实时 CSRF Token，适配远程 SSH 隧道端口）
+      try {
+        const primaryConnectOpts = buildBaseConnectOpts();
+        if (options.origin) primaryConnectOpts.origin = options.origin;
+        if (typeof options.csrfToken === 'string' && options.csrfToken.trim()) {
+          primaryConnectOpts.csrfToken = options.csrfToken.trim();
         }
-        if (!userStatusRes && !quotaSummaryRes) {
-          const firstErr = uRes.status === 'rejected' ? uRes.reason : (qRes.status === 'rejected' ? qRes.reason : new Error('宿主未返回额度数据'));
-          const classified = classifyQuotaFetchError(firstErr);
+        if (typeof options.resolveCsrfToken === 'function') {
+          primaryConnectOpts.resolveCsrfToken = options.resolveCsrfToken;
+        }
+        const primaryPair = await fetchPairFromConnectOpts(primaryConnectOpts);
+        if (hasUsableQuotaData(primaryPair.userStatusRes, primaryPair.quotaSummaryRes)) {
+          userStatusRes = primaryPair.userStatusRes;
+          quotaSummaryRes = primaryPair.quotaSummaryRes;
+        } else {
+          bestPartial = primaryPair;
+        }
+      } catch (e) {
+        primaryErr = e;
+      }
+
+      // Tier 2: 若主连接失败或未返回额度池，尝试通过同源渲染进程 fetch（自动携带远程会话 Cookie 与浏览器网络栈）
+      if (!hasUsableQuotaData(userStatusRes, quotaSummaryRes) && typeof options.rendererRpcFetcher === 'function') {
+        try {
+          const rendererPair = await options.rendererRpcFetcher(options.origin);
+          const uVal = rendererPair?.userStatusRes || null;
+          const qVal = rendererPair?.quotaSummaryRes || null;
+          if (hasUsableQuotaData(uVal, qVal)) {
+            userStatusRes = uVal;
+            quotaSummaryRes = qVal;
+          } else if (!bestPartial && (uVal || qVal)) {
+            bestPartial = { userStatusRes: uVal, quotaSummaryRes: qVal };
+          }
+        } catch (e) {
+          if (!primaryErr) primaryErr = e;
+        }
+      }
+
+      // Tier 3: 远程窗口无法返回额度时（如远端 LS 不托管配额/无法访问配额服务），安全回退至本机宿主 LS（绝不跨端口透传 Token）
+      if (!hasUsableQuotaData(userStatusRes, quotaSummaryRes) && options.allowHostOriginFallback === true) {
+        const fallbackOrigins = collectHostFallbackOrigins(options.origin, options);
+        for (const fbOrigin of fallbackOrigins) {
+          try {
+            const fbConnectOpts = {
+              ...buildBaseConnectOpts(),
+              origin: fbOrigin
+            };
+            const fbPair = await fetchPairFromConnectOpts(fbConnectOpts);
+            if (hasUsableQuotaData(fbPair.userStatusRes, fbPair.quotaSummaryRes)) {
+              userStatusRes = fbPair.userStatusRes;
+              quotaSummaryRes = fbPair.quotaSummaryRes;
+              break;
+            }
+            if (!bestPartial && (fbPair.userStatusRes || fbPair.quotaSummaryRes)) {
+              bestPartial = fbPair;
+            }
+          } catch { }
+        }
+      }
+
+      if (!hasUsableQuotaData(userStatusRes, quotaSummaryRes)) {
+        if (bestPartial) {
+          userStatusRes = bestPartial.userStatusRes;
+          quotaSummaryRes = bestPartial.quotaSummaryRes;
+        } else {
+          const classified = classifyQuotaFetchError(primaryErr || new Error('宿主未返回额度数据'));
           fetchError = classified.message;
           errorKind = classified.kind;
         }
-      } catch (e) {
-        const classified = classifyQuotaFetchError(e);
-        fetchError = classified.message;
-        errorKind = classified.kind;
       }
     }
 
@@ -5157,18 +5297,42 @@ async function fetchUserStatusFromHost(options = {}) {
   }
   try {
     const { connect } = require('./local-api');
-    const connectOpts = {};
-    if (options.origin) connectOpts.origin = options.origin;
-    if (options.authBootstrap !== undefined) connectOpts.authBootstrap = options.authBootstrap;
-    if (options.daemonDir) connectOpts.daemonDir = options.daemonDir;
-    if (options.homeDir) connectOpts.homeDir = options.homeDir;
-    if (typeof options.isPidAlive === 'function') connectOpts.isPidAlive = options.isPidAlive;
-    if (options.allowDaemonFallback !== undefined) connectOpts.allowDaemonFallback = options.allowDaemonFallback;
-    const api = await connect(Object.keys(connectOpts).length ? connectOpts : undefined);
-    const [res, availRes] = await Promise.all([
-      api.call('GetUserStatus', {}),
-      api.call('GetAvailableModels', { forceRefresh: false }).catch(() => null)
-    ]);
+    const buildBaseConnectOpts = () => {
+      const base = {};
+      if (options.authBootstrap !== undefined) base.authBootstrap = options.authBootstrap;
+      if (options.daemonDir) base.daemonDir = options.daemonDir;
+      if (options.homeDir) base.homeDir = options.homeDir;
+      if (typeof options.isPidAlive === 'function') base.isPidAlive = options.isPidAlive;
+      if (options.allowDaemonFallback !== undefined) base.allowDaemonFallback = options.allowDaemonFallback;
+      return base;
+    };
+    const fetchStatusWithConnectOpts = async (cOpts) => {
+      const api = await connect(Object.keys(cOpts).length ? cOpts : undefined);
+      const [res, availRes] = await Promise.all([
+        api.call('GetUserStatus', {}),
+        api.call('GetAvailableModels', { forceRefresh: false }).catch(() => null)
+      ]);
+      return { res, availRes };
+    };
+    let fetched = null;
+    try {
+      const connectOpts = buildBaseConnectOpts();
+      if (options.origin) connectOpts.origin = options.origin;
+      if (typeof options.csrfToken === 'string' && options.csrfToken.trim()) connectOpts.csrfToken = options.csrfToken.trim();
+      if (typeof options.resolveCsrfToken === 'function') connectOpts.resolveCsrfToken = options.resolveCsrfToken;
+      fetched = await fetchStatusWithConnectOpts(connectOpts);
+    } catch {
+      if (options.allowHostOriginFallback === true) {
+        for (const fbOrigin of collectHostFallbackOrigins(options.origin, options)) {
+          try {
+            fetched = await fetchStatusWithConnectOpts({ ...buildBaseConnectOpts(), origin: fbOrigin });
+            if (fetched?.res) break;
+          } catch { }
+        }
+      }
+    }
+    if (!fetched?.res) return cachedEntry?.status || null;
+    const { res, availRes } = fetched;
     const parsed = parseUserPlanStatus(res);
     const configs = res?.userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
     const sorts = res?.userStatus?.cascadeModelConfigData?.clientModelSorts || [];
