@@ -17,10 +17,10 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Node.js 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "22"
 
@@ -41,7 +41,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload Compiled Helper Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cli-window-helper-win
           if-no-files-found: error
@@ -77,15 +77,15 @@ jobs:
           echo "::notice title=Runner Hardware (${{ matrix.runner }})::uname=$UNAME_INFO | arch=$ARCH_INFO | cpu=$CPU_INFO | $SW_INFO"
 
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Node.js 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "22"
 
       - name: Set up Python 3
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.x"
 
@@ -122,7 +122,7 @@ jobs:
           cat /tmp/macos-real.log
 
       - name: Download CI-Built Windows Helper
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: cli-window-helper-win
           path: scripts
