@@ -1087,29 +1087,30 @@ function readExternalContextConfig(options = {}) {
 /**
  * 备份目录位置（支持通过 options 或环境变量隔离，单测安全）
  */
-function getUnlockBackupDir(overrideDir) {
+function getUnlockBackupDir(overrideDir, options = {}) {
+  const ensure = options?.ensure !== false;
   if (overrideDir && typeof overrideDir === 'string') {
-    if (!fs.existsSync(overrideDir)) fs.mkdirSync(overrideDir, { recursive: true });
+    if (ensure && !fs.existsSync(overrideDir)) fs.mkdirSync(overrideDir, { recursive: true });
     return overrideDir;
   }
   if (process.env.AG_UNLOCK_DIR) {
     const dir = path.resolve(process.env.AG_UNLOCK_DIR);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (ensure && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     return dir;
   }
   const dir = path.join(getStateDir(), 'backups', 'context-unlock');
-  if (!fs.existsSync(dir)) {
+  if (ensure && !fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
   return dir;
 }
 
-function getManifestPath(backupDir) {
-  return path.join(getUnlockBackupDir(backupDir), 'manifest.json');
+function getManifestPath(backupDir, options = {}) {
+  return path.join(getUnlockBackupDir(backupDir, options), 'manifest.json');
 }
 
 function loadManifest(backupDir) {
-  const mf = getManifestPath(backupDir);
+  const mf = getManifestPath(backupDir, { ensure: false });
   if (fs.existsSync(mf)) {
     try {
       return JSON.parse(fs.readFileSync(mf, 'utf8'));
@@ -1121,16 +1122,16 @@ function loadManifest(backupDir) {
 }
 
 function saveManifest(data, backupDir) {
-  const mf = getManifestPath(backupDir);
+  const mf = getManifestPath(backupDir, { ensure: true });
   fs.writeFileSync(mf, JSON.stringify(data, null, 2), 'utf8');
 }
 
-function getGate3BSidecarPath(backupDir) {
-  return path.join(getUnlockBackupDir(backupDir), 'gate3b.json');
+function getGate3BSidecarPath(backupDir, options = {}) {
+  return path.join(getUnlockBackupDir(backupDir, options), 'gate3b.json');
 }
 
 function loadGate3BSidecar(backupDir) {
-  const p = getGate3BSidecarPath(backupDir);
+  const p = getGate3BSidecarPath(backupDir, { ensure: false });
   if (fs.existsSync(p)) {
     try {
       return JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -1142,7 +1143,7 @@ function loadGate3BSidecar(backupDir) {
 }
 
 function saveGate3BSidecar(data, backupDir) {
-  const p = getGate3BSidecarPath(backupDir);
+  const p = getGate3BSidecarPath(backupDir, { ensure: true });
   fs.writeFileSync(p, JSON.stringify(data, null, 2), 'utf8');
 }
 

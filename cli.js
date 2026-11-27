@@ -29,7 +29,8 @@ const {
   extractAsarFile,
   getRendererBuildId,
   getHostCoreBuildId,
-  getWatchBundleBuildId
+  getWatchBundleBuildId,
+  isAllowedPluginIframeUrl
 } = require('./install');
 const { restore, tryHotDispose } = require('./restore');
 const { resolvePython, syncLiveRuntimeBundle, getStagedLiveRuntime, OFFICIAL_REPO } = require('./meter-collector');
@@ -472,6 +473,25 @@ async function launchAntigravityHostWithCdp(target, port, options = {}) {
   child.unref();
 }
 
+async function activateAntigravityHostWindow(target, options = {}) {
+  if (options && typeof options._activateHost === 'function') {
+    return options._activateHost(target);
+  }
+  if (process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test') {
+    throw new Error('Test mode blocks activating real Antigravity host');
+  }
+  if (!target || target.platform !== 'darwin' || !target.appBundlePath) {
+    return false;
+  }
+  const cleanEnv = buildCleanHostLaunchEnv(options.env || process.env);
+  execFileSync('open', ['-a', target.appBundlePath], {
+    stdio: 'ignore',
+    timeout: 10000,
+    env: cleanEnv
+  });
+  return true;
+}
+
 async function quitAntigravityHostGracefully(target, customPath = null, options = {}) {
   const activeEnv = (options && options.env) || process.env;
   if (isRunningInsideAntigravitySession(activeEnv)) {
@@ -614,13 +634,51 @@ async function ensureLiveWindowAvailable(customPath = null, cdpOptions = {}, opt
     return { ok: true, live: initial, action: 'connected', port: initial.cdpPort };
   }
   if (initial && initial.running && initial.cdpEnabled !== false && !initial.pageFound) {
-    const readyFromExistingPort = await waitForLiveWindowReady(cdpOptions, {
+    let targetForActivate = null;
+    try {
+      targetForActivate = resolveAntigravityHostTarget(customPath, options);
+    } catch {}
+    const effectivePlatform = targetForActivate?.platform || options.platform || process.platform;
+    const canActivateMacDock = Boolean(
+      options.autoLaunch !== false &&
+      effectivePlatform === 'darwin' &&
+      (typeof options._activateHost === 'function' || targetForActivate?.appBundlePath)
+    );
+    const probeOptsExisting = {
+      ...cdpOptions,
+      ...(initial.cdpPort && !cdpOptions.port ? { port: initial.cdpPort } : {})
+    };
+    const readyFromExistingPort = await waitForLiveWindowReady(probeOptsExisting, {
       ...options,
-      launchTimeoutMs: options.pageReadyTimeoutMs ?? 5000
+      launchTimeoutMs: options.pageReadyTimeoutMs ?? (canActivateMacDock ? 800 : 5000)
     });
     if (readyFromExistingPort) {
-      return { ok: true, live: readyFromExistingPort, action: 'connected', port: readyFromExistingPort.cdpPort };
+      return { ok: true, live: readyFromExistingPort, action: 'connected', port: readyFromExistingPort.cdpPort || initial.cdpPort };
     }
+    if (canActivateMacDock) {
+      if (!options.silent) {
+        console.log('🪟 检测到 Antigravity 已在后台驻留但暂无打开窗口，正在唤醒主窗口...');
+      }
+      try {
+        await activateAntigravityHostWindow(targetForActivate, options);
+        const readyAfterActivate = await waitForLiveWindowReady(probeOptsExisting, options);
+        if (readyAfterActivate) {
+          return {
+            ok: true,
+            live: readyAfterActivate,
+            action: 'activated',
+            port: readyAfterActivate.cdpPort || initial.cdpPort
+          };
+        }
+      } catch {}
+    }
+    return {
+      ok: false,
+      reason: 'no_open_window',
+      manualCmd: null,
+      port: initial.cdpPort || cdpOptions.port || null,
+      live: initial
+    };
   }
 
   let target = null;
@@ -790,9 +848,12 @@ async function queryLiveWindow(options = {}) {
     }
     const discovered = await discoverAntigravityCdp(options);
     const matchedTargets = Array.isArray(discovered.pages) ? discovered.pages : [];
+    const pluginIframes = (Array.isArray(discovered.allPages) ? discovered.allPages : [])
+      .filter(p => p && p.type === 'iframe' && isAllowedPluginIframeUrl(p.url, options))
+      .map(p => ({ id: p.id || null, url: p.url, hasWs: Boolean(p.webSocketDebuggerUrl) }));
     const target = discovered.page || matchedTargets[0];
     const port = discovered.port;
-    if (!target) return { running: true, cdpEnabled: true, cdpPort: port, pageFound: false, origins: [] };
+    if (!target) return { running: true, cdpEnabled: true, cdpPort: port, pageFound: false, windowCount: 0, origins: [], pluginIframes, pluginIframeCount: pluginIframes.length };
     const origin = normalizeLoopbackOrigin(target.url) || new URL(target.url).origin;
     const origins = Array.from(new Set(matchedTargets.map(p => normalizeLoopbackOrigin(p.url)).filter(Boolean)));
     const lightProbe = Boolean(options.lightProbe);
@@ -875,6 +936,8 @@ async function queryLiveWindow(options = {}) {
         origin,
         origins,
         windowCount: matchedTargets.length,
+        pluginIframes,
+        pluginIframeCount: pluginIframes.length,
         allWindowsActive,
         allWindowsI18nMatch,
         ...(status || {})
@@ -884,6 +947,38 @@ async function queryLiveWindow(options = {}) {
     }
   } catch (e) {
     const cdpFree = discoverHostOriginsWithoutCdp(options);
+    const isNoPageTargets = Boolean(
+      e &&
+      e.cdpPort &&
+      (e.code === 'NO_PAGE_TARGETS' || String(e.message || '').includes('未找到 Antigravity 主窗口'))
+    );
+    if (isNoPageTargets) {
+      const explicitPort = parseExplicitPort(options.port ?? process.env.AG_CDP_PORT);
+      let hostConfirmed = Boolean(
+        (explicitPort && explicitPort === e.cdpPort) ||
+        e.fromDevToolsPortFile ||
+        cdpFree.runningWithoutCdp
+      );
+      if (!hostConfirmed) {
+        try {
+          hostConfirmed = await isAntigravityHostRunning(options.customPath || null, options);
+        } catch {}
+      }
+      if (hostConfirmed) {
+        return {
+          running: true,
+          cdpEnabled: true,
+          cdpPort: e.cdpPort,
+          pageFound: false,
+          windowCount: 0,
+          origin: cdpFree.origins[0] || null,
+          origins: cdpFree.origins,
+          discoverySource: e.fromDevToolsPortFile ? 'devtools_port' : (cdpFree.discoverySource || 'cdp_port'),
+          reason: 'no_page_targets',
+          error: e.message
+        };
+      }
+    }
     if (cdpFree.runningWithoutCdp) {
       return {
         running: true,
@@ -1022,15 +1117,19 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null, options = {}) {
   };
 
   const expectedHostBuildId = getHostCoreBuildId(__dirname);
+  const knownCdpPort = parseExplicitPort(live.cdpPort ?? options.port ?? process.env.AG_CDP_PORT);
   if (existingInfo && existingInfo.pid) {
     const info = existingInfo;
     let pidAlive = false;
     try { process.kill(info.pid, 0); pidAlive = true; } catch {}
     const infoBuildMatch = !expectedHostBuildId || !info.hostBuildId || info.hostBuildId === expectedHostBuildId;
-    if (pidAlive && coversAllOrigins(info) && info.hasQuota && (!currentPkgVersion || info.version === currentPkgVersion) && infoBuildMatch) {
+    const infoCdpPort = parseExplicitPort(info.cdpPort);
+    const cdpPortMatch = !knownCdpPort || !infoCdpPort || infoCdpPort === knownCdpPort;
+    if (pidAlive && coversAllOrigins(info) && info.hasQuota && (!currentPkgVersion || info.version === currentPkgVersion) && infoBuildMatch && cdpPortMatch) {
       const probe = await probeFn(info, expectedOrigins[0]);
       const probeBuildMatch = !expectedHostBuildId || !probe?.hostBuildId || probe?.hostBuildId === expectedHostBuildId;
-      if (probe && probe.ok && hasRehydrateCapability(probe.capabilities) && (!currentPkgVersion || probe.backendVersion === currentPkgVersion) && probeBuildMatch) {
+      const probeCdpPortMatch = !knownCdpPort || !probe?.cdpPort || parseExplicitPort(probe.cdpPort) === knownCdpPort;
+      if (probe && probe.ok && hasRehydrateCapability(probe.capabilities) && (!currentPkgVersion || probe.backendVersion === currentPkgVersion) && probeBuildMatch && probeCdpPortMatch) {
         return {
           needed: true,
           ready: true,
@@ -1068,7 +1167,8 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null, options = {}) {
     ...(options.stateDir ? { AG_METER_STATE_DIR: stateDir } : {}),
     ...(options.appDataDir ? { APPDATA: options.appDataDir } : {}),
     AG_LIVE_STAMP_PATH: stagingStamp,
-    ...(expectedOrigins.length ? { AG_LIVE_ORIGINS: JSON.stringify(expectedOrigins) } : {})
+    ...(expectedOrigins.length ? { AG_LIVE_ORIGINS: JSON.stringify(expectedOrigins) } : {}),
+    ...(knownCdpPort ? { AG_LIVE_CDP_PORT: String(knownCdpPort), AG_CDP_PORT: String(knownCdpPort) } : {})
   };
   delete childEnv.ELECTRON_RUN_AS_NODE;
 
@@ -1078,6 +1178,7 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null, options = {}) {
   const hostArgs = [hostEntryScript, '--stamp', stagingStamp];
   if (originsB64) hostArgs.push('--origins-b64', originsB64);
   if (options.stateDir) hostArgs.push('--state-dir', stateDir);
+  if (knownCdpPort) hostArgs.push('--cdp-port', String(knownCdpPort));
 
   let spawnedChild = null;
   let spawnedPid = null;
@@ -1639,6 +1740,9 @@ async function runWatchDaemon(options = {}) {
           const reloadArgs = [stagedScript || expectedScript, 'watch', '--no-launch'];
           if (options.port) reloadArgs.push('--port', String(options.port));
           if (options.customPath) reloadArgs.push('--path', options.customPath);
+          if (options.persistent) reloadArgs.push('--persistent');
+          if (options.chinese === true) reloadArgs.push('--chinese');
+          else if (options.chinese === false) reloadArgs.push('--no-chinese');
           const reloadSpawner = options._spawnSelfReload || spawn;
           const child = reloadSpawner(process.execPath, reloadArgs, {
             detached: true,
@@ -1662,6 +1766,12 @@ async function runWatchDaemon(options = {}) {
       const live = prefetchedLive || await discoverFn();
       prefetchedLive = null;
       const hasWindow = Boolean(live && live.running && live.pageFound);
+      const hostResidentWithoutWindow = Boolean(
+        live &&
+        live.running &&
+        live.cdpEnabled === true &&
+        !live.pageFound
+      );
 
       if (!hasWindow) {
         if (live && live.running && live.cdpEnabled === false && !cdpRestartPrompted && !warnedMissingCdp) {
@@ -1675,7 +1785,7 @@ async function runWatchDaemon(options = {}) {
           }
         }
         if (!windowEverSeen) {
-          if (!warnedMissingCdp && !(live && live.running && live.cdpEnabled === false)) {
+          if (!hostResidentWithoutWindow && !warnedMissingCdp && !(live && live.running && live.cdpEnabled === false)) {
             const hostRunning = await isAntigravityHostRunning(options.customPath || null, options);
             if (hostRunning) {
               warnedMissingCdp = true;
@@ -1692,11 +1802,25 @@ async function runWatchDaemon(options = {}) {
               }
             }
           }
-          if (!options.persistent && Date.now() - startedAt >= startupTimeoutMs) {
+          if (!hostResidentWithoutWindow && !options.persistent && Date.now() - startedAt >= startupTimeoutMs) {
             exitReason = (live && live.running && live.cdpEnabled === false) ? 'cdp_not_enabled' : 'startup_timeout';
             break;
           }
+          if (cycles >= maxCycles) {
+            exitReason = 'max_cycles';
+            break;
+          }
           await sleep(options.persistent ? Math.max(pollIntervalMs, 3000) : startupPollMs);
+          continue;
+        }
+
+        if (hostResidentWithoutWindow) {
+          consecutiveMisses = 0;
+          if (cycles >= maxCycles) {
+            exitReason = 'max_cycles';
+            break;
+          }
+          await sleep(Math.min(pollIntervalMs, 1000));
           continue;
         }
 
@@ -1713,6 +1837,10 @@ async function runWatchDaemon(options = {}) {
             continue;
           }
           exitReason = 'window_closed';
+          break;
+        }
+        if (cycles >= maxCycles) {
+          exitReason = 'max_cycles';
           break;
         }
         await sleep(pollIntervalMs);
@@ -1732,10 +1860,12 @@ async function runWatchDaemon(options = {}) {
         if (cfg?.modules?.meter?.enabled === false) {
           meterEnabled = false;
         }
-        desiredChineseEnabled = Boolean(
-          cfg?.modules?.chinese?.enabled === true &&
-          String(cfg?.modules?.chinese?.language || '').toLowerCase() !== 'en'
-        );
+        desiredChineseEnabled = typeof options.chinese === 'boolean'
+          ? options.chinese
+          : Boolean(
+              cfg?.modules?.chinese?.enabled === true &&
+              String(cfg?.modules?.chinese?.language || '').toLowerCase() !== 'en'
+            );
         desiredBrandTitle = cfg?.modules?.chinese?.brandTitle || 'english';
       } catch {}
 
@@ -1787,6 +1917,7 @@ async function runWatchDaemon(options = {}) {
           const bridgePrep = await ensureBridgeFn(live);
           const report = await hotInjectFn({
             source: 'cli-watch',
+            ...(typeof options.chinese === 'boolean' ? { chineseOverride: options.chinese } : {}),
             liveInfo: bridgePrep?.liveInfo || null,
             liveVerified: Boolean(bridgePrep?.ready && bridgePrep?.liveInfo),
             preferLiveHost: Boolean(bridgePrep?.ready && bridgePrep?.backendSource === 'live-host'),
@@ -2206,7 +2337,7 @@ async function cmdCheck(customPath, cdpOptions = {}) {
   const queryFn = typeof cdpOptions._queryLiveWindow === 'function' ? cdpOptions._queryLiveWindow : queryLiveWindow;
   const live = await queryFn(cdpOptions);
   if (live.running && live.cdpEnabled !== false) {
-    console.log(`  - 运行中窗口 CDP 状态: 已连接 (端口 ${live.cdpPort})`);
+    console.log(`  - 运行中窗口 CDP 状态: 已连接 (端口 ${live.cdpPort}${live.pageFound ? '' : '，当前暂无打开的主窗口'})`);
   } else {
     const procRunning = await isAntigravityHostRunning(customPath, cdpOptions);
     const hostRunning = procRunning || Boolean(live.running && live.cdpEnabled === false && live.discoverySource !== 'daemon_hub');
@@ -2276,6 +2407,7 @@ async function cmdLive(customPath = null, cdpOptions = {}, options = {}) {
   try {
     report = await hotInjectFn({
       ...effectiveCdpOptions,
+      ...(typeof options.chinese === 'boolean' ? { chineseOverride: options.chinese } : {}),
       source: 'cli-live',
       liveInfo: bridgePrep.liveInfo || null,
       liveVerified: Boolean(bridgePrep.ready && bridgePrep.liveInfo),
@@ -2363,7 +2495,8 @@ const CLI_BOOLEAN_FLAGS = new Set([
   '--force', '--all', '--cli', '--no-cli-sync', '--no-sync', '--previous', '--in-place', '--no-shortcut',
   '--today', '--week', '--month', '--json', '--compact', '--once', '--dry-run',
   '--clear', '--sync-cli-settings', '--no-open', '--relaunch', '--force-relaunch', '--no-launch', '--persistent', '--force-mac-asar', '--disk-only',
-  '--check-only', '--beta', '--silent', '--add-to-dock', '--keep-dock', '--no-relaunch'
+  '--check-only', '--beta', '--silent', '--add-to-dock', '--keep-dock', '--no-relaunch',
+  '--chinese', '--no-chinese', '--live'
 ]);
 
 const CLI_KNOWN_COMMANDS = new Set([
@@ -2505,7 +2638,16 @@ async function main() {
   if (portIdx >= 0 && !explicitPort) {
     throw new Error(`无效的 --port 参数: ${args[portIdx + 1]}`);
   }
-  const cdpOptions = explicitPort ? { port: explicitPort, strictPort: true } : {};
+  const stateDirIdxGlobal = args.indexOf('--state-dir');
+  const customStateDirGlobal = stateDirIdxGlobal >= 0 ? args[stateDirIdxGlobal + 1] : null;
+  const resolvedStateDir = customStateDirGlobal ? path.resolve(customStateDirGlobal) : null;
+  if (resolvedStateDir && !process.env.AG_METER_STATE_DIR) {
+    process.env.AG_METER_STATE_DIR = resolvedStateDir;
+  }
+  const cdpOptions = {
+    ...(explicitPort ? { port: explicitPort, strictPort: true } : {}),
+    ...(resolvedStateDir ? { stateDir: resolvedStateDir } : {})
+  };
   const isForce = args.includes('--force');
   const isRelaunch = args.includes('--relaunch');
   const isNoLaunch = args.includes('--no-launch');
@@ -2678,13 +2820,17 @@ async function main() {
     else if (result.hasUpdate) console.log(`发现可用版本 v${result.latestVersion}`);
     else console.log(`已是最新版本 v${result.installedVersion}`);
   } else if (cmd === 'live') {
+    const chineseOpt = args.includes('--chinese') ? true : (args.includes('--no-chinese') ? false : undefined);
     await cmdLive(customPath, cdpOptions, {
       relaunch: isRelaunch,
       autoRecover: getStagedLiveRuntime()?.dir !== __dirname,
-      autoLaunch: !isNoLaunch
+      autoLaunch: !isNoLaunch,
+      ...(resolvedStateDir ? { stateDir: resolvedStateDir } : {}),
+      ...(typeof chineseOpt === 'boolean' ? { chinese: chineseOpt } : {})
     });
   } else if (cmd === 'watch') {
     const isPersistent = args.includes('--persistent');
+    const chineseOpt = args.includes('--chinese') ? true : (args.includes('--no-chinese') ? false : undefined);
     console.log('👀 [Antigravity 对话上下文查看器] 免改盘守护模式启动中（不修改 app.asar，保留官方原始签名）...');
     const res = await runWatchDaemon({
       ...cdpOptions,
@@ -2693,7 +2839,8 @@ async function main() {
       autoBootstrapHost: !isNoLaunch,
       autoLaunch: !isNoLaunch,
       relaunch: isRelaunch,
-      persistent: isPersistent
+      persistent: isPersistent,
+      ...(typeof chineseOpt === 'boolean' ? { chinese: chineseOpt } : {})
     });
     if (!res || res.ok === false) {
       process.exitCode = 1;
@@ -2702,7 +2849,7 @@ async function main() {
       console.log(`👋 守护模式已停止 (${res.exitReason})，已清理临时桥接状态。`);
     }
   } else if (cmd === 'stop-watch') {
-    const res = await stopWatchDaemon();
+    const res = await stopWatchDaemon(resolvedStateDir ? { stateDir: resolvedStateDir } : {});
     if (res.watchStopped || res.liveBridgeStopped) {
       console.log(`✅ 已停止守护进程与本地桥接服务 (watch: ${res.watchStopped ? res.watchPid : '未运行'}, live-host: ${res.liveBridgeStopped ? res.liveBridgePid : '未运行'})`);
     } else {
@@ -2831,10 +2978,12 @@ async function main() {
     }
   } else if (cmd === 'restore' || cmd === 'uninstall') {
     const restoreAll = args.includes('--all');
+    if (!customPath) {
+      await stopWatchDaemon(resolvedStateDir ? { stateDir: resolvedStateDir } : {});
+    }
     const res = await restore({ path: customPath, force: isForce, allowIntegrityOverride: isForceMacAsar, ...cdpOptions });
     // 卸载时同步移除登录自启，避免登录后拉起已不存在的 watch
     if (!customPath) {
-      await stopWatchDaemon();
       try {
         const { disableAutostart } = require('./autostart');
         const aRes = await disableAutostart({});
@@ -3035,14 +3184,69 @@ async function main() {
     }
   } else if (cmd === 'chinese:enable' || cmd === 'chinese:disable') {
     const { loadModulesConfig, saveModulesConfig } = require('./modules-config');
-    const cfg = loadModulesConfig();
+    const stateOpt = resolvedStateDir ? { stateDir: resolvedStateDir } : {};
+    const cfg = loadModulesConfig(stateOpt);
     const enable = cmd === 'chinese:enable';
-    cfg.modules.chinese.enabled = enable;
-    cfg.modules.chinese.language = enable ? 'zh-CN' : 'en';
-    cfg.modules.chinese.lastUpdated = new Date().toISOString();
-    saveModulesConfig(cfg);
-    await install({ path: customPath, modules: { chinese: { enabled: enable, language: cfg.modules.chinese.language } } });
-    console.log(`✅ 客户端界面汉化模块已${enable ? '开启' : '关闭'}并完成 ASAR 注入同步！`);
+    const nextLang = enable ? 'zh-CN' : 'en';
+    const nextUpdatedAt = new Date().toISOString();
+
+    let useRuntimeOnly = args.includes('--live');
+    let fallbackNotice = null;
+    if (!useRuntimeOnly && process.platform === 'darwin' && !isForceMacAsar) {
+      try {
+        const targetAsar = findAsarPath(customPath);
+        const macIntegrity = inspectMacAsarIntegrity(targetAsar);
+        if (macIntegrity.isMacAppBundle && (macIntegrity.patchRisk === 'blocked_integrity' || macIntegrity.patchRisk === 'blocked_signature' || macIntegrity.patchRisk === 'unknown_signature')) {
+          useRuntimeOnly = true;
+          fallbackNotice = '🛡️ 检测到 macOS 官方签名/ElectronAsarIntegrity 保护，已自动切换为免改盘 CDP 运行时模式（不修改 app.asar）。';
+        }
+      } catch {
+        if (!customPath) {
+          try {
+            const liveProbe = await queryLiveWindow(cdpOptions);
+            if (liveProbe?.running && liveProbe.cdpEnabled !== false) {
+              useRuntimeOnly = true;
+              fallbackNotice = '🛡️ 未定位到默认安装路径但检测到运行中的 CDP 窗口，已自动切换为免改盘 CDP 运行时模式。';
+            }
+          } catch {}
+        }
+      }
+    }
+
+    if (useRuntimeOnly) {
+      if (fallbackNotice) console.log(fallbackNotice);
+      cfg.modules.chinese.enabled = enable;
+      cfg.modules.chinese.language = nextLang;
+      cfg.modules.chinese.lastUpdated = nextUpdatedAt;
+      saveModulesConfig(cfg, stateOpt);
+      const liveRes = await tryHotInjectDetailed({
+        ...cdpOptions,
+        ...stateOpt,
+        source: enable ? 'cli-chinese-enable' : 'cli-chinese-disable',
+        chineseOverride: enable
+      });
+      if (liveRes?.ok) {
+        console.log(enable
+          ? `✅ 已开启简体中文配置并立即通过免改盘 CDP 同步 ${liveRes.injectedCount}/${liveRes.windowCount} 个窗口（未修改 app.asar）。`
+          : `✅ 已关闭简体中文配置并立即通过免改盘 CDP 恢复 ${liveRes.injectedCount}/${liveRes.windowCount} 个窗口官方英文界面（无需重启，未修改 app.asar）。`);
+      } else {
+        console.log(enable
+          ? '✅ 已保存简体中文配置（免改盘模式）。请运行 `node cli.js watch` 或 `node cli.js live` 启动/挂载客户端即可生效。'
+          : '✅ 已关闭简体中文配置（免改盘模式，未修改 app.asar）。下次挂载或刷新窗口后恢复官方英文界面。');
+      }
+    } else {
+      cfg.modules.chinese.enabled = enable;
+      cfg.modules.chinese.language = nextLang;
+      cfg.modules.chinese.lastUpdated = nextUpdatedAt;
+      saveModulesConfig(cfg, stateOpt);
+      await install({
+        path: customPath,
+        ...stateOpt,
+        allowIntegrityOverride: isForceMacAsar,
+        modules: { chinese: { enabled: enable, language: nextLang, lastUpdated: nextUpdatedAt } }
+      });
+      console.log(`✅ 客户端界面汉化模块已${enable ? '开启' : '关闭'}并完成 ASAR 注入同步！`);
+    }
   } else if (cmd === 'proxy:enable' || cmd === 'proxy:disable') {
     const { loadModulesConfig, saveModulesConfig } = require('./modules-config');
     const cfg = loadModulesConfig();
@@ -3487,6 +3691,7 @@ module.exports = {
   isAntigravityHostRunning,
   pickAvailableCdpPort,
   launchAntigravityHostWithCdp,
+  activateAntigravityHostWindow,
   quitAntigravityHostGracefully,
   confirmInteractiveRelaunch,
   waitForLiveWindowReady,

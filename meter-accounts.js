@@ -2218,30 +2218,512 @@ function createAccountsManager(options = {}) {
     }
 
     /**
-     * 只读预览 ~/.antigravity_tools/accounts.json 中可用账号（绝不修改第三方文件）
+     * Issue #128: 严格只读探测 Cockpit Tools 数据根目录（不修改第三方任何文件）
+     * 顺序: COCKPIT_TOOLS_DATA_DIR -> ~/.cockpit_tools-data-root.json -> ~/.cockpit_tools / ~/.antigravity_cockpit（按 realpath 去重）
+     */
+    function discoverCockpitToolsDataDirs() {
+      const env = options.env || process.env;
+      const candidates = [];
+      const envDir = String(env?.COCKPIT_TOOLS_DATA_DIR || '').trim();
+      if (envDir) candidates.push({ dir: envDir, origin: 'env' });
+
+      const customRootMeta = readJsonSafe(path.join(homeDir, '.cockpit_tools-data-root.json'), null);
+      if (typeof customRootMeta === 'string' && customRootMeta.trim()) {
+        candidates.push({ dir: customRootMeta.trim(), origin: 'data_root_json' });
+      } else if (customRootMeta && typeof customRootMeta === 'object') {
+        const customDir = String(
+          customRootMeta.data_root ||
+          customRootMeta.dataRoot ||
+          customRootMeta.data_dir ||
+          customRootMeta.dataDir ||
+          customRootMeta.path ||
+          customRootMeta.root ||
+          ''
+        ).trim();
+        if (customDir) candidates.push({ dir: customDir, origin: 'data_root_json' });
+      }
+
+      candidates.push({ dir: path.join(homeDir, '.cockpit_tools'), origin: 'default' });
+      candidates.push({ dir: path.join(homeDir, '.antigravity_cockpit'), origin: 'legacy' });
+
+      const resolved = [];
+      const seenReal = new Set();
+      for (const item of candidates) {
+        if (!item.dir) continue;
+        const absDir = path.resolve(item.dir);
+        if (!fs.existsSync(absDir)) continue;
+        try {
+          if (!fs.statSync(absDir).isDirectory()) continue;
+        } catch {
+          continue;
+        }
+        let realDir = absDir;
+        try { realDir = fs.realpathSync(absDir); } catch { }
+        const dedupKey = process.platform === 'win32' ? realDir.toLowerCase() : realDir;
+        if (seenReal.has(dedupKey)) continue;
+        seenReal.add(dedupKey);
+        resolved.push({ dir: absDir, realDir, origin: item.origin });
+      }
+      return resolved;
+    }
+
+    function readCockpitKeyBase64(keyPath) {
+      if (!fs.existsSync(keyPath)) {
+        return { ok: false, code: 'MISSING_KEY_FILE', error: `缺少密钥文件: ${path.basename(keyPath)}` };
+      }
+      let raw;
+      try {
+        raw = fs.readFileSync(keyPath, 'utf8').trim();
+      } catch (err) {
+        return { ok: false, code: 'UNREADABLE_KEY_FILE', error: `无法读取密钥文件 ${path.basename(keyPath)}: ${err?.message || err}` };
+      }
+      if (!raw) {
+        return { ok: false, code: 'INVALID_KEY_FILE', error: `密钥文件为空: ${path.basename(keyPath)}` };
+      }
+      const keyBuf = Buffer.from(raw, 'base64');
+      if (keyBuf.length !== 32) {
+        return { ok: false, code: 'INVALID_KEY_LENGTH', error: `密钥长度无效 (${keyBuf.length} bytes，期望 32 bytes): ${path.basename(keyPath)}` };
+      }
+      return { ok: true, keyBuf };
+    }
+
+    function decryptCockpitAes256Gcm(keyBuf, nonceB64, ciphertextB64) {
+      try {
+        const nonce = Buffer.from(String(nonceB64 || '').trim(), 'base64');
+        const combined = Buffer.from(String(ciphertextB64 || '').trim(), 'base64');
+        if (nonce.length !== 12) {
+          return { ok: false, code: 'INVALID_NONCE', error: `AES-256-GCM nonce 长度无效 (${nonce.length} bytes)` };
+        }
+        if (combined.length < 17) {
+          return { ok: false, code: 'INVALID_CIPHERTEXT', error: 'AES-256-GCM 密文过短，缺少认证标签' };
+        }
+        const enc = combined.subarray(0, combined.length - 16);
+        const authTag = combined.subarray(combined.length - 16);
+        const decipher = crypto.createDecipheriv('aes-256-gcm', keyBuf, nonce);
+        decipher.setAuthTag(authTag);
+        const plain = Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8');
+        return { ok: true, data: JSON.parse(plain) };
+      } catch (err) {
+        return { ok: false, code: 'DECRYPT_FAILED', error: `AES-256-GCM 解密失败: ${err?.message || err}` };
+      }
+    }
+
+    function readCockpitSqliteIndex(sqlitePath) {
+      if (!fs.existsSync(sqlitePath)) {
+        return { ok: false, accounts: [], currentId: null };
+      }
+      const DatabaseSync = getSqliteSyncCtor();
+      if (!DatabaseSync) {
+        return { ok: false, accounts: [], currentId: null, warning: '当前运行时缺少 node:sqlite，无法读取 antigravity_accounts.sqlite' };
+      }
+      let db = null;
+      try {
+        db = new DatabaseSync(sqlitePath, { readOnly: true });
+        let accounts = [];
+        let currentId = null;
+        try {
+          const rows = db.prepare('SELECT * FROM summaries').all();
+          if (Array.isArray(rows)) {
+            accounts = rows.map(r => ({
+              id: String(r?.account_id || r?.id || '').trim(),
+              email: normalizeEmail(r?.email || ''),
+              name: String(r?.name || '').trim(),
+              created_at: r?.created_at ?? null,
+              last_used: r?.last_used ?? null,
+              plan_type: r?.plan_type ?? null,
+              disabled: Boolean(r?.disabled)
+            })).filter(r => r.id || r.email);
+          }
+        } catch { }
+        try {
+          const st = db.prepare('SELECT current_id FROM account_index_state LIMIT 1').get();
+          if (st?.current_id) currentId = String(st.current_id).trim();
+        } catch { }
+        return { ok: true, accounts, currentId };
+      } catch (err) {
+        return { ok: false, accounts: [], currentId: null, warning: `读取 Cockpit SQLite 索引失败: ${err?.message || err}` };
+      } finally {
+        try { db?.close?.(); } catch { }
+      }
+    }
+
+    function decodeCockpitAccountFile(rootDir, filePath) {
+      const parsed = readJsonSafe(filePath, null);
+      if (!parsed || typeof parsed !== 'object') {
+        return { ok: false, code: 'INVALID_ACCOUNT_JSON', error: `无法解析账号文件: ${path.basename(filePath)}` };
+      }
+
+      // 格式 3: 新版整文件加密信封 (secure-account-storage.key)
+      const isWholeFileEnvelope = Boolean(
+        typeof parsed.nonce === 'string' &&
+        typeof parsed.ciphertext === 'string' &&
+        (
+          parsed.kind === 'antigravity' ||
+          parsed.key_id === 'local-secure-account-storage-v1' ||
+          String(parsed.algorithm || '').toUpperCase() === 'AES-256-GCM'
+        )
+      );
+      if (isWholeFileEnvelope) {
+        if (parsed.version !== 1) {
+          return { ok: false, code: 'UNSUPPORTED_ENVELOPE_VERSION', error: `不支持的 Cockpit 加密信封版本: ${parsed.version}` };
+        }
+        if (parsed.algorithm && String(parsed.algorithm).toUpperCase() !== 'AES-256-GCM') {
+          return { ok: false, code: 'UNSUPPORTED_ALGORITHM', error: `不支持的加密算法: ${parsed.algorithm}` };
+        }
+        const keyRes = readCockpitKeyBase64(path.join(rootDir, 'secure-account-storage.key'));
+        if (!keyRes.ok) return keyRes;
+        const dec = decryptCockpitAes256Gcm(keyRes.keyBuf, parsed.nonce, parsed.ciphertext);
+        if (!dec.ok) return dec;
+        return { ok: true, format: 'envelope_v1', account: dec.data };
+      }
+
+      // 格式 2: 历史字段级加密 (token_encrypted + account-token.key)
+      if (parsed.token_encrypted && typeof parsed.token_encrypted === 'object' && !parsed.token?.refresh_token) {
+        const te = parsed.token_encrypted;
+        if (te.version !== 1) {
+          return { ok: false, code: 'UNSUPPORTED_TOKEN_VERSION', error: `不支持的 Cockpit token_encrypted 版本: ${te.version}` };
+        }
+        const keyRes = readCockpitKeyBase64(path.join(rootDir, 'account-token.key'));
+        if (!keyRes.ok) return keyRes;
+        const dec = decryptCockpitAes256Gcm(keyRes.keyBuf, te.nonce, te.ciphertext);
+        if (!dec.ok) return dec;
+        return { ok: true, format: 'token_encrypted_v1', account: { ...parsed, token: dec.data } };
+      }
+
+      // 格式 1: 旧版明文 JSON
+      return { ok: true, format: 'plaintext', account: parsed };
+    }
+
+    function resolveSafeAccountFilePath(rootDir, accountId) {
+      const idStr = String(accountId || '').trim();
+      if (!idStr || idStr.includes('/') || idStr.includes('\\') || idStr.includes('..')) return null;
+      const accountsDir = path.resolve(rootDir, 'accounts');
+      const candidate = path.resolve(accountsDir, `${idStr}.json`);
+      if (!candidate.startsWith(accountsDir + path.sep)) return null;
+      return candidate;
+    }
+
+    function scanCockpitToolsDirectory(rootDir) {
+      const warnings = [];
+      const byId = new Map();
+      let currentId = null;
+
+      const sqliteRes = readCockpitSqliteIndex(path.join(rootDir, 'antigravity_accounts.sqlite'));
+      if (sqliteRes.warning) warnings.push(sqliteRes.warning);
+      if (sqliteRes.currentId) currentId = sqliteRes.currentId;
+      for (const a of sqliteRes.accounts) {
+        const key = a.id || a.email;
+        if (key) byId.set(key, { ...a, indexSource: 'sqlite' });
+      }
+
+      const jsonIdx = readJsonSafe(path.join(rootDir, 'accounts.json'), null);
+      if (jsonIdx && typeof jsonIdx === 'object') {
+        if (!currentId && jsonIdx.current_account_id) currentId = String(jsonIdx.current_account_id).trim();
+        for (const a of (Array.isArray(jsonIdx.accounts) ? jsonIdx.accounts : [])) {
+          const id = String(a?.id || '').trim();
+          const email = normalizeEmail(a?.email || '');
+          const key = id || email;
+          if (!key) continue;
+          const prev = byId.get(key) || {};
+          byId.set(key, {
+            ...prev,
+            id: id || prev.id || '',
+            email: email || prev.email || '',
+            name: String(a?.name || prev.name || '').trim(),
+            disabled: a?.disabled !== undefined ? Boolean(a.disabled) : Boolean(prev.disabled),
+            created_at: a?.created_at ?? prev.created_at ?? null,
+            last_used: a?.last_used ?? prev.last_used ?? null,
+            token: a?.token || prev.token || null,
+            indexSource: prev.indexSource ? 'sqlite+json' : 'json'
+          });
+        }
+      }
+
+      const accountsDir = path.join(rootDir, 'accounts');
+      if (fs.existsSync(accountsDir)) {
+        try {
+          for (const fname of fs.readdirSync(accountsDir)) {
+            if (!fname.endsWith('.json')) continue;
+            const id = fname.slice(0, -5);
+            if (!id || byId.has(id)) continue;
+            byId.set(id, { id, email: '', name: '', disabled: false, created_at: null, last_used: null, indexSource: 'scan' });
+          }
+        } catch { }
+      }
+
+      const entries = [];
+      for (const meta of byId.values()) {
+        let decoded = null;
+        let decodeError = null;
+        let format = null;
+        const filePath = meta.id ? resolveSafeAccountFilePath(rootDir, meta.id) : null;
+        if (filePath && fs.existsSync(filePath)) {
+          const dec = decodeCockpitAccountFile(rootDir, filePath);
+          if (dec.ok) {
+            decoded = dec.account;
+            format = dec.format;
+          } else {
+            decodeError = dec;
+            warnings.push(`[${meta.email || meta.id}] ${dec.error}`);
+          }
+        }
+        const tok = decoded?.token || meta.token || {};
+        const email = normalizeEmail(decoded?.email || tok?.email || meta.email || '');
+        if (!email) continue;
+        entries.push({
+          id: decoded?.id || meta.id || '',
+          email,
+          name: String(decoded?.name || meta.name || '').trim(),
+          disabled: decoded?.disabled !== undefined ? Boolean(decoded.disabled) : Boolean(meta.disabled),
+          createdAt: decoded?.created_at ?? meta.created_at ?? null,
+          lastUsed: decoded?.last_used ?? meta.last_used ?? null,
+          planType: meta.plan_type ?? decoded?.plan_type ?? null,
+          isCurrent: Boolean(currentId && (meta.id === currentId || decoded?.id === currentId)),
+          provider: 'cockpit_tools',
+          sourceDir: rootDir,
+          storageFormat: format || (decodeError ? 'error' : 'index_only'),
+          decodeError: decodeError ? { code: decodeError.code, error: decodeError.error } : null,
+          credentialData: decoded || meta.token ? {
+            refreshToken: tok.refresh_token || decoded?.refresh_token || '',
+            accessToken: tok.access_token || decoded?.access_token || '',
+            idToken: tok.id_token || decoded?.id_token || '',
+            oauthClientKey: tok.oauth_client_key || decoded?.oauth_client_key || '',
+            oauthClientId: tok.client_id || decoded?.client_id || null,
+            expiresAt: tok.expiry || (tok.expiry_timestamp ? new Date(Number(tok.expiry_timestamp) * 1000).toISOString() : null)
+          } : null
+        });
+      }
+      return { entries, warnings };
+    }
+
+    /**
+     * 只读预览 Cockpit Tools 中可用的 Antigravity 身份文件（绝不修改第三方文件）
+     */
+    function listCockpitToolsAccounts() {
+      const dirs = discoverCockpitToolsDataDirs();
+      if (!dirs.length) return { ok: true, available: false, count: 0, dirs: [], accounts: [], warnings: [] };
+      const byEmail = new Map();
+      const warnings = [];
+      for (const item of dirs) {
+        const scanned = scanCockpitToolsDirectory(item.dir);
+        warnings.push(...scanned.warnings);
+        for (const e of scanned.entries) {
+          if (!byEmail.has(e.email) || (!byEmail.get(e.email).credentialData?.refreshToken && e.credentialData?.refreshToken)) {
+            byEmail.set(e.email, e);
+          }
+        }
+      }
+      const accounts = Array.from(byEmail.values()).map(e => ({
+        id: e.id,
+        email: e.email,
+        name: e.name,
+        disabled: e.disabled,
+        createdAt: e.createdAt,
+        planType: e.planType,
+        isCurrent: e.isCurrent,
+        provider: 'cockpit_tools',
+        storageFormat: e.storageFormat,
+        hasRefreshToken: Boolean(e.credentialData?.refreshToken),
+        ...(e.decodeError ? { decodeError: e.decodeError } : {})
+      }));
+      return {
+        ok: true,
+        available: accounts.length > 0 || dirs.length > 0,
+        count: accounts.length,
+        dirs: dirs.map(d => d.dir),
+        accounts,
+        warnings
+      };
+    }
+
+    /**
+     * 只读导入 Cockpit Tools 中的 Antigravity 身份文件（支持明文、字段级加密、整文件加密信封及 SQLite/JSON 索引）
+     */
+    function importFromCockpitTools(selectedEmails = null) {
+      const dirs = discoverCockpitToolsDataDirs();
+      if (!dirs.length) {
+        return { ok: false, error: '未发现 Cockpit Tools 数据目录 (~/.cockpit_tools / ~/.antigravity_cockpit)' };
+      }
+      const filterSet = Array.isArray(selectedEmails) && selectedEmails.length
+        ? new Set(selectedEmails.map(normalizeEmail).filter(Boolean))
+        : null;
+
+      const byEmail = new Map();
+      const warnings = [];
+      for (const item of dirs) {
+        const scanned = scanCockpitToolsDirectory(item.dir);
+        warnings.push(...scanned.warnings);
+        for (const e of scanned.entries) {
+          if (filterSet && !filterSet.has(e.email)) continue;
+          if (!byEmail.has(e.email) || (!byEmail.get(e.email).credentialData?.refreshToken && e.credentialData?.refreshToken)) {
+            byEmail.set(e.email, e);
+          }
+        }
+      }
+
+      const store = loadStore();
+      const imported = [];
+      for (const entry of byEmail.values()) {
+        const cred = entry.credentialData;
+        if (!cred || !cred.refreshToken) continue;
+        upsertAccountRecord(store, {
+          email: entry.email,
+          name: entry.name || entry.email.split('@')[0],
+          source: 'cockpit_tools_import',
+          oauthClientKey: cred.oauthClientKey || 'antigravity_enterprise',
+          oauthClientId: cred.oauthClientId || null,
+          credential: {
+            accessToken: cred.accessToken || '',
+            refreshToken: cred.refreshToken,
+            expiresAt: cred.expiresAt || null,
+            idToken: cred.idToken || ''
+          },
+          authInvalid: false,
+          authError: null
+        });
+        imported.push(entry.email);
+      }
+      if (imported.length > 0) saveStore(store);
+      if (imported.length === 0 && warnings.length > 0) {
+        return {
+          ok: false,
+          importedCount: 0,
+          accounts: [],
+          warnings,
+          error: `未能从 Cockpit Tools 导入有效账号: ${warnings[0]}`
+        };
+      }
+      return {
+        ok: true,
+        importedCount: imported.length,
+        accounts: imported.map(e => sanitizeAccountForView(store.accounts[e], store.activeAccountEmail)),
+        warnings
+      };
+    }
+
+    /**
+     * Issue #128 备选方案：导入 Cockpit Tools 备份/导出 JSON (schema: "cockpit-tools.data-transfer", version: 1)
+     */
+    function importFromCockpitBackupJson(input, selectedEmails = null) {
+      let parsed = null;
+      if (typeof input === 'string') {
+        const trimmed = input.trim();
+        if (trimmed.startsWith('{')) {
+          try { parsed = JSON.parse(trimmed); } catch { return { ok: false, error: 'Cockpit 备份 JSON 解析失败' }; }
+        } else {
+          parsed = readJsonSafe(trimmed, null);
+          if (!parsed) return { ok: false, error: `无法读取 Cockpit 备份文件: ${path.basename(trimmed)}` };
+        }
+      } else if (input && typeof input === 'object') {
+        parsed = input;
+      }
+      if (!parsed || typeof parsed !== 'object') {
+        return { ok: false, error: '无效的 Cockpit Tools 备份内容' };
+      }
+      if (parsed.schema !== 'cockpit-tools.data-transfer') {
+        return { ok: false, error: `不支持的备份 schema: ${parsed.schema || 'unknown'}` };
+      }
+      if (parsed.version !== 1) {
+        return { ok: false, error: `不支持的 Cockpit Tools 备份版本: ${parsed.version}` };
+      }
+      const list = parsed?.accounts?.platforms?.antigravity?.exported_data;
+      if (!Array.isArray(list) || list.length === 0) {
+        return { ok: false, error: 'Cockpit Tools 备份中未包含可用的 Antigravity 账号数据' };
+      }
+      const filterSet = Array.isArray(selectedEmails) && selectedEmails.length
+        ? new Set(selectedEmails.map(normalizeEmail).filter(Boolean))
+        : null;
+      const store = loadStore();
+      const imported = [];
+      const seen = new Set();
+      for (const row of list) {
+        const email = normalizeEmail(row?.email || '');
+        const refreshToken = String(row?.refresh_token || row?.token?.refresh_token || '').trim();
+        if (!email || !refreshToken || seen.has(email)) continue;
+        if (filterSet && !filterSet.has(email)) continue;
+        seen.add(email);
+        const tok = row?.token || row;
+        const expiresAt = tok?.expiry || (tok?.expiry_timestamp ? new Date(Number(tok.expiry_timestamp) * 1000).toISOString() : null);
+        upsertAccountRecord(store, {
+          email,
+          name: String(row?.name || email.split('@')[0]).trim(),
+          source: 'cockpit_tools_backup_import',
+          oauthClientKey: tok?.oauth_client_key || row?.oauth_client_key || 'antigravity_enterprise',
+          oauthClientId: tok?.client_id || row?.client_id || null,
+          credential: {
+            accessToken: String(tok?.access_token || ''),
+            refreshToken,
+            expiresAt,
+            idToken: String(tok?.id_token || '')
+          },
+          authInvalid: false,
+          authError: null
+        });
+        imported.push(email);
+      }
+      if (imported.length === 0) {
+        return { ok: false, error: 'Cockpit Tools 备份中未找到包含有效 refresh_token 的 Antigravity 账号' };
+      }
+      saveStore(store);
+      return {
+        ok: true,
+        importedCount: imported.length,
+        accounts: imported.map(e => sanitizeAccountForView(store.accounts[e], store.activeAccountEmail))
+      };
+    }
+
+    /**
+     * 只读预览 ~/.antigravity_tools/accounts.json 与 Cockpit Tools 中可用账号（绝不修改第三方文件）
      */
     function listAntigravityToolsAccounts() {
       const toolsIdxPath = path.join(homeDir, '.antigravity_tools', 'accounts.json');
       const data = readJsonSafe(toolsIdxPath, null);
-      if (!data) return { ok: true, available: false, accounts: [] };
-      const rawList = Array.isArray(data.accounts) ? data.accounts : [];
-      const items = rawList
-        .map(a => ({
-          id: a.id || '',
-          email: normalizeEmail(a.email || ''),
-          name: a.name || '',
-          disabled: Boolean(a.disabled),
-          createdAt: a.created_at || null
-        }))
-        .filter(a => a.email);
-      return { ok: true, available: true, count: items.length, accounts: items };
+      const byEmail = new Map();
+      const sources = [];
+      if (data) {
+        sources.push('antigravity_tools');
+        const rawList = Array.isArray(data.accounts) ? data.accounts : [];
+        for (const a of rawList) {
+          const email = normalizeEmail(a?.email || '');
+          if (!email) continue;
+          byEmail.set(email, {
+            id: a.id || '',
+            email,
+            name: a.name || '',
+            disabled: Boolean(a.disabled),
+            createdAt: a.created_at || null,
+            provider: 'antigravity_tools'
+          });
+        }
+      }
+      const cockpit = listCockpitToolsAccounts();
+      if (cockpit.available) {
+        sources.push('cockpit_tools');
+        for (const a of cockpit.accounts) {
+          if (!byEmail.has(a.email)) byEmail.set(a.email, a);
+        }
+      }
+      if (sources.length === 0) {
+        return { ok: true, available: false, count: 0, accounts: [], sources: [], warnings: [] };
+      }
+      const items = Array.from(byEmail.values());
+      return {
+        ok: true,
+        available: true,
+        count: items.length,
+        accounts: items,
+        sources,
+        warnings: cockpit.warnings || []
+      };
     }
 
     function importFromAntigravityTools(selectedEmails = null) {
       const toolsDir = path.join(homeDir, '.antigravity_tools');
       const idx = readJsonSafe(path.join(toolsDir, 'accounts.json'), null);
-      if (!idx || !Array.isArray(idx.accounts)) {
-        return { ok: false, error: '未发现 ~/.antigravity_tools/accounts.json' };
+      const hasLegacyTools = Boolean(idx && Array.isArray(idx.accounts));
+      const cockpitDirs = discoverCockpitToolsDataDirs();
+      if (!hasLegacyTools && cockpitDirs.length === 0) {
+        return { ok: false, error: '未发现 ~/.antigravity_tools/accounts.json 或 Cockpit Tools 数据目录' };
       }
       const filterSet = Array.isArray(selectedEmails) && selectedEmails.length
         ? new Set(selectedEmails.map(normalizeEmail).filter(Boolean))
@@ -2249,34 +2731,81 @@ function createAccountsManager(options = {}) {
 
       const store = loadStore();
       const imported = [];
-      for (const meta of idx.accounts) {
-        const email = normalizeEmail(meta?.email || '');
-        if (!email) continue;
-        if (filterSet && !filterSet.has(email)) continue;
-        const detail = readJsonSafe(path.join(toolsDir, 'accounts', `${meta.id}.json`), null);
-        const tok = detail?.token || meta?.token || {};
-        const refreshToken = tok.refresh_token || detail?.refresh_token || '';
-        const accessToken = tok.access_token || detail?.access_token || '';
-        const idToken = detail?.id_token || '';
-        const expiresAt = tok.expiry || (tok.expiry_timestamp ? new Date(tok.expiry_timestamp * 1000).toISOString() : null);
-        if (!refreshToken) continue;
-        upsertAccountRecord(store, {
-          email,
-          name: meta.name || email.split('@')[0],
-          source: 'antigravity_tools_import',
-          oauthClientKey: tok.oauth_client_key || 'antigravity_enterprise',
-          oauthClientId: tok.client_id || null,
-          credential: { accessToken, refreshToken, expiresAt, idToken },
-          authInvalid: false,
-          authError: null
-        });
-        imported.push(email);
+      const importedSet = new Set();
+      const warnings = [];
+
+      if (hasLegacyTools) {
+        for (const meta of idx.accounts) {
+          const email = normalizeEmail(meta?.email || '');
+          if (!email) continue;
+          if (filterSet && !filterSet.has(email)) continue;
+          const detail = readJsonSafe(path.join(toolsDir, 'accounts', `${meta.id}.json`), null);
+          const tok = detail?.token || meta?.token || {};
+          const refreshToken = tok.refresh_token || detail?.refresh_token || '';
+          const accessToken = tok.access_token || detail?.access_token || '';
+          const idToken = tok.id_token || detail?.id_token || '';
+          const expiresAt = tok.expiry || (tok.expiry_timestamp ? new Date(tok.expiry_timestamp * 1000).toISOString() : null);
+          if (!refreshToken) continue;
+          upsertAccountRecord(store, {
+            email,
+            name: meta.name || email.split('@')[0],
+            source: 'antigravity_tools_import',
+            oauthClientKey: tok.oauth_client_key || 'antigravity_enterprise',
+            oauthClientId: tok.client_id || null,
+            credential: { accessToken, refreshToken, expiresAt, idToken },
+            authInvalid: false,
+            authError: null
+          });
+          imported.push(email);
+          importedSet.add(email);
+        }
       }
-      saveStore(store);
+
+      if (cockpitDirs.length > 0) {
+        for (const item of cockpitDirs) {
+          const scanned = scanCockpitToolsDirectory(item.dir);
+          warnings.push(...scanned.warnings);
+          for (const entry of scanned.entries) {
+            if (filterSet && !filterSet.has(entry.email)) continue;
+            if (importedSet.has(entry.email)) continue;
+            const cred = entry.credentialData;
+            if (!cred || !cred.refreshToken) continue;
+            upsertAccountRecord(store, {
+              email: entry.email,
+              name: entry.name || entry.email.split('@')[0],
+              source: 'cockpit_tools_import',
+              oauthClientKey: cred.oauthClientKey || 'antigravity_enterprise',
+              oauthClientId: cred.oauthClientId || null,
+              credential: {
+                accessToken: cred.accessToken || '',
+                refreshToken: cred.refreshToken,
+                expiresAt: cred.expiresAt || null,
+                idToken: cred.idToken || ''
+              },
+              authInvalid: false,
+              authError: null
+            });
+            imported.push(entry.email);
+            importedSet.add(entry.email);
+          }
+        }
+      }
+
+      if (imported.length > 0) saveStore(store);
+      if (imported.length === 0 && warnings.length > 0) {
+        return {
+          ok: false,
+          importedCount: 0,
+          accounts: [],
+          warnings,
+          error: `未能导入有效账号: ${warnings[0]}`
+        };
+      }
       return {
         ok: true,
         importedCount: imported.length,
-        accounts: imported.map(e => sanitizeAccountForView(store.accounts[e], store.activeAccountEmail))
+        accounts: imported.map(e => sanitizeAccountForView(store.accounts[e], store.activeAccountEmail)),
+        ...(warnings.length ? { warnings } : {})
       };
     }
 
@@ -2672,7 +3201,7 @@ function createAccountsManager(options = {}) {
       }
       const candidates = resolveAllAntigravityOAuthConfigs({
         ...oauthResolveOpts,
-        oauthClientKey: rec.oauthClientKey || (rec.source === 'antigravity_tools_import' ? 'antigravity_enterprise' : ''),
+        oauthClientKey: rec.oauthClientKey || ((rec.source === 'antigravity_tools_import' || rec.source === 'cockpit_tools_import' || rec.source === 'cockpit_tools_backup_import') ? 'antigravity_enterprise' : ''),
         preferredClientId: rec.oauthClientId || ''
       });
       const configsToTry = candidates.length ? candidates : [null];
@@ -4169,6 +4698,10 @@ function createAccountsManager(options = {}) {
     importFromCurrentClient,
     listAntigravityToolsAccounts,
     importFromAntigravityTools,
+    listCockpitToolsAccounts,
+    importFromCockpitTools,
+    importFromCockpitBackupJson,
+    discoverCockpitToolsDataDirs,
     startOAuthLogin,
     addAccountWithCredential,
     removeAccount,
@@ -4424,6 +4957,12 @@ async function dispatchAccountsAction(mgr, payload = {}, options = {}) {
       return mgr.listAntigravityToolsAccounts();
     case 'import_tools':
       return { ...mgr.importFromAntigravityTools(payload.emails || null), overview: mgr.getOverviewState() };
+    case 'preview_cockpit_tools':
+      return mgr.listCockpitToolsAccounts();
+    case 'import_cockpit_tools':
+      return { ...mgr.importFromCockpitTools(payload.emails || null), overview: mgr.getOverviewState() };
+    case 'import_cockpit_backup':
+      return { ...mgr.importFromCockpitBackupJson(payload.data ?? payload.filePath ?? null, payload.emails || null), overview: mgr.getOverviewState() };
     case 'oauth_login':
       return {
         ...(await mgr.startOAuthLogin({

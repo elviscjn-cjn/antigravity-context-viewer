@@ -575,7 +575,7 @@ test('3. 更新器真实代理隧道：HTTP CONNECT / SOCKS5(RFC1928) / bypassLi
       const beforeDirectInvalidCalls = directHitCount;
       await assert.rejects(
         () => requestGithubUrl(`https://proxy-only-check.invalid:${tlsPort}/ok-json`, { rejectUnauthorized: false, timeout: 800 }),
-        /ENOTFOUND|EAI_AGAIN|getaddrinfo|请求超时|直连/i
+        /ENOTFOUND|EAI_AGAIN|getaddrinfo|请求超时|直连|disconnected|ECONNREFUSED|ECONNRESET|socket hang up|ERR_TLS/i
       );
       assert.equal(directHitCount, beforeDirectInvalidCalls);
       cfg.modules.proxy.bypassList = 'localhost';

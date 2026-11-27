@@ -2079,6 +2079,23 @@
                   </label>
                 </div>
               </div>
+
+              <div class="ctx-prefs-row" id="row-speed-display-mode">
+                <div class="ctx-prefs-row-main">
+                  <div class="ctx-prefs-row-title" data-i18n="settings.speedMode.label">速度统计口径</div>
+                  <div class="ctx-prefs-row-sub" data-i18n="settings.speedMode.desc">
+                    切换顶栏、详情卡片与每轮尾部微标的生成速度口径（纯流式扣除首字延迟；端到端包含首字等待）。</div>
+                </div>
+                <div class="ctx-prefs-row-ctl">
+                  <div id="speed-mode-segmented" class="ctx-segmented ctx-seg-pill" role="group"
+                    aria-label="速度统计口径" data-i18n-aria="settings.speedMode.label">
+                    <button id="btn-speed-mode-stream" class="ctx-seg-btn active" type="button"
+                      data-speed-display-mode="stream" data-i18n="settings.speedMode.stream">纯流式</button>
+                    <button id="btn-speed-mode-e2e" class="ctx-seg-btn" type="button"
+                      data-speed-display-mode="e2e" data-i18n="settings.speedMode.e2e">端到端</button>
+                  </div>
+                </div>
+              </div>
             </div>
           </section>
 

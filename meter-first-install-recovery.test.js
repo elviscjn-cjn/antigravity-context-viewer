@@ -1,5 +1,5 @@
 'use strict';
-const { test } = require('node:test');
+const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -7,6 +7,21 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const vm = require('node:vm');
 const { execFileSync } = require('node:child_process');
+
+let _isolatedRecoveryStateDir = null;
+let _prevRecoveryStateDir = undefined;
+before(() => {
+  _prevRecoveryStateDir = process.env.AG_METER_STATE_DIR;
+  _isolatedRecoveryStateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-first-install-state-'));
+  process.env.AG_METER_STATE_DIR = _isolatedRecoveryStateDir;
+});
+after(() => {
+  if (_prevRecoveryStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+  else process.env.AG_METER_STATE_DIR = _prevRecoveryStateDir;
+  if (_isolatedRecoveryStateDir) {
+    try { fs.rmSync(_isolatedRecoveryStateDir, { recursive: true, force: true }); } catch {}
+  }
+});
 
 const core = require('./meter-core');
 const { builtinAsar } = require('./asar-engine');

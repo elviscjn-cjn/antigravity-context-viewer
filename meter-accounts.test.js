@@ -2317,8 +2317,10 @@ test('Issue #115: openUrlInSystemBrowser、startOAuthLogin 浏览器打开失败
     const livePort = liveSrv.address().port;
     const prevEnvId = process.env.AG_OAUTH_CLIENT_ID;
     const prevEnvSec = process.env.AG_OAUTH_CLIENT_SECRET;
+    const prevStateDir = process.env.AG_METER_STATE_DIR;
     process.env.AG_OAUTH_CLIENT_ID = 'test-livehost-client.apps.googleusercontent.com';
     process.env.AG_OAUTH_CLIENT_SECRET = 'GOCSPX-test-livehost-secret';
+    process.env.AG_METER_STATE_DIR = tmpDir;
     try {
       const resp = await new Promise((resolve, reject) => {
         const payload = JSON.stringify({ action: 'oauth_login', timeoutMs: 5000 });
@@ -2350,6 +2352,7 @@ test('Issue #115: openUrlInSystemBrowser、startOAuthLogin 浏览器打开失败
     } finally {
       if (prevEnvId === undefined) delete process.env.AG_OAUTH_CLIENT_ID; else process.env.AG_OAUTH_CLIENT_ID = prevEnvId;
       if (prevEnvSec === undefined) delete process.env.AG_OAUTH_CLIENT_SECRET; else process.env.AG_OAUTH_CLIENT_SECRET = prevEnvSec;
+      if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR; else process.env.AG_METER_STATE_DIR = prevStateDir;
       await new Promise(r => liveSrv.close(r));
     }
   } finally {
@@ -2496,4 +2499,219 @@ test('Issue #115 回归: 关闭自动切号时添加账号仅保存不触发重�
     else process.env.AG_METER_STATE_DIR = prevStateDir;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('Issue #128: Cockpit Tools 合成身份文件全格式(明文/字段加密/整文件信封/SQLite+JSON索引/软链去重/备份导出/异常降级)只读导入验证', async (t) => {
+  const { createAccountsManager: createAccountManager, dispatchAccountsAction } = accountsMod;
+  const crypto = require('node:crypto');
+  const { DatabaseSync } = require('node:sqlite');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cockpit-128-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const fakeHome = path.join(tmpDir, 'home');
+  const stateDir = path.join(tmpDir, 'state');
+  const cockpitRoot = path.join(fakeHome, '.cockpit_tools');
+  const accountsDir = path.join(cockpitRoot, 'accounts');
+  fs.mkdirSync(accountsDir, { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true });
+
+  // 软链接 ~/.antigravity_cockpit -> ~/.cockpit_tools 验证去重
+  try {
+    fs.symlinkSync(cockpitRoot, path.join(fakeHome, '.antigravity_cockpit'), 'dir');
+  } catch {}
+
+  const encryptGcm = (keyBuf, obj) => {
+    const nonce = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', keyBuf, nonce);
+    const enc = Buffer.concat([cipher.update(JSON.stringify(obj), 'utf8'), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return {
+      nonce: nonce.toString('base64'),
+      ciphertext: Buffer.concat([enc, tag]).toString('base64')
+    };
+  };
+
+  const secureKey = crypto.randomBytes(32);
+  const fieldKey = crypto.randomBytes(32);
+  fs.writeFileSync(path.join(cockpitRoot, 'secure-account-storage.key'), secureKey.toString('base64') + '\n', 'utf8');
+  fs.writeFileSync(path.join(cockpitRoot, 'account-token.key'), fieldKey.toString('base64') + '\n', 'utf8');
+
+  // 格式 1: 旧版明文 JSON (UUID id)
+  const id1 = '11111111-1111-4111-8111-111111111111';
+  fs.writeFileSync(path.join(accountsDir, `${id1}.json`), JSON.stringify({
+    id: id1,
+    email: 'plain@cockpit.test',
+    name: 'Plain User',
+    disabled: false,
+    token: {
+      access_token: 'acc-plain-1',
+      refresh_token: 'ref-plain-1',
+      expiry_timestamp: 1900000000,
+      oauth_client_key: 'antigravity_default',
+      id_token: 'idt-plain-1'
+    }
+  }, null, 2));
+
+  // 格式 2: 历史字段级加密 (token_encrypted + account-token.key)
+  const id2 = 'antigravity_22222222222222222222222222222222';
+  const encField = encryptGcm(fieldKey, {
+    access_token: 'acc-field-2',
+    refresh_token: 'ref-field-2',
+    expiry_timestamp: 1900000200,
+    oauth_client_key: 'antigravity_enterprise',
+    id_token: 'idt-field-2'
+  });
+  fs.writeFileSync(path.join(accountsDir, `${id2}.json`), JSON.stringify({
+    id: id2,
+    email: 'field@cockpit.test',
+    name: 'Field Enc User',
+    disabled: false,
+    token_encrypted: { version: 1, ...encField }
+  }, null, 2));
+
+  // 格式 3: 新版整文件加密信封 (secure-account-storage.key)
+  const id3 = 'antigravity_33333333333333333333333333333333';
+  const encEnvelope = encryptGcm(secureKey, {
+    id: id3,
+    email: 'envelope@cockpit.test',
+    name: 'Envelope User',
+    disabled: false,
+    token: {
+      access_token: 'acc-env-3',
+      refresh_token: 'ref-env-3',
+      expiry_timestamp: 1900000300,
+      oauth_client_key: 'custom_client_key',
+      id_token: 'idt-env-3'
+    }
+  });
+  fs.writeFileSync(path.join(accountsDir, `${id3}.json`), JSON.stringify({
+    version: 1,
+    kind: 'antigravity',
+    algorithm: 'AES-256-GCM',
+    key_id: 'local-secure-account-storage-v1',
+    ...encEnvelope,
+    encrypted_at: 1700000000
+  }, null, 2));
+
+  // 格式异常样本：未知加密信封版本 v99（必须优雅降级报错但不阻塞其他 3 个账号）
+  const idBad = 'antigravity_99999999999999999999999999999999';
+  fs.writeFileSync(path.join(accountsDir, `${idBad}.json`), JSON.stringify({
+    version: 99,
+    kind: 'antigravity',
+    algorithm: 'AES-256-GCM',
+    key_id: 'local-secure-account-storage-v99',
+    nonce: crypto.randomBytes(12).toString('base64'),
+    ciphertext: crypto.randomBytes(32).toString('base64')
+  }, null, 2));
+
+  // SQLite 主索引 + accounts.json 兼容索引
+  const dbPath = path.join(cockpitRoot, 'antigravity_accounts.sqlite');
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    CREATE TABLE summaries (account_id TEXT PRIMARY KEY, email TEXT, name TEXT, created_at INTEGER, last_used INTEGER, plan_type TEXT);
+    CREATE TABLE account_index_state (current_id TEXT);
+  `);
+  db.prepare('INSERT INTO summaries VALUES (?, ?, ?, ?, ?, ?)').run(id1, 'plain@cockpit.test', 'Plain User', 1700000001, 1700000101, 'pro');
+  db.prepare('INSERT INTO summaries VALUES (?, ?, ?, ?, ?, ?)').run(id3, 'envelope@cockpit.test', 'Envelope User', 1700000003, 1700000103, 'ultra');
+  db.prepare('INSERT INTO summaries VALUES (?, ?, ?, ?, ?, ?)').run(idBad, 'badver@cockpit.test', 'Bad Ver', 1700000009, 1700000109, 'free');
+  db.prepare('INSERT INTO account_index_state VALUES (?)').run(id3);
+  db.close();
+
+  fs.writeFileSync(path.join(cockpitRoot, 'accounts.json'), JSON.stringify({
+    version: 1,
+    current_account_id: id3,
+    accounts: [{ id: id2, email: 'field@cockpit.test', name: 'Field Enc User', created_at: 1700000002, last_used: 1700000102 }]
+  }, null, 2));
+
+  // 记录第三方目录只读前哈希快照
+  const snapshotDirHashes = () => {
+    const out = {};
+    const walk = (d) => {
+      for (const name of fs.readdirSync(d).sort()) {
+        const full = path.join(d, name);
+        const st = fs.statSync(full);
+        if (st.isDirectory()) walk(full);
+        else out[path.relative(cockpitRoot, full)] = crypto.createHash('sha256').update(fs.readFileSync(full)).digest('hex');
+      }
+    };
+    walk(cockpitRoot);
+    return out;
+  };
+  const beforeHashes = snapshotDirHashes();
+
+  const mgr = createAccountManager({ stateDir, homeDir: fakeHome, env: {} });
+  const dirs = mgr.discoverCockpitToolsDataDirs();
+  assert.equal(dirs.length, 1, '软链接 ~/.antigravity_cockpit 必须与 ~/.cockpit_tools 去重为 1 个根目录');
+
+  // 1. 统一 preview_tools 自动发现 Cockpit Tools 账号
+  const preview = await dispatchAccountsAction(mgr, { action: 'preview_tools' });
+  assert.equal(preview.ok, true);
+  assert.equal(preview.available, true);
+  assert.ok(preview.sources.includes('cockpit_tools'));
+  assert.equal(preview.count, 4);
+  const envItem = preview.accounts.find(a => a.email === 'envelope@cockpit.test');
+  assert.equal(envItem.storageFormat, 'envelope_v1');
+  assert.equal(envItem.isCurrent, true);
+  assert.equal(envItem.planType, 'ultra');
+  assert.ok(preview.warnings.some(w => /不支持的 Cockpit 加密信封版本: 99/.test(w)));
+
+  // 2. 统一 import_tools 成功导入全部 3 种格式并完整保留 OAuth 元数据
+  const imp = await dispatchAccountsAction(mgr, { action: 'import_tools' });
+  assert.equal(imp.ok, true);
+  assert.equal(imp.importedCount, 3);
+  const store = mgr.loadStore();
+  assert.equal(store.accounts['plain@cockpit.test'].oauthClientKey, 'antigravity_default');
+  assert.equal(store.accounts['plain@cockpit.test'].credential.refreshToken, 'ref-plain-1');
+  assert.equal(store.accounts['field@cockpit.test'].oauthClientKey, 'antigravity_enterprise');
+  assert.equal(store.accounts['field@cockpit.test'].credential.refreshToken, 'ref-field-2');
+  assert.equal(store.accounts['envelope@cockpit.test'].oauthClientKey, 'custom_client_key');
+  assert.equal(store.accounts['envelope@cockpit.test'].credential.refreshToken, 'ref-env-3');
+  assert.equal(store.accounts['envelope@cockpit.test'].credential.idToken, 'idt-env-3');
+  assert.equal(store.accounts['envelope@cockpit.test'].source, 'cockpit_tools_import');
+  assert.deepEqual(snapshotDirHashes(), beforeHashes, '严格只读：绝不修改 Cockpit Tools 目录内任何文件');
+
+  // 3. 环境变量 COCKPIT_TOOLS_DATA_DIR 与 ~/.cockpit_tools-data-root.json 优先级验证
+  const customRoot = path.join(tmpDir, 'custom_cockpit');
+  fs.mkdirSync(path.join(customRoot, 'accounts'), { recursive: true });
+  fs.writeFileSync(path.join(fakeHome, '.cockpit_tools-data-root.json'), JSON.stringify({ data_root: customRoot }), 'utf8');
+  const mgrCustom = createAccountManager({ stateDir, homeDir: fakeHome, env: {} });
+  assert.equal(mgrCustom.discoverCockpitToolsDataDirs()[0].dir, customRoot);
+
+  const envRoot = path.join(tmpDir, 'env_cockpit');
+  fs.mkdirSync(path.join(envRoot, 'accounts'), { recursive: true });
+  const mgrEnv = createAccountManager({ stateDir, homeDir: fakeHome, env: { COCKPIT_TOOLS_DATA_DIR: envRoot } });
+  assert.equal(mgrEnv.discoverCockpitToolsDataDirs()[0].dir, envRoot);
+
+  // 4. Cockpit Tools 备份/导出 JSON (schema: "cockpit-tools.data-transfer", version: 1) 导入与去重
+  const backupRes = await dispatchAccountsAction(mgr, {
+    action: 'import_cockpit_backup',
+    data: {
+      schema: 'cockpit-tools.data-transfer',
+      version: 1,
+      accounts: {
+        platforms: {
+          antigravity: {
+            exported_data: [
+              { email: 'backup@cockpit.test', refresh_token: 'ref-backup-1', oauth_client_key: 'antigravity_default' },
+              { email: 'backup@cockpit.test', refresh_token: 'ref-backup-dup' }
+            ]
+          }
+        }
+      }
+    }
+  });
+  assert.equal(backupRes.ok, true);
+  assert.equal(backupRes.importedCount, 1);
+  assert.equal(mgr.loadStore().accounts['backup@cockpit.test'].credential.refreshToken, 'ref-backup-1');
+  assert.equal(mgr.loadStore().accounts['backup@cockpit.test'].oauthClientKey, 'antigravity_default');
+
+  // 5. 缺少密钥文件时优雅降级报错
+  const missingKeyRoot = path.join(tmpDir, 'missing_key_cockpit');
+  fs.mkdirSync(path.join(missingKeyRoot, 'accounts'), { recursive: true });
+  fs.writeFileSync(path.join(missingKeyRoot, 'accounts', `${id3}.json`), fs.readFileSync(path.join(accountsDir, `${id3}.json`)));
+  fs.writeFileSync(path.join(missingKeyRoot, 'accounts.json'), JSON.stringify({ version: 1, accounts: [{ id: id3, email: 'nokey@cockpit.test' }] }));
+  const mgrMissingKey = createAccountManager({ stateDir: path.join(tmpDir, 'state2'), homeDir: path.join(tmpDir, 'empty_home'), env: { COCKPIT_TOOLS_DATA_DIR: missingKeyRoot } });
+  const failImp = mgrMissingKey.importFromCockpitTools();
+  assert.equal(failImp.ok, false);
+  assert.match(failImp.error, /缺少密钥文件: secure-account-storage\.key/);
 });

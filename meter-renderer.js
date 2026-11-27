@@ -131,6 +131,9 @@
     isValidSpeedSample,
     resolveRequestRowSpeed,
     summarizeSessionSpeed,
+    normalizeSpeedDisplayMode,
+    resolveSpeedDisplayMetrics,
+    pickCallDisplayTps,
     computeMedian,
     summarizeSpeedByModel,
     parseSpeedDateRange,
@@ -169,6 +172,7 @@
   } = (globalThis.__AGContextMeterCore || {});
   const VALID_DOCK_POSITIONS = ['flow', 'compact', 'aux', 'page'];
   const VALID_QUOTA_WINDOW_MODES = ['auto', '5h', 'weekly', 'both'];
+  const VALID_SPEED_DISPLAY_MODES = ['stream', 'e2e'];
   const VALID_QUICK_MENU_STYLES = ['floating', 'topbar', 'bottombar', 'classic'];
   const RADIAL_STAGGER_MS = 34;
   const RADIAL_R_REST_360 = 56;
@@ -302,6 +306,12 @@
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_quota_badge_window_mode') : null;
       return VALID_QUOTA_WINDOW_MODES.includes(saved) ? saved : 'auto';
     } catch { return 'auto'; }
+  })();
+  let speedDisplayMode = (() => {
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_speed_display_mode') : null;
+      return VALID_SPEED_DISPLAY_MODES.includes(saved) ? saved : 'stream';
+    } catch { return 'stream'; }
   })();
   // 旧 4 选 1 单选仅作为迁移输入保留，运行期真实状态由 3 个独立布尔开关承载
   let legacyQuickMenuStyle = (() => {
@@ -18940,6 +18950,23 @@
                   </label>
                 </div>
               </div>
+
+              <div class="ctx-prefs-row" id="row-speed-display-mode">
+                <div class="ctx-prefs-row-main">
+                  <div class="ctx-prefs-row-title" data-i18n="settings.speedMode.label">速度统计口径</div>
+                  <div class="ctx-prefs-row-sub" data-i18n="settings.speedMode.desc">
+                    切换顶栏、详情卡片与每轮尾部微标的生成速度口径（纯流式扣除首字延迟；端到端包含首字等待）。</div>
+                </div>
+                <div class="ctx-prefs-row-ctl">
+                  <div id="speed-mode-segmented" class="ctx-segmented ctx-seg-pill" role="group"
+                    aria-label="速度统计口径" data-i18n-aria="settings.speedMode.label">
+                    <button id="btn-speed-mode-stream" class="ctx-seg-btn active" type="button"
+                      data-speed-display-mode="stream" data-i18n="settings.speedMode.stream">纯流式</button>
+                    <button id="btn-speed-mode-e2e" class="ctx-seg-btn" type="button"
+                      data-speed-display-mode="e2e" data-i18n="settings.speedMode.e2e">端到端</button>
+                  </div>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -22083,10 +22110,16 @@ const PANEL_I18N = {
 
   // 生成体验面板多语标签
   'session.speedSummary.titleNoBolt': { 'zh-CN': '生成体验与速度统计', 'zh-TW': '生成體驗與速度統計', en: 'Generation Speed & Experience' },
-  'session.speed.avgStreamRate': { 'zh-CN': '会话平均速率', 'zh-TW': '工作階段平均速率', en: 'Session Avg Speed' },
-  'session.speed.avgTip': { 'zh-CN': '当前会话平均生成速度：{avgTps} tok/s{overallPart}（共 {count} 轮，累计 {totalTok} tokens / {totalDur}s）', 'zh-TW': '目前工作階段平均生成速度：{avgTps} tok/s{overallPart}（共 {count} 輪，累計 {totalTok} tokens / {totalDur}s）', en: 'Session average speed: {avgTps} tok/s{overallPart} ({count} turns, {totalTok} tokens / {totalDur}s)' },
-  'session.speed.avgOverallPart': { 'zh-CN': '，整体含等待 {overallTps} tok/s', 'zh-TW': '，整體含等待 {overallTps} tok/s', en: ', overall {overallTps} tok/s' },
-  'session.speed.streamRate': { 'zh-CN': '本轮纯流式', 'zh-TW': '本輪純串流', en: 'Latest Stream Speed' },
+  'session.speed.avgStreamRate': { 'zh-CN': '会话纯流式均速', 'zh-TW': '工作階段純串流均速', en: 'Session Stream Avg' },
+  'session.speed.avgE2eRate': { 'zh-CN': '会话端到端均速', 'zh-TW': '工作階段端到端均速', en: 'Session E2E Avg' },
+  'session.speed.avgTip': { 'zh-CN': '当前会话平均生成速度：{avgTps} tok/s{overallPart}（共 {count} 步，累计 {totalTok} tokens / {totalDur}s）', 'zh-TW': '目前工作階段平均生成速度：{avgTps} tok/s{overallPart}（共 {count} 步，累計 {totalTok} tokens / {totalDur}s）', en: 'Session average speed: {avgTps} tok/s{overallPart} ({count} steps, {totalTok} tokens / {totalDur}s)' },
+  'session.speed.avgTipStream': { 'zh-CN': '会话纯流式均速：{avgTps} tok/s{secondaryPart}（共 {count} 步，流式 {streamTok} tokens / {streamDur}s；含首字总耗时 {totalDur}s）', 'zh-TW': '工作階段純串流均速：{avgTps} tok/s{secondaryPart}（共 {count} 步，串流 {streamTok} tokens / {streamDur}s；含首字總耗時 {totalDur}s）', en: 'Session stream avg: {avgTps} tok/s{secondaryPart} ({count} steps, {streamTok} tokens / {streamDur}s stream; {totalDur}s total)' },
+  'session.speed.avgTipE2e': { 'zh-CN': '会话端到端均速：{avgTps} tok/s{secondaryPart}（共 {count} 步，累计 {totalTok} tokens / {totalDur}s）', 'zh-TW': '工作階段端到端均速：{avgTps} tok/s{secondaryPart}（共 {count} 步，累計 {totalTok} tokens / {totalDur}s）', en: 'Session E2E avg: {avgTps} tok/s{secondaryPart} ({count} steps, {totalTok} tokens / {totalDur}s)' },
+  'session.speed.avgOverallPart': { 'zh-CN': '，端到端含首字 {overallTps} tok/s', 'zh-TW': '，端到端含首字 {overallTps} tok/s', en: ', E2E {overallTps} tok/s' },
+  'session.speed.avgStreamPart': { 'zh-CN': '，纯流式 {streamTps} tok/s', 'zh-TW': '，純串流 {streamTps} tok/s', en: ', stream {streamTps} tok/s' },
+  'session.speed.streamRate': { 'zh-CN': '本步纯流式', 'zh-TW': '本步純串流', en: 'Step Stream' },
+  'session.speed.stepStreamRate': { 'zh-CN': '本步纯流式', 'zh-TW': '本步純串流', en: 'Step Stream' },
+  'session.speed.stepE2eRate': { 'zh-CN': '本步端到端', 'zh-TW': '本步端到端', en: 'Step E2E' },
   'session.speed.breakdown.sessionAvg': { 'zh-CN': '当前会话平均速度', 'zh-TW': '目前工作階段平均速度', en: 'Session Average Speed' },
   'session.speed.shortSampleBadge': { 'zh-CN': '短样本', 'zh-TW': '短樣本', en: 'Short sample' },
   'session.speed.shortWindowEst': { 'zh-CN': '短窗口估算 (参考)', 'zh-TW': '短視窗估算 (參考)', en: 'Short-Window Est. (Ref)' },
@@ -22211,6 +22244,8 @@ const PANEL_I18N = {
   'session.timeline.modelBreakdownTitle': { 'zh-CN': '按实际执行模型汇总（已去重校验，与请求明细一致）', 'zh-TW': '依實際執行模型彙總（已去重校驗，與請求明細一致）', en: 'By Model (Deduplicated, Matches Call Log)' },
   'session.timeline.unknownModel': { 'zh-CN': '未知模型', 'zh-TW': '未知模型', en: 'Unknown Model' },
   'session.timeline.modelTotalsLine': { 'zh-CN': '会话合计 {calls} 次 · {total} tok（入 {inp} / 缓 {cap} / 出 {out}）', 'zh-TW': '工作階段合計 {calls} 次 · {total} tok（入 {inp} / 快 {cap} / 出 {out}）', en: 'Session total {calls} calls · {total} tok (In {inp} / Cache {cap} / Out {out})' },
+  'session.timeline.cliReportedUsage': { 'zh-CN': 'CLI 报告总量 {total} tok · 缓存读取 {cache} tok', 'zh-TW': 'CLI 回報總量 {total} tok · 快取讀取 {cache} tok', en: 'CLI-reported total {total} tok · Cache reads {cache} tok' },
+  'session.timeline.processedTotalsLine': { 'zh-CN': '累计处理 {calls} 次 · {total} tok（入 {inp} / 缓 {cap} / 出 {out}）', 'zh-TW': '累計處理 {calls} 次 · {total} tok（入 {inp} / 快 {cap} / 出 {out}）', en: 'Processed {calls} calls · {total} tok (In {inp} / Cache {cap} / Out {out})' },
   'tokens.heat.title': { 'zh-CN': 'Token 活动', 'zh-TW': 'Token 活動', en: 'Token Activity' },
   'tokens.heat.daily': { 'zh-CN': '每天', 'zh-TW': '每天', en: 'Daily' },
   'tokens.heat.weekly': { 'zh-CN': '每周', 'zh-TW': '每週', en: 'Weekly' },
@@ -22381,6 +22416,10 @@ const PANEL_I18N = {
   'settings.quotaBadgeMode.5h': { 'zh-CN': '5h 窗口', 'zh-TW': '5h 視窗', en: '5h Window' },
   'settings.quotaBadgeMode.weekly': { 'zh-CN': '周额度', 'zh-TW': '週額度', en: 'Weekly' },
   'settings.quotaBadgeMode.both': { 'zh-CN': '5h 与周双显', 'zh-TW': '5h 與週雙顯', en: 'Dual 5h and 7d' },
+  'settings.speedMode.label': { 'zh-CN': '速度统计口径', 'zh-TW': '速度統計口徑', en: 'Speed metric' },
+  'settings.speedMode.desc': { 'zh-CN': '切换顶栏、详情卡片与每轮尾部微标的生成速度口径（纯流式扣除首字延迟；端到端包含首字等待）。', 'zh-TW': '切換頂欄、詳情卡片與每輪尾部微標的生成速度口徑（純串流扣除首字延遲；端到端包含首字等待）。', en: 'Switch speed metric across topbar, detail card, and turn footer (Pure stream excludes TTFT; End-to-End includes TTFT).' },
+  'settings.speedMode.stream': { 'zh-CN': '纯流式', 'zh-TW': '純串流', en: 'Pure stream' },
+  'settings.speedMode.e2e': { 'zh-CN': '端到端', 'zh-TW': '端到端', en: 'End-to-End' },
   'settings.langAndPalette.label': { 'zh-CN': '面板语言与主题调色', 'zh-TW': '面板語言與佈景調色', en: 'Panel Language & Palette' },
   'settings.palette.label': { 'zh-CN': '主题配色与外观定制', 'zh-TW': '主題配色與外觀自訂', en: 'Theme colors & appearance' },
   'settings.palette.desc': { 'zh-CN': '打开调色面板调整主色调、面板明暗与图表色阶.', 'zh-TW': '開啟調色面板調整主色調、面板明暗與圖表色階.', en: 'Open the palette to tune accent color, panel tone and chart scale.' },
@@ -22579,9 +22618,12 @@ const PANEL_I18N = {
   'badge.speedHoverIdle': { 'zh-CN': ' · 待生成', 'zh-TW': ' · 待生成', en: ' · Idle' },
   'badge.speedTitleIdle': { 'zh-CN': '当前会话平均生成速度与耗时 (tok/s)', 'zh-TW': '目前工作階段平均生成速度與耗時 (tok/s)', en: 'Session average speed & latency (tok/s)' },
   'badge.speedTitleWait': { 'zh-CN': '正在等待模型返回或计算生成指标…', 'zh-TW': '正在等待模型回傳或計算生成指標…', en: 'Waiting for model response or metrics…' },
-  'badge.speedTitleDetail': { 'zh-CN': '当前会话平均生成速度：{avgTps} tok/s（共 {count} 轮，累计 {totalOut} tokens / {totalDur}s）{latestPart}', 'zh-TW': '目前工作階段平均生成速度：{avgTps} tok/s（共 {count} 輪，累計 {totalOut} tokens / {totalDur}s）{latestPart}', en: 'Session average speed: {avgTps} tok/s ({count} turns, {totalOut} tokens / {totalDur}s){latestPart}' },
-  'badge.speedLatestPart': { 'zh-CN': '\n最新一轮输出速度：{tps} tok/s{streaming}\n总耗时：{duration}s (首字 {ttft}s + 流式 {streamSec}s)\n本次产出：{output} tokens', 'zh-TW': '\n最新一輪輸出速度：{tps} tok/s{streaming}\n總耗時：{duration}s (首字 {ttft}s + 流式 {streamSec}s)\n本次產出：{output} tokens', en: '\nLatest turn speed: {tps} tok/s{streaming}\nTotal: {duration}s (TTFT {ttft}s + streaming {streamSec}s)\nOutput: {output} tokens' },
-  'badge.speedStreamingPart': { 'zh-CN': ' (流式 {tps} tok/s)', 'zh-TW': ' (流式 {tps} tok/s)', en: ' (streaming {tps} tok/s)' },
+  'badge.speedTitleDetail': { 'zh-CN': '当前会话平均生成速度：{avgTps} tok/s（共 {count} 步，累计 {totalOut} tokens / {totalDur}s）{latestPart}', 'zh-TW': '目前工作階段平均生成速度：{avgTps} tok/s（共 {count} 步，累計 {totalOut} tokens / {totalDur}s）{latestPart}', en: 'Session average speed: {avgTps} tok/s ({count} steps, {totalOut} tokens / {totalDur}s){latestPart}' },
+  'badge.speedTitleDetailStream': { 'zh-CN': '会话纯流式均速：{avgTps} tok/s{secondaryPart}（共 {count} 步，流式 {streamOut} tokens / {streamDur}s；含首字总耗时 {totalDur}s）{latestPart}', 'zh-TW': '工作階段純串流均速：{avgTps} tok/s{secondaryPart}（共 {count} 步，串流 {streamOut} tokens / {streamDur}s；含首字總耗時 {totalDur}s）{latestPart}', en: 'Session stream avg: {avgTps} tok/s{secondaryPart} ({count} steps, {streamOut} tokens / {streamDur}s stream; {totalDur}s total){latestPart}' },
+  'badge.speedTitleDetailE2e': { 'zh-CN': '会话端到端均速：{avgTps} tok/s{secondaryPart}（共 {count} 步，累计 {totalOut} tokens / {totalDur}s）{latestPart}', 'zh-TW': '工作階段端到端均速：{avgTps} tok/s{secondaryPart}（共 {count} 步，累計 {totalOut} tokens / {totalDur}s）{latestPart}', en: 'Session E2E avg: {avgTps} tok/s{secondaryPart} ({count} steps, {totalOut} tokens / {totalDur}s){latestPart}' },
+  'badge.speedLatestPart': { 'zh-CN': '\n最新一步输出速度：{tps} tok/s{streaming}\n总耗时：{duration}s (首字 {ttft}s + 流式 {streamSec}s)\n本次产出：{output} tokens', 'zh-TW': '\n最新一步輸出速度：{tps} tok/s{streaming}\n總耗時：{duration}s (首字 {ttft}s + 流式 {streamSec}s)\n本次產出：{output} tokens', en: '\nLatest step speed: {tps} tok/s{streaming}\nTotal: {duration}s (TTFT {ttft}s + streaming {streamSec}s)\nOutput: {output} tokens' },
+  'badge.speedStreamingPart': { 'zh-CN': ' (纯流式 {tps} tok/s)', 'zh-TW': ' (純串流 {tps} tok/s)', en: ' (stream {tps} tok/s)' },
+  'badge.speedOverallPart': { 'zh-CN': ' (端到端 {tps} tok/s)', 'zh-TW': ' (端到端 {tps} tok/s)', en: ' (E2E {tps} tok/s)' },
   'badge.corpus.range': { 'zh-CN': '会话{range}{inc}', 'zh-TW': '工作階段{range}{inc}', en: 'Chat {range}{inc}' },
   'badge.corpus.incPlus': { 'zh-CN': '＋未知', 'zh-TW': '＋未知', en: '+unknown' },
   'badge.corpus.scanning': { 'zh-CN': '会话扫描中…', 'zh-TW': '對話掃描中…', en: 'Scanning chat…' },
@@ -22655,8 +22697,10 @@ const PANEL_I18N = {
   'speed.pill.calc': { 'zh-CN': '计算中', 'zh-TW': '計算中', en: 'Calculating' },
   'speed.pill.idle': { 'zh-CN': '待生成', 'zh-TW': '待生成', en: 'Idle' },
   'speed.takeaway.ok': { 'zh-CN': '✔ 最新输出{tone}（{tps} tok/s{stream}），总耗时 {dur}s 内生成 {tok} tokens{model}{avgPart}。', 'zh-TW': '✔ 最新輸出{tone}（{tps} tok/s{stream}），總耗時 {dur}s 內產生 {tok} tokens{model}{avgPart}。', en: '✔ Latest output {tone} ({tps} tok/s{stream}), generated {tok} tokens in {dur}s{model}{avgPart}.' },
-  'speed.avgPart': { 'zh-CN': '；会话平均 {avgTps} tok/s（共 {count} 轮，累计 {totalTok} tokens / {totalDur}s）', 'zh-TW': '；工作階段平均 {avgTps} tok/s（共 {count} 輪，累計 {totalTok} tokens / {totalDur}s）', en: '; session avg {avgTps} tok/s ({count} turns, {totalTok} tokens / {totalDur}s)' },
-  'speed.takeaway.avgInline': { 'zh-CN': ' · 会话平均 {avgTps} tok/s（共 {count} 轮）', 'zh-TW': ' · 工作階段平均 {avgTps} tok/s（共 {count} 輪）', en: ' · Session avg {avgTps} tok/s ({count} turns)' },
+  'speed.avgPart': { 'zh-CN': '；会话平均 {avgTps} tok/s（共 {count} 步，累计 {totalTok} tokens / {totalDur}s）', 'zh-TW': '；工作階段平均 {avgTps} tok/s（共 {count} 步，累計 {totalTok} tokens / {totalDur}s）', en: '; session avg {avgTps} tok/s ({count} steps, {totalTok} tokens / {totalDur}s)' },
+  'speed.takeaway.avgInline': { 'zh-CN': ' · 会话平均 {avgTps} tok/s（共 {count} 步）', 'zh-TW': ' · 工作階段平均 {avgTps} tok/s（共 {count} 步）', en: ' · Session avg {avgTps} tok/s ({count} steps)' },
+  'speed.takeaway.avgInlineStream': { 'zh-CN': ' · 纯流式均速 {avgTps} tok/s（共 {count} 步）', 'zh-TW': ' · 純串流均速 {avgTps} tok/s（共 {count} 步）', en: ' · Stream avg {avgTps} tok/s ({count} steps)' },
+  'speed.takeaway.avgInlineE2e': { 'zh-CN': ' · 端到端均速 {avgTps} tok/s（共 {count} 步）', 'zh-TW': ' · 端到端均速 {avgTps} tok/s（共 {count} 步）', en: ' · E2E avg {avgTps} tok/s ({count} steps)' },
   'speed.tone.smooth': { 'zh-CN': '流畅', 'zh-TW': '流暢', en: 'smooth' },
   'speed.tone.steady': { 'zh-CN': '平稳', 'zh-TW': '平穩', en: 'steady' },
   'speed.streamPart': { 'zh-CN': '，纯流式传输达 {tps} tok/s', 'zh-TW': '，純串流傳輸達 {tps} tok/s', en: ', streaming {tps} tok/s' },
@@ -24015,6 +24059,7 @@ const PANEL_I18N = {
   'ns.showComposerBar.title': { 'zh-CN': '输入框下方显示底栏状态摘要', 'zh-TW': '輸入框下方顯示底欄狀態摘要', en: 'Show status bar below composer' },
   'ns.showComposerBar.desc': { 'zh-CN': '在输入框底部展示当前上下文、速率、缓存命中与额度摘要', 'zh-TW': '在輸入框底部展示目前上下文、速率、快取命中與額度摘要', en: 'Shows context, speed, cache hit rate, and quota below the input box' },
   'ns.turnFooter.desc': { 'zh-CN': '在助手回复操作栏末尾显示本轮模型、用量与耗时微标', 'zh-TW': '在助手回覆操作欄末尾顯示本輪模型、用量與耗時微標', en: 'Shows per-turn model, token usage, and latency badge in reply actions' },
+  'ns.speedMode.desc': { 'zh-CN': '纯流式扣除首字延迟；端到端包含首字等待，作用于顶栏、卡片与尾部微标', 'zh-TW': '純串流扣除首字延遲；端到端包含首字等待，作用於頂欄、卡片與尾部微標', en: 'Pure stream excludes TTFT; End-to-End includes TTFT across topbar, card, and footer' },
   'ns.nextPrompt.desc': { 'zh-CN': '默认关闭 · 开启后每轮结束会调用当前账号模型并消耗额外额度，按 Tab 填入草稿', 'zh-TW': '預設關閉 · 開啟後每輪結束會呼叫目前帳號模型並消耗額外額度，按 Tab 填入草稿', en: 'Off by default · queries active model after each turn using quota; press Tab to insert' },
   'ns.autoSwitch.desc': { 'zh-CN': '达阈值后等待当前生成空闲且单窗口时切往备选账号', 'zh-TW': '達閾值後等待目前生成空閒且單視窗時切往備選帳號', en: 'Switches to a candidate account once threshold hits, idle, and single window' },
   'ns.autoSwitch.emptyCands': { 'zh-CN': '暂无可切入的备选账号', 'zh-TW': '暫無可切入的備選帳號', en: 'No candidate accounts available' },
@@ -32000,7 +32045,14 @@ try {
     if (panelKey === 'speed') {
       const ev = state.lastSpeedEval;
       const avgSp = typeof getSessionAverageSpeed === 'function' ? getSessionAverageSpeed(ev) : null;
-      const sp = avgSp?.avgTps ?? ev?.streamSpeed ?? ev?.overallTps ?? state.latest?.speed?.streamingTps ?? state.latest?.speed?.tps ?? null;
+      const resolved = typeof resolveSpeedDisplayMetrics === 'function'
+        ? resolveSpeedDisplayMetrics(avgSp, ev, speedDisplayMode)
+        : null;
+      const sp = resolved?.sessionPrimaryTps
+        ?? resolved?.stepPrimaryTps
+        ?? (speedDisplayMode === 'e2e'
+          ? (avgSp?.avgOverallTps ?? avgSp?.avgTps ?? ev?.overallTps ?? ev?.streamSpeed ?? state.latest?.speed?.tps ?? state.latest?.speed?.streamingTps ?? null)
+          : (avgSp?.avgStreamTps ?? avgSp?.avgTps ?? ev?.streamSpeed ?? ev?.overallTps ?? state.latest?.speed?.streamingTps ?? state.latest?.speed?.tps ?? null));
       let text = '--/s';
       let pct = 0;
       if (sp != null && Number.isFinite(Number(sp)) && Number(sp) > 0) {
@@ -32081,8 +32133,10 @@ try {
         mode = 'streaming';
         subKind = 'streaming';
         const rawTps = isStreamOverride
-          ? (ov.streamSpeed ?? ov.tps ?? 0)
-          : (spEval?.streamSpeed ?? spEval?.overallTps ?? state.liveSpeed?.emaTps ?? state.latest?.speed?.streamingTps ?? state.latest?.speed?.tps ?? 0);
+          ? (speedDisplayMode === 'e2e' ? (ov.overallTps ?? ov.tps ?? ov.streamSpeed ?? 0) : (ov.streamSpeed ?? ov.tps ?? 0))
+          : (speedDisplayMode === 'e2e'
+            ? (spEval?.overallTps ?? spEval?.streamSpeed ?? state.latest?.speed?.tps ?? state.liveSpeed?.emaTps ?? state.latest?.speed?.streamingTps ?? 0)
+            : (spEval?.streamSpeed ?? spEval?.overallTps ?? state.liveSpeed?.emaTps ?? state.latest?.speed?.streamingTps ?? state.latest?.speed?.tps ?? 0));
         const nTps = Number(rawTps);
         if (Number.isFinite(nTps) && nTps > 0) {
           const rounded = Math.round(nTps);
@@ -33350,6 +33404,11 @@ try {
     const btn = e.target?.closest?.('[data-quota-window-mode]');
     const mode = btn?.getAttribute?.('data-quota-window-mode');
     if (mode) setQuotaBadgeWindowMode(mode, { persist: true });
+  });
+  el('speed-mode-segmented')?.addEventListener('click', e => {
+    const btn = e.target?.closest?.('[data-speed-display-mode]');
+    const mode = btn?.getAttribute?.('data-speed-display-mode');
+    if (mode) setSpeedDisplayMode(mode, { persist: true });
   });
   const onVersionBadgeActivate = () => {
     openContextSettings?.({ scrollToUpdate: true });
@@ -37265,12 +37324,27 @@ let activeCnyTimerId = null;
       stepsFromScan > 0 || maxCallStep > 0 || callsCount > 0 || state.sessionStats?.stepCount != null
     );
 
-    const speedCandidate = state.lastSpeedEval?.tps
-      ?? state.lastSpeedEval?.streamingTps
-      ?? state.liveSpeed?.tps
-      ?? state.latest?.speed?.tps
-      ?? state.speedOverrideForTest?.tps
-      ?? null;
+    const speedCandidate = speedDisplayMode === 'e2e'
+      ? (state.lastSpeedEval?.overallTps
+        ?? state.lastSpeedEval?.tps
+        ?? state.lastSpeedEval?.streamSpeed
+        ?? state.lastSpeedEval?.streamingTps
+        ?? state.liveSpeed?.tps
+        ?? state.latest?.speed?.tps
+        ?? state.latest?.speed?.streamingTps
+        ?? state.speedOverrideForTest?.overallTps
+        ?? state.speedOverrideForTest?.tps
+        ?? null)
+      : (state.lastSpeedEval?.tps
+        ?? state.lastSpeedEval?.streamSpeed
+        ?? state.lastSpeedEval?.streamingTps
+        ?? state.lastSpeedEval?.overallTps
+        ?? state.liveSpeed?.tps
+        ?? state.latest?.speed?.streamingTps
+        ?? state.latest?.speed?.tps
+        ?? state.speedOverrideForTest?.streamSpeed
+        ?? state.speedOverrideForTest?.tps
+        ?? null);
     const isPendingWait = Boolean(state.livePendingRequest && state.livePendingRequest.cascadeId === state.route);
     const isPendingQueued = Boolean(isPendingWait && state.livePendingRequest.stage === 'queued');
     const hasSpeedVal = speedCandidate !== null && speedCandidate !== undefined && Number.isFinite(Number(speedCandidate)) && Number(speedCandidate) >= 0;
@@ -37723,7 +37797,9 @@ let activeCnyTimerId = null;
         const scopeLabel = isTurnAggregate ? t('turnFooter.scopeTurn') : t('turnFooter.scopeReq');
         const hitStr = rawHitPct !== null ? `${rawHitPct}%` : '—';
         const mName = lastCall.attributedModelLabel || lastCall.modelLabel || lastCall.model || '';
-        const tpsNum = lastCall.streamingTps ?? lastCall.tps;
+        const tpsNum = typeof pickCallDisplayTps === 'function'
+          ? pickCallDisplayTps(lastCall, speedDisplayMode)
+          : (speedDisplayMode === 'e2e' ? (lastCall.tps ?? lastCall.streamingTps) : (lastCall.streamingTps ?? lastCall.tps));
         const tpsStr = (tpsNum != null && Number.isFinite(Number(tpsNum)) && Number(tpsNum) > 0) ? `${Number(tpsNum).toFixed(0)} tok/s` : '';
         const inCompact = hasCalcUsage ? `In ${formatReqCompactTokens(cs.totalInput)}` : 'In —';
         const outCompact = hasCalcUsage ? `Out ${formatReqCompactTokens(cs.output)}` : 'Out —';
@@ -38279,6 +38355,37 @@ let activeCnyTimerId = null;
     return quotaBadgeWindowMode;
   }
 
+  function syncSpeedDisplayModeUi() {
+    const seg = el('speed-mode-segmented');
+    if (seg) {
+      for (const btn of Array.from(seg.children || [])) {
+        const mode = btn.getAttribute?.('data-speed-display-mode');
+        const active = mode === speedDisplayMode;
+        btn.classList?.toggle?.('active', active);
+        btn.setAttribute?.('aria-pressed', active ? 'true' : 'false');
+      }
+    }
+  }
+
+  function setSpeedDisplayMode(mode, opts = {}) {
+    const next = typeof normalizeSpeedDisplayMode === 'function'
+      ? normalizeSpeedDisplayMode(mode)
+      : (mode === 'e2e' ? 'e2e' : 'stream');
+    speedDisplayMode = next;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_speed_display_mode', next);
+    } catch { }
+    syncSpeedDisplayModeUi();
+    if (typeof syncSpeedBadgeText === 'function') syncSpeedBadgeText();
+    if (typeof renderTurnFooterStats === 'function') renderTurnFooterStats();
+    if (typeof renderComposerStatusBar === 'function') renderComposerStatusBar();
+    if (typeof syncHostSettingsUi === 'function') syncHostSettingsUi();
+    if (opts.persist !== false && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({ speedDisplayMode: next });
+    }
+    return speedDisplayMode;
+  }
+
   function cycleQuotaBadgeWindowMode() {
     const idx = VALID_QUOTA_WINDOW_MODES.indexOf(quotaBadgeWindowMode);
     const next = VALID_QUOTA_WINDOW_MODES[(idx + 1) % VALID_QUOTA_WINDOW_MODES.length];
@@ -38576,12 +38683,27 @@ let activeCnyTimerId = null;
       const speedValEl = el('csb-card-speed-val');
       const speedTtftEl = el('csb-card-speed-ttft');
       const speedDurationEl = el('csb-card-speed-duration');
-      const speedCandidate = state.lastSpeedEval?.tps
-        ?? state.lastSpeedEval?.streamingTps
-        ?? state.liveSpeed?.tps
-        ?? state.latest?.speed?.tps
-        ?? state.speedOverrideForTest?.tps
-        ?? null;
+      const speedCandidate = speedDisplayMode === 'e2e'
+        ? (state.lastSpeedEval?.overallTps
+          ?? state.lastSpeedEval?.tps
+          ?? state.lastSpeedEval?.streamSpeed
+          ?? state.lastSpeedEval?.streamingTps
+          ?? state.liveSpeed?.tps
+          ?? state.latest?.speed?.tps
+          ?? state.latest?.speed?.streamingTps
+          ?? state.speedOverrideForTest?.overallTps
+          ?? state.speedOverrideForTest?.tps
+          ?? null)
+        : (state.lastSpeedEval?.tps
+          ?? state.lastSpeedEval?.streamSpeed
+          ?? state.lastSpeedEval?.streamingTps
+          ?? state.lastSpeedEval?.overallTps
+          ?? state.liveSpeed?.tps
+          ?? state.latest?.speed?.streamingTps
+          ?? state.latest?.speed?.tps
+          ?? state.speedOverrideForTest?.streamSpeed
+          ?? state.speedOverrideForTest?.tps
+          ?? null);
       const hasSpeedVal = speedCandidate !== null && speedCandidate !== undefined && Number.isFinite(Number(speedCandidate)) && Number(speedCandidate) >= 0;
       const remoteSpeedText = !hasSpeedVal && state.lastSpeedEval?.phase === 'remote_unavailable'
         ? (state.lastSpeedEval?.badge?.text || '远程对话')
@@ -49388,6 +49510,12 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         } else {
           syncQuotaWindowModeUi();
         }
+        const savedSpeedMode = settingsRes.speedDisplayMode || settingsRes.uiPreferences?.speedDisplayMode;
+        if (savedSpeedMode && VALID_SPEED_DISPLAY_MODES.includes(savedSpeedMode) && savedSpeedMode !== speedDisplayMode) {
+          setSpeedDisplayMode(savedSpeedMode, { persist: false });
+        } else {
+          syncSpeedDisplayModeUi();
+        }
         const savedQuickMenuStyle = settingsRes.quickMenuStyle || settingsRes.uiPreferences?.quickMenuStyle;
         const savedOrbPos = settingsRes.radialOrbPos !== undefined ? settingsRes.radialOrbPos : settingsRes.uiPreferences?.radialOrbPos;
         if (savedOrbPos && typeof savedOrbPos === 'object' && Number.isFinite(Number(savedOrbPos.x)) && Number.isFinite(Number(savedOrbPos.y))) {
@@ -55896,6 +56024,19 @@ const {
 
       <div class="ag-ns-row">
         <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="settings.speedMode.label">速度统计口径</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.speedMode.desc">纯流式扣除首字延迟；端到端包含首字等待，作用于顶栏、卡片与尾部微标</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-seg" role="radiogroup" data-ag-ns-seg="speedDisplayMode">
+            <button type="button" class="ag-ns-seg-btn is-active" role="radio" aria-checked="true" data-val="stream" data-i18n="settings.speedMode.stream">纯流式</button>
+            <button type="button" class="ag-ns-seg-btn" role="radio" aria-checked="false" data-val="e2e" data-i18n="settings.speedMode.e2e">端到端</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
           <div class="ag-ns-row-title" data-i18n="settings.nextPrompt.label">下一句预测建议</div>
           <div class="ag-ns-row-desc" data-i18n="ns.nextPrompt.desc">默认关闭 · 开启后每轮结束会调用当前账号模型并消耗额外额度，按 Tab 填入草稿</div>
         </div>
@@ -58581,6 +58722,7 @@ function createHostSettingsController(deps = {}) {
             topbarMode,
             panelDockMode,
             quotaWindowMode: quotaBadgeWindowMode,
+            speedDisplayMode,
             autoHideTopbarOnDock: Boolean(autoHideTopbarOnDockedPanel),
             radialOrb: Boolean(!radialOrbHidden && radialOrbEnabled),
             radialTopbar: Boolean(radialTopbarEnabled),
@@ -58684,6 +58826,7 @@ function createHostSettingsController(deps = {}) {
         if (key === 'topbarMode') { setTopbarMode(value, { persist: true }); syncHostSettingsUi(); return; }
         if (key === 'panelDockMode') { setPanelDockMode(value, { persist: true }); syncHostSettingsUi(); return; }
         if (key === 'quotaWindowMode') { setQuotaBadgeWindowMode(value, { persist: true }); syncHostSettingsUi(); return; }
+        if (key === 'speedDisplayMode') { setSpeedDisplayMode(value, { persist: true }); syncHostSettingsUi(); return; }
         if (key === 'autoHideTopbarOnDock') {
           const prev = autoHideTopbarOnDockedPanel;
           void persistBooleanPreferenceToggle({
@@ -61958,31 +62101,75 @@ function initCrossSessionInsightsControls() {
     return summarizeSessionSpeed(calls, fb);
   }
 
+  function resolveSpeedMetricsForUi(evalRes, avgSp) {
+    if (typeof resolveSpeedDisplayMetrics === 'function') {
+      return resolveSpeedDisplayMetrics(avgSp, evalRes, speedDisplayMode);
+    }
+    const isE2e = speedDisplayMode === 'e2e';
+    const sPrimary = isE2e ? (avgSp?.avgOverallTps ?? avgSp?.avgTps ?? null) : (avgSp?.avgStreamTps ?? avgSp?.avgTps ?? avgSp?.avgOverallTps ?? null);
+    const sSecondary = isE2e ? (avgSp?.avgStreamTps ?? null) : (avgSp?.avgOverallTps ?? null);
+    const lPrimary = isE2e ? (evalRes?.overallTps ?? evalRes?.streamSpeed ?? null) : (evalRes?.streamSpeed ?? evalRes?.overallTps ?? null);
+    const lSecondary = isE2e ? (evalRes?.streamSpeed ?? null) : (evalRes?.overallTps ?? null);
+    return {
+      mode: isE2e ? 'e2e' : 'stream',
+      sessionPrimaryTps: sPrimary,
+      sessionSecondaryTps: sSecondary,
+      sessionPrimaryKind: isE2e ? (avgSp?.avgOverallTps != null ? 'e2e' : 'stream') : (avgSp?.avgStreamTps != null ? 'stream' : 'e2e'),
+      stepPrimaryTps: lPrimary,
+      stepSecondaryTps: lSecondary,
+      stepPrimaryKind: isE2e ? (evalRes?.overallTps != null ? 'e2e' : 'stream') : (evalRes?.streamSpeed != null ? 'stream' : 'e2e')
+    };
+  }
+
   function updateSpeedBadgeHoverTitle(evalRes, avgSp) {
     const speedBadge = el('badge-speed');
     if (!speedBadge) return;
     const sp = state.latest?.speed || null;
-    if (avgSp?.avgTps != null) {
+    const metrics = resolveSpeedMetricsForUi(evalRes, avgSp);
+    if (metrics.sessionPrimaryTps != null) {
       const latestStream = evalRes?.streamSpeed ?? sp?.streamingTps ?? null;
       const latestOverall = evalRes?.overallTps ?? sp?.tps ?? null;
-      const latestPrimary = latestStream ?? latestOverall;
+      const latestPrimary = metrics.stepPrimaryTps ?? latestStream ?? latestOverall;
+      const latestComplement = (metrics.stepPrimaryKind === 'e2e')
+        ? (latestStream != null && Math.abs(latestStream - latestPrimary) >= 0.5 ? t('badge.speedStreamingPart', { tps: latestStream }) : '')
+        : (latestOverall != null && Math.abs(latestOverall - latestPrimary) >= 0.5 ? t('badge.speedOverallPart', { tps: latestOverall }) : '');
       const latestPart = latestPrimary != null
         ? t('badge.speedLatestPart', {
-          tps: latestOverall ?? latestPrimary,
-          streaming: latestStream ? t('badge.speedStreamingPart', { tps: latestStream }) : '',
+          tps: latestPrimary,
+          streaming: latestComplement,
           duration: sp?.duration || evalRes?.durationFormatted || '—',
           ttft: sp?.ttft || evalRes?.ttftFormatted || '—',
           streamSec: sp?.streamingSec || '—',
           output: fmt(evalRes?.outputTokens ?? sp?.outputTokens ?? 0)
         })
         : '';
-      speedBadge.title = t('badge.speedTitleDetail', {
-        avgTps: avgSp.avgTps,
-        count: avgSp.count,
-        totalOut: fmt(avgSp.totalOutputTokens),
-        totalDur: avgSp.totalDurationSec ?? '—',
-        latestPart
-      });
+      const hasDiffSecondary = metrics.sessionSecondaryTps != null && Math.abs(metrics.sessionSecondaryTps - metrics.sessionPrimaryTps) >= 0.5;
+      if (metrics.sessionPrimaryKind === 'stream' && avgSp?.totalStreamingSec != null) {
+        const secondaryPart = hasDiffSecondary
+          ? t('session.speed.avgOverallPart', { overallTps: metrics.sessionSecondaryTps })
+          : '';
+        speedBadge.title = t('badge.speedTitleDetailStream', {
+          avgTps: metrics.sessionPrimaryTps,
+          secondaryPart,
+          count: avgSp.count,
+          streamOut: fmt(avgSp.totalStreamTokens > 0 ? avgSp.totalStreamTokens : avgSp.totalOutputTokens),
+          streamDur: avgSp.totalStreamingSec,
+          totalDur: avgSp.totalDurationSec ?? '—',
+          latestPart
+        });
+      } else {
+        const secondaryPart = hasDiffSecondary
+          ? t('session.speed.avgStreamPart', { streamTps: metrics.sessionSecondaryTps })
+          : '';
+        speedBadge.title = t('badge.speedTitleDetailE2e', {
+          avgTps: metrics.sessionPrimaryTps,
+          secondaryPart,
+          count: avgSp.count,
+          totalOut: fmt(avgSp.totalOutputTokens),
+          totalDur: avgSp.totalDurationSec ?? '—',
+          latestPart
+        });
+      }
     } else if (evalRes?.phase === 'waiting' || state.requestBusy) {
       speedBadge.title = t('badge.speedTitleWait');
     } else {
@@ -62023,6 +62210,7 @@ function initCrossSessionInsightsControls() {
 
     const isCompact = state.layoutMode === 'compact';
     const shortSampleText = t('session.speed.shortSampleBadge');
+    const speedMetrics = resolveSpeedMetricsForUi(evalRes, avgSp);
     if (evalRes.phase === 'queued') {
       bSpeed?.setAttribute?.('data-speed-phase', 'queued');
       if (waitSvgWrap) waitSvgWrap.hidden = true;
@@ -62060,15 +62248,12 @@ function initCrossSessionInsightsControls() {
         if (evalRes.isSampleSparse) {
           speedAmount.textContent = shortSampleText;
           if (overflowSpeedVal) overflowSpeedVal.textContent = shortSampleText;
-        } else if (avgSp?.avgTps != null) {
-          speedAmount.textContent = isCompact ? `${avgSp.avgTps}` : `${avgSp.avgTps} tok/s`;
-          if (overflowSpeedVal) overflowSpeedVal.textContent = `${avgSp.avgTps} tok/s`;
-        } else if (evalRes.streamSpeed != null) {
-          speedAmount.textContent = isCompact ? `${evalRes.streamSpeed}` : `${evalRes.streamSpeed} tok/s`;
-          if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.streamSpeed} tok/s`;
-        } else if (evalRes.overallTps != null) {
-          speedAmount.textContent = isCompact ? `${evalRes.overallTps}` : `${evalRes.overallTps} tok/s`;
-          if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.overallTps} tok/s`;
+        } else if (speedMetrics.sessionPrimaryTps != null) {
+          speedAmount.textContent = isCompact ? `${speedMetrics.sessionPrimaryTps}` : `${speedMetrics.sessionPrimaryTps} tok/s`;
+          if (overflowSpeedVal) overflowSpeedVal.textContent = `${speedMetrics.sessionPrimaryTps} tok/s`;
+        } else if (speedMetrics.stepPrimaryTps != null) {
+          speedAmount.textContent = isCompact ? `${speedMetrics.stepPrimaryTps}` : `${speedMetrics.stepPrimaryTps} tok/s`;
+          if (overflowSpeedVal) overflowSpeedVal.textContent = `${speedMetrics.stepPrimaryTps} tok/s`;
         } else {
           speedAmount.textContent = isCompact ? '--' : '-- tok/s';
           if (overflowSpeedVal) overflowSpeedVal.textContent = '-- tok/s';
@@ -62078,7 +62263,9 @@ function initCrossSessionInsightsControls() {
     }
 
     const spBadge = el('speed-badge');
+    const spAvgLabel = el('speed-avg-label');
     const spAvgVal = el('speed-avg-val');
+    const spValLabel = el('speed-val-label');
     const spVal = el('speed-val');
     const spDur = el('speed-duration');
     const spTtft = el('speed-ttft');
@@ -62088,6 +62275,17 @@ function initCrossSessionInsightsControls() {
     const spBreakdownDet = el('speed-breakdown-details');
     const spBreakdownGrid = el('speed-breakdown-grid');
 
+    if (spAvgLabel) {
+      spAvgLabel.textContent = speedMetrics.mode === 'e2e'
+        ? t('session.speed.avgE2eRate')
+        : t('session.speed.avgStreamRate');
+    }
+    if (spValLabel) {
+      spValLabel.textContent = speedMetrics.mode === 'e2e'
+        ? t('session.speed.stepE2eRate')
+        : t('session.speed.stepStreamRate');
+    }
+
     const spMockTag = el('speed-mock-tag');
     if (spMockTag) {
       spMockTag.hidden = !(state.speedOverrideForTest && typeof state.speedOverrideForTest === 'object');
@@ -62095,18 +62293,33 @@ function initCrossSessionInsightsControls() {
     }
     if (spBadge) applyElv91PillTone(spBadge, evalRes);
     if (spAvgVal) {
-      if (avgSp?.avgTps != null) {
-        spAvgVal.textContent = `${avgSp.avgTps} tok/s`;
-        const overallPart = (avgSp.avgOverallTps != null && Math.abs(avgSp.avgOverallTps - avgSp.avgTps) >= 0.5)
-          ? t('session.speed.avgOverallPart', { overallTps: avgSp.avgOverallTps })
-          : '';
-        spAvgVal.title = t('session.speed.avgTip', {
-          avgTps: avgSp.avgTps,
-          overallPart,
-          count: avgSp.count,
-          totalTok: fmt(avgSp.totalOutputTokens),
-          totalDur: avgSp.totalDurationSec ?? '—'
-        });
+      if (speedMetrics.sessionPrimaryTps != null) {
+        spAvgVal.textContent = `${speedMetrics.sessionPrimaryTps} tok/s`;
+        const hasDiffSecondary = speedMetrics.sessionSecondaryTps != null && Math.abs(speedMetrics.sessionSecondaryTps - speedMetrics.sessionPrimaryTps) >= 0.5;
+        if (speedMetrics.sessionPrimaryKind === 'stream' && avgSp?.totalStreamingSec != null) {
+          const secondaryPart = hasDiffSecondary
+            ? t('session.speed.avgOverallPart', { overallTps: speedMetrics.sessionSecondaryTps })
+            : '';
+          spAvgVal.title = t('session.speed.avgTipStream', {
+            avgTps: speedMetrics.sessionPrimaryTps,
+            secondaryPart,
+            count: avgSp.count,
+            streamTok: fmt(avgSp.totalStreamTokens > 0 ? avgSp.totalStreamTokens : avgSp.totalOutputTokens),
+            streamDur: avgSp.totalStreamingSec,
+            totalDur: avgSp.totalDurationSec ?? '—'
+          });
+        } else {
+          const secondaryPart = hasDiffSecondary
+            ? t('session.speed.avgStreamPart', { streamTps: speedMetrics.sessionSecondaryTps })
+            : '';
+          spAvgVal.title = t('session.speed.avgTipE2e', {
+            avgTps: speedMetrics.sessionPrimaryTps,
+            secondaryPart,
+            count: avgSp.count,
+            totalTok: fmt(avgSp.totalOutputTokens),
+            totalDur: avgSp.totalDurationSec ?? '—'
+          });
+        }
       } else {
         spAvgVal.textContent = '—';
         spAvgVal.title = '';
@@ -62121,10 +62334,8 @@ function initCrossSessionInsightsControls() {
         spVal.textContent = evalRes.shortTitle || '—';
       } else if (evalRes.isSampleSparse) {
         spVal.textContent = shortSampleText;
-      } else if (evalRes.streamSpeed != null) {
-        spVal.textContent = `${evalRes.streamSpeed} tok/s`;
-      } else if (evalRes.overallTps != null) {
-        spVal.textContent = `${evalRes.overallTps} tok/s`;
+      } else if (speedMetrics.stepPrimaryTps != null) {
+        spVal.textContent = `${speedMetrics.stepPrimaryTps} tok/s`;
       } else {
         spVal.textContent = '—';
       }
@@ -62143,11 +62354,21 @@ function initCrossSessionInsightsControls() {
       }
     }
     if (spTakeaway) {
-      const avgNote = (evalRes.phase === 'final' && evalRes.overallTps != null && (evalRes.isSampleSparse || (evalRes.streamSpeed != null && Math.abs(evalRes.overallTps - evalRes.streamSpeed) >= 5)))
-        ? (isEn ? ` (Overall avg ${evalRes.overallTps} tok/s)` : (isTw ? `（整體均速 ${evalRes.overallTps} tok/s）` : `（整体均速 ${evalRes.overallTps} tok/s）`))
-        : '';
-      const sessionAvgNote = avgSp?.avgTps != null
-        ? t('speed.takeaway.avgInline', { avgTps: avgSp.avgTps, count: avgSp.count })
+      let avgNote = '';
+      if (evalRes.phase === 'final') {
+        if (speedMetrics.mode === 'e2e') {
+          if (evalRes.streamSpeed != null && (evalRes.overallTps == null || Math.abs(evalRes.overallTps - evalRes.streamSpeed) >= 5)) {
+            avgNote = isEn ? ` (Pure stream ${evalRes.streamSpeed} tok/s)` : (isTw ? `（純串流 ${evalRes.streamSpeed} tok/s）` : `（纯流式 ${evalRes.streamSpeed} tok/s）`);
+          }
+        } else if (evalRes.overallTps != null && (evalRes.isSampleSparse || (evalRes.streamSpeed != null && Math.abs(evalRes.overallTps - evalRes.streamSpeed) >= 5))) {
+          avgNote = isEn ? ` (Overall avg ${evalRes.overallTps} tok/s)` : (isTw ? `（整體均速 ${evalRes.overallTps} tok/s）` : `（整体均速 ${evalRes.overallTps} tok/s）`);
+        }
+      }
+      const sessionAvgNote = speedMetrics.sessionPrimaryTps != null
+        ? t(speedMetrics.sessionPrimaryKind === 'e2e' ? 'speed.takeaway.avgInlineE2e' : 'speed.takeaway.avgInlineStream', {
+          avgTps: speedMetrics.sessionPrimaryTps,
+          count: avgSp.count
+        })
         : '';
       spTakeaway.textContent = `${evalRes.comment || ''}${avgNote}${sessionAvgNote}`;
     }
@@ -62200,14 +62421,20 @@ function initCrossSessionInsightsControls() {
         { k: t('session.speed.breakdown.overall'), v: evalRes.overallTps != null ? `${evalRes.overallTps} tok/s` : unk, color: null, note: '' },
         {
           k: t('session.speed.breakdown.sessionAvg'),
-          v: avgSp?.avgTps != null ? `${avgSp.avgTps} tok/s` : unk,
+          v: speedMetrics.sessionPrimaryTps != null ? `${speedMetrics.sessionPrimaryTps} tok/s` : unk,
           color: null,
-          note: avgSp?.avgTps != null
-            ? (isEn
-              ? `${avgSp.count} turn(s) · ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`
-              : (isTw
-                ? `共 ${avgSp.count} 輪 · 累計 ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`
-                : `共 ${avgSp.count} 轮 · 累计 ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`))
+          note: speedMetrics.sessionPrimaryTps != null
+            ? (speedMetrics.sessionPrimaryKind === 'stream' && avgSp?.totalStreamingSec != null
+              ? (isEn
+                ? `${avgSp.count} step(s) · ${fmt(avgSp.totalStreamTokens > 0 ? avgSp.totalStreamTokens : avgSp.totalOutputTokens)} tok / ${avgSp.totalStreamingSec}s stream`
+                : (isTw
+                  ? `共 ${avgSp.count} 步 · 純串流 ${fmt(avgSp.totalStreamTokens > 0 ? avgSp.totalStreamTokens : avgSp.totalOutputTokens)} tok / ${avgSp.totalStreamingSec}s`
+                  : `共 ${avgSp.count} 步 · 纯流式 ${fmt(avgSp.totalStreamTokens > 0 ? avgSp.totalStreamTokens : avgSp.totalOutputTokens)} tok / ${avgSp.totalStreamingSec}s`))
+              : (isEn
+                ? `${avgSp.count} step(s) · ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`
+                : (isTw
+                  ? `共 ${avgSp.count} 步 · 累計 ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`
+                  : `共 ${avgSp.count} 步 · 累计 ${fmt(avgSp.totalOutputTokens)} tok / ${avgSp.totalDurationSec ?? '—'}s`)))
             : ''
         },
         { k: t('session.speed.breakdown.stability'), v: stabText, color: evalRes.stability?.isStable ? '#10B981' : null, note: '' }
@@ -64739,6 +64966,14 @@ function initCrossSessionInsightsControls() {
         cache: cacheText
       });
       sumEl.appendChild(sLine);
+      if (tl.cliReportedUsage) {
+        const usageLine = document.createElement('div');
+        usageLine.textContent = t('session.timeline.cliReportedUsage', {
+          total: tl.cliReportedUsage.totalTokens.toLocaleString(),
+          cache: tl.cliReportedUsage.cacheReadTokens.toLocaleString()
+        });
+        sumEl.appendChild(usageLine);
+      }
       if (tl.contextDeltaSummary?.latestContextTokens != null) {
         const dSum = tl.contextDeltaSummary;
         const netTxt = dSum.netDeltaTokens != null
@@ -64784,7 +65019,7 @@ function initCrossSessionInsightsControls() {
           const st = tl.sessionTokenTotals;
           const totLine = document.createElement('div');
           totLine.className = 'timeline-turn-meta';
-          totLine.textContent = t('session.timeline.modelTotalsLine', {
+          totLine.textContent = t(tl.cliReportedUsage ? 'session.timeline.processedTotalsLine' : 'session.timeline.modelTotalsLine', {
             calls: st.callCount || 0,
             total: short(st.totalTokens || 0),
             inp: short(st.inputTokens || 0),
@@ -71685,7 +71920,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   }
 
   globalThis.__AGContextMeter = {
-    buildId: '63669415685a1970',
+    buildId: '18a21df2883712bc',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;
@@ -72100,6 +72335,8 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
     getAutoHideTopbarOnDockedPanel: () => autoHideTopbarOnDockedPanel,
     setQuotaBadgeWindowMode: (mode, opts = {}) => setQuotaBadgeWindowMode(mode, opts),
     getQuotaBadgeWindowMode: () => quotaBadgeWindowMode,
+    setSpeedDisplayMode: (mode, opts = {}) => setSpeedDisplayMode(mode, opts),
+    getSpeedDisplayMode: () => speedDisplayMode,
     getTokenCacheBreakdownForTest: () => ({
       input: el('tcb-input-val')?.textContent || '',
       cacheRead: el('tcb-cache-val')?.textContent || '',
@@ -72684,6 +72921,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   if (el('v-tokens')) el('v-tokens').textContent = formatDisplayVersion(METER_RENDERER_VERSION);
   syncDockPositionUi();
   syncQuotaWindowModeUi();
+  syncSpeedDisplayModeUi();
   syncAllViewPrefControlsUi();
   syncRadialOrbHiddenUi();
   if (el('chk-show-composer-quota')) el('chk-show-composer-quota').checked = showComposerQuotaSummary;

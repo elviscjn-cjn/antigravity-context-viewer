@@ -804,6 +804,10 @@
   var PROTECTED_ID_SET = {
     'context-meter-root': 1,
     'ag-context-meter': 1,
+    'ag-context-meter-radial-host': 1,
+    'ag-context-meter-modal-host': 1,
+    'ag-cm-host-settings-nav': 1,
+    'ag-cm-host-settings-page': 1,
     'ag-composer-status-bar': 1,
     'token-five-line-card': 1
   };
@@ -1186,14 +1190,18 @@
     '#ag-context-meter',
     '#context-meter-root',
     '#ag-context-meter-radial-host',
+    '#ag-context-meter-modal-host',
     '[data-ag-radial-top-layer]',
+    '[data-ag-modal-top-layer]',
+    '#ag-cm-host-settings-nav',
+    '#ag-cm-host-settings-page',
     '#ag-composer-status-bar',
     '#token-five-line-card',
     '#cli-launch-toast'
   ];
 
   /**
-   * PR #90：插件自有节点判定（宿主层 + 顶层径向挂载 + 底栏状态条）。
+   * PR #90 / #131：插件自有节点判定（宿主层 + 顶层径向/模态挂载 + 设置页注入 + 底栏状态条）。
    * 命中后悬停入口立即返回，不再触发任何翻译扫描。
    */
   function isPluginOwnedNode(el) {
@@ -1204,7 +1212,7 @@
       if (cur.id && PROTECTED_ID_SET[cur.id]) return true;
       if (cur.hasAttribute) {
         try {
-          if (cur.hasAttribute('data-ag-radial-top-layer')) return true;
+          if (cur.hasAttribute('data-ag-radial-top-layer') || cur.hasAttribute('data-ag-modal-top-layer')) return true;
         } catch (e) { }
       }
       cur = cur.parentElement || cur.parentNode;
@@ -2014,6 +2022,19 @@
     root.__AGY_TRANSLATE_EL__ = translateElement;
     root.__AGY_RUN_FULL_SCAN__ = safeFullScan;
     root.__AGY_SET_ENABLED__ = setI18nEnabled;
+    root.__AGY_I18N_HOT_UPDATE__ = function (nextData, nextConfig) {
+      if (nextData && typeof nextData === 'object') {
+        I18N_DATA = nextData;
+        defaultEngine = createI18nEngine(I18N_DATA);
+        translateSingleUnit = defaultEngine.translate;
+        root.__AGY_I18N_DATA__ = nextData;
+        root.__AGY_TRANSLATE_UNIT__ = translateSingleUnit;
+        root.__AGY_CACHE__ = defaultEngine.cache;
+      }
+      var cfg = (nextConfig && typeof nextConfig === 'object') ? nextConfig : I18N_CONFIG;
+      var wantEnable = Boolean(cfg && cfg.enabled !== false && String(cfg.language || '').toLowerCase() !== 'en');
+      setI18nEnabled(wantEnable, { brandTitle: cfg && cfg.brandTitle });
+    };
     root.__AGY_RESTORE_ORIGINAL__ = restoreOriginalDom;
     root.__AGY_CACHE__ = defaultEngine.cache;
     root.__AGY_IS_FLOATING__ = isFloatingElement;

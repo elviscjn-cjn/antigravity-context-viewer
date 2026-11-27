@@ -3790,6 +3790,7 @@
         count,
         streamCount,
         totalOutputTokens,
+        totalStreamTokens: streamCount > 0 ? totalStreamTokens : 0,
         totalDurationSec: Number(totalDurationSec.toFixed(2)),
         totalStreamingSec: totalStreamingSec >= 0.05 ? Number(totalStreamingSec.toFixed(2)) : null,
         isFallback: false
@@ -3806,13 +3807,15 @@
         const fbOut = Number(fallbackSpeed.outputTokens);
         const fbDur = Number(fallbackSpeed.totalDurationSec ?? fallbackSpeed.durationSec ?? fallbackSpeed.duration);
         const fbStreamSec = Number(fallbackSpeed.streamingSec);
+        const hasFbStream = Number.isFinite(fbStreamTps) && fbStreamTps > 0;
         return {
           avgTps: fbHeadline,
-          avgStreamTps: (Number.isFinite(fbStreamTps) && fbStreamTps > 0) ? Number(fbStreamTps.toFixed(1)) : null,
+          avgStreamTps: hasFbStream ? Number(fbStreamTps.toFixed(1)) : null,
           avgOverallTps: (Number.isFinite(fbOverallTps) && fbOverallTps > 0) ? Number(fbOverallTps.toFixed(1)) : null,
           count: 1,
-          streamCount: (Number.isFinite(fbStreamTps) && fbStreamTps > 0) ? 1 : 0,
+          streamCount: hasFbStream ? 1 : 0,
           totalOutputTokens: Number.isFinite(fbOut) && fbOut > 0 ? fbOut : 0,
+          totalStreamTokens: (hasFbStream && Number.isFinite(fbOut) && fbOut > 0) ? fbOut : 0,
           totalDurationSec: Number.isFinite(fbDur) && fbDur > 0 ? Number(fbDur.toFixed(2)) : null,
           totalStreamingSec: Number.isFinite(fbStreamSec) && fbStreamSec >= 0.05 ? Number(fbStreamSec.toFixed(2)) : null,
           isFallback: true
@@ -3820,6 +3823,103 @@
       }
     }
 
+    return null;
+  }
+
+  function normalizeSpeedDisplayMode(mode) {
+    return mode === 'e2e' ? 'e2e' : 'stream';
+  }
+
+  /**
+   * 根据速度显示口径（stream 纯流式 / e2e 端到端）解析会话均速与单步主/辅对照指标
+   */
+  function resolveSpeedDisplayMetrics(avgSp, evalRes, mode = 'stream') {
+    const normalizedMode = normalizeSpeedDisplayMode(mode);
+    const hasAvgStream = avgSp?.avgStreamTps != null && Number.isFinite(Number(avgSp.avgStreamTps)) && Number(avgSp.avgStreamTps) > 0;
+    const hasAvgOverall = avgSp?.avgOverallTps != null && Number.isFinite(Number(avgSp.avgOverallTps)) && Number(avgSp.avgOverallTps) > 0;
+    const fallbackAvg = avgSp?.avgTps != null && Number.isFinite(Number(avgSp.avgTps)) && Number(avgSp.avgTps) > 0 ? Number(avgSp.avgTps) : null;
+
+    let sessionPrimaryTps = null;
+    let sessionSecondaryTps = null;
+    let sessionPrimaryKind = normalizedMode;
+    if (normalizedMode === 'e2e') {
+      if (hasAvgOverall) {
+        sessionPrimaryTps = Number(avgSp.avgOverallTps);
+        sessionSecondaryTps = hasAvgStream ? Number(avgSp.avgStreamTps) : null;
+        sessionPrimaryKind = 'e2e';
+      } else if (hasAvgStream) {
+        sessionPrimaryTps = Number(avgSp.avgStreamTps);
+        sessionSecondaryTps = null;
+        sessionPrimaryKind = 'stream';
+      } else if (fallbackAvg !== null) {
+        sessionPrimaryTps = fallbackAvg;
+        sessionPrimaryKind = 'e2e';
+      }
+    } else if (hasAvgStream) {
+      sessionPrimaryTps = Number(avgSp.avgStreamTps);
+      sessionSecondaryTps = hasAvgOverall ? Number(avgSp.avgOverallTps) : null;
+      sessionPrimaryKind = 'stream';
+    } else if (hasAvgOverall) {
+      sessionPrimaryTps = Number(avgSp.avgOverallTps);
+      sessionSecondaryTps = null;
+      sessionPrimaryKind = 'e2e';
+    } else if (fallbackAvg !== null) {
+      sessionPrimaryTps = fallbackAvg;
+      sessionPrimaryKind = 'stream';
+    }
+
+    const hasStepStream = evalRes?.streamSpeed != null && Number.isFinite(Number(evalRes.streamSpeed)) && Number(evalRes.streamSpeed) > 0;
+    const hasStepOverall = evalRes?.overallTps != null && Number.isFinite(Number(evalRes.overallTps)) && Number(evalRes.overallTps) > 0;
+    let stepPrimaryTps = null;
+    let stepSecondaryTps = null;
+    let stepPrimaryKind = normalizedMode;
+    if (normalizedMode === 'e2e') {
+      if (hasStepOverall) {
+        stepPrimaryTps = Number(evalRes.overallTps);
+        stepSecondaryTps = hasStepStream ? Number(evalRes.streamSpeed) : null;
+        stepPrimaryKind = 'e2e';
+      } else if (hasStepStream) {
+        stepPrimaryTps = Number(evalRes.streamSpeed);
+        stepSecondaryTps = null;
+        stepPrimaryKind = 'stream';
+      }
+    } else if (hasStepStream) {
+      stepPrimaryTps = Number(evalRes.streamSpeed);
+      stepSecondaryTps = hasStepOverall ? Number(evalRes.overallTps) : null;
+      stepPrimaryKind = 'stream';
+    } else if (hasStepOverall) {
+      stepPrimaryTps = Number(evalRes.overallTps);
+      stepSecondaryTps = null;
+      stepPrimaryKind = 'e2e';
+    }
+
+    return {
+      mode: normalizedMode,
+      sessionPrimaryTps,
+      sessionSecondaryTps,
+      sessionPrimaryKind,
+      stepPrimaryTps,
+      stepSecondaryTps,
+      stepPrimaryKind
+    };
+  }
+
+  /**
+   * 按口径提取单次调用展示速率（缺省回退至另一口径以兼容历史记录）
+   */
+  function pickCallDisplayTps(call, mode = 'stream') {
+    if (!call || typeof call !== 'object') return null;
+    const normalizedMode = normalizeSpeedDisplayMode(mode);
+    const candidates = normalizedMode === 'e2e'
+      ? [call.tps, call.overallTps, call.streamingTps, call.streamSpeed]
+      : [call.streamingTps, call.streamSpeed, call.tps, call.overallTps];
+    for (let i = 0; i < candidates.length; i++) {
+      const val = candidates[i];
+      if (val !== null && val !== undefined && val !== '') {
+        const num = Number(val);
+        if (Number.isFinite(num) && num > 0) return num;
+      }
+    }
     return null;
   }
 
@@ -9602,6 +9702,22 @@
     return text.slice(0, limit);
   }
 
+  function summarizeCliReportedUsage(calls, cascadeId) {
+    const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalTokens: 0 };
+    let hasUsage = false;
+    for (const call of calls) {
+      if (call.cascadeId !== cascadeId || call.source !== 'cli') continue;
+      if (call.inputTokens == null && (call.totalTokens || 0) > (call.outputTokens || 0)) return null;
+      if (call.inputTokens == null && call.outputTokens == null) continue;
+      hasUsage = true;
+      usage.inputTokens += call.inputTokens || 0;
+      usage.outputTokens += call.outputTokens || 0;
+      usage.cacheReadTokens += call.cacheReadTokens || 0;
+    }
+    usage.totalTokens = usage.inputTokens + usage.outputTokens;
+    return hasUsage ? usage : null;
+  }
+
   /**
    * 按用户轮次（Turn）将当前会话主代理调用与可验证的子代理调用分组汇总。
    * 绝不凭时间接近猜测父子归属：未关联到父步骤的子代理调用放入独立 unlinkedSubagentCalls 列表。
@@ -10616,6 +10732,8 @@
     };
 
     const overallCacheSummary = summarizeCacheReadStats(allCalls);
+    // agy reports input + output. The existing processed totals include cache reads.
+    const cliReportedUsage = options.sessionSource === 'cli' ? summarizeCliReportedUsage(allCalls, cascadeId) : null;
     return {
       cascadeId,
       turns: resultTurns,
@@ -10625,6 +10743,7 @@
       subagentCallsCount: totalSubAll,
       modelBreakdown,
       sessionTokenTotals,
+      ...(cliReportedUsage ? { cliReportedUsage } : {}),
       cacheSummary: overallCacheSummary,
       contextDeltaSummary,
       timingSummary,
@@ -12258,6 +12377,9 @@
     isValidSpeedSample,
     resolveRequestRowSpeed,
     summarizeSessionSpeed,
+    normalizeSpeedDisplayMode,
+    resolveSpeedDisplayMetrics,
+    pickCallDisplayTps,
     computeMedian,
     summarizeSpeedByModel,
     parseSpeedDateRange,

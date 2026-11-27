@@ -117,6 +117,9 @@ async function shutdownLiveHostGracefully(liveInfo) {
       return { ok: true, method: 'http_shutdown', pid: liveInfo.pid };
     }
   }
+  if (Number(liveInfo.pid) === process.pid) {
+    return { ok: false, reason: 'self_pid', pid: liveInfo.pid };
+  }
   try {
     process.kill(liveInfo.pid, 0);
     process.kill(liveInfo.pid);
@@ -126,12 +129,52 @@ async function shutdownLiveHostGracefully(liveInfo) {
   }
 }
 
+const DEFAULT_BUILTIN_PLUGIN_PREFIXES = [
+  'plugin://swarm/',
+  'plugin://swarm--',
+  'plugin://antigravity/',
+  'plugin://antigravity--',
+  'plugin://agy/',
+  'plugin://agy--',
+  'plugin://google-antigravity/',
+  'plugin://google-antigravity--',
+  'plugin://builtin/',
+  'plugin://builtin--'
+];
+
+function isAllowedPluginIframeUrl(url, options = {}) {
+  if (!url || typeof url !== 'string') return false;
+  const lower = url.trim().toLowerCase();
+  if (!lower.startsWith('plugin://')) return false;
+  if (options.includeAllPluginIframes === true) return true;
+  const allowlist = Array.isArray(options.pluginIframeAllowlist) && options.pluginIframeAllowlist.length > 0
+    ? options.pluginIframeAllowlist
+    : DEFAULT_BUILTIN_PLUGIN_PREFIXES;
+  return allowlist.some(rule => {
+    if (!rule) return false;
+    if (rule instanceof RegExp) return rule.test(url);
+    return lower.startsWith(String(rule).trim().toLowerCase());
+  });
+}
+
+function isLoopbackWsUrl(wsUrl) {
+  if (!wsUrl || typeof wsUrl !== 'string') return false;
+  try {
+    const u = new URL(wsUrl);
+    return u.protocol === 'ws:' && (u.hostname === '127.0.0.1' || u.hostname === 'localhost');
+  } catch {
+    return false;
+  }
+}
+
 async function tryHotInjectDetailed(options = {}) {
   const report = {
     ok: false,
     reason: null,
     windowCount: 0,
     injectedCount: 0,
+    pluginIframeCount: 0,
+    pluginIframesInjected: 0,
     backendSource: options.backendSource || null,
     backendVersion: options.backendVersion || null,
     backendVerified: false,
@@ -149,12 +192,14 @@ async function tryHotInjectDetailed(options = {}) {
     }
 
     let targets;
+    let allCdpPages = [];
     try {
       const cdp = await discoverAntigravityCdp(options);
       targets = Array.isArray(cdp.pages) ? cdp.pages : [];
+      allCdpPages = Array.isArray(cdp.allPages) ? cdp.allPages : [];
     } catch (cdpErr) {
       const msg = String(cdpErr?.message || '');
-      if (msg.includes('未找到 Antigravity 主窗口')) {
+      if (cdpErr?.code === 'NO_PAGE_TARGETS' || msg.includes('未找到 Antigravity 主窗口')) {
         report.reason = 'no_page_targets';
       } else if (msg.includes('连接信息无效')) {
         report.reason = 'invalid_cdp_port';
@@ -206,7 +251,14 @@ async function tryHotInjectDetailed(options = {}) {
       const settingsSnap = getPluginSettings({ agDir: stateDir });
       if (settingsSnap && settingsSnap.ok) cachedSettings = settingsSnap;
       const modCfg = loadModulesConfig({ stateDir });
-      if (modCfg?.modules?.chinese) cachedChineseConfig = modCfg.modules.chinese;
+      if (modCfg?.modules?.chinese) cachedChineseConfig = { ...modCfg.modules.chinese };
+      if (typeof options.chineseOverride === 'boolean') {
+        cachedChineseConfig = {
+          ...(cachedChineseConfig || { brandTitle: 'english' }),
+          enabled: options.chineseOverride,
+          language: options.chineseOverride ? 'zh-CN' : 'en'
+        };
+      }
       const historyData = await collectTokenHistoryAsync({ force: true });
       if (historyData && !historyData.loading) cachedHistory = historyData;
     } catch { }
@@ -352,6 +404,46 @@ async function tryHotInjectDetailed(options = {}) {
       }
       report.windows.push(winEntry);
     }
+
+    // PR #131 复用：同步向内置白名单 plugin:// 子框架注入或还原免改盘运行时汉化（不波及第三方 Marketplace 插件或 MCP App）
+    const allowedIframes = allCdpPages.filter(
+      item => item && item.type === 'iframe' && isAllowedPluginIframeUrl(item.url, options) && isLoopbackWsUrl(item.webSocketDebuggerUrl)
+    );
+    report.pluginIframeCount = allowedIframes.length;
+    if (allowedIframes.length > 0 && cachedChineseConfig) {
+      const wantZhEnable = Boolean(
+        cachedChineseConfig.enabled === true &&
+        String(cachedChineseConfig.language || '').toLowerCase() !== 'en'
+      );
+      const brandMode = cachedChineseConfig.brandTitle || 'english';
+      for (const iframeTarget of allowedIframes) {
+        let iframeClient = null;
+        try {
+          iframeClient = await createCdpClient(iframeTarget.webSocketDebuggerUrl, { timeoutMs: 3500 });
+          const evalIframe = (expression, evalTimeoutMs = 5000) => iframeClient.evaluate(expression, { timeoutMs: evalTimeoutMs });
+          if (wantLiveI18n && liveI18nDictRaw && liveI18nRuntimeRaw) {
+            const hasRuntimeRes = await evalIframe('typeof window.__AGY_SET_ENABLED__ === "function"', 2500);
+            if (hasRuntimeRes?.result?.value === true) {
+              await evalIframe(`window.__AGY_SET_ENABLED__(${JSON.stringify(wantZhEnable)}, ${JSON.stringify({ brandTitle: brandMode })})`, 4000);
+            } else {
+              const i18nCfg = { enabled: wantZhEnable, language: wantZhEnable ? 'zh-CN' : 'en', brandTitle: brandMode };
+              await evalIframe(`window.__AGY_I18N_CONFIG__ = ${JSON.stringify(i18nCfg)}; window.__AGY_I18N_DATA__ = ${liveI18nDictRaw.trim()};`, 5000);
+              await evalIframe(liveI18nRuntimeRaw, 6000);
+            }
+            report.pluginIframesInjected++;
+          } else {
+            await evalIframe(`(function(){ if (typeof window.__AGY_SET_ENABLED__ === "function") { window.__AGY_SET_ENABLED__(false, ${JSON.stringify({ brandTitle: brandMode })}); return true; } return false; })()`, 3000);
+          }
+        } catch {
+          // 子框架未就绪或已销毁，忽略不影响主窗口
+        } finally {
+          if (iframeClient) {
+            try { iframeClient.close(); } catch { }
+          }
+        }
+      }
+    }
+
     report.ok = report.injectedCount > 0;
     if (!report.ok && !report.reason) report.reason = 'injection_failed';
     return report;
@@ -1102,5 +1194,7 @@ module.exports = {
   extractAsarFile,
   getRendererBuildId,
   getHostCoreBuildId,
-  getWatchBundleBuildId
+  getWatchBundleBuildId,
+  isAllowedPluginIframeUrl,
+  isLoopbackWsUrl
 };

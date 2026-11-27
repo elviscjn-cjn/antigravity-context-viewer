@@ -10,8 +10,48 @@ permissions:
   contents: read
 
 jobs:
+  build-windows-helper:
+    name: Build Windows CLI Window Helper from Source
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Compile and verify the Windows helper
+        shell: pwsh
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const { ensureWindowsHelper } = require("./scripts/package-release.js");
+            const built = ensureWindowsHelper();
+            try {
+              fs.copyFileSync(built.helperPath, "scripts/cli-window-helper.exe");
+              fs.writeFileSync("scripts/cli-window-helper.exe.sha256", built.helperSha256 + "  scripts/cli-window-helper.exe\n");
+            } finally {
+              fs.rmSync(built.tempDir, { recursive: true, force: true });
+            }
+          '
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload Compiled Helper Artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: cli-window-helper-win
+          if-no-files-found: error
+          path: |
+            scripts/cli-window-helper.exe
+            scripts/cli-window-helper.exe.sha256
+
   verify-macos:
     name: Verify macOS (${{ matrix.label }})
+    needs: build-windows-helper
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     strategy:
@@ -37,15 +77,15 @@ jobs:
           echo "::notice title=Runner Hardware (${{ matrix.runner }})::uname=$UNAME_INFO | arch=$ARCH_INFO | cpu=$CPU_INFO | $SW_INFO"
 
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Node.js 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "22"
 
       - name: Set up Python 3
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.x"
 
@@ -80,6 +120,12 @@ jobs:
           PASS_OUT="$(cat /tmp/macos-real.log | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
           echo "::notice title=Real Mach-O Verify (${{ matrix.runner }})::$PASS_OUT"
           cat /tmp/macos-real.log
+
+      - name: Download CI-Built Windows Helper
+        uses: actions/download-artifact@v7
+        with:
+          name: cli-window-helper-win
+          path: scripts
 
       - name: Verify Package Manifest & Cross-Platform Build
         shell: bash

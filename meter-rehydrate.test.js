@@ -1327,11 +1327,13 @@ test('10. v0.8.7 集成对齐：modules.json 损坏 fail-closed 保护 & 同版�
 
 test('11. POSIX 词法 PATH 解析（保留 Homebrew 符号链接不落入 Cellar）、ok:true 探测缓存与 skipPythonProbe 验证', async () => {
   const childProcess = require('node:child_process');
+  const origExistsSync = fs.existsSync;
   const origStatSync = fs.statSync;
   const origAccessSync = fs.accessSync;
   const origRealpathSync = fs.realpathSync;
   const origExecFileSync = childProcess.execFileSync;
   const origExecFile = childProcess.execFile;
+  const prevPython = process.env.AG_METER_PYTHON;
 
   const fakeBrewBin = '/tmp/ag-mock-brew-991/homebrew/bin';
   const fakeBrewPy = `${fakeBrewBin}/python3`;
@@ -1343,6 +1345,14 @@ test('11. POSIX 词法 PATH 解析（保留 Homebrew 符号链接不落入 Cella
   let mockProbeOutput = `3.12|${fakeCellarPy}\n`;
 
   try {
+    delete process.env.AG_METER_PYTHON;
+    fs.existsSync = (target) => {
+      const candidate = String(target);
+      if (path.basename(candidate) === 'python3') {
+        return candidate === fakeBrewPy || candidate === fakeCellarPy;
+      }
+      return origExistsSync.call(fs, target);
+    };
     fs.statSync = (target, ...rest) => {
       const s = String(target);
       if (s === 'python3' || s === 'node_modules/.bin/python3' || s === fakeBrewPy || s === fakeCellarPy) {
@@ -1469,6 +1479,9 @@ test('11. POSIX 词法 PATH 解析（保留 Homebrew 符号链接不落入 Cella
       env.cleanup();
     }
   } finally {
+    if (prevPython !== undefined) process.env.AG_METER_PYTHON = prevPython;
+    else delete process.env.AG_METER_PYTHON;
+    fs.existsSync = origExistsSync;
     fs.statSync = origStatSync;
     fs.accessSync = origAccessSync;
     fs.realpathSync = origRealpathSync;

@@ -110,8 +110,9 @@ test('CLI 启动链路适配器: 解析、备份、增强生成与原样恢复�
     assert.ok(updatedSettings.statusLine.command.includes('statusline'));
     assert.equal(updatedSettings.statusLine.command.startsWith('node "'), false, '命令绝不能包含外层转义引号，防止 Go statusline_runner 误当成文件名');
 
-    const testNoSpaces = buildCompatibleStatusLineCommand('D:/my-tools/cli.js');
-    assert.equal(testNoSpaces, 'node D:/my-tools/cli.js statusline');
+    const cliJsPath = path.join(path.parse(tmpDir).root, 'my-tools', 'cli.js');
+    const testNoSpaces = buildCompatibleStatusLineCommand(cliJsPath);
+    assert.equal(testNoSpaces, `node ${cliJsPath.replace(/\\/g, '/')} statusline`);
     assert.equal(testNoSpaces.includes('"'), false);
 
     // 4. 状态检查验证

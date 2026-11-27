@@ -375,20 +375,29 @@ test('单元测试：BaseWindow / WebContentsView 架构适配与 WebContents �
   assert.equal(resolvedWc, hubWc, 'BaseWindow 必须精准匹配本地主服务 hubWcv，坚决排除 data: 协议的遮罩 curtainView');
 
   // 场景 3: BaseWindow 创建初期尚未挂载 WebContentsView，installContextMeter 延迟安全探测与清理
-  let closedListener = null;
-  const mockPendingWin = {
-    isDestroyed: () => false,
-    contentView: { children: [] },
-    on() {},
-    once(event, fn) {
-      if (event === 'closed') closedListener = fn;
-    }
-  };
-  installContextMeter(mockPendingWin);
+  const tmpDiagState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-int-diag-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = tmpDiagState;
+  try {
+    let closedListener = null;
+    const mockPendingWin = {
+      isDestroyed: () => false,
+      contentView: { children: [] },
+      on() {},
+      once(event, fn) {
+        if (event === 'closed') closedListener = fn;
+      }
+    };
+    installContextMeter(mockPendingWin);
 
-  // 模拟窗口在挂载完成前被关闭
-  if (typeof closedListener === 'function') {
-    assert.doesNotThrow(() => closedListener(), '窗口关闭时清理探测定时器绝不抛错');
+    // 模拟窗口在挂载完成前被关闭
+    if (typeof closedListener === 'function') {
+      assert.doesNotThrow(() => closedListener(), '窗口关闭时清理探测定时器绝不抛错');
+    }
+  } finally {
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    fs.rmSync(tmpDiagState, { recursive: true, force: true });
   }
 });
 

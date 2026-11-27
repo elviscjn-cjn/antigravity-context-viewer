@@ -1220,6 +1220,7 @@ function getSessionDetail({ sessionId, source = null, agCliDir = null, agDir = n
     const grouped = typeof core.groupSessionCallsByTurns === 'function'
       ? core.groupSessionCallsByTurns(parsed.turns || [], rawMergedCalls, {
           cascadeId: cleanSid,
+          sessionSource: srcName,
           toolExecEvents: toolInsights.toolExecEvents,
           taskEvents: toolInsights.taskEvents
         })
@@ -1346,6 +1347,7 @@ function getSessionDetail({ sessionId, source = null, agCliDir = null, agDir = n
       requestCount: gTotals ? gTotals.callCount : flatCalls.length,
       modelBreakdown: grouped.modelBreakdown || [],
       sessionTokenTotals: gTotals,
+      ...(grouped.cliReportedUsage ? { cliReportedUsage: grouped.cliReportedUsage } : {}),
       speedTokPerSec: speedInfo.speedTokPerSec,
       speedSource: speedInfo.speedSource,
       latestCallMetrics: speedInfo.latestCallMetrics,
@@ -1364,6 +1366,7 @@ function getSessionDetail({ sessionId, source = null, agCliDir = null, agDir = n
         calls: flatCalls,
         modelBreakdown: grouped.modelBreakdown || [],
         sessionTokenTotals: gTotals,
+        ...(grouped.cliReportedUsage ? { cliReportedUsage: grouped.cliReportedUsage } : {}),
         contextChangeEvents,
         contextDeltaSummary: grouped.contextDeltaSummary || null,
         timingSummary: grouped.timingSummary || null,

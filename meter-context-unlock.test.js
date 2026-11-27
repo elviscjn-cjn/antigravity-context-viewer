@@ -6,6 +6,21 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 
+let _isolatedUnlockStateDir = null;
+let _prevUnlockStateDir = undefined;
+test.before(() => {
+  _prevUnlockStateDir = process.env.AG_METER_STATE_DIR;
+  _isolatedUnlockStateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-unlock-state-'));
+  process.env.AG_METER_STATE_DIR = _isolatedUnlockStateDir;
+});
+test.after(() => {
+  if (_prevUnlockStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+  else process.env.AG_METER_STATE_DIR = _prevUnlockStateDir;
+  if (_isolatedUnlockStateDir) {
+    try { fs.rmSync(_isolatedUnlockStateDir, { recursive: true, force: true }); } catch {}
+  }
+});
+
 const {
   AUTHOR_INFO,
   DEFAULT_CHECKPOINT_TOKENS,
