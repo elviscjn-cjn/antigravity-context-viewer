@@ -233,6 +233,19 @@
       return saved === 'false' ? false : true;
     } catch { return true; }
   })();
+  const VALID_STATUS_FONT_SIZES = ['compact', 'comfortable', 'large'];
+  let composerStatusFontSize = (() => {
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_composer_status_font_size') : null;
+      return VALID_STATUS_FONT_SIZES.includes(saved) ? saved : 'compact';
+    } catch { return 'compact'; }
+  })();
+  let turnFooterHighContrast = (() => {
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_turn_footer_high_contrast') : null;
+      return saved === 'true';
+    } catch { return false; }
+  })();
   let showComposerQuotaSummary = (() => {
     try {
       const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_show_composer_quota') : null;
@@ -12466,6 +12479,52 @@
       overflow: hidden;
     }
 
+    .composer-status-bar[data-font-size="comfortable"],
+    .composer-status-bar[data-font-size="comfortable"] .csb-pill,
+    .composer-status-bar[data-font-size="comfortable"] .csb-text {
+      font-size: 12.5px;
+    }
+
+    .composer-status-bar[data-font-size="comfortable"] .csb-pill {
+      height: 24px;
+    }
+
+    .composer-status-bar[data-font-size="comfortable"] #csb-context-text {
+      max-width: 86px;
+    }
+
+    .composer-status-bar[data-font-size="large"],
+    .composer-status-bar[data-font-size="large"] .csb-pill,
+    .composer-status-bar[data-font-size="large"] .csb-text {
+      font-size: 14px;
+    }
+
+    .composer-status-bar[data-font-size="large"] .csb-pill {
+      height: 26px;
+    }
+
+    .composer-status-bar[data-font-size="large"] #csb-context-text {
+      max-width: 98px;
+    }
+
+    .composer-status-bar[data-high-contrast="true"],
+    .composer-status-bar[data-high-contrast="true"] .csb-pill,
+    .composer-status-bar[data-high-contrast="true"] .csb-text {
+      opacity: 1;
+      font-weight: 500;
+      color: var(--ag-text-primary, #f1f5f9);
+    }
+
+    :host([data-theme="light"]) .composer-status-bar[data-high-contrast="true"],
+    :host([data-theme="light"]) .composer-status-bar[data-high-contrast="true"] .csb-pill,
+    :host([data-theme="light"]) .composer-status-bar[data-high-contrast="true"] .csb-text,
+    :host([data-panel-tone="light"]) .composer-status-bar[data-high-contrast="true"],
+    :host([data-panel-tone="light"]) .composer-status-bar[data-high-contrast="true"] .csb-pill,
+    :host([data-panel-tone="light"]) .composer-status-bar[data-high-contrast="true"] .csb-text {
+      opacity: 1;
+      color: #0f172a;
+    }
+
     .csb-pill:not(#csb-group-tokens) {
       cursor: default !important;
     }
@@ -18925,6 +18984,41 @@
                   </label>
                 </div>
               </div>
+
+              <div class="ctx-prefs-row" id="row-status-font-size">
+                <div class="ctx-prefs-row-main">
+                  <div class="ctx-prefs-row-title" data-i18n="settings.statusFontSize.label">底栏与尾标字号</div>
+                  <div class="ctx-prefs-row-sub" data-i18n="settings.statusFontSize.desc">
+                    调整输入框底栏状态摘要与回复尾部统计的文字大小.</div>
+                </div>
+                <div class="ctx-prefs-row-ctl">
+                  <div id="status-font-size-segmented" class="ctx-segmented ctx-seg-pill" role="group"
+                    aria-label="底栏与尾标字号">
+                    <button id="btn-status-font-compact" class="ctx-seg-btn active" type="button"
+                      data-status-font-size="compact" data-i18n="settings.statusFontSize.compact">紧凑 11px</button>
+                    <button id="btn-status-font-comfortable" class="ctx-seg-btn" type="button"
+                      data-status-font-size="comfortable"
+                      data-i18n="settings.statusFontSize.comfortable">舒适 13px</button>
+                    <button id="btn-status-font-large" class="ctx-seg-btn" type="button"
+                      data-status-font-size="large" data-i18n="settings.statusFontSize.large">大号 14px</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="ctx-prefs-row" id="row-turn-footer-contrast">
+                <label class="ctx-prefs-row-main ctx-prefs-row-label" id="lbl-turn-footer-contrast"
+                  for="chk-turn-footer-high-contrast">
+                  <span class="ctx-prefs-row-title" data-i18n="settings.turnFooterContrast.label">尾标与底栏高对比度</span>
+                  <span class="ctx-prefs-row-sub" data-i18n="settings.turnFooterContrast.desc">
+                    移除低透明度淡化并提升文字对比度，便于阅读.</span>
+                </label>
+                <div class="ctx-prefs-row-ctl">
+                  <label class="ctx-toggle" for="chk-turn-footer-high-contrast">
+                    <input id="chk-turn-footer-high-contrast" class="ctx-toggle-input" type="checkbox">
+                    <span class="ctx-toggle-track" aria-hidden="true"><span class="ctx-toggle-knob"></span></span>
+                  </label>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -22289,6 +22383,13 @@ const PANEL_I18N = {
   'settings.dock.pageHint': { 'zh-CN': '独立页面已开启，可使用顶部“返回聊天”切回常驻工具栏.', 'zh-TW': '獨立頁面已開啟，可使用頂部「返回聊天」切回常駐工具列.', en: 'Standalone view active; use top "Back to Chat" to return.' },
   'settings.turnFooter.label': { 'zh-CN': '每轮回复尾部统计', 'zh-TW': '每輪回覆尾部統計', en: 'Per-turn footer stats' },
   'settings.turnFooter.desc': { 'zh-CN': '在助手回复操作栏末尾显示本轮模型、用量与耗时微标.', 'zh-TW': '在助手回覆操作列末尾顯示本輪模型、用量與耗時微標.', en: 'Show this turn model, usage and duration chip at the end of the assistant action bar.' },
+  'settings.statusFontSize.label': { 'zh-CN': '底栏与尾标字号', 'zh-TW': '底欄與尾標字級', en: 'Status bar & footer font size' },
+  'settings.statusFontSize.desc': { 'zh-CN': '调整输入框底栏状态摘要与回复尾部统计的文字大小.', 'zh-TW': '調整輸入框底欄狀態摘要與回覆尾部統計的文字大小.', en: 'Adjust text size for the composer status bar and per-turn reply footer.' },
+  'settings.statusFontSize.compact': { 'zh-CN': '紧凑 11px', 'zh-TW': '緊湊 11px', en: 'Compact 11px' },
+  'settings.statusFontSize.comfortable': { 'zh-CN': '舒适 13px', 'zh-TW': '舒適 13px', en: 'Comfortable 13px' },
+  'settings.statusFontSize.large': { 'zh-CN': '大号 14px', 'zh-TW': '大號 14px', en: 'Large 14px' },
+  'settings.turnFooterContrast.label': { 'zh-CN': '尾标与底栏高对比度', 'zh-TW': '尾標與底欄高對比度', en: 'High-contrast status & footer' },
+  'settings.turnFooterContrast.desc': { 'zh-CN': '移除低透明度淡化并提升文字对比度，便于阅读.', 'zh-TW': '移除低透明度淡化並提升文字對比度，便於閱讀.', en: 'Disable dimmed opacity and boost text contrast for clearer readability.' },
   'settings.composerQuota.label': { 'zh-CN': '输入框下方状态条', 'zh-TW': '輸入框下方狀態列', en: 'Status bar under the composer' },
   'settings.composerQuota.desc': { 'zh-CN': '在聊天输入框下方显示速度、Token、上下文与额度摘要.', 'zh-TW': '在聊天輸入框下方顯示速度、Token、上下文與額度摘要.', en: 'Show speed, tokens, context and quota summary below the chat composer.' },
   'settings.nextPrompt.label': { 'zh-CN': '下一句预测建议', 'zh-TW': '下一句預測建議', en: 'Next prompt prediction' },
@@ -23961,6 +24062,8 @@ const PANEL_I18N = {
   'ns.showComposerBar.title': { 'zh-CN': '输入框下方显示底栏状态摘要', 'zh-TW': '輸入框下方顯示底欄狀態摘要', en: 'Show status bar below composer' },
   'ns.showComposerBar.desc': { 'zh-CN': '在输入框底部展示当前上下文、速率、缓存命中与额度摘要', 'zh-TW': '在輸入框底部展示目前上下文、速率、快取命中與額度摘要', en: 'Shows context, speed, cache hit rate, and quota below the input box' },
   'ns.turnFooter.desc': { 'zh-CN': '在助手回复操作栏末尾显示本轮模型、用量与耗时微标', 'zh-TW': '在助手回覆操作欄末尾顯示本輪模型、用量與耗時微標', en: 'Shows per-turn model, token usage, and latency badge in reply actions' },
+  'ns.statusFontSize.desc': { 'zh-CN': '调节底栏状态摘要与每轮回复尾标的字体大小', 'zh-TW': '調節底欄狀態摘要與每輪回覆尾標的字體大小', en: 'Adjust font size of composer status bar and per-turn footer' },
+  'ns.turnFooterContrast.desc': { 'zh-CN': '取消透明度淡化并加深或提亮前景色，增强小字辨识度', 'zh-TW': '取消透明度淡化並加深或提亮前景色，增強小字辨識度', en: 'Remove dimmed opacity and sharpen foreground contrast for better legibility' },
   'ns.nextPrompt.desc': { 'zh-CN': '默认关闭 · 开启后每轮结束会调用当前账号模型并消耗额外额度，按 Tab 填入草稿', 'zh-TW': '預設關閉 · 開啟後每輪結束會呼叫目前帳號模型並消耗額外額度，按 Tab 填入草稿', en: 'Off by default · queries active model after each turn using quota; press Tab to insert' },
   'ns.autoSwitch.desc': { 'zh-CN': '达阈值后等待当前生成空闲且单窗口时切往备选账号', 'zh-TW': '達閾值後等待目前生成空閒且單視窗時切往備選帳號', en: 'Switches to a candidate account once threshold hits, idle, and single window' },
   'ns.autoSwitch.emptyCands': { 'zh-CN': '暂无可切入的备选账号', 'zh-TW': '暫無可切入的備選帳號', en: 'No candidate accounts available' },
@@ -30280,6 +30383,76 @@ try {
         .ag-cm-turn-footer ~ [role="button"] {
           flex-shrink: 0 !important;
         }
+        #composer-status-bar[data-font-size="comfortable"],
+        #composer-status-bar[data-font-size="comfortable"] .csb-pill,
+        #composer-status-bar[data-font-size="comfortable"] .csb-text {
+          font-size: 12.5px !important;
+        }
+        #composer-status-bar[data-font-size="comfortable"] .csb-pill {
+          height: 24px !important;
+        }
+        #composer-status-bar[data-font-size="comfortable"] .csb-svg-icon svg {
+          width: 13.5px !important;
+          height: 13.5px !important;
+        }
+        #composer-status-bar[data-font-size="comfortable"] .csb-ring-morph-wrap {
+          width: 14.5px !important;
+          height: 14.5px !important;
+        }
+        #composer-status-bar[data-font-size="comfortable"] #csb-context-text {
+          max-width: 86px !important;
+        }
+        #composer-status-bar[data-font-size="large"],
+        #composer-status-bar[data-font-size="large"] .csb-pill,
+        #composer-status-bar[data-font-size="large"] .csb-text {
+          font-size: 14px !important;
+        }
+        #composer-status-bar[data-font-size="large"] .csb-pill {
+          height: 26px !important;
+        }
+        #composer-status-bar[data-font-size="large"] .csb-svg-icon svg {
+          width: 15px !important;
+          height: 15px !important;
+        }
+        #composer-status-bar[data-font-size="large"] .csb-ring-morph-wrap {
+          width: 16px !important;
+          height: 16px !important;
+        }
+        #composer-status-bar[data-font-size="large"] #csb-context-text {
+          max-width: 98px !important;
+        }
+        .ag-cm-turn-footer[data-font-size="comfortable"],
+        html[data-ag-tf-size="comfortable"] .ag-cm-turn-footer {
+          font-size: 12.5px !important;
+          line-height: 1.25 !important;
+          max-width: min(100%, 620px) !important;
+        }
+        .ag-cm-turn-footer[data-font-size="large"],
+        html[data-ag-tf-size="large"] .ag-cm-turn-footer {
+          font-size: 14px !important;
+          line-height: 1.28 !important;
+          max-width: min(100%, 680px) !important;
+        }
+        #composer-status-bar[data-high-contrast="true"],
+        #composer-status-bar[data-high-contrast="true"] .csb-pill,
+        #composer-status-bar[data-high-contrast="true"] .csb-text,
+        .ag-cm-turn-footer[data-high-contrast="true"],
+        html[data-ag-tf-contrast="high"] .ag-cm-turn-footer {
+          opacity: 1 !important;
+          font-weight: 500 !important;
+          color: var(--foreground, #ececef) !important;
+        }
+        #composer-status-bar[data-theme="light"][data-high-contrast="true"],
+        #composer-status-bar[data-theme="light"][data-high-contrast="true"] .csb-pill,
+        #composer-status-bar[data-theme="light"][data-high-contrast="true"] .csb-text,
+        :is(html.light, html[data-theme="light"], body.light, body.vscode-light, body[data-theme="light"]) .ag-cm-turn-footer[data-high-contrast="true"],
+        :is(html.light, html[data-theme="light"], body.light, body.vscode-light, body[data-theme="light"])[data-ag-tf-contrast="high"] .ag-cm-turn-footer,
+        :is(html.light, html[data-theme="light"], body.light, body.vscode-light, body[data-theme="light"]) #composer-status-bar[data-high-contrast="true"],
+        :is(html.light, html[data-theme="light"], body.light, body.vscode-light, body[data-theme="light"]) #composer-status-bar[data-high-contrast="true"] .csb-pill,
+        :is(html.light, html[data-theme="light"], body.light, body.vscode-light, body[data-theme="light"]) #composer-status-bar[data-high-contrast="true"] .csb-text {
+          opacity: 1 !important;
+          color: #0f172a !important;
+        }
         #composer-status-bar .csb-quota-pill {
           gap: 6px !important;
           min-width: 0 !important;
@@ -33135,6 +33308,92 @@ try {
     });
   };
   el('chk-show-turn-footer-stats')?.addEventListener('change', onShowTurnFooterToggle);
+  function syncStatusTypographyUi() {
+    ensureComposerStatusBarStyles?.();
+    const size = VALID_STATUS_FONT_SIZES.includes(composerStatusFontSize) ? composerStatusFontSize : 'compact';
+    const hcStr = turnFooterHighContrast ? 'true' : 'false';
+    const docContrast = turnFooterHighContrast ? 'high' : 'normal';
+    try {
+      document.documentElement?.setAttribute?.('data-ag-tf-size', size);
+      document.documentElement?.setAttribute?.('data-ag-tf-contrast', docContrast);
+    } catch { }
+    try {
+      host?.setAttribute?.('data-status-font-size', size);
+      host?.setAttribute?.('data-turn-footer-high-contrast', hcStr);
+    } catch { }
+    try {
+      if (composerSummary) {
+        composerSummary.setAttribute?.('data-font-size', size);
+        composerSummary.setAttribute?.('data-high-contrast', hcStr);
+      }
+      const docBar = typeof document !== 'undefined' ? document.getElementById?.('composer-status-bar') : null;
+      if (docBar && docBar !== composerSummary) {
+        docBar.setAttribute?.('data-font-size', size);
+        docBar.setAttribute?.('data-high-contrast', hcStr);
+      }
+    } catch { }
+    try {
+      const badges = document.querySelectorAll?.('.ag-cm-turn-footer') || [];
+      for (const node of badges) {
+        node?.setAttribute?.('data-font-size', size);
+        node?.setAttribute?.('data-high-contrast', hcStr);
+      }
+    } catch { }
+    const seg = el('status-font-size-segmented');
+    if (seg) {
+      for (const btn of Array.from(seg.children || [])) {
+        const val = btn.getAttribute?.('data-status-font-size');
+        const active = val === size;
+        btn.classList?.toggle?.('active', active);
+        btn.setAttribute?.('aria-pressed', active ? 'true' : 'false');
+      }
+    }
+    const chkHc = el('chk-turn-footer-high-contrast');
+    if (chkHc) chkHc.checked = Boolean(turnFooterHighContrast);
+  }
+  function setComposerStatusFontSize(size, opts = {}) {
+    const next = VALID_STATUS_FONT_SIZES.includes(size) ? size : 'compact';
+    composerStatusFontSize = next;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ag_composer_status_font_size', next);
+    } catch { }
+    syncStatusTypographyUi();
+    syncHostSettingsUi();
+    if (opts.persist !== false && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
+      void saveSettingsPayloadBridge({ composerStatusFontSize: next });
+    }
+    return composerStatusFontSize;
+  }
+  const onTurnFooterHighContrastToggle = (e) => {
+    const chk = el('chk-turn-footer-high-contrast');
+    const prev = turnFooterHighContrast;
+    const next = e?.target ? Boolean(e.target.checked) : (chk ? Boolean(chk.checked) : prev);
+    void persistBooleanPreferenceToggle({
+      payloadKey: 'turnFooterHighContrast',
+      next,
+      prev,
+      checkboxEl: chk,
+      statusId: '',
+      localStorageKey: 'ag_turn_footer_high_contrast',
+      onApplyState: (val) => { turnFooterHighContrast = val; },
+      onUiSync: () => { syncStatusTypographyUi(); }
+    });
+  };
+  el('chk-turn-footer-high-contrast')?.addEventListener('change', onTurnFooterHighContrastToggle);
+  el('status-font-size-segmented')?.addEventListener('click', e => {
+    const target = e?.target;
+    const btn = target?.getAttribute?.('data-status-font-size')
+      ? target
+      : target?.closest?.('[data-status-font-size]');
+    const val = btn?.getAttribute?.('data-status-font-size');
+    if (val) setComposerStatusFontSize(val, { persist: true });
+  });
+  for (const btnId of ['btn-status-font-compact', 'btn-status-font-comfortable', 'btn-status-font-large']) {
+    el(btnId)?.addEventListener?.('click', () => {
+      const val = el(btnId)?.getAttribute?.('data-status-font-size');
+      if (val) setComposerStatusFontSize(val, { persist: true });
+    });
+  }
   const onShowComposerQuotaToggle = (e) => {
     const chk = el('chk-show-composer-quota');
     const prev = showComposerQuotaSummary;
@@ -37638,6 +37897,8 @@ let activeCnyTimerId = null;
           badge.tabIndex = 0;
           row.prepend ? row.prepend(badge) : row.appendChild?.(badge);
         }
+        badge.setAttribute('data-font-size', composerStatusFontSize);
+        badge.setAttribute('data-high-contrast', turnFooterHighContrast ? 'true' : 'false');
         badge.__turnObj = turnObj;
         badge.__forceFallback = forceFallbackScope;
         badge.__tb = tb;
@@ -49144,6 +49405,17 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
           setToggleFeedbackUi('status-turn-footer', 'idle', showTurnFooterStats ? t('prefs.stateOn') : t('prefs.stateOff'));
           renderTurnFooterStats();
         }
+        const savedStatusFontSize = settingsRes.composerStatusFontSize ?? settingsRes.uiPreferences?.composerStatusFontSize;
+        if (typeof savedStatusFontSize === 'string' && VALID_STATUS_FONT_SIZES.includes(savedStatusFontSize)) {
+          composerStatusFontSize = savedStatusFontSize;
+          try { if (typeof localStorage !== 'undefined') localStorage.setItem('ag_composer_status_font_size', savedStatusFontSize); } catch { }
+        }
+        const savedTurnFooterContrast = settingsRes.turnFooterHighContrast ?? settingsRes.uiPreferences?.turnFooterHighContrast;
+        if (typeof savedTurnFooterContrast === 'boolean') {
+          turnFooterHighContrast = savedTurnFooterContrast;
+          try { if (typeof localStorage !== 'undefined') localStorage.setItem('ag_turn_footer_high_contrast', savedTurnFooterContrast ? 'true' : 'false'); } catch { }
+        }
+        syncStatusTypographyUi();
         const savedComposerQuota = settingsRes.showComposerQuotaSummary ?? settingsRes.uiPreferences?.showComposerQuotaSummary;
         if (savedComposerQuota !== undefined) {
           showComposerQuotaSummary = savedComposerQuota !== false;
@@ -55581,6 +55853,33 @@ const {
 
       <div class="ag-ns-row">
         <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="settings.statusFontSize.label">底栏与尾标字号</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.statusFontSize.desc">调节底栏状态摘要与每轮回复尾标的字体大小</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-seg" role="radiogroup" data-ag-ns-seg="composerStatusFontSize">
+            <button type="button" class="ag-ns-seg-btn" data-val="compact" data-i18n="settings.statusFontSize.compact">紧凑 11px</button>
+            <button type="button" class="ag-ns-seg-btn" data-val="comfortable" data-i18n="settings.statusFontSize.comfortable">舒适 13px</button>
+            <button type="button" class="ag-ns-seg-btn" data-val="large" data-i18n="settings.statusFontSize.large">大号 14px</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
+          <div class="ag-ns-row-title" data-i18n="settings.turnFooterContrast.label">尾标与底栏高对比度</div>
+          <div class="ag-ns-row-desc" data-i18n="ns.turnFooterContrast.desc">取消透明度淡化并加深或提亮前景色，增强小字辨识度</div>
+        </div>
+        <div class="ag-ns-control">
+          <div class="ag-ns-switch-wrap">
+            <span class="ag-ns-switch-state" data-ag-ns-sw-status="turnFooterHighContrast" aria-live="polite"></span>
+            <button type="button" id="ag-ns-sw-turnFooterHighContrast" class="ag-ns-switch" role="switch" aria-checked="false" data-ag-ns-switch="turnFooterHighContrast"></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ag-ns-row">
+        <div class="ag-ns-row-text">
           <div class="ag-ns-row-title" data-i18n="settings.nextPrompt.label">下一句预测建议</div>
           <div class="ag-ns-row-desc" data-i18n="ns.nextPrompt.desc">默认关闭 · 开启后每轮结束会调用当前账号模型并消耗额外额度，按 Tab 填入草稿</div>
         </div>
@@ -58177,6 +58476,8 @@ function createHostSettingsController(deps = {}) {
             radialBottombar: Boolean(radialBottombarEnabled),
             showComposerBar: Boolean(showComposerQuotaSummary),
             showTurnFooter: Boolean(showTurnFooterStats),
+            composerStatusFontSize,
+            turnFooterHighContrast: Boolean(turnFooterHighContrast),
             nextPromptEnabled: Boolean(nextPromptEnabled),
             autoSwitchEnabled: Boolean(asCfg.enabled),
             autoSwitchTarget: encodeAutoSwitchTargetKey(asCfg.poolKey, asCfg.windowKey),
@@ -58212,6 +58513,7 @@ function createHostSettingsController(deps = {}) {
               radialBottombar: buildSwFb('radialBottombarEnabled', radialBottombarEnabled),
               showComposerBar: buildSwFb('showComposerQuotaSummary', showComposerQuotaSummary),
               showTurnFooter: buildSwFb('showTurnFooterStats', showTurnFooterStats),
+              turnFooterHighContrast: buildSwFb('turnFooterHighContrast', turnFooterHighContrast),
               nextPromptEnabled: buildSwFb('nextPromptEnabled', nextPromptEnabled),
               autoCheckUpdate: buildSwFb('autoCheckUpdate', autoCheckUpdate),
               betaChannel: buildSwFb('allowBetaUpdates', allowBetaUpdates)
@@ -58327,6 +58629,8 @@ function createHostSettingsController(deps = {}) {
         }
         if (key === 'showComposerBar') { onShowComposerQuotaToggle({ target: { checked: Boolean(value) } }); return; }
         if (key === 'showTurnFooter') { onShowTurnFooterToggle({ target: { checked: Boolean(value) } }); return; }
+        if (key === 'composerStatusFontSize') { setComposerStatusFontSize(value, { persist: true }); return; }
+        if (key === 'turnFooterHighContrast') { onTurnFooterHighContrastToggle({ target: { checked: Boolean(value) } }); return; }
         if (key === 'nextPromptEnabled') { void setNextPromptEnabledState(Boolean(value), { persist: true }); return; }
         if (key === 'autoCheckUpdate') {
           const prev = autoCheckUpdate;
@@ -71152,7 +71456,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   }
 
   globalThis.__AGContextMeter = {
-    buildId: '6fa9255b969466ee',
+    buildId: '70aca98b2e522c85',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;
@@ -71713,6 +72017,23 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
       renderTurnFooterStats();
       return showTurnFooterStats;
     },
+    getStatusTypographyForTest: () => ({
+      fontSize: composerStatusFontSize,
+      highContrast: turnFooterHighContrast,
+      barFontSize: composerSummary?.getAttribute?.('data-font-size') || null,
+      barHighContrast: composerSummary?.getAttribute?.('data-high-contrast') || null,
+      docFontSize: document.documentElement?.getAttribute?.('data-ag-tf-size') || null,
+      docContrast: document.documentElement?.getAttribute?.('data-ag-tf-contrast') || null
+    }),
+    setComposerStatusFontSizeForTest: (size, opts) => setComposerStatusFontSize(size, opts || { persist: false }),
+    setTurnFooterHighContrastForTest: (enabled) => {
+      turnFooterHighContrast = Boolean(enabled);
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem('ag_turn_footer_high_contrast', turnFooterHighContrast ? 'true' : 'false');
+      } catch { }
+      syncStatusTypographyUi();
+      return turnFooterHighContrast;
+    },
     getCumulativeViewStateForTest: () => ({
       summary: _lastCumSummary,
       lockedKey: cumLockedKey,
@@ -72140,6 +72461,10 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
       try { document.getElementById('ag-wco-spacer')?.remove?.(); } catch { }
       try { document.getElementById('ag-topbar-host-fix')?.remove?.(); } catch { }
       turnFooterScopeState.clear();
+      try {
+        document.documentElement?.removeAttribute?.('data-ag-tf-size');
+        document.documentElement?.removeAttribute?.('data-ag-tf-contrast');
+      } catch { }
       cleanupLegacyModelPickerArtifacts();
       if (typeof disposeNextPrompt === 'function') disposeNextPrompt();
       disposeRadialTopLayer();
@@ -72157,6 +72482,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   cleanupLegacyModelPickerArtifacts();
   if (el('chk-next-prompt-enabled')) el('chk-next-prompt-enabled').checked = nextPromptEnabled;
   if (el('chk-show-turn-footer-stats')) el('chk-show-turn-footer-stats').checked = showTurnFooterStats;
+  syncStatusTypographyUi();
   if (typeof bindNextPromptComposerListeners === 'function') bindNextPromptComposerListeners();
   applyStaticPanelTranslations(shadow);
   if (radialShadow) {

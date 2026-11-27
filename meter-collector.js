@@ -4385,6 +4385,7 @@ function getPluginSettings(options = {}) {
     if (typeof uiPrefs.floatingOrbHidden === 'boolean') return !uiPrefs.floatingOrbHidden;
     return legacyQuickMenuStyle === 'floating';
   })();
+  const validComposerStatusFontSizes = new Set(['compact', 'comfortable', 'large']);
   return {
     ok: true,
     customPlan,
@@ -4417,6 +4418,10 @@ function getPluginSettings(options = {}) {
     panelLanguage: hasExplicitPanelLanguage ? uiPrefs.panelLanguage : 'zh-CN',
     panelLanguageExplicit: hasExplicitPanelLanguage,
     showTurnFooterStats: uiPrefs.showTurnFooterStats !== false,
+    composerStatusFontSize: validComposerStatusFontSizes.has(uiPrefs.composerStatusFontSize)
+      ? uiPrefs.composerStatusFontSize
+      : 'compact',
+    turnFooterHighContrast: uiPrefs.turnFooterHighContrast === true,
     showComposerQuotaSummary: uiPrefs.showComposerQuotaSummary === true,
     simplifiedModelPickerEnabled: uiPrefs.simplifiedModelPickerEnabled !== false,
     nextPromptEnabled: uiPrefs.nextPromptEnabled === true,
@@ -4608,8 +4613,15 @@ function savePluginSettings(payload = {}, options = {}) {
   if (typeof payload.panelLanguage === 'string' && validPanelLanguages.has(payload.panelLanguage)) {
     topLevelUiPrefs.panelLanguage = payload.panelLanguage;
   }
+  const validComposerStatusFontSizes = new Set(['compact', 'comfortable', 'large']);
   if (typeof payload.showTurnFooterStats === 'boolean') {
     topLevelUiPrefs.showTurnFooterStats = payload.showTurnFooterStats;
+  }
+  if (typeof payload.composerStatusFontSize === 'string' && validComposerStatusFontSizes.has(payload.composerStatusFontSize)) {
+    topLevelUiPrefs.composerStatusFontSize = payload.composerStatusFontSize;
+  }
+  if (typeof payload.turnFooterHighContrast === 'boolean') {
+    topLevelUiPrefs.turnFooterHighContrast = payload.turnFooterHighContrast;
   }
   if (typeof payload.showComposerQuotaSummary === 'boolean') {
     topLevelUiPrefs.showComposerQuotaSummary = payload.showComposerQuotaSummary;
@@ -4678,6 +4690,12 @@ function savePluginSettings(payload = {}, options = {}) {
     }
     if (incomingUiPrefs.panelLanguage !== undefined && !validPanelLanguages.has(incomingUiPrefs.panelLanguage)) {
       delete incomingUiPrefs.panelLanguage;
+    }
+    if (incomingUiPrefs.composerStatusFontSize !== undefined && !validComposerStatusFontSizes.has(incomingUiPrefs.composerStatusFontSize)) {
+      delete incomingUiPrefs.composerStatusFontSize;
+    }
+    if (incomingUiPrefs.turnFooterHighContrast !== undefined && typeof incomingUiPrefs.turnFooterHighContrast !== 'boolean') {
+      delete incomingUiPrefs.turnFooterHighContrast;
     }
     if (incomingUiPrefs.defaultViewPrefs && !topLevelUiPrefs.defaultViewPrefs) {
       incomingUiPrefs.defaultViewPrefs = sanitizeDefaultViewPrefs(incomingUiPrefs.defaultViewPrefs, incomingUiPrefs.savedHeatView || settings.uiPreferences?.savedHeatView);
