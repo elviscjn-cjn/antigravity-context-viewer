@@ -358,7 +358,7 @@ function resolveMacLauncherTarget(options = {}) {
 
 function buildMacLauncherInfoPlist(options = {}) {
   const target = resolveMacLauncherTarget(options);
-  const version = String(options.version || '0.9.4').trim() || '0.9.4';
+  const version = String(options.version || '0.9.4').trim().split(/[-+]/)[0] || '0.9.4';
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">

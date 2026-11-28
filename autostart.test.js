@@ -254,6 +254,7 @@ test('Issue #119: macOS Dock 一键启动挂载入口 (.app) 生成、签名、�
       nodePath: '/opt/homebrew/bin/node',
       scriptPath: '/opt/meter/cli.js',
       port: 58321,
+      version: '0.9.4-beta.1',
       sourceAppPath: fakeSourceApp,
       addToDock: true,
       restartDock: false,
@@ -270,6 +271,8 @@ test('Issue #119: macOS Dock 一键启动挂载入口 (.app) 生成、签名、�
     assert.ok(fs.existsSync(res.execPath));
 
     const plist = fs.readFileSync(res.plistPath, 'utf8');
+    assert.match(plist, /<key>CFBundleShortVersionString<\/key>\s*<string>0\.9\.4<\/string>/);
+    assert.match(plist, /<key>CFBundleVersion<\/key>\s*<string>0\.9\.4<\/string>/);
     assert.match(plist, /<key>LSUIElement<\/key>\s*<true\/>/);
     assert.match(plist, /<string>launch-antigravity-meter<\/string>/);
     const script = fs.readFileSync(res.execPath, 'utf8');

@@ -1182,7 +1182,7 @@ test('界面状态 5.6：在线更新完成后再次检查更新呈现已是最�
   h.elements.get('btn-check-update').click();
   await h.flush();
 
-  const escapedVer = currentVer.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escapedVer = (require('./package.json').displayVersion || currentVer).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   assert.equal(titleEl.textContent, '✅ 已是最新版本');
   assert.match(verEl.textContent, new RegExp(`v?${escapedVer}.*已是最新`));
   assert.equal(applyBtn.style.display, 'none');

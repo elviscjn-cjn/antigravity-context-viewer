@@ -12,6 +12,7 @@ permissions:
 jobs:
   build-windows-helper:
     name: Build Windows CLI Window Helper from Source
+    if: github.ref_name != 'v0.9.4-beta.1'
     runs-on: windows-latest
 
     steps:
@@ -96,3 +97,48 @@ jobs:
           gh release edit "${{ github.ref_name }}" --title "${{ steps.meta.outputs.release_title }}" --notes-file RELEASE_NOTES.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-macos-beta:
+    name: Publish Apple Silicon Mac Beta
+    if: github.ref_type == 'tag' && github.ref_name == 'v0.9.4-beta.1'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Test release source on macOS
+        env:
+          AG_METER_STATE_DIR: ${{ runner.temp }}/antigravity-context-meter-tests
+        run: npm test
+      - name: Build and verify Apple Silicon package
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const { version } = require('./package.json');
+          if (process.env.GITHUB_REF_NAME !== 'v' + version || require('./plugin.json').version !== version) {
+            throw new Error('Release versions disagree');
+          }
+          const pkg = require('./scripts/package-release.js').packagePlatform(
+            { name: 'darwin_arm64', scripts: ['install.sh', 'uninstall.sh'] },
+            version
+          );
+          fs.writeFileSync('dist/release/checksums.txt', pkg.sha256 + '  ' + pkg.name + '\n');
+          NODE
+          cd dist/release
+          shasum -a 256 -c checksums.txt
+          unzip -t antigravity-context-viewer_0.9.4-beta.1_darwin_arm64.zip
+      - name: Publish only the Apple Silicon package
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "v0.9.4 Beta 1 · Mac 兼容性测试版"
+          body_path: RELEASE_NOTES.md
+          files: |
+            dist/release/antigravity-context-viewer_0.9.4-beta.1_darwin_arm64.zip
+            dist/release/checksums.txt
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: true
+          make_latest: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
