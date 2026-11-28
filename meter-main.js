@@ -35,6 +35,7 @@ const {
   syncPricingCatalogAsync
 } = require('./meter-collector');
 const { isValidExternalUrl, compareVersions } = require('./meter-core');
+const { normalizeLoopbackOrigin } = require('./local-api');
 
 function isHostVersionAtLeast(targetVersion = '2.34.0') {
   try {
@@ -357,6 +358,178 @@ function resolveTargetWindow(sender) {
     }
   } catch { }
   return null;
+}
+
+const CAPTURED_CSRF_MAX_ENTRIES = 64;
+const capturedCsrfByOrigin = new Map();
+const capturedCsrfBySession = new WeakMap();
+const csrfCaptureBoundSessions = new WeakSet();
+
+function extractCsrfHeaderValue(requestHeaders) {
+  if (!requestHeaders || typeof requestHeaders !== 'object') return '';
+  for (const [key, val] of Object.entries(requestHeaders)) {
+    if (String(key || '').toLowerCase() !== 'x-codeium-csrf-token') continue;
+    if (Array.isArray(val)) {
+      const first = val.find(item => typeof item === 'string' && item.trim());
+      return first ? first.trim() : '';
+    }
+    return typeof val === 'string' ? val.trim() : '';
+  }
+  return '';
+}
+
+function recordCapturedCsrfToken(rawUrlOrOrigin, rawToken, ses = null) {
+  const safeOrigin = normalizeLoopbackOrigin(rawUrlOrOrigin);
+  const token = typeof rawToken === 'string' ? rawToken.trim() : '';
+  if (!safeOrigin || !token) return false;
+  if (capturedCsrfByOrigin.has(safeOrigin)) capturedCsrfByOrigin.delete(safeOrigin);
+  capturedCsrfByOrigin.set(safeOrigin, token);
+  while (capturedCsrfByOrigin.size > CAPTURED_CSRF_MAX_ENTRIES) {
+    const oldest = capturedCsrfByOrigin.keys().next().value;
+    capturedCsrfByOrigin.delete(oldest);
+  }
+  if (ses && typeof ses === 'object') {
+    let sesMap = capturedCsrfBySession.get(ses);
+    if (!sesMap) {
+      sesMap = new Map();
+      capturedCsrfBySession.set(ses, sesMap);
+    }
+    if (sesMap.has(safeOrigin)) sesMap.delete(safeOrigin);
+    sesMap.set(safeOrigin, token);
+    while (sesMap.size > CAPTURED_CSRF_MAX_ENTRIES) {
+      const oldest = sesMap.keys().next().value;
+      sesMap.delete(oldest);
+    }
+  }
+  return true;
+}
+
+function getCapturedCsrfToken(rawOrigin, ses = null) {
+  const safeOrigin = normalizeLoopbackOrigin(rawOrigin);
+  if (!safeOrigin) return null;
+  if (ses && typeof ses === 'object') {
+    const sesToken = capturedCsrfBySession.get(ses)?.get(safeOrigin);
+    if (sesToken) return sesToken;
+  }
+  return capturedCsrfByOrigin.get(safeOrigin) || null;
+}
+
+function clearCapturedCsrfToken(rawOrigin, ses = null) {
+  const safeOrigin = normalizeLoopbackOrigin(rawOrigin);
+  if (!safeOrigin) return;
+  if (ses && typeof ses === 'object') {
+    capturedCsrfBySession.get(ses)?.delete(safeOrigin);
+  }
+  capturedCsrfByOrigin.delete(safeOrigin);
+}
+
+/**
+ * 为指定 Electron Session 注册被动、只读的回环请求 x-codeium-csrf-token 捕获。
+ * 优先使用只读无阻塞的 webRequest.onSendHeaders，避免覆盖宿主或扩展已注册的 onBeforeSendHeaders / onBeforeRequest 监听器。
+ */
+function attachSessionCsrfCapture(ses) {
+  if (!ses || typeof ses !== 'object' || csrfCaptureBoundSessions.has(ses)) return false;
+  const webRequest = ses.webRequest;
+  if (!webRequest || typeof webRequest !== 'object') return false;
+  const filter = { urls: ['http://127.0.0.1:*/*', 'https://127.0.0.1:*/*'] };
+  const handleHeaders = (details) => {
+    try {
+      const token = extractCsrfHeaderValue(details?.requestHeaders);
+      if (token) {
+        recordCapturedCsrfToken(details?.url, token, ses);
+      }
+    } catch { }
+  };
+  try {
+    if (typeof webRequest.onSendHeaders === 'function') {
+      webRequest.onSendHeaders(filter, handleHeaders);
+      csrfCaptureBoundSessions.add(ses);
+      return true;
+    }
+    if (typeof webRequest.onBeforeSendHeaders === 'function') {
+      webRequest.onBeforeSendHeaders(filter, (details, callback) => {
+        handleHeaders(details);
+        if (typeof callback === 'function') callback({ cancel: false });
+      });
+      csrfCaptureBoundSessions.add(ses);
+      return true;
+    }
+  } catch { }
+  return false;
+}
+
+function isRemoteSenderSession(sender) {
+  if (!sender || typeof sender !== 'object') return false;
+  if (sender.__isRemoteSession === true) return true;
+  try {
+    const wb = require('./remote/windowBackends');
+    if (typeof wb.remoteBackendOf === 'function' && wb.remoteBackendOf(sender)) return true;
+  } catch { }
+  try {
+    const rws = require('./remote/remoteWindowSecurity');
+    if (typeof rws.isRemoteContents === 'function' && rws.isRemoteContents(sender)) return true;
+  } catch { }
+  try {
+    const electron = require('electron');
+    const defaultSes = electron?.session?.defaultSession;
+    if (sender.session && defaultSes && sender.session !== defaultSes) return true;
+  } catch { }
+  return false;
+}
+
+async function readRendererCsrfTokenFromSender(sender, expectedOrigin) {
+  const safeOrigin = normalizeLoopbackOrigin(expectedOrigin);
+  if (!safeOrigin || !sender || sender.isDestroyed?.() || typeof sender.executeJavaScript !== 'function') {
+    return null;
+  }
+  try {
+    const senderUrl = typeof sender.getURL === 'function' ? sender.getURL() : '';
+    if (senderUrl) {
+      const senderOrigin = normalizeLoopbackOrigin(senderUrl);
+      if (senderOrigin && senderOrigin !== safeOrigin) return null;
+    }
+    const token = await Promise.race([
+      sender.executeJavaScript(
+        '(() => { try { const direct = typeof window.__APP_CONFIG__?.csrfToken === "string" ? window.__APP_CONFIG__.csrfToken.trim() : ""; if (direct) return direct; return String(window.localStorage?.getItem?.("agy_session_csrf_token") || "").trim(); } catch { return ""; } })()',
+        true
+      ),
+      new Promise(resolve => setTimeout(() => resolve(''), 500))
+    ]);
+    const trimmed = typeof token === 'string' ? token.trim() : '';
+    return trimmed || null;
+  } catch {
+    return null;
+  }
+}
+
+function buildSenderOriginAuthOptions(event, origin) {
+  const sender = event?.sender || null;
+  const senderSession = sender?.session || null;
+  if (senderSession) {
+    attachSessionCsrfCapture(senderSession);
+  }
+  const safeOrigin = normalizeLoopbackOrigin(origin);
+  const useSessionFetch = Boolean(
+    safeOrigin &&
+    senderSession &&
+    typeof senderSession.fetch === 'function' &&
+    isRemoteSenderSession(sender)
+  );
+  return {
+    getCapturedCsrfToken: (targetOrigin) => getCapturedCsrfToken(targetOrigin, senderSession),
+    onCapturedCsrfRejected: (targetOrigin) => clearCapturedCsrfToken(targetOrigin, senderSession),
+    refreshCapturedCsrfToken: async (targetOrigin) => {
+      const existing = getCapturedCsrfToken(targetOrigin, senderSession);
+      if (existing) return existing;
+      const fromRenderer = await readRendererCsrfTokenFromSender(sender, targetOrigin);
+      if (fromRenderer) {
+        recordCapturedCsrfToken(targetOrigin, fromRenderer, senderSession);
+        return fromRenderer;
+      }
+      return null;
+    },
+    ...(useSessionFetch ? { sessionFetch: (u, init) => senderSession.fetch(u, init) } : {})
+  };
 }
 
 let registered = false;
@@ -713,6 +886,12 @@ async function handleRestartHost(event, options = {}) {
 function registerIpcOnce() {
   if (registered || !ipcMain) return;
   registered = true;
+  try {
+    const electron = require('electron');
+    if (electron?.session?.defaultSession) {
+      attachSessionCsrfCapture(electron.session.defaultSession);
+    }
+  } catch { }
   registerMeterIpcHandlers(ipcMain);
 }
 
@@ -732,15 +911,19 @@ function registerMeterIpcHandlers(ipcMain) {
   ipcMain.handle('context-meter:scan', async (event, id, force) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
-    try { return { ok: true, data: await collect(url.origin, id, { force: force === true, supersedePrevious: true }) }; }
-    catch (e) { return { ok: false, error: e.message }; }
+    try {
+      const senderAuthOpts = buildSenderOriginAuthOptions(event, url.origin);
+      return { ok: true, data: await collect(url.origin, id, { force: force === true, supersedePrevious: true, ...senderAuthOpts }) };
+    } catch (e) { return { ok: false, error: e.message }; }
   });
 
   ipcMain.handle('context-meter:turn-state', async (event, id) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
-    try { return { ok: true, data: await collectTurnState(url.origin, id) }; }
-    catch (e) { return { ok: false, error: e.message }; }
+    try {
+      const senderAuthOpts = buildSenderOriginAuthOptions(event, url.origin);
+      return { ok: true, data: await collectTurnState(url.origin, id, senderAuthOpts) };
+    } catch (e) { return { ok: false, error: e.message }; }
   });
 
   ipcMain.handle('context-meter:record-calls', async (event, calls) => {
@@ -803,9 +986,11 @@ function registerMeterIpcHandlers(ipcMain) {
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
       const opts = options && typeof options === 'object' ? options : {};
+      const senderAuthOpts = buildSenderOriginAuthOptions(event, url.origin);
       const safeOpts = {
         origin: url.origin,
         force: opts.force === true,
+        ...senderAuthOpts,
         ...(Array.isArray(opts.liveSteps) ? { liveSteps: opts.liveSteps } : {}),
         ...(Array.isArray(opts.liveCalls) ? { liveCalls: opts.liveCalls } : {}),
         ...(Array.isArray(opts.cascadeModelConfigs) ? { cascadeModelConfigs: opts.cascadeModelConfigs } : {}),
@@ -823,12 +1008,14 @@ function registerMeterIpcHandlers(ipcMain) {
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
       const collector = require('./meter-collector');
+      const senderAuthOpts = buildSenderOriginAuthOptions(event, url.origin);
       const opts = {
         force: options === true || options?.force === true,
         currentModel: typeof options?.currentModel === 'string' ? options.currentModel : null,
         browsePoolKey: typeof options?.browsePoolKey === 'string' ? options.browsePoolKey : null,
         origin: url.origin,
-        backendSource: 'electron-ipc'
+        backendSource: 'electron-ipc',
+        ...senderAuthOpts
       };
       const res = await collector.fetchQuotaSnapshotFromHost(opts);
       const { _raw, ...safePayload } = res || {};
@@ -1712,6 +1899,7 @@ exports.installContextMeter = function (win) {
   const bindToWc = (wc) => {
     if (!wc || boundWebContents.has(wc)) return;
     boundWebContents.add(wc);
+    attachSessionCsrfCapture(wc.session);
     logDiagnostic('bind:wc_attached', { wcId: wc.id, url: wc.getURL?.()?.slice(0, 32) });
 
     wc.on('did-finish-load', () => {
@@ -2210,3 +2398,8 @@ exports.getMeterSource = getMeterSource;
 exports.clearMeterSourceCacheForTest = clearMeterSourceCacheForTest;
 exports.logDiagnostic = logDiagnostic;
 exports.flushDiagnosticLogsForTest = flushDiagnosticLogsForTest;
+exports.attachSessionCsrfCapture = attachSessionCsrfCapture;
+exports.recordCapturedCsrfToken = recordCapturedCsrfToken;
+exports.getCapturedCsrfToken = getCapturedCsrfToken;
+exports.clearCapturedCsrfToken = clearCapturedCsrfToken;
+exports.buildSenderOriginAuthOptions = buildSenderOriginAuthOptions;

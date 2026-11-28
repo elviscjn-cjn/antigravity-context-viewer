@@ -704,8 +704,66 @@ function setBoundedMap(map, key, val, maxEntries) {
 const _collectorHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 8, rejectUnauthorized: false });
 const _collectorHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 8 });
 
-function request(origin, method, body, token, signal = null) {
+async function requestViaSessionFetch(sessionFetch, url, method, body, token, signal = null) {
+  if (signal?.aborted) {
+    const err = new Error('请求已取消');
+    err.name = 'AbortError';
+    throw err;
+  }
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  let timer = null;
+  const onAbort = () => {
+    try { controller?.abort(signal.reason); } catch { }
+  };
+  if (controller && signal) {
+    signal.addEventListener('abort', onAbort, { once: true });
+  }
+  if (controller) {
+    timer = setTimeout(() => controller.abort(new Error('本机接口读取超时')), 20000);
+  }
+  try {
+    const res = await sessionFetch(url, {
+      method: method ? 'POST' : 'GET',
+      headers: method ? { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': token } : {},
+      ...(method ? { body: JSON.stringify(body) } : {}),
+      ...(controller ? { signal: controller.signal } : {})
+    });
+    if (signal?.aborted) {
+      const err = new Error('请求已取消');
+      err.name = 'AbortError';
+      throw err;
+    }
+    const text = typeof res?.text === 'function' ? await res.text() : '';
+    if (Buffer.byteLength(text, 'utf8') > 96 * 1024 * 1024) {
+      throw new Error('本地响应过大，扫描不完整');
+    }
+    if (Number(res?.status) !== 200) {
+      throw new Error(`本机接口 HTTP ${res?.status}`);
+    }
+    return method ? JSON.parse(text) : text;
+  } catch (err) {
+    if (signal?.aborted) {
+      const abortErr = new Error('请求已取消');
+      abortErr.name = 'AbortError';
+      throw abortErr;
+    }
+    if (err && (err.name === 'AbortError' || /本机接口读取超时/.test(String(err.message || '')))) {
+      throw new Error('本机接口读取超时');
+    }
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (signal) {
+      try { signal.removeEventListener('abort', onAbort); } catch { }
+    }
+  }
+}
+
+function request(origin, method, body, token, signal = null, requestOptions = null) {
   const url = method ? `${origin}/exa.language_server_pb.LanguageServerService/${method}` : origin + '/';
+  if (typeof requestOptions?.sessionFetch === 'function') {
+    return requestViaSessionFetch(requestOptions.sessionFetch, url, method, body, token, signal);
+  }
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       const err = new Error('请求已取消');
@@ -989,8 +1047,9 @@ async function resolveCollectCsrfToken(origin, signal, options = {}, isSupersede
   let token = '';
   let hasConfig = false;
   let htmlFetchErr = null;
+  const reqOpts = typeof options?.sessionFetch === 'function' ? { sessionFetch: options.sessionFetch } : null;
   try {
-    const html = await request(origin, null, null, null, signal);
+    const html = await request(origin, null, null, null, signal, reqOpts);
     if (typeof isSuperseded === 'function' && isSuperseded()) return '';
     const match = String(html || '').match(/window\.__APP_CONFIG__\s*=\s*(\{.*?\})\s*;/s);
     if (match) {
@@ -1010,6 +1069,15 @@ async function resolveCollectCsrfToken(origin, signal, options = {}, isSupersede
       const fallbackToken = resolveOriginCsrfToken(origin, options);
       if (fallbackToken) {
         token = fallbackToken;
+        hasConfig = true;
+      }
+    } catch { }
+  }
+  if (!token && canFallback && typeof options?.refreshCapturedCsrfToken === 'function') {
+    try {
+      const refreshedToken = String((await options.refreshCapturedCsrfToken(origin)) || '').trim();
+      if (refreshedToken) {
+        token = refreshedToken;
         hasConfig = true;
       }
     } catch { }
@@ -1055,16 +1123,20 @@ async function collect(origin, id, options = {}) {
         if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
         csrfTokenByOrigin.set(origin, token);
       }
+      const reqOpts = typeof options?.sessionFetch === 'function' ? { sessionFetch: options.sessionFetch } : null;
       const call = async (method, body) => {
         try {
-          return await request(origin, method, body, token, signal);
+          return await request(origin, method, body, token, signal, reqOpts);
         } catch (err) {
           if (err && /HTTP 40[13]/.test(String(err.message || '')) && !signal?.aborted) {
             csrfTokenByOrigin.delete(origin);
+            if (typeof options?.onCapturedCsrfRejected === 'function') {
+              try { options.onCapturedCsrfRejected(origin); } catch { }
+            }
             token = await resolveCollectCsrfToken(origin, signal, options, isSuperseded);
             if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
             csrfTokenByOrigin.set(origin, token);
-            return await request(origin, method, body, token, signal);
+            return await request(origin, method, body, token, signal, reqOpts);
           }
           throw err;
         }
@@ -1326,15 +1398,19 @@ async function collectTurnState(origin, id, options = {}) {
     token = await resolveCollectCsrfToken(origin, null, options, () => false);
     csrfTokenByOrigin.set(origin, token);
   }
+  const reqOpts = typeof options?.sessionFetch === 'function' ? { sessionFetch: options.sessionFetch } : null;
   const call = async (method, body) => {
     try {
-      return await request(origin, method, body, token);
+      return await request(origin, method, body, token, null, reqOpts);
     } catch (err) {
       if (err && /HTTP 40[13]/.test(String(err.message || ''))) {
         csrfTokenByOrigin.delete(origin);
+        if (typeof options?.onCapturedCsrfRejected === 'function') {
+          try { options.onCapturedCsrfRejected(origin); } catch { }
+        }
         token = await resolveCollectCsrfToken(origin, null, options, () => false);
         csrfTokenByOrigin.set(origin, token);
-        return await request(origin, method, body, token);
+        return await request(origin, method, body, token, null, reqOpts);
       }
       throw err;
     }
@@ -4942,6 +5018,12 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
         if (options.homeDir) connectOpts.homeDir = options.homeDir;
         if (typeof options.isPidAlive === 'function') connectOpts.isPidAlive = options.isPidAlive;
         if (options.allowDaemonFallback !== undefined) connectOpts.allowDaemonFallback = options.allowDaemonFallback;
+        if (typeof options.capturedCsrfToken === 'string' && options.capturedCsrfToken.trim()) connectOpts.capturedCsrfToken = options.capturedCsrfToken.trim();
+        if (options.capturedCsrfOrigin !== undefined) connectOpts.capturedCsrfOrigin = options.capturedCsrfOrigin;
+        if (typeof options.getCapturedCsrfToken === 'function') connectOpts.getCapturedCsrfToken = options.getCapturedCsrfToken;
+        if (typeof options.refreshCapturedCsrfToken === 'function') connectOpts.refreshCapturedCsrfToken = options.refreshCapturedCsrfToken;
+        if (typeof options.onCapturedCsrfRejected === 'function') connectOpts.onCapturedCsrfRejected = options.onCapturedCsrfRejected;
+        if (typeof options.sessionFetch === 'function') connectOpts.sessionFetch = options.sessionFetch;
         const api = await connector(Object.keys(connectOpts).length ? connectOpts : undefined);
         const [uRes, qRes] = await Promise.allSettled([
           api.call('GetUserStatus', {}),

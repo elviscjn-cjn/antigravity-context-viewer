@@ -93,7 +93,43 @@ function getCandidateCdpPorts(options = {}) {
   return ports;
 }
 
-function request(url, body, token, timeoutMs = 20000) {
+async function requestViaSessionFetch(sessionFetch, url, body, token, timeoutMs = 20000) {
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  let timer = null;
+  if (controller && timeoutMs > 0) {
+    timer = setTimeout(() => controller.abort(new Error('Local API timeout')), timeoutMs);
+  }
+  try {
+    const res = await sessionFetch(url, {
+      method: body ? 'POST' : 'GET',
+      headers: body
+        ? {
+            'Content-Type': 'application/json',
+            'Connect-Protocol-Version': '1',
+            'x-codeium-csrf-token': token
+          }
+        : {},
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      ...(controller ? { signal: controller.signal } : {})
+    });
+    const text = typeof res?.text === 'function' ? await res.text() : '';
+    const status = Number(res?.status);
+    if (status === 200) return text;
+    throw new Error(`HTTP ${status}: ${String(text || '').slice(0, 200)}`);
+  } catch (err) {
+    if (err && (err.name === 'AbortError' || /Local API timeout/i.test(String(err.message || '')))) {
+      throw new Error('Local API timeout');
+    }
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function request(url, body, token, timeoutMs = 20000, requestOptions = null) {
+  if (typeof requestOptions?.sessionFetch === 'function') {
+    return requestViaSessionFetch(requestOptions.sessionFetch, url, body, token, timeoutMs);
+  }
   return new Promise((resolve, reject) => {
     const req = (url.startsWith('https:') ? https : http).request(
       url,
@@ -720,12 +756,43 @@ function resolveDaemonHubForOrigin(rawOrigin, options = {}) {
 }
 
 /**
- * 为指定回环原点解析非 HTML 来源的 Antigravity 2.34.0+ 本地 CSRF Token（优先主进程 authBootstrap，其次精确匹配的存活 daemon/hub_*.json）。
+ * 从主进程被动捕获的运行时回环请求头缓存中解析对应 origin 的 CSRF Token。
+ * 严格限制仅对合法的 127.0.0.1 回环原点返回凭据，避免跨端口或非回环地址泄露。
+ */
+function resolveCapturedCsrfForOrigin(rawOrigin, options = {}) {
+  const safeOrigin = normalizeLoopbackOrigin(rawOrigin);
+  if (!safeOrigin || !options || typeof options !== 'object') return null;
+  if (typeof options.getCapturedCsrfToken === 'function') {
+    try {
+      const dynamicToken = String(options.getCapturedCsrfToken(safeOrigin) || '').trim();
+      if (dynamicToken) return dynamicToken;
+    } catch {}
+  }
+  if (typeof options.capturedCsrfToken === 'string') {
+    const staticToken = options.capturedCsrfToken.trim();
+    if (staticToken) {
+      if (options.capturedCsrfOrigin !== undefined && options.capturedCsrfOrigin !== null) {
+        const expectedOrigin = normalizeLoopbackOrigin(options.capturedCsrfOrigin);
+        if (expectedOrigin !== safeOrigin) return null;
+      }
+      return staticToken;
+    }
+  }
+  return null;
+}
+
+/**
+ * 为指定回环原点解析非 HTML 来源的 Antigravity 2.34.0+ 本地/SSH CSRF Token（优先主进程 authBootstrap，其次精确匹配的存活 daemon/hub_*.json，最后运行时被动捕获的同源请求头 Token）。
  */
 function resolveOriginCsrfToken(rawOrigin, options = {}) {
   const safeOrigin = normalizeLoopbackOrigin(rawOrigin);
   if (!safeOrigin) return null;
-  return resolveAuthBootstrapForOrigin(safeOrigin, options) || resolveDaemonHubForOrigin(safeOrigin, options) || null;
+  return (
+    resolveAuthBootstrapForOrigin(safeOrigin, options) ||
+    resolveDaemonHubForOrigin(safeOrigin, options) ||
+    resolveCapturedCsrfForOrigin(safeOrigin, options) ||
+    null
+  );
 }
 
 async function extractAppConfigViaCdp(page) {
@@ -760,13 +827,16 @@ async function connectOrigin(rawOrigin, page = null, origins = null, extraMeta =
     throw new Error('非法的本机回环页面地址');
   }
   const mergedMeta = { ...(extraMeta || {}), ...(options || {}) };
+  const requestOpts = typeof mergedMeta.sessionFetch === 'function'
+    ? { sessionFetch: mergedMeta.sessionFetch }
+    : null;
 
-  const resolveAuth = async () => {
+  const resolveAuth = async (resolveOpts = {}) => {
     let hasConfig = false;
     let token = '';
     let htmlFetchErr = null;
     try {
-      const html = await request(origin + '/');
+      const html = await request(origin + '/', null, null, 20000, requestOpts);
       const config = html.match(/window\.__APP_CONFIG__\s*=\s*(\{.*?\})\s*;/s);
       if (config) {
         hasConfig = true;
@@ -801,6 +871,22 @@ async function connectOrigin(rawOrigin, page = null, origins = null, extraMeta =
         hasConfig = true;
       }
     }
+    if (!token && canUseHostAuthFallback) {
+      const capturedToken = resolveCapturedCsrfForOrigin(origin, mergedMeta);
+      if (capturedToken) {
+        token = capturedToken;
+        hasConfig = true;
+      }
+    }
+    if ((!token || resolveOpts.forceRefresh === true) && canUseHostAuthFallback && typeof mergedMeta.refreshCapturedCsrfToken === 'function') {
+      try {
+        const refreshedCaptured = String((await mergedMeta.refreshCapturedCsrfToken(origin)) || '').trim();
+        if (refreshedCaptured) {
+          token = refreshedCaptured;
+          hasConfig = true;
+        }
+      } catch {}
+    }
 
     if (!hasConfig && !token && htmlFetchErr) {
       throw htmlFetchErr;
@@ -825,16 +911,19 @@ async function connectOrigin(rawOrigin, page = null, origins = null, extraMeta =
     call: async (method, body) => {
       const endpoint = `${origin}/exa.language_server_pb.LanguageServerService/${method}`;
       try {
-        return JSON.parse(await request(endpoint, body, activeToken));
+        return JSON.parse(await request(endpoint, body, activeToken, 20000, requestOpts));
       } catch (err) {
         if (/^HTTP 40[13]\b/.test(String(err?.message || ''))) {
+          if (typeof mergedMeta.onCapturedCsrfRejected === 'function') {
+            try { mergedMeta.onCapturedCsrfRejected(origin); } catch {}
+          }
           let refreshed = '';
           try {
-            refreshed = await resolveAuth();
+            refreshed = await resolveAuth({ forceRefresh: true });
           } catch {}
           if (refreshed && refreshed !== activeToken) {
             activeToken = refreshed;
-            return JSON.parse(await request(endpoint, body, activeToken));
+            return JSON.parse(await request(endpoint, body, activeToken, 20000, requestOpts));
           }
         }
         throw err;
@@ -914,6 +1003,7 @@ module.exports = {
   resolveOriginCsrfToken,
   resolveAuthBootstrapForOrigin,
   resolveDaemonHubForOrigin,
+  resolveCapturedCsrfForOrigin,
   discoverLiveDaemonHubs,
   normalizeLoopbackOrigin,
   parseExplicitPort,
