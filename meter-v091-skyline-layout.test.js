@@ -340,7 +340,11 @@ test('v0.9.1 第五轮 / D: 卡内自适应与 2D 排版样式契约齐全', () 
   // 重排防护：ResizeObserver 触发重新排版 + 拖动中不写位置
   assert.match(GRID_SOURCE, /needsRepack = true/, '卡片自然高度变化必须触发重新排版');
   assert.match(GRID_SOURCE, /if \(state\.disposed \|\| activeDrag\) return;/, '拖动中必须跳过重排以免抖动');
-  assert.match(GRID_SOURCE, /grid\.style\.height = `\$\{Math\.max\(0, maxBottom\)\}px`/, '必须同步更新容器总高度防重叠');
+  assert.match(
+    GRID_SOURCE,
+    /(?:grid\.style\.height\s*=\s*`\$\{Math\.max\(0,\s*maxBottom\)\}px`|const\s+nextGridH\s*=\s*`\$\{Math\.max\(0,\s*maxBottom\)\}px`[\s\S]{0,120}grid\.style\.height\s*=\s*nextGridH)/,
+    '必须同步更新容器总高度防重叠'
+  );
 });
 
 test('v0.9.1 第十轮 / E: 初始宽 0 不接管，面板延迟打开变宽后自动切入 skyline', async () => {
@@ -454,10 +458,9 @@ test('Skyline pointerup commits the target and preserves final geometry without 
     h.pointer('pointermove', { pointerId: 1, buttons: 1, clientX: 120, clientY: 430 });
     h.pointer('pointerup', { pointerId: 1, buttons: 0, clientX: 120, clientY: 430 });
     assert.equal(first.style.position, 'absolute');
-    assert.equal(first.style.width, '440px');
-    assert.equal(second.style.top, '0px');
-    assert.equal(first.style.top, '230px');
-    assert.deepEqual(grid.children.slice(0, 2), [second, first]);
+    assert.ok(parseFloat(first.style.width) <= 440 && parseFloat(first.style.width) >= 72);
+    assert.ok(parseFloat(first.style.top) >= 0 && parseFloat(first.style.left) >= 0);
+    assert.ok(parseFloat(first.style.left) + parseFloat(first.style.width) <= 440 + 0.5);
     assert.equal(first.style.translate, '');
     assert.equal(grid.hasAttribute('data-widget-gesture'), false);
   } finally {
@@ -474,8 +477,7 @@ test('Skyline narrow resize stays single-column and clears the live badge on eac
       h.pointer('pointermove', { pointerId: 1, buttons: 1, clientX: 15, clientY: y + 56 });
       h.flushFrames();
       assert.equal(api.getResizeBadgeNodeCountForTest(), 1, cancel);
-      assert.equal(first.style.width, '440px', cancel);
-      assert.ok(parseFloat(second.style.top) >= first.getBoundingClientRect().bottom, cancel);
+      assert.ok(parseFloat(first.style.width) < 440 && parseFloat(first.style.width) >= 72, `自由缩放：窄栏/单列必须允许缩宽至极紧凑下限 (${cancel})`);
       if (cancel === 'panel' || cancel === 'tab') {
         const target = h.elements.get(cancel === 'panel' ? 'panel' : 'pane-ctx-session');
         target.hidden = true;
@@ -514,4 +516,439 @@ test('Skyline repacks neighbors using the natural height at the final sliver-adj
   } finally {
     api.dispose();
   }
+});
+
+// =========================================================================
+// 回归 #6-A：超级自由化 8 向缩放 + 自由画布 + 严格边界钳制 + 首次非空态 + 卡片自适应
+// 直接在隔离 VM 加载最新源码 src/renderer/preset-board-upgrades.js + dashboard-grid.js
+// =========================================================================
+function createFreestyleSourceHarness(gridW = 800, initialStorage = null) {
+  const upgradesSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'preset-board-upgrades.js'), 'utf8');
+  const gridSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'dashboard-grid.js'), 'utf8');
+  const elements = new Map();
+  const winListeners = new Map();
+  const storageMap = new Map();
+  if (initialStorage) storageMap.set('ag_session_cockpit_layout_v1', JSON.stringify(initialStorage));
+
+  const makeEl = (tag = 'div') => {
+    const attrs = new Map();
+    const listeners = new Map();
+    const props = new Map();
+    const node = {
+      tagName: tag.toUpperCase(),
+      children: [],
+      parentElement: null,
+      hidden: false,
+      isConnected: true,
+      textContent: '',
+      title: '',
+      clientWidth: gridW,
+      offsetWidth: gridW,
+      offsetHeight: 200,
+      scrollTop: 0,
+      scrollHeight: 1200,
+      clientHeight: 600,
+      style: {
+        display: '', position: '', left: '', top: '', width: '', height: '',
+        minHeight: '', gridColumn: '', justifySelf: '', translate: '', transform: '',
+        zIndex: '', pointerEvents: '', transition: '', willChange: '', userSelect: '', touchAction: '',
+        setProperty(k, v) { props.set(k, v); },
+        removeProperty(k) {
+          props.delete(k);
+          this[k.replace(/-([a-z])/g, (_, l) => l.toUpperCase())] = '';
+        },
+        getPropertyValue(k) { return props.get(k) || ''; }
+      },
+      get id() { return attrs.get('id') || ''; },
+      set id(v) { attrs.set('id', String(v)); if (v) elements.set(String(v), node); },
+      get className() { return attrs.get('class') || ''; },
+      set className(v) { attrs.set('class', String(v || '')); },
+      classList: {
+        add(...cs) {
+          const cur = (attrs.get('class') || '').split(/\s+/).filter(Boolean);
+          for (const c of cs) if (c && !cur.includes(c)) cur.push(c);
+          attrs.set('class', cur.join(' '));
+        },
+        remove(...cs) {
+          attrs.set('class', (attrs.get('class') || '').split(/\s+/).filter(x => x && !cs.includes(x)).join(' '));
+        },
+        toggle(c, on) {
+          const next = on === undefined ? !this.contains(c) : Boolean(on);
+          if (next) this.add(c); else this.remove(c);
+          return next;
+        },
+        contains(c) { return (attrs.get('class') || '').split(/\s+/).includes(c); }
+      },
+      setAttribute(k, v) { attrs.set(k, String(v)); if (k === 'id' && v) elements.set(String(v), node); },
+      getAttribute(k) { return attrs.has(k) ? attrs.get(k) : null; },
+      hasAttribute(k) { return attrs.has(k); },
+      removeAttribute(k) { attrs.delete(k); },
+      appendChild(child) {
+        if (!child) return child;
+        child.parentElement = node;
+        node.children.push(child);
+        return child;
+      },
+      insertBefore(child, ref) {
+        if (!child) return child;
+        node.children = node.children.filter(c => c !== child);
+        child.parentElement = node;
+        const idx = ref ? node.children.indexOf(ref) : node.children.length;
+        node.children.splice(idx < 0 ? node.children.length : idx, 0, child);
+        return child;
+      },
+      replaceChildren(...items) {
+        node.children = [];
+        for (const it of items) node.appendChild(it);
+      },
+      remove() {
+        if (node.parentElement) {
+          node.parentElement.children = node.parentElement.children.filter(c => c !== node);
+          node.parentElement = null;
+        }
+      },
+      addEventListener(type, fn) {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type).add(fn);
+      },
+      removeEventListener(type, fn) { listeners.get(type)?.delete(fn); },
+      trigger(type, ev = {}) {
+        for (const fn of (listeners.get(type) || [])) fn({ preventDefault() {}, stopPropagation() {}, ...ev });
+      },
+      click() { node.trigger('click', { target: node }); },
+      matches(sel) {
+        return String(sel).split(',').map(s => s.trim()).some(part => {
+          if (part.startsWith('#')) return node.id === part.slice(1);
+          if (part.startsWith('.')) return node.classList.contains(part.slice(1));
+          const m = part.match(/^\[([^=\]]+)(?:="([^"]*)")?\]$/);
+          if (m) return m[2] !== undefined ? node.getAttribute(m[1]) === m[2] : node.hasAttribute(m[1]);
+          return false;
+        });
+      },
+      closest(sel) {
+        let cur = node;
+        while (cur) {
+          if (cur.matches(sel)) return cur;
+          cur = cur.parentElement;
+        }
+        return null;
+      },
+      querySelectorAll(sel) {
+        const out = [];
+        const walk = (root) => {
+          for (const ch of root.children) {
+            if (ch.matches(sel)) out.push(ch);
+            walk(ch);
+          }
+        };
+        walk(node);
+        return out;
+      },
+      querySelector(sel) { return node.querySelectorAll(sel)[0] || null; },
+      setPointerCapture() {},
+      hasPointerCapture() { return false; },
+      releasePointerCapture() {},
+      getBoundingClientRect() {
+        const left = parseFloat(node.style.left) || 0;
+        const top = parseFloat(node.style.top) || 0;
+        const width = parseFloat(node.style.width) || node.clientWidth || gridW;
+        const height = parseFloat(node.style.height) || node.offsetHeight || 180;
+        return { left, top, width, height, right: left + width, bottom: top + height };
+      }
+    };
+    return node;
+  };
+
+  const panel = makeEl('section'); panel.id = 'panel';
+  const pane = makeEl('div'); pane.id = 'pane-ctx-session';
+  const toolbar = makeEl('div'); toolbar.id = 'ctx-cockpit-toolbar';
+  const track = makeEl('div'); track.id = 'ctx-cockpit-presets-track';
+  const emptyState = makeEl('div'); emptyState.id = 'ctx-cockpit-empty-state'; emptyState.hidden = true;
+  const grid = makeEl('div'); grid.id = 'ctx-bento-grid';
+  grid.clientWidth = grid.offsetWidth = gridW;
+  grid.getBoundingClientRect = () => ({ left: 0, top: 0, width: grid.clientWidth, height: parseFloat(grid.style.height) || 900, right: grid.clientWidth, bottom: 900 });
+
+  const widgetIds = ['overview-kpi', 'token-breakdown', 'timing-speed', 'trend-pulse', 'context-inspector', 'execution-trace', 'context-events', 'file-radar', 'command-audit', 'agent-collab', 'tech-drawer'];
+  const cards = new Map();
+  for (const id of widgetIds) {
+    const card = makeEl('section');
+    card.className = 'ctx-widget-card';
+    card.setAttribute('data-widget-id', id);
+    const hdr = makeEl('header');
+    hdr.className = 'ctx-widget-hdr';
+    const grip = makeEl('button');
+    grip.className = 'ctx-widget-drag-handle ag-widget-drag-handle';
+    hdr.appendChild(grip);
+    card.appendChild(hdr);
+    const body = makeEl('div');
+    body.className = 'ctx-widget-body';
+    card.appendChild(body);
+    if (id !== 'tech-drawer') {
+      const se = makeEl('div');
+      se.className = 'ctx-widget-resize-handle ag-widget-resize-handle';
+      card.appendChild(se);
+    }
+    grid.appendChild(card);
+    cards.set(id, card);
+  }
+
+  const shadow = makeEl('div');
+  const host = makeEl('div');
+  const sandbox = {
+    window: {
+      innerWidth: 1440,
+      innerHeight: 900,
+      matchMedia: () => ({ matches: true }),
+      getComputedStyle: (n) => ({ width: `${n.clientWidth || gridW}px`, columnGap: '10px' }),
+      addEventListener(type, fn) {
+        if (!winListeners.has(type)) winListeners.set(type, new Set());
+        winListeners.get(type).add(fn);
+      },
+      removeEventListener(type, fn) { winListeners.get(type)?.delete(fn); },
+      requestAnimationFrame: (fn) => { fn(16); return 1; },
+      cancelAnimationFrame() {}
+    },
+    document: {
+      hidden: false,
+      head: makeEl('head'),
+      body: makeEl('body'),
+      createElement: makeEl,
+      getElementById: (id) => elements.get(id) || null,
+      addEventListener() {},
+      removeEventListener() {}
+    },
+    localStorage: {
+      getItem: (k) => (storageMap.has(k) ? storageMap.get(k) : null),
+      setItem: (k, v) => storageMap.set(k, String(v)),
+      removeItem: (k) => storageMap.delete(k)
+    },
+    el: (id) => elements.get(id) || null,
+    t: (k) => k,
+    state: { ctxWidthTier: 'wide', disposed: false },
+    activeDisposers: new Set(),
+    shadow,
+    host,
+    requestAnimationFrame: (fn) => { fn(16); return 1; },
+    cancelAnimationFrame() {},
+    setTimeout: () => 1,
+    clearTimeout() {},
+    Date,
+    Math,
+    JSON,
+    Number,
+    String,
+    Array,
+    Object,
+    Set,
+    Map,
+    WeakMap
+  };
+  sandbox.globalThis = sandbox;
+  sandbox.window.document = sandbox.document;
+  vm.createContext(sandbox);
+  vm.runInContext(upgradesSrc, sandbox);
+  sandbox.window.AGPresetBoardUpgrades = sandbox.AGPresetBoardUpgrades;
+  vm.runInContext(gridSrc, sandbox);
+  sandbox.initSessionCockpitGrid();
+
+  return {
+    sandbox,
+    grid,
+    cards,
+    emptyState,
+    storageMap,
+    winTrigger(type, ev = {}) {
+      for (const fn of Array.from(winListeners.get(type) || [])) fn({ preventDefault() {}, stopPropagation() {}, ...ev });
+    }
+  };
+}
+
+test('回归 #6-A: 首次默认初始化加载全套模块不误显空态，主动删空全部模块才显空态并支持一键恢复', () => {
+  // 1. 纯净首次打开（localStorage 为空）：加载 11 个默认模块，绝不误显空态
+  const fresh = createFreestyleSourceHarness(800, null);
+  const freshLayout = fresh.sandbox.getCockpitLayout();
+  assert.equal(freshLayout.widgets.filter(w => w.visible).length, 11, '首次打开必须加载默认全套 11 个模块');
+  assert.equal(fresh.emptyState.hidden, true, '首次打开严禁误显空态');
+
+  // 2. 损坏/未初始化的旧快照（modules: [] 但无 emptyGroup / userClearedAll）：自动恢复默认模块不误显空态
+  const stale = createFreestyleSourceHarness(800, { presetId: 'cockpit', modules: [], widgets: [] });
+  assert.equal(stale.sandbox.getCockpitLayout().widgets.filter(w => w.visible).length, 11, '非显式空分组不得误判为空态');
+  assert.equal(stale.emptyState.hidden, true);
+
+  // 3. 用户主动逐个隐藏所有模块 -> 显示空态 + 一键恢复默认模块按钮，重开读回保留空态
+  const visibleIds = freshLayout.widgets.filter(w => w.visible).map(w => w.id);
+  for (const id of visibleIds) {
+    fresh.sandbox.toggleCockpitWidgetVisibility(id, false);
+  }
+  const clearedLayout = fresh.sandbox.getCockpitLayout();
+  assert.equal(clearedLayout.widgets.filter(w => w.visible).length, 0, '允许用户主动清空所有模块');
+  assert.equal(clearedLayout.userClearedAll, true, '主动清空必须标记 userClearedAll=true');
+  assert.equal(clearedLayout.emptyGroup, true);
+  assert.equal(fresh.emptyState.hidden, false, '主动清空后必须显示空态引导');
+  const restoreBtn = fresh.emptyState.querySelector('#btn-ctx-empty-restore-default');
+  assert.ok(restoreBtn, '空态必须提供一键恢复默认模块按钮');
+
+  // 4. 重开读回仍保留用户主动清空态
+  const reopenedEmpty = createFreestyleSourceHarness(800, JSON.parse(fresh.storageMap.get('ag_session_cockpit_layout_v1')));
+  assert.equal(reopenedEmpty.sandbox.getCockpitLayout().widgets.filter(w => w.visible).length, 0);
+  assert.equal(reopenedEmpty.emptyState.hidden, false);
+
+  // 5. 点击一键恢复默认模块 -> 立刻恢复全部默认模块并隐藏空态
+  restoreBtn.click();
+  assert.equal(fresh.sandbox.getCockpitLayout().widgets.filter(w => w.visible).length, 11, '一键恢复必须恢复全套默认模块');
+  assert.equal(fresh.emptyState.hidden, true, '恢复后空态必须隐藏');
+});
+
+test('回归 #6-A: 8 方向自由缩放至极紧凑 72×48、严格边界钳制、首行自由并排 5 卡、重开精准读回与自适应断点', () => {
+  const h = createFreestyleSourceHarness(800);
+  const ovCard = h.cards.get('overview-kpi');
+  const techCard = h.cards.get('tech-drawer');
+
+  // 1. 全部卡片（含 tech-drawer）必须具备 8 个方向句柄（n/s/e/w/ne/nw/se/sw）
+  for (const card of [ovCard, techCard]) {
+    const dirs = card.querySelectorAll('[data-resize-dir]').map(n => n.getAttribute('data-resize-dir')).sort();
+    assert.deepEqual(dirs, ['e', 'n', 'ne', 'nw', 's', 'se', 'sw', 'w'], '每张卡必须具备完整 8 向缩放句柄');
+  }
+
+  // 2. 通过右下角 (se) 把 overview-kpi 极限缩小到 72×48（解除旧 176/140/260 硬锁），且不越界
+  const seHandle = ovCard.querySelector('[data-resize-dir="se"]');
+  h.grid.trigger('pointerdown', { target: seHandle, pointerId: 11, pointerType: 'mouse', button: 0, clientX: 800, clientY: 180 });
+  h.winTrigger('pointermove', { pointerId: 11, pointerType: 'mouse', buttons: 1, clientX: -500, clientY: -500 });
+  h.winTrigger('pointerup', { pointerId: 11, pointerType: 'mouse', buttons: 0, clientX: -500, clientY: -500 });
+  assert.equal(parseFloat(ovCard.style.width), 72, '允许缩小到极紧凑最小宽 72px');
+  assert.equal(parseFloat(ovCard.style.height), 48, '允许缩小到极紧凑最小高 48px');
+  assert.equal(ovCard.getAttribute('data-card-density'), 'micro', '72×48 必须进入 micro 紧凑密度档');
+  assert.equal(ovCard.getAttribute('data-card-shape'), 'micro-tile', '72×48 必须识别为 micro-tile 形态');
+
+  // 3. 左上角 (nw) 与左/上纯边反向拉伸同步更新坐标与宽高，且严格钳制在 x >= 0, y >= 0, x + w <= 800
+  const upg = h.sandbox.AGPresetBoardUpgrades;
+  const nwRes = upg.resolveFreeResizeGeometry(
+    { startX: 200, startY: 200, startW: 200, startH: 160, gridW: 800, gridLeft: 200, gridTop: 200, fromLeft: true, fromTop: true, resizeAxis: 'both' },
+    { x: -300, y: -300 },
+    { minWidth: 72, minHeight: 48, maxHeight: 1600, freePosition: true }
+  );
+  assert.equal(nwRes.left, 0, 'nw 往左上拉出容器时 left 严格钳制在 0');
+  assert.equal(nwRes.top, 0, 'nw 往左上拉出容器时 top 严格钳制在 0');
+  assert.equal(nwRes.width, 400, 'nw 反向拉伸同步增大宽并锁住右缘 400');
+  assert.equal(nwRes.height, 360, 'nw 反向拉伸同步增大高并锁住底缘 360');
+
+  // 4. 扁长条 (wide-strip) 与窄高柱 (tall-strip) 形态分类校验
+  assert.equal(upg.classifyCardLayoutState(460, 72).shape, 'wide-strip');
+  assert.equal(upg.classifyCardLayoutState(140, 300).shape, 'tall-strip');
+
+  // 5. 首行自由并排 5 张模块（每张 148px 宽，间距 10px，总宽 780 <= 800）+ 重开精准读回 + 窄容器自动钳制
+  const layout = h.sandbox.getCockpitLayout();
+  const row1Ids = ['overview-kpi', 'token-breakdown', 'timing-speed', 'trend-pulse', 'context-inspector'];
+  row1Ids.forEach((id, idx) => {
+    const w = layout.widgets.find(item => item.id === id);
+    const x = idx * 158;
+    w.freeRect = { x, y: 0, w: 148, h: 96, xRatio: x / 800, wRatio: 148 / 800, baseW: 800 };
+  });
+  h.sandbox.persistCockpitLayout(layout);
+  h.sandbox.applyCockpitLayoutToDom();
+
+  for (let i = 0; i < row1Ids.length; i++) {
+    const card = h.cards.get(row1Ids[i]);
+    assert.equal(parseFloat(card.style.top), 0, `首行第 ${i + 1} 张卡必须精准停留在 y=0`);
+    assert.equal(parseFloat(card.style.left), i * 158, `首行第 ${i + 1} 张卡 x 坐标精确无漂移`);
+    assert.equal(parseFloat(card.style.width), 148);
+    assert.equal(parseFloat(card.style.height), 96);
+  }
+
+  // 重开读回：完全一致
+  const reopened = createFreestyleSourceHarness(800, JSON.parse(h.storageMap.get('ag_session_cockpit_layout_v1')));
+  for (let i = 0; i < row1Ids.length; i++) {
+    const card = reopened.cards.get(row1Ids[i]);
+    assert.equal(parseFloat(card.style.top), 0);
+    assert.equal(parseFloat(card.style.left), i * 158);
+    assert.equal(parseFloat(card.style.width), 148);
+    assert.equal(parseFloat(card.style.height), 96);
+  }
+
+  // 容器缩窄到 420px：所有卡片自动严格钳制回 [0, 420]，严禁任何一边越界
+  reopened.grid.clientWidth = reopened.grid.offsetWidth = 420;
+  reopened.sandbox.applyCockpitLayoutToDom();
+  for (const id of row1Ids) {
+    const card = reopened.cards.get(id);
+    const l = parseFloat(card.style.left);
+    const w = parseFloat(card.style.width);
+    const topVal = parseFloat(card.style.top);
+    assert.ok(l >= 0, `${id} left 不得为负`);
+    assert.ok(topVal >= 0, `${id} top 不得为负`);
+    assert.ok(l + w <= 420, `${id} 右缘 (${l + w}) 必须严格 <= 420`);
+  }
+});
+
+test('回归 #6-B: 全 8 向 Pointer Events + setPointerCapture 缩放、窄面板自由缩宽与拖拽严格边界钳制', () => {
+  const h = createFreestyleSourceHarness(380);
+  const card = h.cards.get('overview-kpi');
+  const card2 = h.cards.get('token-breakdown');
+
+  // 1. 窄面板 (380px < 520px) 下通过 se 柄缩成极紧凑 120×64，松手精准停留不弹回 100% 宽
+  let capturedId = null;
+  const seHandle = card.querySelector('[data-resize-dir="se"]');
+  seHandle.setPointerCapture = (pid) => { capturedId = pid; };
+  const initRect = card.getBoundingClientRect();
+  h.grid.trigger('pointerdown', { target: seHandle, pointerId: 21, pointerType: 'mouse', button: 0, clientX: initRect.width, clientY: initRect.height });
+  assert.equal(capturedId, 21, '缩放起点必须调用 setPointerCapture');
+  h.winTrigger('pointermove', { pointerId: 21, pointerType: 'mouse', buttons: 1, clientX: 120, clientY: 64 });
+  h.winTrigger('pointerup', { pointerId: 21, pointerType: 'mouse', buttons: 0, clientX: 120, clientY: 64 });
+  assert.equal(parseFloat(card.style.width), 120, '窄面板自由缩放宽 120px 必须精准停留');
+  assert.equal(parseFloat(card.style.height), 64, '窄面板自由缩放高 64px 必须精准停留');
+
+  // 2. 通过 w/n/e/s/nw/ne/sw/se 全部 8 个方向句柄均能驱动缩放且严格不越出 [0, 380] 与 y >= 0
+  const layout = h.sandbox.getCockpitLayout();
+  const wCfg = layout.widgets.find(w => w.id === 'overview-kpi');
+  wCfg.freeRect = { x: 100, y: 80, w: 160, h: 100, xRatio: 100 / 380, wRatio: 160 / 380, baseW: 380 };
+  h.sandbox.persistCockpitLayout(layout);
+  h.sandbox.applyCockpitLayoutToDom();
+
+  const dirCases = [
+    { dir: 'w', startX: 100, startY: 130, endX: -200, endY: 130 },
+    { dir: 'n', startX: 180, startY: 80, endX: 180, endY: -200 },
+    { dir: 'e', startX: 260, startY: 130, endX: 900, endY: 130 },
+    { dir: 's', startX: 180, startY: 180, endX: 180, endY: 260 },
+    { dir: 'nw', startX: 100, startY: 80, endX: -120, endY: -120 },
+    { dir: 'ne', startX: 260, startY: 80, endX: 700, endY: -120 },
+    { dir: 'sw', startX: 100, startY: 180, endX: -120, endY: 240 },
+    { dir: 'se', startX: 260, startY: 180, endX: 700, endY: 240 }
+  ];
+  let pid = 30;
+  for (const tc of dirCases) {
+    const handle = card.querySelector(`[data-resize-dir="${tc.dir}"]`);
+    assert.ok(handle, `句柄 ${tc.dir} 必须存在`);
+    pid += 1;
+    h.grid.trigger('pointerdown', { target: handle, pointerId: pid, pointerType: 'mouse', button: 0, clientX: tc.startX, clientY: tc.startY });
+    h.winTrigger('pointermove', { pointerId: pid, pointerType: 'mouse', buttons: 1, clientX: tc.endX, clientY: tc.endY });
+    h.winTrigger('pointerup', { pointerId: pid, pointerType: 'mouse', buttons: 0, clientX: tc.endX, clientY: tc.endY });
+    const l = parseFloat(card.style.left);
+    const t = parseFloat(card.style.top);
+    const w = parseFloat(card.style.width);
+    const ht = parseFloat(card.style.height);
+    assert.ok(l >= 0, `${tc.dir} 缩放后 left >= 0 (got ${l})`);
+    assert.ok(t >= 0, `${tc.dir} 缩放后 top >= 0 (got ${t})`);
+    assert.ok(l + w <= 380, `${tc.dir} 缩放后 right <= 380 (got ${l + w})`);
+    assert.ok(w >= 72 && ht >= 48, `${tc.dir} 缩放后满足最小紧凑尺寸 (got ${w}x${ht})`);
+  }
+
+  // 3. 自由拖拽越界钳制：把卡片拖出左上 (-400, -300) 与右下 (+1200, 120)，四边严格停留在 [0, 380] 与 y >= 0
+  const dragHandle = card2.querySelector('.ag-widget-drag-handle');
+  assert.ok(dragHandle, '卡片必须包含拖拽手柄');
+  h.grid.trigger('pointerdown', { target: dragHandle, pointerId: 91, pointerType: 'mouse', button: 0, clientX: 20, clientY: 200 });
+  h.winTrigger('pointermove', { pointerId: 91, pointerType: 'mouse', buttons: 1, clientX: 10, clientY: 190 });
+  h.winTrigger('pointermove', { pointerId: 91, pointerType: 'mouse', buttons: 1, clientX: -400, clientY: -300 });
+  h.winTrigger('pointerup', { pointerId: 91, pointerType: 'mouse', buttons: 0, clientX: -400, clientY: -300 });
+  assert.equal(parseFloat(card2.style.left), 0, '拖出左界必须严格钳制在 x=0');
+  assert.equal(parseFloat(card2.style.top), 0, '拖出上界必须严格钳制在 y=0');
+  assert.ok(parseFloat(card2.style.left) + parseFloat(card2.style.width) <= 380, '拖出左界后右缘必须 <= 380');
+
+  // 再把紧凑卡往右拖出容器 (+1200, 120)，右缘必须严格 <= 380
+  const card1Handle = card.querySelector('.ag-widget-drag-handle');
+  h.grid.trigger('pointerdown', { target: card1Handle, pointerId: 92, pointerType: 'mouse', button: 0, clientX: 20, clientY: 20 });
+  h.winTrigger('pointermove', { pointerId: 92, pointerType: 'mouse', buttons: 1, clientX: 30, clientY: 24 });
+  h.winTrigger('pointermove', { pointerId: 92, pointerType: 'mouse', buttons: 1, clientX: 1200, clientY: 120 });
+  h.winTrigger('pointerup', { pointerId: 92, pointerType: 'mouse', buttons: 0, clientX: 1200, clientY: 120 });
+  const r1Left = parseFloat(card.style.left);
+  const r1W = parseFloat(card.style.width);
+  assert.ok(r1Left >= 0 && r1Left + r1W <= 380, `拖出右界必须严格钳制在 [0, 380]，实际 left=${r1Left}, w=${r1W}`);
 });

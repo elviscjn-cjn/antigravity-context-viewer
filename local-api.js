@@ -212,11 +212,17 @@ async function discoverAntigravityCdp(options = {}) {
 
   const timeoutMs = options.timeoutMs || 1500;
   let anyPortResponded = false;
+  let firstRespondedPort = null;
+  let devToolsRespondedPort = null;
 
   for (const port of candidatePorts) {
     try {
       const allPages = await fetchJsonList(port, timeoutMs);
       anyPortResponded = true;
+      if (!firstRespondedPort) firstRespondedPort = port;
+      if (portFileInfo.valid && port === portFileInfo.port) {
+        devToolsRespondedPort = port;
+      }
       const matchedPages = allPages.filter(
         item => item && item.type === 'page' && Boolean(normalizeLoopbackOrigin(item.url))
       );
@@ -262,7 +268,11 @@ async function discoverAntigravityCdp(options = {}) {
   }
 
   if (anyPortResponded) {
-    throw new Error('未找到 Antigravity 主窗口，请等待窗口加载后重试');
+    const err = new Error('未找到 Antigravity 主窗口，请等待窗口加载后重试');
+    err.code = 'NO_PAGE_TARGETS';
+    err.cdpPort = devToolsRespondedPort || firstRespondedPort;
+    err.fromDevToolsPortFile = Boolean(devToolsRespondedPort);
+    throw err;
   }
   if (portFileInfo.exists && !portFileInfo.valid) {
     throw new Error('Antigravity 本地连接信息无效，请重新打开客户端');
@@ -908,6 +918,139 @@ async function connect(options = {}) {
   throw cdpErr || new Error('Antigravity 本地连接信息尚未就绪，请稍后重试');
 }
 
+const HOST_THEME_ENUM_MAP = Object.freeze({
+  auto: { enumName: 'THEME_MODE_INHERIT', enumCode: 1, mode: 'auto' },
+  inherit: { enumName: 'THEME_MODE_INHERIT', enumCode: 1, mode: 'auto' },
+  light: { enumName: 'THEME_MODE_LIGHT', enumCode: 2, mode: 'light' },
+  dark: { enumName: 'THEME_MODE_DARK', enumCode: 3, mode: 'dark' }
+});
+
+function normalizeHostThemeValue(raw) {
+  if (raw === 2 || raw === '2' || raw === 'light' || raw === 'THEME_MODE_LIGHT') {
+    return HOST_THEME_ENUM_MAP.light;
+  }
+  if (raw === 3 || raw === '3' || raw === 'dark' || raw === 'THEME_MODE_DARK') {
+    return HOST_THEME_ENUM_MAP.dark;
+  }
+  return HOST_THEME_ENUM_MAP.auto;
+}
+
+function getHostConfigJsonPath(options = {}) {
+  if (options && typeof options.configPath === 'string' && options.configPath.trim()) {
+    return path.resolve(options.configPath.trim());
+  }
+  const home = (options && options.homeDir) || os.homedir();
+  return path.join(home, '.gemini', 'config', 'config.json');
+}
+
+/**
+ * 读取 Antigravity 宿主权威深浅模式与自定义强调色种子 (~/.gemini/config/config.json)
+ */
+function readHostThemeConfig(options = {}) {
+  const cfgPath = getHostConfigJsonPath(options);
+  try {
+    if (!fs.existsSync(cfgPath)) {
+      return {
+        ok: true,
+        exists: false,
+        configPath: cfgPath,
+        mode: 'auto',
+        rawThemeMode: 'THEME_MODE_INHERIT',
+        accentDark: null,
+        accentLight: null
+      };
+    }
+    const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    const us = parsed && typeof parsed.userSettings === 'object' ? parsed.userSettings : {};
+    const norm = normalizeHostThemeValue(us.themeMode);
+    return {
+      ok: true,
+      exists: true,
+      configPath: cfgPath,
+      mode: norm.mode,
+      rawThemeMode: typeof us.themeMode === 'string' ? us.themeMode : norm.enumName,
+      accentDark: typeof us.customThemeSeedsDark?.primary === 'string' ? us.customThemeSeedsDark.primary : null,
+      accentLight: typeof us.customThemeSeedsLight?.primary === 'string' ? us.customThemeSeedsLight.primary : null
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      exists: fs.existsSync(cfgPath),
+      configPath: cfgPath,
+      mode: 'auto',
+      rawThemeMode: null,
+      error: err?.message || '读取宿主主题配置失败'
+    };
+  }
+}
+
+/**
+ * 通过 Antigravity 宿主权威 LanguageServerService/JetboxWriteState RPC 同步整个客户端深浅模式。
+ * 写入成功后回读 config.json 校验；若当前语言服务不可达则明确返回失败，绝不静默假成功。
+ */
+async function writeHostThemeMode(targetMode, options = {}) {
+  const key = String(targetMode || '').trim().toLowerCase();
+  const spec = HOST_THEME_ENUM_MAP[key];
+  if (!spec) {
+    return { ok: false, reason: 'invalid_theme_mode', error: `不支持的主题模式: ${targetMode}` };
+  }
+  const before = readHostThemeConfig(options);
+  const callRpc = async (body) => {
+    if (typeof options._callRpc === 'function') {
+      return await options._callRpc('JetboxWriteState', body);
+    }
+    const api = await connect({
+      ...(options.origin ? { origin: options.origin } : {}),
+      ...(options.port ? { port: options.port } : {})
+    });
+    return await api.call('JetboxWriteState', body);
+  };
+
+  let rpcErr = null;
+  let rpcRes = null;
+  try {
+    rpcRes = await callRpc({
+      userConfig: {
+        userSettings: {
+          themeMode: spec.enumName
+        }
+      }
+    });
+  } catch (e1) {
+    try {
+      rpcRes = await callRpc({
+        userConfig: {
+          userSettings: {
+            themeMode: spec.enumCode
+          }
+        }
+      });
+    } catch (e2) {
+      rpcErr = e2 || e1;
+    }
+  }
+  if (rpcErr) {
+    return {
+      ok: false,
+      reason: 'host_theme_rpc_failed',
+      mode: before.mode,
+      previousMode: before.mode,
+      targetMode: spec.mode,
+      error: rpcErr?.message || '同步宿主主题失败'
+    };
+  }
+  const after = readHostThemeConfig(options);
+  return {
+    ok: true,
+    mode: after.ok && after.exists ? after.mode : spec.mode,
+    targetMode: spec.mode,
+    enumName: spec.enumName,
+    previousMode: before.mode,
+    verifiedOnDisk: Boolean(after.ok && after.exists && after.mode === spec.mode),
+    rpcResult: rpcRes || {}
+  };
+}
+
 module.exports = {
   connect,
   connectOrigin,
@@ -923,5 +1066,9 @@ module.exports = {
   discoverAntigravityCdp,
   connectCdpWebSocket,
   createCdpClient,
-  HANS_CANDIDATE_PORTS
+  HANS_CANDIDATE_PORTS,
+  HOST_THEME_ENUM_MAP,
+  normalizeHostThemeValue,
+  readHostThemeConfig,
+  writeHostThemeMode
 };

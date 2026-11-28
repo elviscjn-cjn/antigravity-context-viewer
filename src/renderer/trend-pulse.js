@@ -151,7 +151,7 @@ function renderTrendPulseExtras(series, pts, svg, timelineSrc, layoutMeta) {
         const latPath = createSvgEl('path', {
           d: pathD,
           fill: 'none',
-          stroke: '#A855F7',
+          stroke: 'var(--ag-host-accent, var(--primary, #3274f6))',
           'stroke-width': '1.6',
           'stroke-dasharray': '4 2',
           style: 'pointer-events:none'
@@ -163,7 +163,7 @@ function renderTrendPulseExtras(series, pts, svg, timelineSrc, layoutMeta) {
           cx: lp.x.toFixed(1),
           cy: lp.y.toFixed(1),
           r: '2.5',
-          fill: '#C084FC',
+          fill: 'var(--ag-host-accent, var(--primary, #3274f6))',
           stroke: 'var(--ctx-ck-card, #151517)',
           'stroke-width': '1',
           'data-latency-sec': String(lp.dur)
@@ -179,7 +179,7 @@ function renderTrendPulseExtras(series, pts, svg, timelineSrc, layoutMeta) {
         x: (width - padR).toFixed(1),
         y: (padT + 9).toFixed(1),
         'text-anchor': 'end',
-        fill: '#C084FC',
+        fill: 'var(--ag-host-accent-text, var(--ag-host-accent, var(--primary, #3274f6)))',
         'font-size': '8.5',
         style: 'pointer-events:none'
       });

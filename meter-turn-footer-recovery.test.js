@@ -312,3 +312,104 @@ test('回复底部单次请求遥测微标：默认开启、多步汇总自动�
     h.sandbox.__AGContextMeter.dispose();
   }
 });
+
+test('Issue #140 回归：时间线滞后（M > T）时绝不将上一轮模型与 Token 错挂到新回复，迟到回填只更新正确回复', () => {
+  const turnA = {
+    turnKey: 'turn-1',
+    turnIndex: 1,
+    calls: [{ callId: 'call-a', attributedModelLabel: 'Model A (Gemini)', inputTokens: 1000, outputTokens: 200, streamingTps: 80 }]
+  };
+  const turnB = {
+    turnKey: 'turn-2',
+    turnIndex: 2,
+    calls: [{ callId: 'call-b', attributedModelLabel: 'Model B (Claude)', inputTokens: 2500, outputTokens: 400, streamingTps: 60 }]
+  };
+
+  // 1. 第一轮完成：M=1, T=1，回复 A 稳定归属 turn-1
+  const step1 = core.alignTurnFootersWithTurns([{ existingTurnKey: '', existingSessionId: '' }], [turnA], { sessionId: 'sess-140' });
+  assert.equal(step1.length, 1);
+  assert.equal(step1[0]?.turnKey, 'turn-1');
+
+  // 2. 第二轮回复 B 已渲染出工具栏，但时间线仍滞后在第一轮：M=2, T=1
+  const step2 = core.alignTurnFootersWithTurns(
+    [
+      { existingTurnKey: 'turn-1', existingSessionId: 'sess-140' },
+      { existingTurnKey: '', existingSessionId: '' }
+    ],
+    [turnA],
+    { sessionId: 'sess-140' }
+  );
+  assert.equal(step2.length, 2);
+  assert.equal(step2[0]?.turnKey, 'turn-1', '回复 A 必须保持原有 turn-1 归属，绝不被清空');
+  assert.equal(step2[1], null, '回复 B 在时间线滞后时必须留空，绝不可显示上一轮 Model A 的模型与 Token');
+
+  // 2b. 即使页面刚刷新无既有 DOM 绑定，M=2, T=1（turnIndex=1）也必须头对齐而非尾移到回复 B
+  const step2Cold = core.alignTurnFootersWithTurns(
+    [{ existingTurnKey: '', existingSessionId: '' }, { existingTurnKey: '', existingSessionId: '' }],
+    [turnA],
+    { sessionId: 'sess-140' }
+  );
+  assert.equal(step2Cold[0]?.turnKey, 'turn-1');
+  assert.equal(step2Cold[1], null, '冷启动时间线滞后时回复 B 同样不可误挂 turn-1');
+
+  // 3. 时间线迟到回填完成：M=2, T=2，回复 A 保持 Model A，回复 B 精准回填 Model B
+  const step3 = core.alignTurnFootersWithTurns(
+    [
+      { existingTurnKey: 'turn-1', existingSessionId: 'sess-140' },
+      { existingTurnKey: '', existingSessionId: '' }
+    ],
+    [turnA, turnB],
+    { sessionId: 'sess-140' }
+  );
+  assert.equal(step3[0]?.turnKey, 'turn-1');
+  assert.equal(step3[1]?.turnKey, 'turn-2');
+
+  // 4. 多模型整轮明确标注（含「多模型」显式标识、零括号与 lastCallModel 溯源）
+  const multiModelAttr = core.resolveTurnFooterModelAttribution([
+    { attributedModelLabel: 'Gemini 4 Neon (High)', inputTokens: 2000, outputTokens: 300, totalTokens: 2300 },
+    { attributedModelLabel: 'Claude Sonnet 4.6', inputTokens: 1000, outputTokens: 100, totalTokens: 1100 }
+  ], { isTurnAggregate: true });
+  assert.equal(multiModelAttr.isMixed, true);
+  assert.deepEqual(multiModelAttr.models, ['Gemini 4 Neon (High)', 'Claude Sonnet 4.6']);
+  assert.equal(multiModelAttr.lastCallModel, 'Claude Sonnet 4.6');
+  assert.match(multiModelAttr.label, /^多模型/);
+  assert.match(multiModelAttr.label, /2模型/);
+
+  // 5. 切会话隔离：旧会话的 existingTurnKey 不得跨会话误匹配
+  const otherSession = core.alignTurnFootersWithTurns(
+    [
+      { existingTurnKey: 'turn-9', existingSessionId: 'old-sess' },
+      { existingTurnKey: '', existingSessionId: '' }
+    ],
+    [{ turnKey: 'turn-9', turnIndex: 9, calls: turnA.calls }],
+    { sessionId: 'new-sess' }
+  );
+  assert.deepEqual(otherSession, [null, null], '无稳定同会话绑定且起始轮次非 1 时不猜测尾移');
+
+  // 6. Issue #140 作者原复现：请求列表已有第 1 轮 A(Out 100) 与第 2 轮 B(Out 150)，但时间线仅到第 1 轮
+  const authorTurn1 = { turnKey: 'turn-1', turnIndex: 1, calls: [{ callId: 'cA', attributedModelLabel: 'Model A', outputTokens: 100 }] };
+  const authorTurn2 = { turnKey: 'turn-2', turnIndex: 2, calls: [{ callId: 'cB', attributedModelLabel: 'Model B', outputTokens: 150 }] };
+  const lagged = core.alignTurnFootersWithTurns(
+    [{ existingTurnKey: '', existingSessionId: '' }, { existingTurnKey: '', existingSessionId: '' }],
+    [authorTurn1],
+    { sessionId: 'author-repro', turnsSource: 'timeline', hasUnmappedLaterCalls: true }
+  );
+  assert.equal(lagged[0]?.turnKey, 'turn-1');
+  assert.equal(lagged[1], null, '第二条回复在时间线滞后时绝不可借用 turn-1 (Model A / Out 100)');
+  const caughtUp = core.alignTurnFootersWithTurns(
+    [{ existingTurnKey: 'turn-1', existingSessionId: 'author-repro' }, { existingTurnKey: '', existingSessionId: '' }],
+    [authorTurn1, authorTurn2],
+    { sessionId: 'author-repro', turnsSource: 'timeline', hasUnmappedLaterCalls: false }
+  );
+  assert.equal(caughtUp[0]?.turnKey, 'turn-1');
+  assert.equal(caughtUp[1]?.turnKey, 'turn-2');
+
+  // 7. 兼容无时间线的单条 fallback 兜底（M=2, T=1, 无既有绑定且无未入时间线后续调用）
+  const fallbackCompat = core.alignTurnFootersWithTurns(
+    [{ existingTurnKey: '', existingSessionId: '' }, { existingTurnKey: '', existingSessionId: '' }],
+    [{ turnKey: 'fallback-1', turnIndex: 1, calls: turnA.calls }],
+    { sessionId: 'fb-sess', turnsSource: 'fallback', hasUnmappedLaterCalls: false }
+  );
+  assert.equal(fallbackCompat[0], null);
+  assert.equal(fallbackCompat[1]?.turnKey, 'fallback-1');
+});

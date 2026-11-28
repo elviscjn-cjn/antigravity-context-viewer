@@ -197,12 +197,12 @@ test('v0.9.1 模块二 / A: 吸附列数严格锁死合法档位，绝不出现 
     await h.flush();
 
     const spans = (tier) => Array.from(api.legalCockpitSpansForTest(tier));
-    assert.deepStrictEqual(spans('xl'), [4, 6, 8, 12], 'xl 宽屏仅允许 4/6/8/12 列');
-    assert.deepStrictEqual(spans('wide'), [6, 12], 'wide 侧栏仅允许 6/12 列');
+    assert.deepStrictEqual(spans('xl'), [3, 4, 6, 8, 12], 'xl 宽屏允许 3/4/6/8/12 列，支持四卡同行且杜绝碎列');
+    assert.deepStrictEqual(spans('wide'), [3, 4, 6, 12], 'wide 宽侧栏允许 3/4/6/12 列');
     assert.deepStrictEqual(spans('medium'), [6, 12], 'medium 侧栏仅允许 6/12 列');
     assert.deepStrictEqual(spans('narrow'), [12], 'narrow 窄栏锁死 12 列仅调高度');
 
-    const legalXl = [4, 6, 8, 12];
+    const legalXl = [3, 4, 6, 8, 12];
     for (let raw = 1; raw <= 12; raw++) {
       const snapped = api.snapCockpitSpanForTest(raw, 'xl');
       assert.ok(legalXl.includes(snapped), `xl 下 ${raw} 列必须吸附到合法档位，实际 ${snapped}`);
@@ -212,7 +212,7 @@ test('v0.9.1 模块二 / A: 吸附列数严格锁死合法档位，绝不出现 
     assert.equal(api.snapCockpitSpanForTest(9, 'xl'), 8, '9 列必须吸附为 8 列');
     assert.equal(api.snapCockpitSpanForTest(11, 'xl'), 12, '11 列必须吸附为 12 列');
     for (let raw = 1; raw <= 12; raw++) {
-      assert.ok([6, 12].includes(api.snapCockpitSpanForTest(raw, 'wide')), `wide 下 ${raw} 列必须吸附到 6 或 12`);
+      assert.ok([3, 4, 6, 12].includes(api.snapCockpitSpanForTest(raw, 'wide')), `wide 下 ${raw} 列必须吸附到合法档位`);
       assert.equal(api.snapCockpitSpanForTest(raw, 'narrow'), 12, 'narrow 下任何列数都必须锁死 12 列');
     }
   } finally {

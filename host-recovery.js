@@ -11,7 +11,15 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { loadAsarEngine, builtinAsar, getStateDir, isIsolatedTestPath } = require('./asar-engine');
+const {
+  loadAsarEngine,
+  builtinAsar,
+  getStateDir,
+  isIsolatedTestPath,
+  resolveAsarTarget,
+  computeAsarTargetKey,
+  normalizeTargetPathForCompare
+} = require('./asar-engine');
 const { inspectMacAsarIntegrity } = require('./macos-binary-utils');
 const { cleanUtilsSource, verifyCleanStructure, diagnoseCleanStructure, TAGS } = require('./modular-installer');
 const {
@@ -49,45 +57,87 @@ function extractArchiveFile(archivePath, relPath) {
 }
 
 function resolveRecoveryTarget(options = {}) {
-  const { findAsarPath } = require('./install');
   const stateDir = options.stateDir ? path.resolve(String(options.stateDir)) : getStateDir();
   const explicitAsar = options.asarPath || options.path || null;
-  let asarPath = null;
-  let findError = null;
-  try {
-    asarPath = findAsarPath(explicitAsar);
-  } catch (e) {
-    findError = e?.message || String(e);
-    if (explicitAsar) asarPath = path.resolve(String(explicitAsar));
-  }
-  return { stateDir, asarPath, findError };
+  const resolved = resolveAsarTarget(explicitAsar, {
+    stateDir,
+    platform: options._platform || options.platform || process.platform,
+    homeDir: options.homeDir,
+    localAppData: options.localAppData,
+    programFiles: options.programFiles,
+    extraCandidates: options.extraCandidates,
+    useRecordedManifest: options.useRecordedManifest !== false,
+    useElectronSelf: options.useElectronSelf !== false,
+    env: options.env
+  });
+  const asarPath = resolved.ok && resolved.asarPath
+    ? resolved.asarPath
+    : (explicitAsar ? path.resolve(String(explicitAsar)) : null);
+  return {
+    stateDir,
+    asarPath,
+    targetSource: resolved.source || 'not_found',
+    targetKey: asarPath ? computeAsarTargetKey(asarPath) : resolved.targetKey,
+    recordedTargetMissing: Boolean(resolved.recordedTargetMissing),
+    recordedTargetPath: resolved.recordedTargetPath || null,
+    findError: resolved.error || null
+  };
 }
 
 function loadManifestForTarget(stateDir, asarPath) {
   const manifestPath = path.join(stateDir, 'installation.json');
   const legacyPath = path.join(__dirname, 'installation.json');
   const resolvedAsar = asarPath ? path.resolve(asarPath) : null;
+  const targetCmp = resolvedAsar ? normalizeTargetPathForCompare(resolvedAsar) : null;
+  const targetKey = resolvedAsar ? computeAsarTargetKey(resolvedAsar) : null;
   for (const candidate of [manifestPath, legacyPath]) {
     if (!fs.existsSync(candidate)) continue;
     try {
       const parsed = JSON.parse(fs.readFileSync(candidate, 'utf8'));
       if (!parsed || typeof parsed !== 'object') continue;
-      const matchTarget = !resolvedAsar || !parsed.installed || path.resolve(parsed.installed) === resolvedAsar;
+      if (targetKey && parsed.targets && typeof parsed.targets === 'object' && parsed.targets[targetKey]) {
+        const scoped = parsed.targets[targetKey];
+        if (!targetCmp || !scoped.installed || normalizeTargetPathForCompare(scoped.installed) === targetCmp) {
+          return { manifestPath: candidate, manifest: { ...parsed, ...scoped, backupsByVersion: scoped.backupsByVersion || parsed.backupsByVersion || {} }, scopedTarget: true };
+        }
+      }
+      const matchTarget = !targetCmp || !parsed.installed || normalizeTargetPathForCompare(parsed.installed) === targetCmp;
       if (matchTarget) {
-        return { manifestPath: candidate, manifest: parsed };
+        return { manifestPath: candidate, manifest: parsed, scopedTarget: false };
       }
     } catch {}
   }
-  return { manifestPath, manifest: null };
+  return { manifestPath, manifest: null, scopedTarget: false };
 }
 
-function checkHasPriorInstallHistory(stateDir, manifestInfo, disk) {
-  if (manifestInfo && manifestInfo.manifest) return true;
+function isManifestExplicitlyUninstalled(manifest) {
+  if (!manifest || typeof manifest !== 'object') return false;
+  if (manifest.uninstalled === true) return true;
+  const restoredTs = manifest.restoredAt ? Date.parse(manifest.restoredAt) : NaN;
+  const installedTs = manifest.installedAt ? Date.parse(manifest.installedAt) : NaN;
+  if (Number.isFinite(restoredTs) && (!Number.isFinite(installedTs) || restoredTs >= installedTs)) {
+    return true;
+  }
+  return false;
+}
+
+function checkHasPriorInstallHistory(stateDir, manifestInfo, disk, targetKey = null) {
   if (disk && (disk.meter || disk.chinese || disk.proxy)) return true;
+  if (manifestInfo && manifestInfo.manifest) {
+    if (isManifestExplicitlyUninstalled(manifestInfo.manifest)) return false;
+    return true;
+  }
   const backupDir = path.join(stateDir, 'backups');
   if (fs.existsSync(backupDir)) {
     try {
       const entries = fs.readdirSync(backupDir);
+      if (targetKey) {
+        if (entries.some(name => name.endsWith(`-${targetKey}-base.asar`) && name.startsWith('app-'))) {
+          return true;
+        }
+        // 多目标场景下若已存在明确的 targetKey，禁止误用其他目标目录的备份判定当前目标曾安装过
+        return false;
+      }
       if (entries.some(name => name.endsWith('.asar') && name.startsWith('app-'))) {
         return true;
       }
@@ -232,12 +282,30 @@ function backupHostAsarByVersion(options = {}) {
     const backupsByVersion = (manifest.backupsByVersion && typeof manifest.backupsByVersion === 'object')
       ? { ...manifest.backupsByVersion }
       : {};
-    backupsByVersion[hostVersion] = {
+    const entry = {
       backup: backupPath,
       sha256: currentSha,
       recordedAt: new Date().toISOString()
     };
-    manifest.backupsByVersion = backupsByVersion;
+    const isSameTopTarget = !manifest.installed || normalizeTargetPathForCompare(manifest.installed) === normalizeTargetPathForCompare(asarPath);
+    if (isSameTopTarget) {
+      backupsByVersion[hostVersion] = entry;
+      manifest.backupsByVersion = backupsByVersion;
+    }
+    const targets = (manifest.targets && typeof manifest.targets === 'object') ? { ...manifest.targets } : {};
+    const prevTarget = (targets[targetKey] && typeof targets[targetKey] === 'object') ? targets[targetKey] : {};
+    const targetBackups = (prevTarget.backupsByVersion && typeof prevTarget.backupsByVersion === 'object')
+      ? { ...prevTarget.backupsByVersion }
+      : {};
+    targetBackups[hostVersion] = entry;
+    targets[targetKey] = {
+      ...prevTarget,
+      targetKey,
+      installed: path.resolve(asarPath),
+      backupsByVersion: targetBackups,
+      updatedAt: new Date().toISOString()
+    };
+    manifest.targets = targets;
     safeWriteJsonSync(manifestPath, manifest);
   } catch {}
 
@@ -254,7 +322,8 @@ function backupHostAsarByVersion(options = {}) {
  * 只读探测宿主 ASAR 当前状态与写入前置兼容性，绝不改盘。
  */
 function inspectHostRecoveryState(options = {}) {
-  const { stateDir, asarPath, findError } = resolveRecoveryTarget(options);
+  const resolvedInfo = resolveRecoveryTarget(options);
+  const { stateDir, asarPath, targetSource, targetKey, recordedTargetMissing, recordedTargetPath, findError } = resolvedInfo;
   if (!asarPath || !fs.existsSync(asarPath)) {
     return {
       ok: false,
@@ -262,6 +331,10 @@ function inspectHostRecoveryState(options = {}) {
       needsRecovery: false,
       stateDir,
       asarPath: asarPath || null,
+      targetSource: targetSource || 'not_found',
+      targetKey: targetKey || null,
+      recordedTargetMissing: Boolean(recordedTargetMissing),
+      recordedTargetPath: recordedTargetPath || null,
       error: findError || '未检测到 Antigravity app.asar'
     };
   }
@@ -272,7 +345,7 @@ function inspectHostRecoveryState(options = {}) {
   const manifestInfo = loadManifestForTarget(stateDir, asarPath);
   const preflight = runPreflightChecks(asarPath, options);
   const hostVersion = preflight.hostVersion || null;
-  const hasPriorHistory = checkHasPriorInstallHistory(stateDir, manifestInfo, disk);
+  const hasPriorHistory = checkHasPriorInstallHistory(stateDir, manifestInfo, disk, targetKey);
   const savedModules = {
     meter: cfg.modules?.meter?.enabled !== false,
     chinese: cfg.modules?.chinese?.enabled === true,
@@ -282,6 +355,25 @@ function inspectHostRecoveryState(options = {}) {
     promptTier: cfg.modules?.enhance?.promptTier ?? null,
     chineseTitle: cfg.modules?.enhance?.chineseTitle ?? null
   };
+
+  let asarSize = null;
+  let asarMtimeMs = null;
+  let asarSha256 = null;
+  let diskRendererBuildId = null;
+  try {
+    const st = fs.statSync(asarPath);
+    asarSize = st.size;
+    asarMtimeMs = st.mtimeMs;
+    if (options.includeAsarSha256 !== false) {
+      asarSha256 = sha256File(asarPath);
+    }
+  } catch {}
+  if (disk.meter) {
+    try {
+      const rBuf = extractArchiveFile(asarPath, 'dist/meter-renderer.js');
+      diskRendererBuildId = sha256Buffer(rBuf).slice(0, 16);
+    } catch {}
+  }
 
   let state = 'healthy';
   let reason = 'ok';
@@ -293,10 +385,12 @@ function inspectHostRecoveryState(options = {}) {
   } else if (!hasAnyPluginTrace) {
     if (hasPriorHistory) {
       state = 'overwritten_by_host_update';
-      reason = 'host_updated_without_plugin';
+      reason = manifestInfo.manifest?.version && hostVersion && manifestInfo.manifest.version === hostVersion
+        ? 'host_repaired_same_version_without_plugin'
+        : 'host_updated_without_plugin';
     } else {
       state = 'not_installed';
-      reason = 'no_prior_installation';
+      reason = isManifestExplicitlyUninstalled(manifestInfo?.manifest) ? 'uninstalled_by_user' : 'no_prior_installation';
     }
   } else if (
     !disk.meterReady
@@ -325,6 +419,14 @@ function inspectHostRecoveryState(options = {}) {
     reason,
     stateDir,
     asarPath: path.resolve(asarPath),
+    targetSource: targetSource || 'default_candidates',
+    targetKey: targetKey || computeAsarTargetKey(asarPath),
+    recordedTargetMissing: Boolean(recordedTargetMissing),
+    recordedTargetPath: recordedTargetPath || null,
+    asarSize,
+    asarMtimeMs,
+    asarSha256,
+    diskRendererBuildId,
     hostVersion,
     manifestVersion: manifestInfo.manifest?.version || null,
     pluginVersion: manifestInfo.manifest?.meterVersion || null,
@@ -489,8 +591,15 @@ async function recoverHostInstallation(options = {}) {
   try {
     if (fs.existsSync(manifestPath)) {
       const m = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-      m.lastRecoveredAt = new Date().toISOString();
+      const nowIso = new Date().toISOString();
+      m.lastRecoveredAt = nowIso;
       m.lastRecoveryFromState = inspected.state;
+      const tk = inspected.targetKey || computeAsarTargetKey(inspected.asarPath);
+      if (m.targets && typeof m.targets === 'object' && m.targets[tk]) {
+        m.targets[tk].lastRecoveredAt = nowIso;
+        m.targets[tk].lastRecoveryFromState = inspected.state;
+        m.targets[tk].updatedAt = nowIso;
+      }
       safeWriteJsonSync(manifestPath, m);
       latestManifest = m;
     }

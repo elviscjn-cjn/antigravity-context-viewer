@@ -602,50 +602,61 @@ test('第 4 项浏览器实机布局回归：唯一滚动容器、滚轮顶到�
     })()`);
     assert.equal(afterBottomToggle.ariaChecked, 'true');
     assert.equal(afterBottomToggle.savedBeta, true);
-    assert.ok(afterBottomToggle.statusText.length > 0);
+    assert.equal(afterBottomToggle.statusText, '', '第 01 批开关稳态不显示冗余已开启/已关闭文字');
     assert.ok(Math.abs(afterBottomToggle.scrollTop - beforeToggleScroll) <= 2, '底部保存刷新不得跳回顶部');
 
-    // 2.5 验证自动切号四项监控额度下拉、移除旧池/主窗口、自定义暗色下拉菜单与候选账号滑动开关
+    // 2.5 验证设置页 3 个下拉 + 同级「账号与额度」页 2 个四项监控额度下拉（合计 5 个自定义暗色下拉）与候选账号滑动开关
     const autoSwitchCheck = await cdp.evaluate(`(() => {
       const pg = document.getElementById('ag-cm-host-settings-page');
       const sr = pg.shadowRoot;
-      const sel = sr.getElementById('ag-ns-sel-autoSwitchTarget');
-      const oldPool = sr.getElementById('ag-ns-sel-autoSwitchPool');
-      const oldWin = sr.getElementById('ag-ns-sel-autoSwitchWindow');
-      const metricSel = sr.getElementById('ag-ns-sel-autoSwitchMetric');
-      const summaryEl = sr.getElementById('ag-ns-autoswitch-live-summary');
-      const allSelects = Array.from(sr.querySelectorAll('[data-ag-ns-select]'));
-      const enhancedAll = allSelects.length === 5 && allSelects.every(s => getComputedStyle(s).display === 'none' && Boolean(sr.getElementById(s.id + '-trigger')));
-      const sec = sr.getElementById('ag-ns-sec-accounts');
-      if (sec) sec.scrollIntoView({ block: 'start' });
-      const targetTrigger = sr.getElementById('ag-ns-sel-autoSwitchTarget-trigger');
-      const targetMenu = sr.getElementById('ag-ns-sel-autoSwitchTarget-menu');
-      targetTrigger.click();
-      const menuStyle = getComputedStyle(targetMenu);
-      const cardStyle = getComputedStyle(sec.querySelector('.ag-ns-card'));
-      const menuRect = targetMenu.getBoundingClientRect();
-      const groupLabels = Array.from(targetMenu.querySelectorAll('.ag-ns-dd-group')).map(g => g.textContent.trim());
-      const menuValues = Array.from(targetMenu.querySelectorAll('.ag-ns-dd-item')).map(i => i.getAttribute('data-value'));
-      const initialSummary = summaryEl ? summaryEl.textContent : '';
-      // 通过自定义下拉点击选择 Claude / GPT 周额度
-      const claude7dItem = targetMenu.querySelector('.ag-ns-dd-item[data-value="shared_3p_pool:7d"]');
-      if (claude7dItem) claude7dItem.click();
-      // 通过自定义下拉点击选择已用额度口径
-      const metricTrigger = sr.getElementById('ag-ns-sel-autoSwitchMetric-trigger');
-      const metricMenu = sr.getElementById('ag-ns-sel-autoSwitchMetric-menu');
-      metricTrigger.click();
-      const usedItem = metricMenu.querySelector('.ag-ns-dd-item[data-value="used_pct"]');
-      if (usedItem) usedItem.click();
-      // 检查账单区订阅档位自定义下拉暗色背景
+      const settingsSelects = Array.from(sr.querySelectorAll('[data-ag-ns-select]'));
+      // 检查设置页订阅档位自定义下拉暗色背景
       const tierTrigger = sr.getElementById('ag-ns-sel-planTier-trigger');
       const tierMenu = sr.getElementById('ag-ns-sel-planTier-menu');
       tierTrigger.click();
       const tierMenuBg = getComputedStyle(tierMenu).backgroundColor;
       tierTrigger.click();
+
+      // 切换到左栏同级「账号与额度」页验证历史阈值规则区四项监控额度下拉
+      const accNav = document.getElementById('ag-cm-host-settings-accounts-nav');
+      if (accNav) accNav.click();
+      const accPg = document.getElementById('ag-cm-host-accounts-page');
+      const accSr = accPg.shadowRoot;
+      const sec = accSr.getElementById('ag-ns-sec-accounts');
+      if (sec) {
+        sec.open = true;
+        sec.scrollIntoView({ block: 'start' });
+      }
+      const sel = accSr.getElementById('ag-ns-sel-autoSwitchTarget');
+      const oldPool = accSr.getElementById('ag-ns-sel-autoSwitchPool');
+      const oldWin = accSr.getElementById('ag-ns-sel-autoSwitchWindow');
+      const metricSel = accSr.getElementById('ag-ns-sel-autoSwitchMetric');
+      const summaryEl = accSr.getElementById('ag-ns-autoswitch-live-summary');
+      const accSelects = Array.from(accSr.querySelectorAll('[data-ag-ns-select]'));
+      const enhancedSettings = settingsSelects.length === 3 && settingsSelects.every(s => getComputedStyle(s).display === 'none' && Boolean(sr.getElementById(s.id + '-trigger')));
+      const enhancedAccounts = accSelects.length === 2 && accSelects.every(s => getComputedStyle(s).display === 'none' && Boolean(accSr.getElementById(s.id + '-trigger')));
+      const targetTrigger = accSr.getElementById('ag-ns-sel-autoSwitchTarget-trigger');
+      const targetMenu = accSr.getElementById('ag-ns-sel-autoSwitchTarget-menu');
+      targetTrigger.click();
+      const menuStyle = getComputedStyle(targetMenu);
+      const cardStyle = getComputedStyle(sec);
+      const menuRect = targetMenu.getBoundingClientRect();
+      const groupLabels = Array.from(targetMenu.querySelectorAll('.ag-ns-dd-group')).map(g => g.textContent.trim());
+      const menuValues = Array.from(targetMenu.querySelectorAll('.ag-ns-dd-item')).map(i => i.getAttribute('data-value'));
+      const initialSummary = summaryEl ? summaryEl.textContent : '';
+      // 通过自定义下拉点击选择 Claude / GPT 7D 额度
+      const claude7dItem = targetMenu.querySelector('.ag-ns-dd-item[data-value="shared_3p_pool:7d"]');
+      if (claude7dItem) claude7dItem.click();
+      // 通过自定义下拉点击选择已用额度口径
+      const metricTrigger = accSr.getElementById('ag-ns-sel-autoSwitchMetric-trigger');
+      const metricMenu = accSr.getElementById('ag-ns-sel-autoSwitchMetric-menu');
+      metricTrigger.click();
+      const usedItem = metricMenu.querySelector('.ag-ns-dd-item[data-value="used_pct"]');
+      if (usedItem) usedItem.click();
       const validOpts = Array.from(sel.options).filter(o => !o.disabled).map(o => o.value);
       const allTexts = Array.from(sel.options).map(o => o.textContent || '');
       return {
-        enhancedAll,
+        enhancedAll: enhancedSettings && enhancedAccounts,
         cardOverflow: cardStyle.overflow,
         menuBg: menuStyle.backgroundColor,
         tierMenuBg,
@@ -662,24 +673,32 @@ test('第 4 项浏览器实机布局回归：唯一滚动容器、滚轮顶到�
         updatedSummary: summaryEl ? summaryEl.textContent : ''
       };
     })()`);
-    assert.equal(autoSwitchCheck.enhancedAll, true, '原生设置页全部 5 个 select 必须替换为自定义下拉组件');
+    assert.equal(autoSwitchCheck.enhancedAll, true, '原生设置页 3 个与账号页 2 个共 5 个 select 必须替换为自定义下拉组件');
     assert.equal(autoSwitchCheck.cardOverflow, 'visible', '设置卡片 overflow 必须为 visible 防止下拉菜单裁切');
-    assert.equal(autoSwitchCheck.menuBg, 'rgb(30, 30, 36)', '暗色主题自定义下拉浮层必须为深色不透明背景而非系统白底');
-    assert.equal(autoSwitchCheck.tierMenuBg, 'rgb(30, 30, 36)', '订阅档位自定义下拉浮层必须为深色背景');
+    assert.equal(autoSwitchCheck.menuBg, 'rgb(30, 30, 34)', '暗色主题自定义下拉浮层必须为深色不透明背景而非系统白底');
+    assert.equal(autoSwitchCheck.tierMenuBg, 'rgb(30, 30, 34)', '订阅档位自定义下拉浮层必须为深色背景');
     assert.ok(autoSwitchCheck.menuHeight > 100, `自定义下拉菜单必须完整展开无裁切, 实得 height=${autoSwitchCheck.menuHeight}`);
     assert.equal(autoSwitchCheck.groupLabels.length, 2, '监控额度菜单应呈现 2 个 optgroup 分组标题');
     assert.deepEqual(autoSwitchCheck.menuValues, ['shared_gemini_main:5h', 'shared_gemini_main:7d', 'shared_3p_pool:5h', 'shared_3p_pool:7d'], '自定义下拉不得暴露 hidden/disabled 旧规则占位项');
-    assert.match(autoSwitchCheck.triggerLabelAfter, /Claude \/ GPT 周额度/);
+    assert.match(autoSwitchCheck.triggerLabelAfter, /Claude \/ GPT 7D 额度/);
     assert.equal(autoSwitchCheck.metricValueAfter, 'used_pct');
     assert.equal(autoSwitchCheck.hasOldPool, false, '旧 ag-ns-sel-autoSwitchPool 必须已移除');
     assert.equal(autoSwitchCheck.hasOldWin, false, '旧 ag-ns-sel-autoSwitchWindow 必须已移除');
     assert.deepEqual(autoSwitchCheck.validOpts, ['shared_gemini_main:5h', 'shared_gemini_main:7d', 'shared_3p_pool:5h', 'shared_3p_pool:7d']);
     assert.equal(autoSwitchCheck.hasForbidden, false, '四项选择器不得残留 Argon / Carbon / 主窗口');
-    assert.match(autoSwitchCheck.initialSummary, /Gemini 5 小时额度.*已用 28%.*剩余 72%/);
-    assert.match(autoSwitchCheck.updatedSummary, /Claude \/ GPT 周额度.*已用 ≥ 15%.*已用 25%.*剩余 75%/);
+    assert.match(autoSwitchCheck.initialSummary, /Gemini 5H 额度.*已用 28%.*剩余 72%/);
+    assert.match(autoSwitchCheck.updatedSummary, /Claude \/ GPT 7D 额度.*已用 ≥ 15%.*已用 25%.*剩余 75%/);
     await new Promise((r) => setTimeout(r, 80));
     const shotAutoSwitch = await cdp.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(shotDir, '04-native-settings-autoswitch-4targets.png'), Buffer.from(shotAutoSwitch.data, 'base64'));
+    // 切回 Context Meter 设置页并保持在底部，以便继续验证滚轮回顶与键盘导航
+    await cdp.evaluate(`(() => {
+      const nav = document.getElementById('ag-cm-host-settings-nav');
+      if (nav) nav.click();
+      const pg = document.getElementById('ag-cm-host-settings-page');
+      if (pg) pg.scrollTop = pg.scrollHeight;
+    })()`);
+    await new Promise((r) => setTimeout(r, 60));
 
     // 3. 滚轮向上滚回顶部，随后测键盘 End / Home 可达性
     for (let i = 0; i < 16; i++) {
@@ -747,6 +766,7 @@ test('第 4 项浏览器实机布局回归：唯一滚动容器、滚轮顶到�
     // 动态修改宿主浅色主题 + 自定义强调色，验证开关轨道色实时跟随 --ag-host-accent
     await cdp.evaluate(`(() => {
       document.documentElement.classList.add('light-theme');
+      document.documentElement.style.setProperty('--primary', '#2563eb');
       document.documentElement.style.setProperty('--accent', '#2563eb');
       document.documentElement.setAttribute('data-theme', 'light');
     })()`);

@@ -782,3 +782,57 @@ test('Phase 3 (图 5): 移除拆解冗余按钮、保留诊断评分、requested
     h.api.dispose();
   }
 });
+
+test('PR #130 & #114: 纯流式 vs 端到端统计口径对齐 (totalStreamTokens 同样本分子分母、stream/streaming 兼容、请求表默认端到端)', () => {
+  // 1. 混合样本：1 条含流式窗口 + 1 条仅含端到端耗时，totalStreamTokens 仅统计参与流式分母的同批样本
+  const mixedSummary = core.summarizeSessionSpeed([
+    { callId: 's1', status: 'final', outputTokens: 200, streamingSec: 2.0, streamingTps: 100, durationSec: 4.0 },
+    { callId: 's2', status: 'final', outputTokens: 600, durationSec: 6.0 }
+  ]);
+  assert.equal(mixedSummary.count, 2);
+  assert.equal(mixedSummary.streamCount, 1);
+  assert.equal(mixedSummary.totalOutputTokens, 800);
+  assert.equal(mixedSummary.totalStreamTokens, 200, 'totalStreamTokens 必须与 totalStreamingSec 使用同一批流式样本');
+  assert.equal(mixedSummary.totalStreamingSec, 2);
+  assert.equal(mixedSummary.avgStreamTps, 100);
+  assert.equal(mixedSummary.avgOverallTps, 80);
+
+  // 2. fallback 分支同样输出 totalStreamTokens
+  const fbSummary = core.summarizeSessionSpeed([], { outputTokens: 300, streamingSec: 3.0, streamSpeed: 100, overallTps: 60, durationSec: 5.0 });
+  assert.equal(fbSummary.totalStreamTokens, 300);
+  assert.equal(fbSummary.avgStreamTps, 100);
+  assert.equal(fbSummary.avgOverallTps, 60);
+
+  // 3. normalizeSpeedDisplayMode 兼容 'stream' 与旧偏好 'streaming'
+  assert.equal(core.normalizeSpeedDisplayMode('stream'), 'stream');
+  assert.equal(core.normalizeSpeedDisplayMode('streaming'), 'stream');
+  assert.equal(core.normalizeSpeedDisplayMode('e2e'), 'e2e');
+  assert.equal(core.normalizeSpeedDisplayMode('unknown'), 'stream');
+
+  // 4. resolveSpeedDisplayMetrics 与 pickCallDisplayTps
+  const evalMock = { streamSpeed: 150, overallTps: 120 };
+  const streamMetrics = core.resolveSpeedDisplayMetrics(mixedSummary, evalMock, 'streaming');
+  assert.equal(streamMetrics.mode, 'stream');
+  assert.equal(streamMetrics.sessionPrimaryTps, 100);
+  assert.equal(streamMetrics.sessionSecondaryTps, 80);
+  assert.equal(streamMetrics.stepPrimaryTps, 150);
+  assert.equal(streamMetrics.stepSecondaryTps, 120);
+
+  const e2eMetrics = core.resolveSpeedDisplayMetrics(mixedSummary, evalMock, 'e2e');
+  assert.equal(e2eMetrics.mode, 'e2e');
+  assert.equal(e2eMetrics.sessionPrimaryTps, 80);
+  assert.equal(e2eMetrics.sessionSecondaryTps, 100);
+  assert.equal(e2eMetrics.stepPrimaryTps, 120);
+  assert.equal(e2eMetrics.stepSecondaryTps, 150);
+
+  const sampleCall = { tps: 120, streamingTps: 150 };
+  assert.equal(core.pickCallDisplayTps(sampleCall, 'stream'), 150);
+  assert.equal(core.pickCallDisplayTps(sampleCall, 'streaming'), 150);
+  assert.equal(core.pickCallDisplayTps(sampleCall, 'e2e'), 120);
+
+  // 5. 实时请求表行速度 (resolveRequestTableSpeed / resolveRequestRowSpeed mode:'e2e') 独立保持默认端到端 (e2e)
+  const rowSpd = core.resolveRequestRowSpeed({ outputTokens: 200, streamingSec: 2.0, durationSec: 4.0, status: 'final' }, { mode: 'e2e' });
+  assert.equal(rowSpd.source, 'e2e');
+  assert.equal(rowSpd.endToEndTps, 50);
+  assert.equal(rowSpd.streamingDetail.speed, 100);
+});

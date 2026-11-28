@@ -257,7 +257,7 @@ function sha256File(filePath) {
 /**
  * 探测本机 Antigravity 桌面端 language_server 二进制路径
  */
-function detectTargetBinary(customPath) {
+function detectTargetBinary(customPath, options = {}) {
   if (customPath) {
     const resolved = path.resolve(customPath);
     if (fs.existsSync(resolved)) return resolved;
@@ -266,6 +266,19 @@ function detectTargetBinary(customPath) {
 
   const home = os.homedir();
   const candidates = [];
+
+  // 优先复用自定义/已记录的 Antigravity 安装目录（Issue #109 / #116 / #113）
+  try {
+    const { resolveAsarTarget, deriveHostResourcesDirFromAsar } = require('./asar-engine');
+    const resolvedAsar = resolveAsarTarget(null, { stateDir: options.stateDir });
+    if (resolvedAsar?.ok && resolvedAsar.asarPath) {
+      const derived = deriveHostResourcesDirFromAsar(resolvedAsar.asarPath);
+      if (derived?.resourcesDir) {
+        const binName = process.platform === 'win32' ? 'language_server.exe' : 'language_server';
+        candidates.push(path.join(derived.resourcesDir, 'bin', binName));
+      }
+    }
+  } catch {}
 
   if (process.platform === 'win32') {
     const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');

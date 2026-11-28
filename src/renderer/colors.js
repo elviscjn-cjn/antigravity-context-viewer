@@ -35,12 +35,16 @@ const customColors = {
   heatLvl3: '',
   heatLvl4: ''
 };
-let heatPreset = 'purple';
+let heatPreset = 'blue';
 
 const HEAT_PRESETS = {
+  blue: {
+    dark: ['#27272a', '#1e3a8a', '#1d4ed8', '#3b82f6', '#93c5fd'],
+    light: ['#e4e4e7', '#bfdbfe', '#60a5fa', '#2563eb', '#1e3a8a']
+  },
   purple: {
-    dark: ['#27272a', '#3f1e6b', '#652ab7', '#9053f8', '#c084fc'],
-    light: ['#e4e4e7', '#e9d5ff', '#c084fc', '#9333ea', '#6b21a8']
+    dark: ['#27272a', '#1e3a8a', '#1d4ed8', '#3b82f6', '#93c5fd'],
+    light: ['#e4e4e7', '#bfdbfe', '#60a5fa', '#2563eb', '#1e3a8a']
   },
   yellow: {
     dark: ['#27272a', '#713f12', '#a16207', '#eab308', '#fde047'],
@@ -49,10 +53,6 @@ const HEAT_PRESETS = {
   green: {
     dark: ['#27272a', '#14532d', '#15803d', '#22c55e', '#86efac'],
     light: ['#e4e4e7', '#bbf7d0', '#4ade80', '#16a34a', '#14532d']
-  },
-  blue: {
-    dark: ['#27272a', '#1e3a8a', '#1d4ed8', '#3b82f6', '#93c5fd'],
-    light: ['#e4e4e7', '#bfdbfe', '#60a5fa', '#2563eb', '#1e3a8a']
   },
   red: {
     dark: ['#27272a', '#7f1d1d', '#b91c1c', '#ef4444', '#fca5a5'],
@@ -207,7 +207,7 @@ function normalizeHex(input) {
     }
     return rgbToHex(Number(mColorSrgb[1]) * 255, Number(mColorSrgb[2]) * 255, Number(mColorSrgb[3]) * 255);
   }
-  const mRgb = s.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*[,/]\s*([\d.]+%?))?/i);
+  const mRgb = s.match(/rgba?\(\s*(\d+(?:\.\d+)?)\s*[,\s]\s*(\d+(?:\.\d+)?)\s*[,\s]\s*(\d+(?:\.\d+)?)(?:\s*[,/]\s*([\d.]+%?))?\s*\)/i);
   if (mRgb) {
     if (mRgb[4] !== undefined) {
       const alphaRaw = mRgb[4].endsWith('%') ? Number(mRgb[4].slice(0, -1)) / 100 : Number(mRgb[4]);
@@ -280,7 +280,7 @@ function rgbToHsl(r, g, b) {
 
 function interpolateHex(hexA, hexB, t) {
   const a = hexToRgb(hexA) || { r: 39, g: 39, b: 42 };
-  const b = hexToRgb(hexB) || { r: 192, g: 132, b: 252 };
+  const b = hexToRgb(hexB) || { r: 50, g: 116, b: 246 };
   const ratio = clampNum(t, 0, 1);
   return rgbToHex(
     a.r + (b.r - a.r) * ratio,
@@ -355,7 +355,7 @@ function resolveTheme() {
 
 function getPresetHeatmapScale() {
   const isLight = resolveTheme() === 'light';
-  const presetObj = HEAT_PRESETS[heatPreset] || HEAT_PRESETS.purple;
+  const presetObj = HEAT_PRESETS[heatPreset] || HEAT_PRESETS.blue;
   return (isLight ? presetObj.light : presetObj.dark).slice();
 }
 
@@ -396,8 +396,8 @@ function getDefaultSlotColor(slotKey) {
     case 'ringTrack': return isLight ? '#b8b8c2' : '#52525b';
     case 'contextText': return isLight ? '#18181b' : '#ececef';
     case 'speedText': return isLight ? '#0284c7' : '#38bdf8';
-    case 'tokenTotal': return isLight ? '#7c3aed' : '#c084fc';
-    case 'tokenAccent': return isLight ? '#7c3aed' : '#a78bfa';
+    case 'tokenTotal': return resolveHostAccentColor() || (isLight ? '#1d4ed8' : '#60a5fa');
+    case 'tokenAccent': return resolveHostAccentColor() || (isLight ? '#2563eb' : '#60a5fa');
     case 'heatLow': return presetScale[0];
     case 'heatHigh': return presetScale[4];
     case 'heatLvl0': return baseScale[0];
@@ -405,7 +405,7 @@ function getDefaultSlotColor(slotKey) {
     case 'heatLvl2': return baseScale[2];
     case 'heatLvl3': return baseScale[3];
     case 'heatLvl4': return baseScale[4];
-    default: return '#7748cf';
+    default: return resolveHostAccentColor() || '#3274f6';
   }
 }
 
@@ -495,18 +495,6 @@ function syncSwatchAndResetButtons() {
 
 function getContinuousScaleStops() {
   const scale = getEffectiveHeatmapScale();
-  const isLight = resolveTheme() === 'light';
-  const hasCustomHeat = Boolean(
-    customColors.heatLow ||
-    customColors.heatHigh ||
-    customColors.heatLvl1 ||
-    customColors.heatLvl2 ||
-    customColors.heatLvl3 ||
-    customColors.heatLvl4
-  );
-  if (!isLight && heatPreset === 'purple' && !hasCustomHeat) {
-    return ['#2E1A47', '#6D28D9', '#9333EA', '#D8B4FE'];
-  }
   return [scale[1], scale[2], scale[3], scale[4]].filter(Boolean);
 }
 
@@ -532,7 +520,7 @@ function getContinuousHeatColor(value, modeOrAnchor = 'heat') {
   if (typeof core.interpolateScaleColorHsl === 'function') {
     return core.interpolateScaleColorHsl(resp, stops);
   }
-  return stops[stops.length - 1] || '#9333ea';
+  return stops[stops.length - 1] || '#3274f6';
 }
 
 let __chartsReady = false;
@@ -572,6 +560,9 @@ function applyCustomColors() {
   applyHeatmapPalette();
   syncSwatchAndResetButtons();
   refreshActiveChartViews();
+  try {
+    if (typeof syncQuotaBoardSurfaceTheme === 'function') syncQuotaBoardSurfaceTheme();
+  } catch { }
   try {
     if (typeof syncHostSettingsUi === 'function') syncHostSettingsUi();
   } catch { }
@@ -615,83 +606,415 @@ function resetHeatmapLevels() {
 
 function resetCustomColors() {
   for (const key of Object.keys(COLOR_SLOTS)) customColors[key] = '';
-  heatPreset = 'purple';
+  heatPreset = 'blue';
   saveCustomColors();
   applyCustomColors();
 }
 
-function resolveHostAccentColor() {
-  const isNeutralOrInvalid = (hex) => {
-    if (!hex || !/^#[0-9a-f]{6}$/i.test(hex)) return true;
-    const h = hex.toLowerCase();
-    if (h === '#000000' || h === '#ffffff') return true;
-    const r = parseInt(h.slice(1, 3), 16);
-    const g = parseInt(h.slice(3, 5), 16);
-    const b = parseInt(h.slice(5, 7), 16);
-    const max = Math.max(r, g, b);
-    const min = Math.min(r, g, b);
-    // 过滤纯灰/接近无彩度的背景前景色
-    return (max - min) < 18;
+let cachedHostThemeConfigAccent = { light: null, dark: null };
+let lastAppliedHostAccentSig = '';
+
+function computeSrgbRelativeLuminance(hex) {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return 0.5;
+  const toLinear = (v) => {
+    const s = v / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
   };
+  return 0.2126 * toLinear(rgb.r) + 0.7152 * toLinear(rgb.g) + 0.0722 * toLinear(rgb.b);
+}
+
+function computeContrastRatio(hexA, hexB) {
+  const la = computeSrgbRelativeLuminance(hexA);
+  const lb = computeSrgbRelativeLuminance(hexB);
+  const hi = Math.max(la, lb);
+  const lo = Math.min(la, lb);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+function computeAccentContrastTokens(accentHex, activeTheme = 'dark') {
+  const safeAccent = normalizeHex(accentHex) || '#3274f6';
+  const isLight = activeTheme === 'light';
+  const lum = computeSrgbRelativeLuminance(safeAccent);
+  const whiteContrast = computeContrastRatio(safeAccent, '#ffffff');
+  const darkContrast = computeContrastRatio(safeAccent, '#111114');
+  // 严格按 WCAG AA >= 4.5:1 对比度为强调色底选配前景色（白/深灰）
+  const fg = whiteContrast >= 4.5 || whiteContrast >= darkContrast ? '#ffffff' : '#111114';
+  const knob = lum > 0.68 ? '#18181b' : '#ffffff';
+
+  // 极浅强调色在浅底或极暗强调色在深底时，自动补足描边可见度
+  let border = safeAccent;
+  if (isLight && lum > 0.76) {
+    border = interpolateHex(safeAccent, '#18181b', 0.24);
+  } else if (!isLight && lum < 0.14) {
+    border = interpolateHex(safeAccent, '#ffffff', 0.28);
+  }
+
+  // 文字与徽标前景色严格满足 >= 4.5:1 对比度保护（避免白底浅字或黑底深字）
+  let textColor = safeAccent;
+  const surfaceBg = isLight ? '#ffffff' : '#181818';
+  const targetMix = isLight ? '#111114' : '#ffffff';
+  if (computeContrastRatio(textColor, surfaceBg) < 4.5) {
+    for (let step = 1; step <= 10; step++) {
+      const candidate = interpolateHex(safeAccent, targetMix, step * 0.1);
+      textColor = candidate;
+      if (computeContrastRatio(candidate, surfaceBg) >= 4.5) break;
+    }
+  }
+
+  return { accent: safeAccent, fg, border, knob, text: textColor, lum };
+}
+
+function resolveHostAccentColor() {
+  const resolveRawColor = (raw, varName = '') => {
+    const str = String(raw || '').trim();
+    if (!str || /^transparent$/i.test(str) || str === 'rgba(0, 0, 0, 0)') return '';
+    return normalizeHex(str) || resolveCssColorToHex(str, 'color') || (varName ? resolveCssColorToHex(`var(${varName})`, 'color') : '');
+  };
+  const isValidHex = (hex) => Boolean(hex && /^#[0-9a-f]{6}$/i.test(hex));
+  const isNeutralPure = (hex) => {
+    if (!isValidHex(hex)) return true;
+    const h = hex.toLowerCase();
+    return h === '#000000' || h === '#ffffff';
+  };
+  const activeTheme = resolveTheme();
   try {
-    if (typeof getComputedStyle === 'function' && typeof document !== 'undefined') {
-      const modalNode = typeof document.querySelector === 'function'
-        ? document.querySelector('.settings-modal-container, [role="dialog"]')
-        : null;
-      const probeStyles = [
-        modalNode && !modalNode.closest?.('#ag-context-meter, #ag-cm-host-settings-page') ? getComputedStyle(modalNode) : null,
-        document.documentElement ? getComputedStyle(document.documentElement) : null,
-        document.body ? getComputedStyle(document.body) : null
-      ].filter(Boolean);
-      const varNames = [
-        '--ag-accent-override',
-        '--accent',
-        '--primary',
-        '--color-accent',
-        '--vscode-button-background',
-        '--vscode-focusBorder',
-        '--brand-accent',
-        '--vscode-textLink-foreground',
-        '--ring'
-      ];
-      for (const st of probeStyles) {
-        for (const vName of varNames) {
-          const raw = st?.getPropertyValue?.(vName) || '';
-          const hex = normalizeHex(raw) || resolveCssColorToHex(raw, 'color') || (raw.trim() ? resolveCssColorToHex(`var(${vName})`, 'color') : '');
-          if (hex && !isNeutralOrInvalid(hex)) return hex;
+    if (typeof document !== 'undefined') {
+      // 1. 最高优先级：Antigravity 外观设置实时写入 document.documentElement.style 的 --primary（原样保留极浅/极暗色如 #FEFDFF）
+      const inlinePrimary = document.documentElement?.style?.getPropertyValue?.('--primary')
+        || document.body?.style?.getPropertyValue?.('--primary')
+        || '';
+      const inlineHex = resolveRawColor(inlinePrimary, '--primary');
+      if (isValidHex(inlineHex)) return inlineHex;
+
+      // 2. 读取宿主根元素与原生设置容器的权威 CSS 变量（显式 --primary / --color-primary 严禁因低彩度过滤）
+      if (typeof getComputedStyle === 'function') {
+        const modalNode = typeof document.querySelector === 'function'
+          ? document.querySelector('.settings-modal-container, [role="dialog"]')
+          : null;
+        const probeStyles = [
+          document.documentElement ? getComputedStyle(document.documentElement) : null,
+          document.body ? getComputedStyle(document.body) : null,
+          modalNode && !modalNode.closest?.('#ag-context-meter, #ag-cm-host-settings-page') ? getComputedStyle(modalNode) : null
+        ].filter(Boolean);
+
+        const primaryVars = ['--ag-accent-override', '--primary', '--color-primary'];
+        for (const st of probeStyles) {
+          for (const vName of primaryVars) {
+            const raw = st?.getPropertyValue?.(vName) || '';
+            const hex = resolveRawColor(raw, vName);
+            if (isValidHex(hex)) return hex;
+          }
         }
-      }
-      // 兜底从宿主原生可见的选中态开关/高对比切换器提取强调色
-      if (typeof document.querySelectorAll === 'function') {
-        const nativeToggles = document.querySelectorAll('button[role="switch"][aria-checked="true"], [role="switch"][aria-checked="true"], input[type="checkbox"]:checked, [data-testid*="settings"] button[aria-pressed="true"], .settings-modal-container button[aria-checked="true"]');
-        for (const node of Array.from(nativeToggles || [])) {
-          if (!node || node.id?.startsWith?.('ag-') || node.closest?.('#ag-context-meter, #ag-context-meter-radial-host, #ag-cm-host-settings-page')) continue;
-          const st = getComputedStyle(node);
-          const hex = normalizeHex(st?.backgroundColor || '') || resolveCssColorToHex(st?.backgroundColor || '', 'backgroundColor');
-          if (hex && !isNeutralOrInvalid(hex)) return hex;
-          const child = node.firstElementChild;
-          if (child) {
-            const cst = getComputedStyle(child);
-            const cHex = normalizeHex(cst?.backgroundColor || '') || resolveCssColorToHex(cst?.backgroundColor || '', 'backgroundColor');
-            if (cHex && !isNeutralOrInvalid(cHex)) return cHex;
+
+        // 3. 若宿主 ~/.gemini/config/config.json 已读到当前明暗主题的自定义强调色种子，优先于通用回退
+        const cfgSeed = activeTheme === 'light' ? cachedHostThemeConfigAccent.light : cachedHostThemeConfigAccent.dark;
+        const cfgHex = resolveRawColor(cfgSeed);
+        if (isValidHex(cfgHex)) return cfgHex;
+
+        // 4. 次级宿主变量兜底
+        const secondaryVars = [
+          '--accent',
+          '--color-accent',
+          '--vscode-button-background',
+          '--vscode-focusBorder',
+          '--brand-accent',
+          '--vscode-textLink-foreground',
+          '--ring'
+        ];
+        for (const st of probeStyles) {
+          for (const vName of secondaryVars) {
+            const raw = st?.getPropertyValue?.(vName) || '';
+            const hex = resolveRawColor(raw, vName);
+            if (isValidHex(hex) && !isNeutralPure(hex)) return hex;
+          }
+        }
+
+        // 5. 兜底从宿主原生可见的选中态开关提取强调色（与原生开关同源）
+        if (typeof document.querySelectorAll === 'function') {
+          const nativeToggles = document.querySelectorAll('button[role="switch"][aria-checked="true"], [role="switch"][aria-checked="true"], input[type="checkbox"]:checked, [data-testid*="settings"] button[aria-pressed="true"], .settings-modal-container button[aria-checked="true"]');
+          for (const node of Array.from(nativeToggles || [])) {
+            if (!node || node.id?.startsWith?.('ag-') || node.closest?.('#ag-context-meter, #ag-context-meter-radial-host, #ag-cm-host-settings-page, #ag-cm-host-accounts-page, #ag-sidebar-account-host')) continue;
+            const st = getComputedStyle(node);
+            const hex = resolveRawColor(st?.backgroundColor || '');
+            if (isValidHex(hex)) return hex;
+            const child = node.firstElementChild;
+            if (child) {
+              const cst = getComputedStyle(child);
+              const cHex = resolveRawColor(cst?.backgroundColor || '');
+              if (isValidHex(cHex)) return cHex;
+            }
           }
         }
       }
     }
   } catch { }
-  return '#7748CF';
+  const cfgFallback = activeTheme === 'light' ? cachedHostThemeConfigAccent.light : cachedHostThemeConfigAccent.dark;
+  const cfgFallbackHex = normalizeHex(cfgFallback || '');
+  if (cfgFallbackHex) return cfgFallbackHex;
+  return '#3274f6';
 }
 
-function syncHostAccentCssVar() {
+function syncHostAccentCssVar(opts = {}) {
+  const activeTheme = resolveTheme();
   const accent = resolveHostAccentColor();
+  const tokens = computeAccentContrastTokens(accent, activeTheme);
+  const sig = `${activeTheme}|${tokens.accent}|${tokens.fg}|${tokens.border}|${tokens.knob}|${tokens.text}`;
+  if (!opts.force && sig === lastAppliedHostAccentSig) return tokens.accent;
+  lastAppliedHostAccentSig = sig;
   try {
-    host?.style?.setProperty?.('--ag-host-accent', accent);
-    host?.style?.setProperty?.('--ag-accent', accent);
+    host?.style?.setProperty?.('--ag-host-accent', tokens.accent);
+    host?.style?.setProperty?.('--ag-accent', tokens.accent);
+    host?.style?.setProperty?.('--ag-host-accent-fg', tokens.fg);
+    host?.style?.setProperty?.('--ag-host-accent-border', tokens.border);
+    host?.style?.setProperty?.('--ag-host-accent-knob', tokens.knob);
+    host?.style?.setProperty?.('--ag-host-accent-text', tokens.text);
     if (typeof syncHostSettingsThemeAttrs === 'function') {
       syncHostSettingsThemeAttrs();
     }
+    if (typeof hostSettingsCtrl?.syncThemeToPageHost === 'function') {
+      hostSettingsCtrl.syncThemeToPageHost();
+    }
+    if (typeof sidebarAccountCtrl?.syncTheme === 'function') {
+      sidebarAccountCtrl.syncTheme();
+    }
+    if (typeof modalTopHost !== 'undefined' && modalTopHost && typeof syncHostSettingsThemeAttrs === 'function') {
+      syncHostSettingsThemeAttrs(modalTopHost);
+    }
   } catch { }
-  return accent;
+  return tokens.accent;
+}
+
+async function refreshHostAccentFromConfigBridge() {
+  try {
+    const res = await invokeHostThemeBridge({ action: 'get' });
+    if (res && res.ok) {
+      const nextLight = normalizeHex(res.accentLight || '') || null;
+      const nextDark = normalizeHex(res.accentDark || '') || null;
+      if (nextLight !== cachedHostThemeConfigAccent.light || nextDark !== cachedHostThemeConfigAccent.dark) {
+        cachedHostThemeConfigAccent = { light: nextLight, dark: nextDark };
+        syncHostAccentCssVar({ force: true });
+      }
+    }
+  } catch { }
+}
+
+const PRE_TAKEOVER_THEME_KEY = 'ag_pre_takeover_host_theme';
+const LAST_APPLIED_HOST_THEME_KEY = 'ag_last_applied_host_theme';
+let preTakeoverHostThemeMode = null;
+let lastAppliedHostThemeMode = null;
+let themeSyncSeq = 0;
+let themeSyncDebounceTimer = null;
+let suppressHostThemeObserverUntil = 0;
+let lastThemeSyncState = {
+  ok: true,
+  mode: currentThemeMode,
+  hostMode: null,
+  source: 'init',
+  error: null,
+  seq: 0,
+  updatedAtMs: 0
+};
+try {
+  if (typeof localStorage !== 'undefined') {
+    const savedPre = localStorage.getItem(PRE_TAKEOVER_THEME_KEY);
+    if (['auto', 'light', 'dark'].includes(savedPre)) preTakeoverHostThemeMode = savedPre;
+    const savedApplied = localStorage.getItem(LAST_APPLIED_HOST_THEME_KEY);
+    if (['light', 'dark'].includes(savedApplied)) lastAppliedHostThemeMode = savedApplied;
+  }
+} catch { }
+
+function persistThemeTakeoverMeta() {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    if (preTakeoverHostThemeMode) localStorage.setItem(PRE_TAKEOVER_THEME_KEY, preTakeoverHostThemeMode);
+    else localStorage.removeItem(PRE_TAKEOVER_THEME_KEY);
+    if (lastAppliedHostThemeMode) localStorage.setItem(LAST_APPLIED_HOST_THEME_KEY, lastAppliedHostThemeMode);
+    else localStorage.removeItem(LAST_APPLIED_HOST_THEME_KEY);
+  } catch { }
+}
+
+async function invokeHostThemeBridge(payload = {}) {
+  try {
+    if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.hostTheme === 'function') {
+      return await window.contextMeterAPI.hostTheme(payload);
+    }
+    if (typeof hasLiveHttpBridge === 'function' && hasLiveHttpBridge() && typeof callLiveHttpRoute === 'function') {
+      return await callLiveHttpRoute('/host-theme', payload);
+    }
+    return { ok: false, unsupported: true, error: 'host_theme_bridge_unavailable' };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+}
+
+function getThemeSyncState() {
+  return {
+    ...lastThemeSyncState,
+    themeMode: currentThemeMode,
+    activeTheme: resolveTheme(),
+    preTakeoverHostThemeMode,
+    lastAppliedHostThemeMode
+  };
+}
+
+/**
+ * 全插件统一主题模式切换入口：
+ * - 显式 light/dark：由插件主导，同步写入整个 Antigravity 客户端（JetboxWriteState）并记录接管前模式；
+ * - 切回 auto（跟随宿主）：仅当宿主当前值仍等于插件上次主动覆盖值时恢复接管前模式，保留用户后续在原生外观页的修改。
+ */
+async function setPluginThemeMode(mode, opts = {}) {
+  if (!['auto', 'light', 'dark'].includes(mode)) {
+    return { ok: false, error: 'invalid_theme_mode', mode: currentThemeMode };
+  }
+  const source = opts.source || 'user';
+  const shouldPersist = opts.persist !== false;
+  const shouldSyncHost = opts.syncHost !== false;
+  const prevMode = currentThemeMode;
+  currentThemeMode = mode;
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem('ag_theme_mode', mode);
+  } catch { }
+  applyTheme();
+  if (typeof renderQuotaBoard === 'function' && typeof lastComputedQuotaView !== 'undefined' && lastComputedQuotaView && !quotaBoardCtrl?.isAnimating?.()) {
+    try { renderQuotaBoard(Date.now(), { animate: false, forceStatic: true }); } catch { }
+  }
+  if (shouldPersist && typeof saveSettingsPayloadBridge === 'function') {
+    try { void saveSettingsPayloadBridge({ themeMode: mode }); } catch { }
+  }
+  if (typeof syncHostSettingsUi === 'function') {
+    try { syncHostSettingsUi(); } catch { }
+  }
+  if (typeof sidebarAccountCtrl?.syncTheme === 'function') {
+    try { sidebarAccountCtrl.syncTheme(); } catch { }
+  }
+  if (!shouldSyncHost) {
+    lastThemeSyncState = { ok: true, mode, hostMode: null, source, error: null, seq: themeSyncSeq, updatedAtMs: Date.now() };
+    return { ok: true, mode, localOnly: true };
+  }
+
+  const mySeq = ++themeSyncSeq;
+  if (themeSyncDebounceTimer) {
+    clearTimeout(themeSyncDebounceTimer);
+    themeSyncDebounceTimer = null;
+  }
+
+  const executeSync = async () => {
+    if (mySeq !== themeSyncSeq) return { ok: true, stale: true, mode };
+    const readRes = await invokeHostThemeBridge({ action: 'get' });
+    if (mySeq !== themeSyncSeq) return { ok: true, stale: true, mode };
+    if (readRes?.unsupported) {
+      lastThemeSyncState = { ok: false, unsupported: true, mode, hostMode: null, source, error: readRes.error || 'host_theme_bridge_unavailable', seq: mySeq, updatedAtMs: Date.now() };
+      return lastThemeSyncState;
+    }
+    const currentHostMode = readRes?.ok && ['auto', 'light', 'dark'].includes(readRes.mode)
+      ? readRes.mode
+      : null;
+
+    if (mode === 'light' || mode === 'dark') {
+      // 首次从 auto 接管时记录接管前宿主模式（不覆写已有的接管前记录）
+      if (!lastAppliedHostThemeMode && !preTakeoverHostThemeMode) {
+        preTakeoverHostThemeMode = currentHostMode || 'auto';
+      }
+      // 幂等判等：宿主已等于目标模式时仅更新状态不重复写 RPC
+      if (currentHostMode === mode) {
+        lastAppliedHostThemeMode = mode;
+        persistThemeTakeoverMeta();
+        suppressHostThemeObserverUntil = Date.now() + 500;
+        lastThemeSyncState = { ok: true, mode, hostMode: currentHostMode, source, idempotent: true, error: null, seq: mySeq, updatedAtMs: Date.now() };
+        applyTheme();
+        return lastThemeSyncState;
+      }
+      suppressHostThemeObserverUntil = Date.now() + 900;
+      const writeRes = await invokeHostThemeBridge({ action: 'set', mode });
+      if (mySeq !== themeSyncSeq) return { ok: true, stale: true, mode };
+      if (writeRes?.ok) {
+        lastAppliedHostThemeMode = mode;
+        persistThemeTakeoverMeta();
+        suppressHostThemeObserverUntil = Date.now() + 700;
+        lastThemeSyncState = { ok: true, mode, hostMode: writeRes.mode || mode, source, error: null, seq: mySeq, updatedAtMs: Date.now() };
+        applyTheme();
+        if (typeof syncHostSettingsUi === 'function') { try { syncHostSettingsUi(); } catch { } }
+        return lastThemeSyncState;
+      }
+      // 写入失败：回读宿主当前实际值并记录真实失败反馈，绝不伪报成功
+      const rb = await invokeHostThemeBridge({ action: 'get' });
+      if (mySeq !== themeSyncSeq) return { ok: true, stale: true, mode };
+      const rbMode = rb?.ok && ['auto', 'light', 'dark'].includes(rb.mode) ? rb.mode : currentHostMode;
+      lastThemeSyncState = {
+        ok: false,
+        mode,
+        prevMode,
+        hostMode: rbMode,
+        source,
+        error: writeRes?.error || 'host_theme_write_failed',
+        seq: mySeq,
+        updatedAtMs: Date.now()
+      };
+      if (typeof showNativeSettingsToast === 'function' && typeof t === 'function') {
+        try { showNativeSettingsToast(t('theme.syncFailed', { err: lastThemeSyncState.error })); } catch { }
+      }
+      if (typeof syncHostSettingsUi === 'function') { try { syncHostSettingsUi(); } catch { } }
+      return lastThemeSyncState;
+    }
+
+    // 切回跟随宿主 (auto)
+    let restoredHost = false;
+    let finalHostMode = currentHostMode;
+    if (lastAppliedHostThemeMode && currentHostMode === lastAppliedHostThemeMode && preTakeoverHostThemeMode && preTakeoverHostThemeMode !== currentHostMode) {
+      suppressHostThemeObserverUntil = Date.now() + 900;
+      const restoreRes = await invokeHostThemeBridge({ action: 'set', mode: preTakeoverHostThemeMode });
+      if (mySeq !== themeSyncSeq) return { ok: true, stale: true, mode };
+      if (restoreRes?.ok) {
+        restoredHost = true;
+        finalHostMode = restoreRes.mode || preTakeoverHostThemeMode;
+        suppressHostThemeObserverUntil = Date.now() + 700;
+      } else {
+        const rb = await invokeHostThemeBridge({ action: 'get' });
+        if (mySeq !== themeSyncSeq) return { ok: true, stale: true, mode };
+        finalHostMode = rb?.ok ? rb.mode : currentHostMode;
+        lastThemeSyncState = {
+          ok: false,
+          mode: 'auto',
+          hostMode: finalHostMode,
+          source,
+          error: restoreRes?.error || 'host_theme_restore_failed',
+          seq: mySeq,
+          updatedAtMs: Date.now()
+        };
+        applyTheme();
+        return lastThemeSyncState;
+      }
+    }
+    // 无论是否需要还原（若用户已手动改过宿主则保留用户选择），释放插件主动接管状态
+    lastAppliedHostThemeMode = null;
+    preTakeoverHostThemeMode = null;
+    persistThemeTakeoverMeta();
+    lastThemeSyncState = {
+      ok: true,
+      mode: 'auto',
+      hostMode: finalHostMode,
+      restoredHost,
+      source,
+      error: null,
+      seq: mySeq,
+      updatedAtMs: Date.now()
+    };
+    applyTheme();
+    if (typeof syncHostSettingsUi === 'function') { try { syncHostSettingsUi(); } catch { } }
+    return lastThemeSyncState;
+  };
+
+  const debounceMs = Number.isFinite(Number(opts.debounceMs)) ? Math.max(0, Number(opts.debounceMs)) : 0;
+  if (debounceMs > 0) {
+    return new Promise((resolve) => {
+      themeSyncDebounceTimer = setTimeout(() => {
+        themeSyncDebounceTimer = null;
+        void executeSync().then(resolve);
+      }, debounceMs);
+    });
+  }
+  return executeSync();
 }
 
 function applyTheme() {
@@ -716,6 +1039,9 @@ function applyTheme() {
   applyHeatmapPalette();
   syncSwatchAndResetButtons();
   refreshActiveChartViews();
+  try {
+    if (typeof syncQuotaBoardSurfaceTheme === 'function') syncQuotaBoardSurfaceTheme();
+  } catch { }
   syncNativeOverlayTheme();
 }
 
@@ -816,28 +1142,40 @@ function syncNativeOverlayTheme() {
 }
 
 function cycleTheme() {
-  if (currentThemeMode === 'auto') currentThemeMode = 'light';
-  else if (currentThemeMode === 'light') currentThemeMode = 'dark';
-  else currentThemeMode = 'auto';
-  try {
-    if (typeof localStorage !== 'undefined') localStorage.setItem('ag_theme_mode', currentThemeMode);
-  } catch { }
-  applyTheme();
+  const nextMode = currentThemeMode === 'auto'
+    ? 'light'
+    : (currentThemeMode === 'light' ? 'dark' : 'auto');
+  void setPluginThemeMode(nextMode, { persist: true, syncHost: true, source: 'cycleTheme', debounceMs: 80 });
 }
 
 let themeObserver = null;
+let headStyleObserver = null;
+let headStyleDebounceTimer = null;
+let accentPollTimer = null;
 let overlayMediaCleanup = null;
 const overlaySyncTimers = [];
 try {
   if (typeof MutationObserver !== 'undefined' && document.body) {
     themeObserver = new MutationObserver(() => {
       syncHostAccentCssVar();
+      if (Date.now() < suppressHostThemeObserverUntil) return;
       if (currentThemeMode === 'auto') applyTheme();
       else syncNativeOverlayTheme();
     });
-    themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
+    themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'data-agy-theme'] });
     if (document.documentElement) {
-      themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
+      themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'data-agy-theme'] });
+    }
+    if (document.head) {
+      headStyleObserver = new MutationObserver(() => {
+        if (state.disposed) return;
+        if (headStyleDebounceTimer) clearTimeout(headStyleDebounceTimer);
+        headStyleDebounceTimer = setTimeout(() => {
+          headStyleDebounceTimer = null;
+          if (!state.disposed) syncHostAccentCssVar();
+        }, 30);
+      });
+      headStyleObserver.observe(document.head, { childList: true, subtree: true, characterData: true });
     }
   }
   if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
@@ -857,12 +1195,38 @@ try {
   }
   for (const delayMs of [80, 600, 1800]) {
     const tid = setTimeout(() => {
-      if (!state.disposed) syncNativeOverlayTheme();
+      if (!state.disposed) {
+        syncNativeOverlayTheme();
+        syncHostAccentCssVar();
+      }
     }, delayMs);
     overlaySyncTimers.push(tid);
   }
+  // 首次加载同步宿主 config.json 强调色种子；窗口聚焦或可见时静默校对（无变更零 DOM 写入，不新增后台轮询）
+  const initCfgTid = setTimeout(() => {
+    if (!state.disposed) void refreshHostAccentFromConfigBridge();
+  }, 160);
+  overlaySyncTimers.push(initCfgTid);
+  const onWindowFocusAccentSync = () => {
+    if (state.disposed) return;
+    syncHostAccentCssVar();
+    void refreshHostAccentFromConfigBridge();
+  };
+  const onDocVisibilityAccentSync = () => {
+    if (state.disposed || document?.visibilityState === 'hidden') return;
+    syncHostAccentCssVar();
+    void refreshHostAccentFromConfigBridge();
+  };
+  try { window.addEventListener?.('focus', onWindowFocusAccentSync); } catch { }
+  try { document.addEventListener?.('visibilitychange', onDocVisibilityAccentSync); } catch { }
   if (typeof activeDisposers?.add === 'function') {
     activeDisposers.add(() => {
+      if (themeSyncDebounceTimer) { clearTimeout(themeSyncDebounceTimer); themeSyncDebounceTimer = null; }
+      if (headStyleDebounceTimer) { clearTimeout(headStyleDebounceTimer); headStyleDebounceTimer = null; }
+      try { window.removeEventListener?.('focus', onWindowFocusAccentSync); } catch { }
+      try { document.removeEventListener?.('visibilitychange', onDocVisibilityAccentSync); } catch { }
+      try { themeObserver?.disconnect?.(); } catch { }
+      try { headStyleObserver?.disconnect?.(); } catch { }
       for (const tid of overlaySyncTimers) clearTimeout(tid);
       overlaySyncTimers.length = 0;
       if (overlayMediaCleanup) { overlayMediaCleanup(); overlayMediaCleanup = null; }
@@ -880,7 +1244,7 @@ applyCustomColors();
 // =========================================================================
 let activePickerSlot = null;
 let activePickerAnchor = null;
-let cpHsv = { h: 265, s: 77, v: 72 };
+let cpHsv = { h: 217, s: 80, v: 96 };
 
 function syncPickerUiFromHsv(skipInputId = '', exactRgb = null) {
   const rgb = exactRgb || hsvToRgb(cpHsv.h, cpHsv.s, cpHsv.v);
@@ -969,6 +1333,9 @@ function openColorPicker(slotKey, anchorEl = null, labelText = '') {
   if (!Object.prototype.hasOwnProperty.call(COLOR_SLOTS, slotKey)) return;
   const pop = el('color-picker-popover');
   if (!pop) return;
+  if (typeof ensureColorPickerTopLayer === 'function') {
+    try { ensureColorPickerTopLayer(); } catch { }
+  }
 
   const op = ++pickerOpVersion;
   activePickerSlot = slotKey;
@@ -981,7 +1348,7 @@ function openColorPicker(slotKey, anchorEl = null, labelText = '') {
     cpResetBtn.textContent = slotKey.startsWith('heat') ? t('colors.resetLevel') : t('colors.followTheme');
   }
   const startHex = getEffectiveSlotColor(slotKey);
-  const rgb = hexToRgb(startHex) || { r: 101, g: 42, b: 183 };
+  const rgb = hexToRgb(startHex) || { r: 50, g: 116, b: 246 };
   cpHsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
   syncPickerUiFromHsv();
 
@@ -1047,7 +1414,7 @@ for (const key of Object.keys(COLOR_SLOTS)) {
     setCustomColor(key, '');
     if (activePickerSlot === key) {
       const eff = getEffectiveSlotColor(key);
-      const rgb = hexToRgb(eff) || { r: 101, g: 42, b: 183 };
+      const rgb = hexToRgb(eff) || { r: 50, g: 116, b: 246 };
       cpHsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
       syncPickerUiFromHsv();
     }
@@ -1073,7 +1440,7 @@ el('reset-heat-lvls')?.addEventListener('click', () => {
   resetHeatmapLevels();
   if (activePickerSlot?.startsWith('heat')) {
     const eff = getEffectiveSlotColor(activePickerSlot);
-    const rgb = hexToRgb(eff) || { r: 101, g: 42, b: 183 };
+    const rgb = hexToRgb(eff) || { r: 50, g: 116, b: 246 };
     cpHsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
     syncPickerUiFromHsv();
   }
@@ -1110,7 +1477,7 @@ el('cp-reset-slot')?.addEventListener('click', () => {
   if (activePickerSlot) {
     setCustomColor(activePickerSlot, '');
     const eff = getEffectiveSlotColor(activePickerSlot);
-    const rgb = hexToRgb(eff) || { r: 101, g: 42, b: 183 };
+    const rgb = hexToRgb(eff) || { r: 50, g: 116, b: 246 };
     cpHsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
     syncPickerUiFromHsv();
   }

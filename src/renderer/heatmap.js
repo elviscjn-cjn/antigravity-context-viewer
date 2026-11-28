@@ -532,8 +532,18 @@
     axisRow.id = 'cum-axis-row';
 
     const isLight = typeof resolveEffectiveTheme === 'function' && resolveEffectiveTheme() === 'light';
-    const segPaletteDark = ['#4c1d95', '#5b21b6', '#6d28d9', '#7c3aed'];
-    const segPaletteLight = ['#7c3aed', '#6d28d9', '#8b5cf6', '#5b21b6'];
+    const segPaletteDark = [
+      'color-mix(in srgb, var(--ag-host-accent, var(--primary, #3274f6)) 42%, #0f172a)',
+      'color-mix(in srgb, var(--ag-host-accent, var(--primary, #3274f6)) 60%, #0f172a)',
+      'color-mix(in srgb, var(--ag-host-accent, var(--primary, #3274f6)) 78%, #0f172a)',
+      'var(--ag-host-accent, var(--primary, #3274f6))'
+    ];
+    const segPaletteLight = [
+      'color-mix(in srgb, var(--ag-host-accent, var(--primary, #3274f6)) 58%, #ffffff)',
+      'color-mix(in srgb, var(--ag-host-accent, var(--primary, #3274f6)) 74%, #ffffff)',
+      'color-mix(in srgb, var(--ag-host-accent, var(--primary, #3274f6)) 88%, #ffffff)',
+      'var(--ag-host-accent, var(--primary, #3274f6))'
+    ];
     const segPalette = isLight ? segPaletteLight : segPaletteDark;
 
     const showSegPop = (seg, anchorNode) => {
@@ -599,7 +609,7 @@
         segBtn.className = `cum-seg${seg.isPeak ? ' is-peak' : ''}${isActiveFocus ? ' is-active' : ''}`;
         segBtn.style.width = `${seg.stripWidthPct.toFixed(6)}%`;
         const colBg = seg.isPeak
-          ? (isLight ? '#7c3aed' : '#9333ea')
+          ? 'var(--ag-host-accent, var(--primary, #3274f6))'
           : segPalette[(seg.weekIdx * 2 + (activeBarIdx % 2)) % segPalette.length];
         segBtn.style.backgroundColor = colBg;
         segBtn.setAttribute('data-cum-key', seg.key);
@@ -1209,7 +1219,7 @@
         activeRing.setAttribute('cy', String(cy));
         activeRing.setAttribute('r', (radius + 3.5).toFixed(2));
         activeRing.setAttribute('fill', 'none');
-        activeRing.setAttribute('stroke', 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))');
+        activeRing.setAttribute('stroke', 'var(--ag-custom-token-accent, var(--ag-host-accent, var(--primary, #3274f6)))');
         activeRing.setAttribute('stroke-width', '1.5');
         activeRing.setAttribute('stroke-dasharray', '3,3');
         g.appendChild(activeRing);
@@ -1223,7 +1233,7 @@
         peakBadge.setAttribute('text-anchor', 'middle');
         peakBadge.setAttribute('font-size', '8.5');
         peakBadge.setAttribute('font-weight', '600');
-        peakBadge.setAttribute('fill', 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))');
+        peakBadge.setAttribute('fill', 'var(--ag-custom-token-accent, var(--ag-host-accent, var(--primary, #3274f6)))');
         peakBadge.textContent = t('tokens.heat.peakBadge');
         g.appendChild(peakBadge);
       }
@@ -1451,3 +1461,1088 @@
     };
   }
 
+
+// =========================================================================
+// 阶段六：个人 Token 用量主页左起自然日点阵热力图引擎 (renderProfileHeatmapInto)
+// =========================================================================
+
+const OM_PROFILE_HM_STYLE_ID = 'ag-om-profile-heatmap-style';
+const OM_PROFILE_HM_STORAGE_KEY = 'ag_om_profile_hm_levels_v1';
+
+const OM_PROFILE_HM_I18N = {
+  'zh-CN': {
+    title: 'Token 活动',
+    firstUsePrefix: '首次使用',
+    rangeDay: '每天',
+    rangeWeek: '每周',
+    rangeMonth: '每月',
+    rangeYear: '今年',
+    rangeAll: '累计总量',
+    less: '少',
+    more: '多',
+    hoverHint: '点击或悬停任意格子查看当日明细',
+    paletteBtn: '色阶自定义',
+    paletteReset: '恢复默认',
+    paletteLevelPrefix: '档位',
+    detailTotal: '总用量',
+    detailInput: '新输入未缓存',
+    detailCache: '缓存读取',
+    detailOutput: '输出',
+    detailCacheHit: '缓存命中率',
+    detailCost: '估算费用',
+    detailModelsTitle: '分模型消耗',
+    detailNoModels: '暂无分模型明细',
+    detailEmptyDay: '当日无使用记录',
+    detailClose: '关闭',
+    summaryDaysSuffix: '天活跃',
+    summaryTotalPrefix: '区间合计',
+    summaryCostPrefix: '预估费用'
+  },
+  'zh-TW': {
+    title: 'Token 活動',
+    firstUsePrefix: '首次使用',
+    rangeDay: '每天',
+    rangeWeek: '每週',
+    rangeMonth: '每月',
+    rangeYear: '今年',
+    rangeAll: '累計總量',
+    less: '少',
+    more: '多',
+    hoverHint: '點擊或懸停任意格子查看當日明細',
+    paletteBtn: '色階自訂',
+    paletteReset: '恢復預設',
+    paletteLevelPrefix: '檔位',
+    detailTotal: '總用量',
+    detailInput: '新輸入未快取',
+    detailCache: '快取讀取',
+    detailOutput: '輸出',
+    detailCacheHit: '快取命中率',
+    detailCost: '估算費用',
+    detailModelsTitle: '依模型消耗',
+    detailNoModels: '暫無依模型明細',
+    detailEmptyDay: '當日無使用記錄',
+    detailClose: '關閉',
+    summaryDaysSuffix: '天活躍',
+    summaryTotalPrefix: '區間合計',
+    summaryCostPrefix: '預估費用'
+  },
+  en: {
+    title: 'Token Activity',
+    firstUsePrefix: 'First Use',
+    rangeDay: 'Daily',
+    rangeWeek: 'Weekly',
+    rangeMonth: 'Monthly',
+    rangeYear: 'This Year',
+    rangeAll: 'Cumulative',
+    less: 'Less',
+    more: 'More',
+    hoverHint: 'Click or hover any cell to inspect daily details',
+    paletteBtn: 'Scale Colors',
+    paletteReset: 'Reset',
+    paletteLevelPrefix: 'Level',
+    detailTotal: 'Total Tokens',
+    detailInput: 'Uncached Input',
+    detailCache: 'Cache Read',
+    detailOutput: 'Output',
+    detailCacheHit: 'Cache Hit',
+    detailCost: 'Estimated Cost',
+    detailModelsTitle: 'By Model',
+    detailNoModels: 'No per-model records',
+    detailEmptyDay: 'No usage recorded on this day',
+    detailClose: 'Close',
+    summaryDaysSuffix: 'active days',
+    summaryTotalPrefix: 'Range Total',
+    summaryCostPrefix: 'Estimated Cost'
+  }
+};
+
+function omHmResolveLang(lang) {
+  const raw = String(lang || (typeof currentPanelLanguage !== 'undefined' ? currentPanelLanguage : 'zh-CN') || 'zh-CN').toLowerCase();
+  if (raw.includes('tw') || raw.includes('hk') || raw.includes('hant')) return 'zh-TW';
+  if (raw.startsWith('en')) return 'en';
+  return 'zh-CN';
+}
+
+function omHmFormatYmd(dt) {
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, '0');
+  const d = String(dt.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function omHmParseYmd(str) {
+  if (typeof str !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(str)) return null;
+  const [y, m, d] = str.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function omHmAddDays(dt, delta) {
+  return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() + delta);
+}
+
+function omHmShortTok(n) {
+  if (typeof short === 'function') return short(n);
+  const v = Number(n || 0);
+  if (!Number.isFinite(v) || v <= 0) return '0';
+  if (v >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
+  if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
+  if (v >= 1e3) return `${(v / 1e3).toFixed(1)}k`;
+  return String(Math.round(v));
+}
+
+function omHmFormatUsd(val) {
+  const v = Number(val || 0);
+  if (!Number.isFinite(v) || v <= 0) return '$0.00';
+  if (v < 0.01) return `$${v.toFixed(4)}`;
+  return `$${v.toFixed(2)}`;
+}
+
+function omHmLoadSavedLevels() {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    const raw = localStorage.getItem(OM_PROFILE_HM_STORAGE_KEY);
+    if (!raw) return null;
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr) && arr.length === 5 && arr.every(c => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c))) {
+      return arr;
+    }
+  } catch { }
+  return null;
+}
+
+function omHmSaveLevels(levels) {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    if (!levels) localStorage.removeItem(OM_PROFILE_HM_STORAGE_KEY);
+    else localStorage.setItem(OM_PROFILE_HM_STORAGE_KEY, JSON.stringify(levels));
+  } catch { }
+}
+
+function omHmEnsureStyles(containerEl) {
+  if (!containerEl) return;
+  const doc = containerEl.ownerDocument || (typeof document !== 'undefined' ? document : null);
+  if (!doc) return;
+  const root = typeof containerEl.getRootNode === 'function' ? containerEl.getRootNode() : doc;
+  const target = root && root.nodeType === 11 ? root : (doc.head || containerEl);
+  if (!target || target.querySelector?.(`#${OM_PROFILE_HM_STYLE_ID}`)) return;
+  const st = doc.createElement('style');
+  st.id = OM_PROFILE_HM_STYLE_ID;
+  st.setAttribute('data-om-view-style', 'profile-heatmap');
+  st.textContent = `
+    .om-hm-wrap {
+      --om-hm-accent: var(--ag-host-accent, var(--primary, #3274f6));
+      --om-hm-bg: var(--card, rgba(255, 255, 255, 0.035));
+      --om-hm-surface: rgba(148, 163, 184, 0.08);
+      --om-hm-border: var(--border, rgba(148, 163, 184, 0.2));
+      --om-hm-text: var(--foreground, #ececef);
+      --om-hm-muted: var(--muted-foreground, #94a3b8);
+      --om-hm-lvl-0: rgba(148, 163, 184, 0.16);
+      --om-hm-lvl-1: color-mix(in srgb, var(--om-hm-accent) 26%, transparent);
+      --om-hm-lvl-2: color-mix(in srgb, var(--om-hm-accent) 48%, transparent);
+      --om-hm-lvl-3: color-mix(in srgb, var(--om-hm-accent) 74%, transparent);
+      --om-hm-lvl-4: var(--om-hm-accent);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+      color: var(--om-hm-text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+    }
+    .om-hm-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .om-hm-title-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+    .om-hm-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--om-hm-text);
+    }
+    .om-hm-meta {
+      font-size: 11.5px;
+      color: var(--om-hm-muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .om-hm-ranges {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 2px;
+      border-radius: 999px;
+      border: 1px solid var(--om-hm-border);
+      background: var(--om-hm-surface);
+      flex-wrap: wrap;
+    }
+    .om-hm-range-btn {
+      appearance: none;
+      border: none;
+      background: transparent;
+      color: var(--om-hm-muted);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 11.5px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background-color 140ms ease, color 140ms ease;
+    }
+    .om-hm-range-btn:hover {
+      color: var(--om-hm-text);
+    }
+    .om-hm-range-btn.is-active {
+      background: color-mix(in srgb, var(--om-hm-accent) 22%, transparent);
+      color: var(--om-hm-text);
+      font-weight: 600;
+    }
+    .om-hm-scroll {
+      width: 100%;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 4px 2px 6px;
+      box-sizing: border-box;
+    }
+    .om-hm-matrix {
+      display: inline-flex;
+      align-items: flex-end;
+      gap: 5px;
+      min-width: max-content;
+    }
+    .om-hm-day-col {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+    .om-hm-cell {
+      appearance: none;
+      border: 1px solid transparent;
+      padding: 2px;
+      margin: 0;
+      width: 16px;
+      min-height: 16px;
+      border-radius: 5px;
+      background: var(--om-hm-lvl-0);
+      cursor: pointer;
+      display: flex;
+      flex-direction: column-reverse;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      box-sizing: border-box;
+      transition: transform 110ms ease, border-color 110ms ease, box-shadow 110ms ease;
+    }
+    .om-hm-cell:hover {
+      transform: translateY(-1px);
+      border-color: color-mix(in srgb, var(--om-hm-accent) 65%, var(--om-hm-text));
+    }
+    .om-hm-cell[data-level="0"] { background: var(--om-hm-lvl-0); }
+    .om-hm-cell[data-level="1"] { background: var(--om-hm-lvl-1); }
+    .om-hm-cell[data-level="2"] { background: var(--om-hm-lvl-2); }
+    .om-hm-cell[data-level="3"] { background: var(--om-hm-lvl-3); }
+    .om-hm-cell[data-level="4"] { background: var(--om-hm-lvl-4); }
+    .om-hm-cell[data-selected="true"] {
+      border-color: var(--om-hm-text);
+      box-shadow: 0 0 0 2px var(--om-hm-accent);
+      transform: translateY(-1px);
+    }
+    .om-hm-dots-stack {
+      display: flex;
+      flex-direction: column-reverse;
+      gap: 2px;
+      align-items: center;
+      pointer-events: none;
+    }
+    .om-hm-dot-pip {
+      width: 12px;
+      height: 12px;
+      border-radius: 4px;
+      background: var(--om-hm-lvl-0);
+      transition: background-color 120ms ease;
+    }
+    .om-hm-cell--codex {
+      width: auto;
+      height: auto;
+      padding: 3px;
+      background: transparent !important;
+      border-radius: 6px;
+    }
+    .om-hm-cell--codex[data-selected="true"] {
+      background: color-mix(in srgb, var(--om-hm-accent) 14%, transparent) !important;
+    }
+    .om-hm-axis-lbl {
+      font-size: 9.5px;
+      color: var(--om-hm-muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      height: 13px;
+      line-height: 13px;
+    }
+    .om-hm-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      font-size: 11.5px;
+      color: var(--om-hm-muted);
+    }
+    .om-hm-legend {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .om-hm-legend-swatch {
+      width: 11px;
+      height: 11px;
+      border-radius: 3px;
+      display: inline-block;
+    }
+    .om-hm-btn {
+      appearance: none;
+      border: 1px solid var(--om-hm-border);
+      background: var(--om-hm-surface);
+      color: var(--om-hm-text);
+      border-radius: 6px;
+      padding: 3px 9px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .om-hm-btn:hover {
+      border-color: var(--om-hm-accent);
+    }
+    .om-hm-palette-editor {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--om-hm-border);
+      background: var(--om-hm-surface);
+    }
+    .om-hm-palette-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      color: var(--om-hm-muted);
+    }
+    .om-hm-color-input {
+      width: 24px;
+      height: 20px;
+      padding: 0;
+      border: 1px solid var(--om-hm-border);
+      border-radius: 4px;
+      background: transparent;
+      cursor: pointer;
+    }
+    .om-hm-day-detail {
+      border-radius: 10px;
+      border: 1px solid color-mix(in srgb, var(--om-hm-accent) 42%, var(--om-hm-border));
+      background: color-mix(in srgb, var(--om-hm-accent) 7%, var(--om-hm-bg));
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .om-hm-detail-hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .om-hm-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+      gap: 8px;
+    }
+    .om-hm-detail-stat {
+      padding: 7px 9px;
+      border-radius: 7px;
+      background: var(--om-hm-surface);
+      border: 1px solid var(--om-hm-border);
+    }
+    .om-hm-detail-k {
+      font-size: 10.5px;
+      color: var(--om-hm-muted);
+    }
+    .om-hm-detail-v {
+      font-size: 14px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--om-hm-text);
+      margin-top: 2px;
+    }
+    .om-hm-models-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .om-hm-model-chip {
+      padding: 3px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--om-hm-border);
+      background: var(--om-hm-surface);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+  `;
+  target.appendChild(st);
+}
+
+function omHmNormalizePayload(data, opts = {}) {
+  const src = data && typeof data === 'object' ? data : {};
+  const isDirectDailyMap = Object.keys(src).some(k => /^\d{4}-\d{2}-\d{2}$/.test(k));
+  const dailyMap = isDirectDailyMap
+    ? src
+    : (src.dailyMap || src.allDailyMap || src.filteredDailyMap || {});
+  const dailyInsights = src.dailyInsights
+    || src.crossSessionInsights?.dailyInsights
+    || {};
+  const dailyModelMap = src.dailyModelMap
+    || src.dailyModelMapBySource?.all
+    || {};
+  const modelMetaByKey = src.modelMetaByKey || {};
+  const todayStr = String(
+    opts.todayStr || src.todayStr || omHmFormatYmd(new Date())
+  );
+
+  // 合并所有日期的真实 token / input / cache / output / 精确 costUSD
+  const merged = {};
+  const allKeys = new Set([
+    ...Object.keys(dailyMap || {}),
+    ...Object.keys(dailyInsights || {})
+  ]);
+  let earliestActive = '';
+  for (const dk of Array.from(allKeys).sort()) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dk) || dk > todayStr) continue;
+    const dRec = dailyMap?.[dk] || null;
+    const iRec = dailyInsights?.[dk] || null;
+    const input = Math.max(0, Number(dRec?.input ?? iRec?.input ?? 0));
+    const cache = Math.max(0, Number(dRec?.cache ?? iRec?.cache ?? 0));
+    const output = Math.max(0, Number(dRec?.output ?? iRec?.output ?? 0));
+    const total = Math.max(0, Number(dRec?.total ?? iRec?.tokens ?? 0), input + cache + output);
+    const exactCost = (iRec && Number.isFinite(Number(iRec.costUSD)) && Number(iRec.costUSD) > 0)
+      ? Number(iRec.costUSD)
+      : ((dRec && Number.isFinite(Number(dRec.costUSD)) && Number(dRec.costUSD) > 0) ? Number(dRec.costUSD) : 0);
+    merged[dk] = {
+      date: dk,
+      total,
+      input,
+      cache,
+      output,
+      costUSD: exactCost,
+      calls: Number(iRec?.calls ?? dRec?.steps ?? 0),
+      sessions: Number(iRec?.sessions ?? 0)
+    };
+    if (total > 0 && !earliestActive) earliestActive = dk;
+  }
+
+  const explicitFirst = String(src.firstUseDate || opts.firstUseDate || '').trim();
+  const validExplicitFirst = /^\d{4}-\d{2}-\d{2}$/.test(explicitFirst) && explicitFirst <= todayStr ? explicitFirst : '';
+  let earliestDate = earliestActive || validExplicitFirst || todayStr;
+  if (validExplicitFirst && earliestActive && validExplicitFirst < earliestActive) {
+    earliestDate = validExplicitFirst;
+  }
+
+  return {
+    merged,
+    dailyInsights,
+    dailyModelMap,
+    modelMetaByKey,
+    earliestDate,
+    todayStr
+  };
+}
+
+/**
+ * 阶段六统一契约：渲染严格从左往右、自然日列粒度的个人主页 Token 活动热力图。
+ * 第一列永远代表最早有记录日期，最后一列永远代表今天；支持五档视图、色阶自定义与全格点击锁定当日明细。
+ */
+function renderProfileHeatmapInto(containerEl, data, opts = {}) {
+  if (!containerEl) return null;
+  const doc = containerEl.ownerDocument || (typeof document !== 'undefined' ? document : null);
+  if (!doc) return null;
+
+  if (containerEl.__omProfileHmCtrl && typeof containerEl.__omProfileHmCtrl.update === 'function') {
+    containerEl.__omProfileHmCtrl.update(data, opts);
+    return containerEl.__omProfileHmCtrl;
+  }
+
+  omHmEnsureStyles(containerEl);
+
+  const validRanges = ['day', 'week', 'month', 'year', 'all'];
+  const st = {
+    lang: omHmResolveLang(opts.lang),
+    range: validRanges.includes(opts.range) ? opts.range : 'day',
+    selectedDate: null,
+    paletteOpen: false,
+    customLevels: Array.isArray(opts.customLevels) && opts.customLevels.length === 5
+      ? opts.customLevels.slice()
+      : (Array.isArray(data?.customLevels) && data.customLevels.length === 5 ? data.customLevels.slice() : omHmLoadSavedLevels()),
+    data: data || {},
+    opts: { ...opts },
+    disposed: false,
+    dayByDate: new Map()
+  };
+
+  const wrap = doc.createElement('div');
+  wrap.className = 'om-hm-wrap';
+  wrap.setAttribute('data-om-profile-heatmap', 'true');
+  wrap.setAttribute('data-heatmap-direction', 'ltr');
+  containerEl.replaceChildren(wrap);
+
+  function applyCustomLevelVars() {
+    if (Array.isArray(st.customLevels) && st.customLevels.length === 5) {
+      for (let i = 0; i < 5; i++) {
+        wrap.style.setProperty(`--om-hm-lvl-${i}`, st.customLevels[i]);
+      }
+    } else {
+      for (let i = 0; i < 5; i++) {
+        wrap.style.removeProperty(`--om-hm-lvl-${i}`);
+      }
+    }
+  }
+
+  function computeDayCost(dayRec, dateStr, norm) {
+    if (!dayRec || dayRec.total <= 0) return 0;
+    if (dayRec.costUSD > 0) return dayRec.costUSD;
+    if (typeof calculateIntervalCost === 'function') {
+      try {
+        const calc = calculateIntervalCost(
+          { [dateStr]: dayRec },
+          [dateStr],
+          'gemini-3.8-flash',
+          { todayStr: norm.todayStr, dailyInsights: norm.dailyInsights }
+        );
+        return Number(calc?.totalCostUSD || 0);
+      } catch { }
+    }
+    return 0;
+  }
+
+  function buildRangeDates(norm) {
+    const todayDt = omHmParseYmd(norm.todayStr) || new Date();
+    const earliestDt = omHmParseYmd(norm.earliestDate) || todayDt;
+    let startDt = earliestDt;
+
+    if (st.range === 'week') {
+      const wStart = omHmAddDays(todayDt, -6);
+      startDt = wStart > earliestDt ? wStart : earliestDt;
+    } else if (st.range === 'month') {
+      const mStart = omHmAddDays(todayDt, -29);
+      startDt = mStart > earliestDt ? mStart : earliestDt;
+    } else if (st.range === 'year') {
+      const yStart = new Date(todayDt.getFullYear(), 0, 1);
+      startDt = yStart > earliestDt ? yStart : earliestDt;
+    }
+    // day 与 all 均严格从 earliestDt（首次使用日）起自然延展至今日
+
+    const dates = [];
+    let cur = new Date(startDt.getFullYear(), startDt.getMonth(), startDt.getDate());
+    const endMs = todayDt.getTime();
+    let guard = 0;
+    while (cur.getTime() <= endMs && guard < 1500) {
+      dates.push(omHmFormatYmd(cur));
+      cur = omHmAddDays(cur, 1);
+      guard++;
+    }
+    if (!dates.length) dates.push(norm.todayStr);
+    return dates;
+  }
+
+  function computeLevel(val, maxVal) {
+    if (!(val > 0) || !(maxVal > 0)) return 0;
+    const ratio = val / maxVal;
+    if (ratio >= 0.72) return 4;
+    if (ratio >= 0.44) return 3;
+    if (ratio >= 0.2) return 2;
+    return 1;
+  }
+
+  function renderAll() {
+    if (st.disposed) return;
+    applyCustomLevelVars();
+    const copy = OM_PROFILE_HM_I18N[st.lang] || OM_PROFILE_HM_I18N['zh-CN'];
+    const norm = omHmNormalizePayload(st.data, st.opts);
+    const dates = buildRangeDates(norm);
+
+    st.dayByDate.clear();
+    let runningCum = 0;
+    const series = dates.map((dk, idx) => {
+      const base = norm.merged[dk] || { date: dk, total: 0, input: 0, cache: 0, output: 0, costUSD: 0, calls: 0, sessions: 0 };
+      const costUSD = computeDayCost(base, dk, norm);
+      runningCum += base.total;
+      const rec = {
+        ...base,
+        colIndex: idx,
+        costUSD,
+        cumulativeTokens: runningCum
+      };
+      st.dayByDate.set(dk, rec);
+      return rec;
+    });
+
+    const metricMax = st.range === 'all'
+      ? Math.max(1, runningCum)
+      : Math.max(1, ...series.map(d => d.total));
+
+    const activeDaysCount = series.filter(d => d.total > 0).length;
+    const rangeTokens = series.reduce((s, d) => s + d.total, 0);
+    const rangeCost = series.reduce((s, d) => s + d.costUSD, 0);
+
+    wrap.setAttribute('data-om-hm-active-range', st.range);
+    wrap.setAttribute('data-earliest-date', dates[0] || norm.earliestDate);
+    wrap.setAttribute('data-today-date', dates[dates.length - 1] || norm.todayStr);
+
+    const frag = doc.createDocumentFragment();
+
+    // 1. 顶栏：标题 + 首次使用日期 + 5 档视图切换（每天 / 每周 / 每月 / 今年 / 累计总量）
+    const hdr = doc.createElement('div');
+    hdr.className = 'om-hm-header';
+
+    const titleGrp = doc.createElement('div');
+    titleGrp.className = 'om-hm-title-group';
+    const titleEl = doc.createElement('div');
+    titleEl.className = 'om-hm-title';
+    titleEl.textContent = copy.title;
+    const metaEl = doc.createElement('span');
+    metaEl.className = 'om-hm-meta';
+    metaEl.textContent = `${copy.firstUsePrefix} ${norm.earliestDate} · ${dates[0]} → ${dates[dates.length - 1]}`;
+    titleGrp.appendChild(titleEl);
+    titleGrp.appendChild(metaEl);
+
+    const rangeWrap = doc.createElement('div');
+    rangeWrap.className = 'om-hm-ranges';
+    rangeWrap.setAttribute('role', 'tablist');
+    const rangeDefs = [
+      ['day', copy.rangeDay],
+      ['week', copy.rangeWeek],
+      ['month', copy.rangeMonth],
+      ['year', copy.rangeYear],
+      ['all', copy.rangeAll]
+    ];
+    for (const [rk, rlbl] of rangeDefs) {
+      const btn = doc.createElement('button');
+      btn.type = 'button';
+      btn.className = `om-hm-range-btn${st.range === rk ? ' is-active' : ''}`;
+      btn.setAttribute('role', 'tab');
+      btn.setAttribute('data-om-hm-range', rk);
+      btn.setAttribute('aria-selected', st.range === rk ? 'true' : 'false');
+      btn.textContent = rlbl;
+      btn.addEventListener('click', () => {
+        if (st.range === rk) return;
+        st.range = rk;
+        st.opts.onRangeChange?.(rk);
+        renderAll();
+      });
+      rangeWrap.appendChild(btn);
+    }
+
+    hdr.appendChild(titleGrp);
+    hdr.appendChild(rangeWrap);
+    frag.appendChild(hdr);
+
+    // 2. 左起自然日点阵矩阵（每列 = 1 个自然日，首列最早，末列今天，Codex 柔和圆角点阵）
+    const scrollEl = doc.createElement('div');
+    scrollEl.className = 'om-hm-scroll';
+    const matrixEl = doc.createElement('div');
+    matrixEl.className = 'om-hm-matrix';
+    matrixEl.setAttribute('data-om-hm-grid', 'true');
+    matrixEl.setAttribute('data-col-count', String(series.length));
+
+    let lastMonthTag = '';
+    const hoverBar = doc.createElement('span');
+    hoverBar.className = 'om-hm-meta';
+    hoverBar.setAttribute('data-om-hm-hover-bar', 'true');
+    hoverBar.textContent = copy.hoverHint;
+
+    const cellByDate = new Map();
+    const detailSlot = doc.createElement('div');
+    detailSlot.setAttribute('data-om-hm-detail-slot', 'true');
+
+    const renderDayDetailInPlace = () => {
+      detailSlot.replaceChildren();
+      if (!st.selectedDate) return;
+      const selDay = st.dayByDate.get(st.selectedDate) || {
+        date: st.selectedDate,
+        total: 0,
+        input: 0,
+        cache: 0,
+        output: 0,
+        costUSD: 0
+      };
+      const detail = doc.createElement('section');
+      detail.className = 'om-hm-day-detail';
+      detail.setAttribute('data-om-hm-day-detail', 'true');
+      detail.setAttribute('data-selected-date', selDay.date);
+
+      const dHdr = doc.createElement('div');
+      dHdr.className = 'om-hm-detail-hdr';
+      const dTitle = doc.createElement('strong');
+      dTitle.textContent = selDay.total > 0 ? selDay.date : `${selDay.date} · ${copy.detailEmptyDay}`;
+      const closeBtn = doc.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'om-hm-btn';
+      closeBtn.setAttribute('data-om-hm-detail-close', 'true');
+      closeBtn.textContent = copy.detailClose;
+      closeBtn.addEventListener('click', () => {
+        syncSelectionInPlace(null);
+      });
+      dHdr.appendChild(dTitle);
+      dHdr.appendChild(closeBtn);
+      detail.appendChild(dHdr);
+
+      const inpDenom = selDay.input + selDay.cache;
+      const cachePct = inpDenom > 0 ? `${((selDay.cache / inpDenom) * 100).toFixed(1)}%` : '0%';
+      const statGrid = doc.createElement('div');
+      statGrid.className = 'om-hm-detail-grid';
+      for (const [k, v] of [
+        [copy.detailTotal, omHmShortTok(selDay.total)],
+        [copy.detailInput, omHmShortTok(selDay.input)],
+        [copy.detailCache, omHmShortTok(selDay.cache)],
+        [copy.detailOutput, omHmShortTok(selDay.output)],
+        [copy.detailCacheHit, cachePct],
+        [copy.detailCost, omHmFormatUsd(selDay.costUSD)]
+      ]) {
+        const box = doc.createElement('div');
+        box.className = 'om-hm-detail-stat';
+        const kEl = doc.createElement('div');
+        kEl.className = 'om-hm-detail-k';
+        kEl.textContent = k;
+        const vEl = doc.createElement('div');
+        vEl.className = 'om-hm-detail-v';
+        vEl.textContent = v;
+        box.appendChild(kEl);
+        box.appendChild(vEl);
+        statGrid.appendChild(box);
+      }
+      detail.appendChild(statGrid);
+
+      const dayModelsObj = norm.dailyModelMap?.[selDay.date] || null;
+      const modelEntries = dayModelsObj && typeof dayModelsObj === 'object'
+        ? Object.entries(dayModelsObj)
+          .map(([mk, rec]) => {
+            const meta = norm.modelMetaByKey?.[mk];
+            const label = String(meta?.displayName || meta?.label || mk);
+            const tot = Number(rec?.total || 0) || (Number(rec?.input || 0) + Number(rec?.cache || 0) + Number(rec?.output || 0));
+            return { label, total: tot };
+          })
+          .filter(m => m.total > 0)
+          .sort((a, b) => b.total - a.total)
+        : [];
+
+      const mTitle = doc.createElement('div');
+      mTitle.className = 'om-hm-detail-k';
+      mTitle.textContent = copy.detailModelsTitle;
+      detail.appendChild(mTitle);
+
+      if (modelEntries.length) {
+        const mList = doc.createElement('div');
+        mList.className = 'om-hm-models-list';
+        for (const me of modelEntries.slice(0, 8)) {
+          const chip = doc.createElement('span');
+          chip.className = 'om-hm-model-chip';
+          chip.textContent = `${me.label} · ${omHmShortTok(me.total)}`;
+          mList.appendChild(chip);
+        }
+        detail.appendChild(mList);
+      } else {
+        const noM = doc.createElement('div');
+        noM.className = 'om-hm-meta';
+        noM.textContent = copy.detailNoModels;
+        detail.appendChild(noM);
+      }
+
+      detailSlot.appendChild(detail);
+    };
+
+    const syncSelectionInPlace = (nextDate) => {
+      st.selectedDate = nextDate || null;
+      for (const [dk, cEl] of cellByDate.entries()) {
+        const active = st.selectedDate === dk;
+        cEl.setAttribute('data-selected', active ? 'true' : 'false');
+        cEl.setAttribute('aria-pressed', active ? 'true' : 'false');
+      }
+      renderDayDetailInPlace();
+      const detailRec = st.selectedDate ? (st.dayByDate.get(st.selectedDate) || null) : null;
+      st.opts.onSelectDate?.(st.selectedDate, detailRec);
+    };
+    st.syncSelectionInPlace = syncSelectionInPlace;
+
+    for (const day of series) {
+      const col = doc.createElement('div');
+      col.className = 'om-hm-day-col';
+      col.setAttribute('data-om-hm-col', String(day.colIndex));
+
+      const metricVal = st.range === 'all' ? day.cumulativeTokens : day.total;
+      const lvl = day.total > 0 ? computeLevel(metricVal, metricMax) : 0;
+      const isSel = st.selectedDate === day.date;
+
+      const cell = doc.createElement('button');
+      cell.type = 'button';
+      cell.className = 'om-hm-cell om-hm-cell--codex';
+      cell.setAttribute('data-om-hm-cell', 'true');
+      cell.setAttribute('data-date', day.date);
+      cell.setAttribute('data-col-index', String(day.colIndex));
+      cell.setAttribute('data-level', String(lvl));
+      cell.setAttribute('data-selected', isSel ? 'true' : 'false');
+      cell.setAttribute('data-has-data', day.total > 0 ? 'true' : 'false');
+      cell.setAttribute('aria-pressed', isSel ? 'true' : 'false');
+      cell.title = `${day.date} · ${omHmShortTok(day.total)} tok · ${omHmFormatUsd(day.costUSD)}`;
+      cell.addEventListener('click', (ev) => {
+        if (ev && ev.__omHmCellHandled) return;
+        if (ev) ev.__omHmCellHandled = true;
+        const nextDate = st.selectedDate === day.date ? null : day.date;
+        syncSelectionInPlace(nextDate);
+      });
+      cellByDate.set(day.date, cell);
+
+      // Codex 风格 5 格柔和圆角点阵柱（下往上点亮，直观表达强度同时整列可点无死区）
+      const stack = doc.createElement('span');
+      stack.className = 'om-hm-dots-stack';
+      const litPips = day.total > 0 ? Math.max(1, lvl + 1) : 0;
+      for (let p = 0; p < 5; p++) {
+        const pip = doc.createElement('span');
+        pip.className = 'om-hm-dot-pip';
+        if (p < litPips) {
+          const pipLvl = Math.min(4, Math.max(1, p + 1));
+          pip.style.background = `var(--om-hm-lvl-${pipLvl})`;
+        } else {
+          pip.style.background = 'var(--om-hm-lvl-0)';
+        }
+        stack.appendChild(pip);
+      }
+      cell.appendChild(stack);
+
+      const mTag = day.date.slice(0, 7);
+      const axis = doc.createElement('span');
+      axis.className = 'om-hm-axis-lbl';
+      if (day.colIndex === 0 || mTag !== lastMonthTag || day.colIndex === series.length - 1) {
+        axis.textContent = day.date.slice(5);
+        lastMonthTag = mTag;
+      } else {
+        axis.textContent = '';
+      }
+
+      col.appendChild(cell);
+      col.appendChild(axis);
+      matrixEl.appendChild(col);
+    }
+
+    // 事件委托在网格根上：原地更新选中态与当日明细，不销毁格子 DOM 引用与焦点
+    matrixEl.addEventListener('click', (ev) => {
+      if (ev && ev.__omHmCellHandled) return;
+      const targetCell = ev?.target?.closest?.('[data-om-hm-cell="true"]');
+      if (!targetCell) return;
+      const dateStr = targetCell.getAttribute('data-date');
+      if (!dateStr) return;
+      if (ev) ev.__omHmCellHandled = true;
+      const nextDate = st.selectedDate === dateStr ? null : dateStr;
+      syncSelectionInPlace(nextDate);
+    });
+    matrixEl.addEventListener('mouseover', (ev) => {
+      const targetCell = ev?.target?.closest?.('[data-om-hm-cell="true"]');
+      if (!targetCell) return;
+      const dk = targetCell.getAttribute('data-date');
+      const d = dk ? st.dayByDate.get(dk) : null;
+      if (d) {
+        hoverBar.textContent = `${d.date} · ${omHmShortTok(d.total)} tok · ${omHmFormatUsd(d.costUSD)}`;
+      }
+    });
+    matrixEl.addEventListener('mouseleave', () => {
+      hoverBar.textContent = copy.hoverHint;
+    });
+
+    scrollEl.appendChild(matrixEl);
+    frag.appendChild(scrollEl);
+
+    // 3. 底部汇总 + 悬浮提示 + 5 档图例 + 色阶自定义入口
+    const foot = doc.createElement('div');
+    foot.className = 'om-hm-footer';
+    const footLeft = doc.createElement('div');
+    footLeft.style.cssText = 'display:flex;align-items:center;gap:12px;flex-wrap:wrap;';
+    const sumSpan = doc.createElement('span');
+    sumSpan.textContent = `${copy.summaryTotalPrefix} ${omHmShortTok(rangeTokens)} · ${copy.summaryCostPrefix} ${omHmFormatUsd(rangeCost)} · ${activeDaysCount} ${copy.summaryDaysSuffix}`;
+    footLeft.appendChild(sumSpan);
+    footLeft.appendChild(hoverBar);
+
+    const footRight = doc.createElement('div');
+    footRight.style.cssText = 'display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap;';
+    const legend = doc.createElement('span');
+    legend.className = 'om-hm-legend';
+    const lessTxt = doc.createElement('span');
+    lessTxt.textContent = copy.less;
+    legend.appendChild(lessTxt);
+    for (let l = 0; l < 5; l++) {
+      const sw = doc.createElement('span');
+      sw.className = 'om-hm-legend-swatch';
+      sw.style.background = `var(--om-hm-lvl-${l})`;
+      legend.appendChild(sw);
+    }
+    const moreTxt = doc.createElement('span');
+    moreTxt.textContent = copy.more;
+    legend.appendChild(moreTxt);
+    footRight.appendChild(legend);
+
+    if (st.opts.showPaletteEditor !== false) {
+      const palBtn = doc.createElement('button');
+      palBtn.type = 'button';
+      palBtn.className = 'om-hm-btn';
+      palBtn.setAttribute('data-om-hm-palette-toggle', 'true');
+      palBtn.textContent = copy.paletteBtn;
+      palBtn.addEventListener('click', () => {
+        st.paletteOpen = !st.paletteOpen;
+        renderAll();
+      });
+      footRight.appendChild(palBtn);
+    }
+
+    foot.appendChild(footLeft);
+    foot.appendChild(footRight);
+    frag.appendChild(foot);
+
+    // 4. 可折叠 5 档色阶自定义面板
+    if (st.paletteOpen) {
+      const defaults = ['#27272a', '#1d4ed8', '#2563eb', '#3b82f6', '#60a5fa'];
+      const curLvls = Array.isArray(st.customLevels) && st.customLevels.length === 5 ? st.customLevels : defaults;
+      const editor = doc.createElement('div');
+      editor.className = 'om-hm-palette-editor';
+      editor.setAttribute('data-om-hm-palette-editor', 'true');
+      for (let i = 0; i < 5; i++) {
+        const item = doc.createElement('label');
+        item.className = 'om-hm-palette-item';
+        const lbl = doc.createElement('span');
+        lbl.textContent = `${copy.paletteLevelPrefix} ${i}`;
+        const inp = doc.createElement('input');
+        inp.type = 'color';
+        inp.className = 'om-hm-color-input';
+        inp.value = curLvls[i];
+        inp.addEventListener('input', () => {
+          const next = (Array.isArray(st.customLevels) && st.customLevels.length === 5 ? st.customLevels : defaults).slice();
+          next[i] = inp.value;
+          st.customLevels = next;
+          omHmSaveLevels(next);
+          applyCustomLevelVars();
+          st.opts.onCustomLevelsChange?.(next.slice());
+        });
+        item.appendChild(lbl);
+        item.appendChild(inp);
+        editor.appendChild(item);
+      }
+      const resetBtn = doc.createElement('button');
+      resetBtn.type = 'button';
+      resetBtn.className = 'om-hm-btn';
+      resetBtn.textContent = copy.paletteReset;
+      resetBtn.addEventListener('click', () => {
+        st.customLevels = null;
+        omHmSaveLevels(null);
+        applyCustomLevelVars();
+        st.opts.onCustomLevelsChange?.(null);
+        renderAll();
+      });
+      editor.appendChild(resetBtn);
+      frag.appendChild(editor);
+    }
+
+    // 5. 选中日期的当日明细槽位（原地更新，不销毁格子 DOM）
+    renderDayDetailInPlace();
+    frag.appendChild(detailSlot);
+
+    wrap.replaceChildren(frag);
+  }
+
+  function update(nextData, nextOpts = {}) {
+    if (st.disposed) return;
+    if (nextData !== undefined) st.data = nextData || {};
+    if (nextOpts && typeof nextOpts === 'object') {
+      st.opts = { ...st.opts, ...nextOpts };
+      if (nextOpts.lang) st.lang = omHmResolveLang(nextOpts.lang);
+      if (validRanges.includes(nextOpts.range)) st.range = nextOpts.range;
+      if (Array.isArray(nextOpts.customLevels) && nextOpts.customLevels.length === 5) {
+        st.customLevels = nextOpts.customLevels.slice();
+      }
+    }
+    renderAll();
+  }
+
+  function setRange(rangeKey) {
+    if (st.disposed || !validRanges.includes(rangeKey)) return;
+    st.range = rangeKey;
+    st.opts.onRangeChange?.(rangeKey);
+    renderAll();
+  }
+
+  function setLang(nextLang) {
+    if (st.disposed) return;
+    st.lang = omHmResolveLang(nextLang);
+    renderAll();
+  }
+
+  function getSelectedDate() {
+    return st.selectedDate;
+  }
+
+  function clearSelection() {
+    if (st.disposed) return;
+    if (typeof st.syncSelectionInPlace === 'function') st.syncSelectionInPlace(null);
+    else {
+      st.selectedDate = null;
+      st.opts.onSelectDate?.(null, null);
+      renderAll();
+    }
+  }
+
+  function setCustomLevels(levels) {
+    if (st.disposed) return;
+    if (Array.isArray(levels) && levels.length === 5) {
+      st.customLevels = levels.slice();
+      omHmSaveLevels(st.customLevels);
+    } else {
+      st.customLevels = null;
+      omHmSaveLevels(null);
+    }
+    renderAll();
+  }
+
+  function getCustomLevels() {
+    return st.customLevels ? st.customLevels.slice() : null;
+  }
+
+  function destroy() {
+    if (st.disposed) return;
+    st.disposed = true;
+    if (containerEl.__omProfileHmCtrl === handle) {
+      delete containerEl.__omProfileHmCtrl;
+    }
+  }
+
+  const handle = {
+    update,
+    setRange,
+    setLang,
+    getSelectedDate,
+    clearSelection,
+    setCustomLevels,
+    getCustomLevels,
+    destroy
+  };
+
+  containerEl.__omProfileHmCtrl = handle;
+  renderAll();
+  return handle;
+}
+
+if (typeof window !== 'undefined') {
+  window.renderProfileHeatmapInto = renderProfileHeatmapInto;
+}

@@ -240,36 +240,38 @@ function createTestHarness(options = {}) {
   };
 }
 
-test('0.8.3 修复验证 1: 四 Tab 导航布局、平级配置页与 setting 英文统一', async () => {
+test('0.8.3 修复验证 1: 三 Tab 去重导航布局、平级配置页与 setting 英文统一', async () => {
   const h = createTestHarness();
   const api = h.api;
 
-  // 1. 验证存在 4 个平级 Tab
+  // 1. 验证存在 3 个平级 Tab 且冗余「账号与共享池」已彻底移除
   const btnSession = h.elements.get('tab-ctx-session');
   const btnModels = h.elements.get('tab-ctx-models');
   const btnSpeed = h.elements.get('tab-ctx-speed');
   const btnAccounts = h.elements.get('tab-ctx-accounts');
-  assert.ok(btnSession && btnModels && btnSpeed && btnAccounts, '必须同时存在 4 个平级 Tab');
+  assert.ok(btnSession && btnModels && btnSpeed, '必须同时存在 3 个平级 Tab');
+  assert.equal(btnAccounts, undefined, '冗余旧「账号与共享池」Tab 必须已移除');
+  assert.equal(h.elements.get('pane-ctx-accounts'), undefined, '冗余旧「账号与共享池」Pane 必须已移除');
 
-  // 2. 检查第四标签三语「账号与共享池」及配置降级标题三语
+  // 2. 检查三语文案保留与统一
   api.setPanelLanguage('zh-CN');
-  assert.equal(api.translateForTest('tab.accounts'), '账号与共享池', '简体中文必须显示「账号与共享池」');
+  assert.equal(api.translateForTest('tab.accounts'), '账号与共享池', '简体中文必须保留兼容词条');
   assert.equal(api.translateForTest('tab.settings'), '配置', '简体中文必须保留「配置」');
   api.setPanelLanguage('zh-TW');
-  assert.equal(api.translateForTest('tab.accounts'), '帳號與共享池', '繁體中文必须显示「帳號與共享池」');
+  assert.equal(api.translateForTest('tab.accounts'), '帳號與共享池', '繁體中文必须保留兼容词条');
   assert.equal(api.translateForTest('tab.settings'), '配置', '繁體中文必须严格显示「配置」，不生造异体词');
 
   // 3. 检查英文模式下标签名称
   api.setPanelLanguage('en');
-  assert.equal(api.translateForTest('tab.accounts'), 'Accounts & Pools', '英文必须显示「Accounts & Pools」');
+  assert.equal(api.translateForTest('tab.accounts'), 'Accounts & Pools', '英文必须保留兼容词条');
   assert.equal(api.translateForTest('tab.settings'), 'setting', '英文必须严格显示「setting」');
 
-  // 4. 点击第四标签 -> 正确切换到账号与共享池分页，主导航 tabs bar 保持平级可见
-  btnAccounts.click();
+  // 4. 点击模型设置标签 -> 正确切换，主导航 tabs bar 保持平级可见
+  btnModels.click();
   const st = api.getContextPreferencesState();
-  assert.equal(st.activeContextTab, 'accounts', '当前活动 Tab 应为 accounts');
-  assert.equal(h.elements.get('pane-ctx-accounts').hidden, false, '账号与共享池页应显示');
-  assert.equal(h.elements.get('ctx-tabs-bar').hidden, false, '主导航栏在四 Tab 架构下必须保持平级可见');
+  assert.equal(st.activeContextTab, 'models', '当前活动 Tab 应为 models');
+  assert.equal(h.elements.get('pane-ctx-models').hidden, false, '模型设置页应显示');
+  assert.equal(h.elements.get('ctx-tabs-bar').hidden, false, '主导航栏在三 Tab 架构下必须保持平级可见');
   h.api.dispose();
 });
 
@@ -1835,7 +1837,7 @@ test('ELV-47 & ELV-60: 禁用汉化但开品牌不误报重启恢复英文；组
   });
   try {
     await new Promise(r => setTimeout(r, 560));
-    assert.equal(h2.elements.get('chinese-badge').textContent, '⚪ 已关闭 (官方英文)');
+    assert.equal(h2.elements.get('chinese-badge').textContent, '当前是英语客户端');
   } finally {
     h2.api.dispose();
   }
@@ -2105,12 +2107,12 @@ test('ELV-47 & ELV-60: Electron 沙箱隔离且侧边栏含中文项目名时，
   });
   try {
     await new Promise(r => setTimeout(r, 560));
-    assert.equal(h.elements.get('chinese-badge').textContent, '⚪ 已关闭 (官方英文)', '英文宿主不能受隔离上下文影响误报待重启恢复英文');
+    assert.equal(h.elements.get('chinese-badge').textContent, '当前是英语客户端', '英文宿主不能受隔离上下文影响误报待重启恢复英文');
 
     // 在英文宿主中开启简体中文，重启前必须提示待重启，不能提前误报已翻译生效
     h.elements.get('btn-toggle-chinese-module').click();
     await new Promise(r => setTimeout(r, 50));
-    assert.equal(h.elements.get('chinese-badge').textContent, '⏳ 待重启客户端生效');
+    assert.equal(h.elements.get('chinese-badge').textContent, '待重启应用中文');
   } finally {
     h.api.dispose();
   }

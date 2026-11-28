@@ -224,9 +224,19 @@ function resolvePosixCommandInPath(cmdName, envPath = process.env.PATH) {
 }
 
 function formatResolvedPythonResult(cand, parsed, resolvedPosix, targetPlatform) {
-  const command = targetPlatform !== 'win32' && cand.preferBare
-    ? (resolvedPosix || parsed.executable || cand.command)
-    : (cand.preferBare ? cand.command : (parsed.executable || cand.command));
+  let command;
+  if (targetPlatform !== 'win32') {
+    if (cand.preferBare) {
+      command = resolvedPosix || parsed.executable || cand.command;
+    } else if (typeof cand.command === 'string' && cand.command.startsWith('/')) {
+      // 保留词法符号链接路径（如 /opt/homebrew/bin/python3），不落入版本化 Cellar 真实路径
+      command = cand.command;
+    } else {
+      command = parsed.executable || cand.command;
+    }
+  } else {
+    command = cand.preferBare ? cand.command : (parsed.executable || cand.command);
+  }
   return {
     ok: true,
     command,

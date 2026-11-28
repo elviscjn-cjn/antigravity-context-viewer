@@ -120,7 +120,7 @@ test('上游词典合并一致性、版权署名及 2.34.0 核心界面翻译与
   assert.ok(noticeDoc.includes('Permission is hereby granted, free of charge'));
   assert.ok(readmeZh.includes('aabbWei') && readmeZh.includes('antigravity-cn-community'));
   assert.ok(readmeEn.includes('aabbWei') && readmeEn.includes('antigravity-cn-community'));
-  assert.ok(relNotes.includes(creditZh));
+  assert.ok(/Antigravity 界面汉化基于 Antigravity-Chinese-Localization[，.]\s*感谢 aabbWei 与 antigravity-cn-community 贡献者/.test(relNotes));
   assert.ok(pkgScript.includes("'THIRD_PARTY_NOTICES.md'"));
 
   const engine = createI18nEngine(dict);
@@ -436,4 +436,112 @@ test('性能回归: 3000+ 节点模拟设置弹窗 O(N) 单趟翻译 <50ms 且 p
     fn({ target: nav });
   }
   assert.equal(untouchedTxt.nodeValue, 'Save', 'pointerenter 落在大型容器时禁止重扫整棵大子树');
+});
+
+test('Issue #118 & #58 回归: 工具调用短动作词白名单 (Ran/Analyzed/Edited) 汉化且正文/代码/用户输入严禁误译', () => {
+  const dict = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'i18n', 'zh-CN.json'), 'utf8'));
+  const rtSrc = fs.readFileSync(path.join(ROOT_DIR, 'i18n', 'i18n-runtime.js'), 'utf8');
+  const d = makeMockDom();
+  const toolStep = d.el('div', { attrs: { 'data-testid': 'mcp-tool-step' } });
+  const ranSpan = d.el('span'); const tRan = d.text('Ran'); ranSpan.appendChild(tRan);
+  const analyzedSpan = d.el('span'); const tAnalyzed = d.text('Analyzed'); analyzedSpan.appendChild(tAnalyzed);
+  const editedSpan = d.el('span'); const tEdited = d.text('Edited'); editedSpan.appendChild(tEdited);
+  const codeBlock = d.el('code'); const tCodeRan = d.text('Ran'); codeBlock.appendChild(tCodeRan);
+  const prosePara = d.el('p'); const tProseAnalyzed = d.text('Analyzed'); prosePara.appendChild(tProseAnalyzed);
+  toolStep.appendChild(ranSpan);
+  toolStep.appendChild(analyzedSpan);
+  toolStep.appendChild(editedSpan);
+  toolStep.appendChild(codeBlock);
+  toolStep.appendChild(prosePara);
+  d.body.appendChild(toolStep);
+
+  const userMsg = d.el('div', { attrs: { 'data-testid': 'user-message-content' } });
+  const userSpan = d.el('span'); const tUserEdited = d.text('Edited'); userSpan.appendChild(tUserEdited);
+  userMsg.appendChild(userSpan);
+  d.body.appendChild(userMsg);
+
+  const sandbox = {
+    window: {
+      __AGY_I18N_CONFIG__: { enabled: true, language: 'zh-CN', brandTitle: 'english' },
+      __AGY_I18N_DATA__: dict
+    },
+    document: { documentElement: d.body, body: d.body, readyState: 'complete' },
+    setTimeout: () => 1,
+    clearTimeout() {},
+    setInterval: () => 1
+  };
+  sandbox.window.document = sandbox.document;
+  vm.runInNewContext(rtSrc, sandbox);
+  sandbox.window.__AGY_RUN_FULL_SCAN__();
+
+  assert.notEqual(tRan.nodeValue, 'Ran', '工具步骤短动作词 Ran 必须汉化');
+  assert.notEqual(tAnalyzed.nodeValue, 'Analyzed', '工具步骤短动作词 Analyzed 必须汉化');
+  assert.notEqual(tEdited.nodeValue, 'Edited', '工具步骤短动作词 Edited 必须汉化');
+  assert.equal(tCodeRan.nodeValue, 'Ran', '代码块内 Ran 严禁误翻译');
+  assert.equal(tProseAnalyzed.nodeValue, 'Analyzed', '正文段落内 Analyzed 严禁误翻译');
+  assert.equal(tUserEdited.nodeValue, 'Edited', '用户输入内 Edited 严禁误翻译');
+});
+
+test('Issue #118 动态流式插入 + PR #81/#90 回归: MutationObserver 增量翻译工具动作标签、双份运行一致与 __AGY_I18N_DISPOSE__', () => {
+  const dict = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'i18n', 'zh-CN.json'), 'utf8'));
+  const rtSrc = fs.readFileSync(path.join(ROOT_DIR, 'i18n', 'i18n-runtime.js'), 'utf8');
+  const srcRt = fs.readFileSync(path.join(ROOT_DIR, 'src', 'i18n', 'i18n-runtime.js'), 'utf8');
+  assert.equal(rtSrc, srcRt, 'i18n/i18n-runtime.js 与 src/i18n/i18n-runtime.js 必须逐字节一致');
+  assert.doesNotMatch(rtSrc, /setInterval\(scheduleIdleScan,\s*15000\)/, 'PR #81: 严禁保留 15 秒全树扫描定时器');
+  assert.match(rtSrc, /getNow\(\)\s*-\s*startMs\)\s*>=\s*6/, 'PR #81/#90: 保留 6ms 分片预算');
+
+  const d = makeMockDom();
+  let observerCb = null;
+  const rafQueue = [];
+  const docMock = {
+    documentElement: d.body,
+    body: d.body,
+    readyState: 'complete',
+    addEventListener() {},
+    removeEventListener() {}
+  };
+  const sandbox = {
+    window: {
+      __AGY_I18N_CONFIG__: { enabled: true, language: 'zh-CN', brandTitle: 'english' },
+      __AGY_I18N_DATA__: dict,
+      requestAnimationFrame(fn) { rafQueue.push(fn); return rafQueue.length; },
+      MutationObserver: class {
+        constructor(cb) { observerCb = cb; }
+        observe() {}
+        disconnect() {}
+      }
+    },
+    document: docMock,
+    performance,
+    setTimeout: () => 1,
+    clearTimeout() {},
+    setInterval: () => 1
+  };
+  sandbox.window.document = docMock;
+  vm.runInNewContext(rtSrc, sandbox);
+  assert.equal(typeof sandbox.window.__AGY_I18N_DISPOSE__, 'function', 'PR #90: 必须暴露 __AGY_I18N_DISPOSE__ 清理钩子');
+
+  // 模拟流式对话中 MutationObserver 动态追加 mcp-tool-step 与 assistant 容器
+  const dynamicStep = d.el('div', { attrs: { 'data-testid': 'mcp-tool-step' } });
+  const spanViewed = d.el('span'); const tViewed = d.text('Viewed'); spanViewed.appendChild(tViewed);
+  const spanSearched = d.el('span'); const tSearched = d.text('Searched'); spanSearched.appendChild(tSearched);
+  const spanFile = d.el('span'); const tFile = d.text('Ran.ts'); spanFile.appendChild(tFile);
+  const mdBody = d.el('div', { className: 'markdown-body' });
+  const mdSpan = d.el('span'); const tMd = d.text('Plane Trajectory Planning'); mdSpan.appendChild(tMd);
+  mdBody.appendChild(mdSpan);
+  dynamicStep.appendChild(spanViewed);
+  dynamicStep.appendChild(spanSearched);
+  dynamicStep.appendChild(spanFile);
+  dynamicStep.appendChild(mdBody);
+  d.body.appendChild(dynamicStep);
+
+  observerCb([{ type: 'childList', addedNodes: [dynamicStep] }]);
+  while (rafQueue.length > 0) rafQueue.shift()();
+
+  assert.notEqual(tViewed.nodeValue, 'Viewed', '动态插入的工具步骤短动作词 Viewed 必须经 MutationObserver 汉化');
+  assert.notEqual(tSearched.nodeValue, 'Searched', '动态插入的工具步骤短动作词 Searched 必须经 MutationObserver 汉化');
+  assert.equal(tFile.nodeValue, 'Ran.ts', '文件名 Ran.ts 严禁误译');
+  assert.equal(tMd.nodeValue, 'Plane Trajectory Planning', 'Issue #58 正文容器严禁误译');
+
+  sandbox.window.__AGY_I18N_DISPOSE__();
 });

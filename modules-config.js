@@ -98,6 +98,17 @@ const DEFAULT_CONFIG = {
       hadPreexistingScript: false,
       preexistingScriptBackupPath: null,
       lastUpdated: null
+    },
+    hostGuard: {
+      enabled: false,
+      mode: 'auto',
+      targetPath: null,
+      cdpPort: null,
+      lastUpdated: null
+    },
+    hostInstall: {
+      customPath: null,
+      lastUpdated: null
     }
   }
 };
@@ -118,6 +129,9 @@ function normalizeClientLanguage(val, enabledHint) {
 }
 
 function resolveModulesStateDir(options = {}) {
+  if (options && typeof options.configPath === 'string' && options.configPath.trim()) {
+    return path.dirname(path.resolve(options.configPath.trim()));
+  }
   if (options && typeof options.stateDir === 'string' && options.stateDir.trim()) {
     return path.resolve(options.stateDir.trim());
   }
@@ -125,6 +139,9 @@ function resolveModulesStateDir(options = {}) {
 }
 
 function getModulesConfigPath(options = {}) {
+  if (options && typeof options.configPath === 'string' && options.configPath.trim()) {
+    return path.resolve(options.configPath.trim());
+  }
   return path.join(resolveModulesStateDir(options), 'modules.json');
 }
 
@@ -143,15 +160,16 @@ function detectAndMigrateLegacyConfigs(options = {}) {
       ? path.join(home, 'Library', 'Application Support')
       : (process.env.XDG_STATE_HOME || path.join(home, '.local', 'state'));
 
-  // 隔离 stateDir 且未显式指定 localAppData/homeDir 时，禁止误扫宿主机真实旧配置
+  // 隔离 stateDir/configPath 且未显式指定 localAppData/homeDir 时，禁止误扫宿主机真实旧配置
+  const explicitTargetDir = options && typeof options.configPath === 'string' && options.configPath.trim()
+    ? path.dirname(path.resolve(options.configPath.trim()))
+    : (options && typeof options.stateDir === 'string' && options.stateDir.trim() ? options.stateDir : '');
   if (
-    options &&
-    typeof options.stateDir === 'string' &&
-    options.stateDir.trim() &&
+    explicitTargetDir &&
     options.localAppData === undefined &&
     options.homeDir === undefined &&
     options.allowLegacyMigration !== true &&
-    isIsolatedTestPath(options.stateDir) &&
+    isIsolatedTestPath(explicitTargetDir) &&
     !isIsolatedTestPath(localApp)
   ) {
     return { proxy: null, chinese: null };
@@ -222,9 +240,22 @@ function validateModulesSchema(parsed) {
   if (!isPlainObject(parsed)) return { ok: false, error: '配置文件根节点必须是 JSON 对象' };
   if (!isPlainObject(parsed.modules)) return { ok: false, error: '配置文件缺少有效的 modules 对象' };
   const mods = parsed.modules;
-  for (const key of ['meter', 'chinese', 'proxy', 'enhance', 'rehydrate']) {
+  for (const key of ['meter', 'chinese', 'proxy', 'enhance', 'rehydrate', 'hostGuard', 'hostInstall']) {
     if (mods[key] !== undefined && !isPlainObject(mods[key])) {
       return { ok: false, error: `配置文件中 modules.${key} 字段格式非法` };
+    }
+  }
+  if (mods.hostInstall) {
+    if (mods.hostInstall.customPath !== undefined && mods.hostInstall.customPath !== null && typeof mods.hostInstall.customPath !== 'string') {
+      return { ok: false, error: '配置文件中 modules.hostInstall.customPath 必须为字符串' };
+    }
+  }
+  if (mods.hostGuard) {
+    if (mods.hostGuard.enabled !== undefined && typeof mods.hostGuard.enabled !== 'boolean') {
+      return { ok: false, error: '配置文件中 modules.hostGuard.enabled 必须为布尔值' };
+    }
+    if (mods.hostGuard.targetPath !== undefined && mods.hostGuard.targetPath !== null && typeof mods.hostGuard.targetPath !== 'string') {
+      return { ok: false, error: '配置文件中 modules.hostGuard.targetPath 必须为字符串' };
     }
   }
   if (mods.rehydrate) {
@@ -311,6 +342,16 @@ function loadModulesConfig(options = {}) {
         DEFAULT_CONFIG.modules.rehydrate,
         parsed.modules.rehydrate || {}
       );
+      current.modules.hostGuard = Object.assign(
+        {},
+        DEFAULT_CONFIG.modules.hostGuard,
+        parsed.modules.hostGuard || {}
+      );
+      current.modules.hostInstall = Object.assign(
+        {},
+        DEFAULT_CONFIG.modules.hostInstall,
+        parsed.modules.hostInstall || {}
+      );
       return current;
     } catch (e) {
       return attachConfigCorruptionMeta(
@@ -341,6 +382,13 @@ function loadModulesConfig(options = {}) {
  */
 function saveModulesConfig(cfg, options = {}) {
   const cfgPath = getModulesConfigPath(options);
+  if (
+    process.env.AG_METER_TEST_MODE === '1' &&
+    options.allowNonIsolatedInTest !== true &&
+    !isIsolatedTestPath(cfgPath)
+  ) {
+    throw new Error(`测试模式禁止写入非隔离模块配置路径: ${cfgPath}`);
+  }
   fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
   if (fs.existsSync(cfgPath)) {
     try {

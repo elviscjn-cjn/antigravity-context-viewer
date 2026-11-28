@@ -834,6 +834,82 @@
     'Git Diff': 1, 'Git 差异': 1
   };
 
+  // Issue #118：工具执行步骤独立短动作标签白名单（仅允许在非正文/非代码/非思考链/非输入的短标签节点生效）
+  var TOOL_STEP_ACTION_EXACT = {
+    Ran: 1, Running: 1,
+    Analyzed: 1, Analyzing: 1,
+    Edited: 1, Editing: 1,
+    Viewed: 1, Viewing: 1,
+    Searched: 1, Searching: 1,
+    Explored: 1, Exploring: 1,
+    Read: 1, Reading: 1,
+    Wrote: 1, Writing: 1,
+    Created: 1, Creating: 1,
+    Deleted: 1, Deleting: 1,
+    Updated: 1, Updating: 1,
+    Listed: 1, Listing: 1,
+    Opened: 1, Opening: 1,
+    Checked: 1, Checking: 1,
+    Found: 1,
+    Thought: 1, Thinking: 1,
+    Completed: 1, Finished: 1, Failed: 1, Cancelled: 1, Canceled: 1,
+    'Ran command': 1, 'Ran background command': 1, 'Edited file': 1,
+    'Viewed file': 1, 'Analyzed file': 1, 'Searched files': 1
+  };
+  var TOOL_STEP_ACTION_RE = /^(?:Thought for \d+(?:\.\d+)?\s*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes)|Thinking for \d+(?:\.\d+)?\s*(?:s|sec|secs|m|min)|Ran background command|Ran command|Edited|Analyzed|Viewed|Searched|Explored|Running|Analyzing|Editing|Viewing|Searching|Exploring)$/i;
+  var TOOL_STEP_PATH_OR_CODE_RE = /[\/\\`{}()[\];=<>]|\.[a-z0-9]{1,5}\b/i;
+
+  function isSafeToolStepActionLabel(el) {
+    if (!el || el.nodeType !== 1) return false;
+    var tag = el.tagName ? String(el.tagName).toUpperCase() : '';
+    if (tag !== 'SPAN' && tag !== 'BUTTON' && tag !== 'DIV' && tag !== 'LABEL') return false;
+    // 仅允许纯文本叶子或单层文本包装节点，避免命中复合内容容器
+    if (el.children && el.children.length > 0) return false;
+    var txt = (el.textContent || '').trim();
+    if (!txt || txt.length > 48) return false;
+    if (TOOL_STEP_PATH_OR_CODE_RE.test(txt)) return false;
+    if (!Object.prototype.hasOwnProperty.call(TOOL_STEP_ACTION_EXACT, txt) && !TOOL_STEP_ACTION_RE.test(txt)) {
+      return false;
+    }
+    // 严格核查祖先：严禁位于 Markdown、代码、用户输入、思考链正文、终端/工具输出或段落列表内
+    var cur = el;
+    var steps = 0;
+    var insideToolOrAssistant = false;
+    while (cur && steps < 32) {
+      if (cur.nodeType === 1) {
+        if (hasProtectedCoreOwnMarkers(cur, true)) return false;
+        var cTag = cur.tagName ? String(cur.tagName).toUpperCase() : '';
+        if (cur !== el && (cTag === 'P' || cTag === 'LI' || cTag === 'ARTICLE' || cTag === 'BLOCKQUOTE' || cTag === 'TABLE' || cTag === 'TR' || cTag === 'TD')) {
+          return false;
+        }
+        var dtid = cur.getAttribute ? (cur.getAttribute('data-testid') || '') : '';
+        var dRole = cur.getAttribute ? (cur.getAttribute('data-role') || '') : '';
+        if (dtid === 'mcp-tool-step' || dRole === 'assistant' || (dtid && /tool|step|action/i.test(dtid))) {
+          insideToolOrAssistant = true;
+        }
+        if (dRole === 'user' || dtid === 'user-message-content') return false;
+        var cls = typeof cur.className === 'string' ? cur.className : '';
+        if (cls && (IGNORED_CLASS_CS_RE.test(cls) || PROTECTED_CLASS_CI_RE.test(cls))) {
+          return false;
+        }
+      }
+      cur = cur.parentElement || cur.parentNode;
+      if (doc && cur === doc.body) break;
+      steps++;
+    }
+    return insideToolOrAssistant;
+  }
+
+  function isAssistantOrToolStepScopeNode(cur) {
+    if (!cur || cur.nodeType !== 1 || !cur.getAttribute) return false;
+    var dRole = cur.getAttribute('data-role') || '';
+    var dtid = cur.getAttribute('data-testid') || '';
+    if (dRole === 'assistant' || dtid === 'mcp-tool-step') {
+      return !hasProtectedCoreOwnMarkers(cur, true);
+    }
+    return false;
+  }
+
   var TRANSLATABLE_ATTRS = ['title', 'placeholder', 'aria-label', 'data-tooltip', 'alt', 'aria-description'];
 
   function isModelSelectorBoundary(elem) {
@@ -977,14 +1053,16 @@
     return false;
   }
 
-  // 返回状态：0 = 放行；1 = 忽略；2 = 处于安全白名单控制条内放行
+  // 返回状态：0 = 放行；1 = 忽略；2 = 处于安全白名单控制条内放行；3 = 处于 assistant/tool-step 仅允许扫描内部白名单动作标签
   function inspectIgnoreState(el) {
     if (!el || el.nodeType !== 1) return 0;
+    if (isSafeToolStepActionLabel(el)) return 2;
     var cur = el;
     var depth = 0;
     var menuOpt = null;
     var inSafeBar = false;
     var inProtected = false;
+    var inAssistantScope = false;
     while (cur && depth < 64) {
       if (cur.nodeType === 1) {
         if (hasProtectedCoreOwnMarkers(cur, cur !== el)) return 1;
@@ -995,7 +1073,11 @@
           inSafeBar = true;
         }
         if (!inProtected && hasProtectedNodeOwnMarkers(cur)) {
-          inProtected = true;
+          if (isAssistantOrToolStepScopeNode(cur)) {
+            inAssistantScope = true;
+          } else {
+            inProtected = true;
+          }
         }
       }
       cur = cur.parentElement || cur.parentNode;
@@ -1008,12 +1090,16 @@
       return inSafeBar ? 2 : 0;
     }
     if (inSafeBar) return 2;
-    return inProtected ? 1 : 0;
+    if (inProtected) return 1;
+    return inAssistantScope ? 3 : 0;
   }
 
-  function resolveOwnIgnoreState(el, ancestorSafeBar) {
-    if (!el || el.nodeType !== 1) return ancestorSafeBar ? 2 : 0;
+  function resolveOwnIgnoreState(el, ancestorState) {
+    var ancestorSafeBar = ancestorState === 2;
+    var ancestorAssistantScope = ancestorState === 3;
+    if (!el || el.nodeType !== 1) return ancestorSafeBar ? 2 : (ancestorAssistantScope ? 3 : 0);
     if (hasProtectedCoreOwnMarkers(el, false)) return 1;
+    if (isSafeToolStepActionLabel(el)) return 2;
     if (el.getAttribute && el.getAttribute('data-testid') === 'menu-option-label') {
       var optTxt = (el.innerText || el.textContent || '').trim();
       if (!Object.prototype.hasOwnProperty.call(MENTION_CATEGORIES, optTxt)) return 1;
@@ -1021,8 +1107,11 @@
     }
     var safeNow = ancestorSafeBar || isSafeActionBarNode(el);
     if (safeNow) return 2;
-    if (hasProtectedNodeOwnMarkers(el)) return 1;
-    return 0;
+    if (hasProtectedNodeOwnMarkers(el)) {
+      if (isAssistantOrToolStepScopeNode(el)) return 3;
+      return 1;
+    }
+    return ancestorAssistantScope ? 3 : 0;
   }
 
   var ignoreElementCache = typeof WeakMap === 'function' ? new WeakMap() : null;
@@ -1083,11 +1172,13 @@
     }
   }
 
-  function shouldIgnoreElement(el) {    if (!el || el.nodeType !== 1) return false;
+  function shouldIgnoreElement(el) {
+    if (!el || el.nodeType !== 1) return false;
     if (ignoreElementCache && ignoreElementCache.has(el)) {
       return ignoreElementCache.get(el);
     }
-    var res = inspectIgnoreState(el) === 1;
+    var st = inspectIgnoreState(el);
+    var res = st === 1 || st === 3;
     if (ignoreElementCache && (res === true || el.isConnected === true)) {
       ignoreElementCache.set(el, res);
     }
@@ -1306,9 +1397,22 @@
     }
     var ignoreState = ancestorState === undefined
       ? inspectIgnoreState(el)
-      : resolveOwnIgnoreState(el, ancestorState === 2);
+      : resolveOwnIgnoreState(el, ancestorState);
     if (ignoreState === 1) return;
     if (scanId) el._agyScanId = scanId;
+
+    // Issue #118：在受保护的 assistant / mcp-tool-step 作用域内 (ignoreState === 3)，
+    // 严格跳过当前节点自身的文本与属性翻译，仅有限下钻定位独立白名单工具动作标签与安全控制条
+    if (ignoreState === 3) {
+      var scopedChild = el.firstChild;
+      while (scopedChild) {
+        if (scopedChild.nodeType === 1) {
+          translateElement(scopedChild, scanId, 3, budget);
+        }
+        scopedChild = scopedChild.nextSibling;
+      }
+      return;
+    }
 
     if (i18nEnabled && el.getAttribute && el.getAttribute('data-testid') === 'plan-command-fyi-alert') {
       var alertSpan = el.querySelector ? el.querySelector('span') : null;
@@ -1462,7 +1566,8 @@
       if (child.nodeType === 3) {
         translateTextNode(child, true);
       } else if (child.nodeType === 1) {
-        translateElement(child, scanId, ignoreState, budget);
+        if (scanId || budget) translateElement(child, scanId, ignoreState, budget);
+        else enqueueNode(child);
       }
       child = child.nextSibling;
     }
@@ -1506,7 +1611,15 @@
   function enqueueNode(node) {
     if (!node) return;
     var checkEl = node.nodeType === 1 ? node : (node.parentElement || node.parentNode);
-    if (checkEl && checkEl.nodeType === 1 && shouldIgnoreElement(checkEl)) return;
+    if (checkEl && checkEl.nodeType === 1) {
+      // Issue #118: 状态 3 (assistant / mcp-tool-step 作用域) 仅阻止节点自身文本翻译，
+      // 仍允许元素节点入队以便下钻翻译动态新增的独立白名单工具动作标签 (Ran/Analyzed/Edited 等)
+      if (node.nodeType === 1) {
+        if (inspectIgnoreState(checkEl) === 1) return;
+      } else if (shouldIgnoreElement(checkEl)) {
+        return;
+      }
+    }
     if (pendingNodeSet) {
       if (pendingNodeSet.has(node)) return;
       pendingNodes.push(node);
@@ -1722,6 +1835,16 @@
 
       doc.addEventListener('pointerenter', onHoverAction, { capture: true, passive: true });
       doc.addEventListener('contextmenu', onHoverAction, { capture: true, passive: true });
+      if (root) {
+        root.__AGY_I18N_DISPOSE__ = function () {
+          try { disconnectObserver(); } catch (e) { }
+          try { doc.removeEventListener('pointerenter', onHoverAction, { capture: true }); } catch (e) { }
+          try { doc.removeEventListener('contextmenu', onHoverAction, { capture: true }); } catch (e) { }
+          pendingNodes.length = 0;
+          if (pendingNodeSet) pendingNodeSet.clear();
+          rafScheduled = false;
+        };
+      }
     } catch (e) { }
   }
 

@@ -113,6 +113,9 @@ test('CLI 启动链路适配器: 解析、备份、增强生成与原样恢复�
     const testNoSpaces = buildCompatibleStatusLineCommand('D:/my-tools/cli.js');
     assert.equal(testNoSpaces, 'node D:/my-tools/cli.js statusline');
     assert.equal(testNoSpaces.includes('"'), false);
+    if (process.platform !== 'win32') {
+      assert.equal(buildCompatibleStatusLineCommand('/opt/my-tools/cli.js'), 'node /opt/my-tools/cli.js statusline');
+    }
 
     // 4. 状态检查验证
     const st = statusCliAdapter({ proxyScript, settingsPath });

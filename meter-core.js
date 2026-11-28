@@ -247,7 +247,29 @@
     const pct = f * 100;
     if (pct < 0.1) return '<0.1%';
     if (pct < 1) return `${pct.toFixed(1)}%`;
+    if (pct > 10 && pct < 10.5) {
+      const oneDec = pct.toFixed(1);
+      if (oneDec !== '10.0') return `${oneDec}%`;
+      return `${Number(pct.toFixed(2))}%`;
+    }
     return `${Math.round(pct)}%`;
+  }
+
+  /**
+   * 全插件可见周期缩写统一映射为 5H / 7D / 24H，保持内部 windowKey / windowShort 协议不变
+   */
+  function formatQuotaWindowDisplayTag(raw) {
+    if (raw && typeof raw === 'object') {
+      return formatQuotaWindowDisplayTag(raw.windowDisplay || raw.windowShort || raw.windowKey || raw.window || '');
+    }
+    const clean = String(raw || '').trim();
+    if (!clean) return '';
+    const low = clean.toLowerCase();
+    if (low === '5h') return '5H';
+    if (low === '7d' || low === 'weekly') return '7D';
+    if (low === '24h' || low === 'daily') return '24H';
+    if (/^\d+[hdw]$/i.test(clean)) return clean.toUpperCase();
+    return clean;
   }
 
   function formatQuotaResetMeta(resetTimeIso, nowMs = Date.now()) {
@@ -287,21 +309,25 @@
         resetTimeIso,
         resetAtMs: parsedMs,
         resetTimeText,
-        countdownText: '已到重置时间（待确认）',
+        countdownText: '已到重置时间 · 待确认',
         countdownMs: 0,
         isResetPassed: true
       };
     }
-    const totalSec = Math.ceil(diffMs / 1000);
-    const days = Math.floor(totalSec / 86400);
-    const hours = Math.floor((totalSec % 86400) / 3600);
-    const mins = Math.floor((totalSec % 3600) / 60);
-    const secs = totalSec % 60;
+    // 与 Antigravity 官方客户端倒计时口径一致：>= 60s 时按分钟向下取整，避免边界差 1 分钟
     let countdownText;
-    if (days > 0) countdownText = `${days}天${hours}小时`;
-    else if (hours > 0) countdownText = `${hours}小时${mins}分`;
-    else if (mins > 0) countdownText = `${mins}分`;
-    else countdownText = `${Math.max(1, secs)}秒`;
+    if (diffMs >= 60000) {
+      const totalMins = Math.floor(diffMs / 60000);
+      const days = Math.floor(totalMins / 1440);
+      const hours = Math.floor((totalMins % 1440) / 60);
+      const mins = totalMins % 60;
+      if (days > 0) countdownText = `${days}天${hours}小时`;
+      else if (hours > 0) countdownText = `${hours}小时${mins}分`;
+      else countdownText = `${mins}分`;
+    } else {
+      const secs = Math.max(1, Math.ceil(diffMs / 1000));
+      countdownText = `${secs}秒`;
+    }
     return {
       hasResetTime: true,
       resetTimeIso,
@@ -313,13 +339,23 @@
     };
   }
 
-  const DECORATIVE_BADGE_TAG_RE = /^(new|beta|preview|alpha|experimental|recommended|updated|hot|popular|最新|预览|預覽|推荐|推薦)$/i;
+  const DECORATIVE_BADGE_TAG_RE = /^(new|beta|preview|alpha|experimental|recommended|updated|hot|popular|最新|新建|预览|預覽|推荐|推薦)$/i;
 
   /**
    * 判断模型角标文本是否仅为装饰性标签，不能作为不可用或故障原因
    */
   function isDecorativeBadgeTagTitle(tagTitle) {
     return typeof tagTitle === 'string' && DECORATIVE_BADGE_TAG_RE.test(tagTitle.trim());
+  }
+
+  /**
+   * 规范化模型装饰标签文案：将「新建」与 New 统一为 NEW，其余装饰标签保留去空白原文
+   */
+  function normalizeDecorativeBadgeTagTitle(tagTitle) {
+    if (!isDecorativeBadgeTagTitle(tagTitle)) return null;
+    const trimmed = String(tagTitle).trim();
+    if (/^(?:new|新建)$/i.test(trimmed)) return 'NEW';
+    return trimmed;
   }
 
   /**
@@ -386,14 +422,16 @@
 
   function classifyModelQuotaAvailability(config, planStatus = null) {
     if (!config || typeof config !== 'object') {
-      return { noPermission: false, unavailable: false, reason: null, noticeTitle: null, noticeText: null };
+      return { noPermission: false, unavailable: false, reason: null, noticeTitle: null, noticeText: null, decorativeBadgeTag: null };
     }
     const tagTitle = typeof config.tagTitle === 'string' ? config.tagTitle.trim() : '';
     const tagDesc = typeof config.tagDescription === 'string' ? config.tagDescription.trim() : '';
     const isTagUnavailable = /^(unavailable|disabled|不可用|无权限|無權限)$/i.test(tagTitle) || /unavailable|disabled|不可用|无权限|無權限/i.test(tagTitle);
     const isDecorativeBadgeTag = isDecorativeBadgeTagTitle(tagTitle);
+    const decorativeBadgeTag = isDecorativeBadgeTag ? normalizeDecorativeBadgeTagTitle(tagTitle) : null;
     const isExplicitNoticeTag = /^notice$/i.test(tagTitle);
-    const isTagNotice = !isTagUnavailable && (Boolean(tagDesc) || isExplicitNoticeTag || (Boolean(tagTitle) && !isDecorativeBadgeTag));
+    // 装饰标签（如 New / 新建）附带的模型介绍文案不作为 Notice 告警；真实下线、Notice 与无权限各自保留
+    const isTagNotice = !isTagUnavailable && !isDecorativeBadgeTag && (Boolean(tagDesc) || isExplicitNoticeTag || Boolean(tagTitle));
 
     let tierBlocked = false;
     let tierReason = null;
@@ -443,7 +481,8 @@
       unavailable: explicitlyDisabled,
       reason: explicitlyDisabled ? unavailabilityReason : null,
       noticeTitle: (noticeText && (isTagNotice || hasConfigNotice)) ? (tagTitle || 'Notice') : null,
-      noticeText: noticeText || null
+      noticeText: noticeText || null,
+      decorativeBadgeTag
     };
   }
 
@@ -1368,7 +1407,14 @@
     const estimatedTotalMedian = items
       .filter(it => !it.overlapped)
       .reduce((acc, it) => acc + it.median, 0);
-    const denomForUsed = (actualTokens !== null && actualTokens > 0) ? actualTokens : estimatedTotalMedian;
+    const estimateExceedsActual = actualTokens !== null && actualTokens > 0 && estimatedTotalMedian > actualTokens;
+    // 估算总量超出实报窗口时，估算分类占比严格以估算自身总量为分母，杜绝 1144.1% 跨口径百分比
+    const denomForUsed = (actualTokens !== null && actualTokens > 0 && !estimateExceedsActual)
+      ? actualTokens
+      : estimatedTotalMedian;
+    const pctDenomSource = (actualTokens !== null && actualTokens > 0 && !estimateExceedsActual)
+      ? 'actual'
+      : (estimatedTotalMedian > 0 ? 'estimate' : 'none');
     for (const it of items) {
       it.pct = estimatedTotalMedian > 0 ? Math.round((it.median / estimatedTotalMedian) * 1000) / 10 : 0;
       it.pctOfUsed = denomForUsed > 0 ? Math.round((it.median / denomForUsed) * 1000) / 10 : 0;
@@ -1379,9 +1425,11 @@
       : 0;
     const coverageScope = (actualTokens !== null && estimatedTotalMedian === 0)
       ? 'host_only'
-      : (targetStep !== null && !stepBounded && estimatedTotalMedian > 0)
-        ? 'session_approx'
-        : (unaccountedTokens > 0 ? 'partial_estimate' : (estimatedTotalMedian > 0 ? 'estimated_visible' : 'unavailable'));
+      : (estimateExceedsActual
+        ? 'estimate_exceeds_actual'
+        : ((targetStep !== null && !stepBounded && estimatedTotalMedian > 0)
+          ? 'session_approx'
+          : (unaccountedTokens > 0 ? 'partial_estimate' : (estimatedTotalMedian > 0 ? 'estimated_visible' : 'unavailable'))));
 
     const rawSlices = Array.isArray(session?.sequentialSlices) ? session.sequentialSlices : [];
     let sequentialSlices = rawSlices;
@@ -1421,6 +1469,9 @@
       actualTokens,
       budgetTokens,
       unaccountedTokens,
+      estimateExceedsActual,
+      pctDenomSource,
+      usedDenom: denomForUsed,
       diffTokens: (actualTokens !== null && estimatedTotalMedian > 0) ? (actualTokens - estimatedTotalMedian) : null,
       coverageScope,
       stepScope: targetStep !== null ? (stepBounded ? 'step_bounded' : 'session_approx') : 'session_full',
@@ -3627,11 +3678,292 @@
   }
 
   /**
-   * 逐条请求速率统一口径：保留原始小数耗时精度，解除 < 0.2s 有效流式样本限制，并标明不可计算原因
+   * 实时请求逐条表速度口径与详情流式拆解：
+   * - 默认速度列与排序严格采用「端到端速度」= 输出 Token ÷ 实际派发至结束的未舍入总秒数（含首字等待），绝不拿流式峰值兜底
+   * - 流式速度单独放入 streamingDetail 供单条请求详情展示，极短窗口 (<0.2s) 标「短样本」及原始时长
+   * - 批量到达、缺起止事件、粗粒度计时或段不匹配按可信度标 observed / unavailable
    */
-  function resolveRequestRowSpeed(rec) {
+  function resolveRequestTableSpeed(rec) {
     if (!rec || typeof rec !== 'object') {
-      return { calculable: false, speed: null, rawSpeed: null, source: 'unavailable', reasonCode: 'missing_record', isShortStream: false };
+      return {
+        calculable: false,
+        speed: null,
+        rawSpeed: null,
+        sortValue: null,
+        source: 'unavailable',
+        reasonCode: 'missing_record',
+        rawDurationSec: null,
+        durationSource: 'missing',
+        outputTokens: 0,
+        streamingDetail: {
+          calculable: false,
+          speed: null,
+          rawSpeed: null,
+          reliability: 'unavailable',
+          isShortStream: false,
+          rawStreamingSec: null,
+          outputCountSource: 'missing',
+          streamingDurationSource: 'missing',
+          reasonCode: 'missing_record'
+        }
+      };
+    }
+
+    const outp = Math.max(0, Number(rec.outputTokens ?? 0) || 0);
+    const isStreaming = rec.status === 'streaming' || String(rec.outcomeStatus || '').toLowerCase() === 'streaming';
+    const dispatchedAtMs = Number.isFinite(Number(rec.dispatchedAtMs)) && Number(rec.dispatchedAtMs) > 0 ? Number(rec.dispatchedAtMs) : null;
+    const completedAtMs = Number.isFinite(Number(rec.completedAtMs)) && Number(rec.completedAtMs) > 0 ? Number(rec.completedAtMs) : null;
+    const firstTokenAtMs = Number.isFinite(Number(rec.firstTokenAtMs)) && Number(rec.firstTokenAtMs) > 0 ? Number(rec.firstTokenAtMs) : null;
+    const ttftRaw = rec.ttftSec != null && Number.isFinite(Number(rec.ttftSec)) && Number(rec.ttftSec) >= 0 ? Number(rec.ttftSec) : null;
+    const sSecRaw = rec.streamingSec != null && Number.isFinite(Number(rec.streamingSec)) && Number(rec.streamingSec) >= 0 ? Number(rec.streamingSec) : null;
+    const explicitRawDur = rec.rawDurationSec != null && Number.isFinite(Number(rec.rawDurationSec)) && Number(rec.rawDurationSec) > 0
+      ? Number(rec.rawDurationSec)
+      : null;
+    const durField = rec.durationSec != null && Number.isFinite(Number(rec.durationSec)) && Number(rec.durationSec) > 0
+      ? Number(rec.durationSec)
+      : null;
+
+    // 优先使用未舍入的派发至完成原始时长，其次使用 ttftSec + streamingSec，再次使用原始 durationSec
+    let rawDurationSec = null;
+    let durationSource = 'missing';
+    if (rec.untrustedTiming === true || rec.timingUnlinked === true) {
+      rawDurationSec = null;
+      durationSource = 'unlinked';
+    } else if (dispatchedAtMs !== null && completedAtMs !== null && completedAtMs > dispatchedAtMs) {
+      rawDurationSec = (completedAtMs - dispatchedAtMs) / 1000;
+      durationSource = 'dispatch_to_complete_timestamps';
+    } else if (explicitRawDur !== null) {
+      rawDurationSec = explicitRawDur;
+      durationSource = 'raw_duration_field';
+    } else if (ttftRaw !== null && sSecRaw !== null && (ttftRaw + sSecRaw) > 0) {
+      rawDurationSec = ttftRaw + sSecRaw;
+      durationSource = 'ttft_plus_streaming';
+    } else if (durField !== null) {
+      rawDurationSec = durField;
+      durationSource = 'duration_field';
+    }
+
+    const outputCountSource = rec.outputCountSource || (rec.isEstimated ? 'estimated_output' : (outp > 0 ? 'host_usage_output_tokens' : 'missing'));
+    const rawStreamSecFromTs = (firstTokenAtMs !== null && completedAtMs !== null && completedAtMs > firstTokenAtMs)
+      ? (completedAtMs - firstTokenAtMs) / 1000
+      : null;
+    const effectiveStreamSec = rawStreamSecFromTs !== null ? rawStreamSecFromTs : sSecRaw;
+    const streamingDurationSource = rec.streamingDurationSource
+      || (rawStreamSecFromTs !== null ? 'first_to_last_token_timestamps' : (sSecRaw !== null ? 'host_streaming_duration' : 'missing'));
+
+    const timingGranularityMs = Number.isFinite(Number(rec.timingGranularityMs)) ? Number(rec.timingGranularityMs) : null;
+    const isCoarseTiming = timingGranularityMs !== null && timingGranularityMs >= 500;
+    const segmentMismatch = rec.segmentMismatch === true || rec.outputDurationMismatch === true;
+    const isBatchArrival = Boolean(
+      rec.batchArrival === true
+      || (effectiveStreamSec !== null && effectiveStreamSec <= 0)
+      || (effectiveStreamSec === null && ttftRaw !== null && rawDurationSec !== null && rawDurationSec <= ttftRaw)
+    );
+
+    let streamingDetail;
+    if (isStreaming) {
+      streamingDetail = {
+        calculable: false,
+        speed: null,
+        rawSpeed: null,
+        reliability: 'in_progress',
+        isShortStream: false,
+        rawStreamingSec: effectiveStreamSec,
+        outputCountSource,
+        streamingDurationSource,
+        reasonCode: 'in_progress'
+      };
+    } else if (outp <= 0) {
+      streamingDetail = {
+        calculable: false,
+        speed: null,
+        rawSpeed: null,
+        reliability: 'unavailable',
+        isShortStream: false,
+        rawStreamingSec: effectiveStreamSec,
+        outputCountSource,
+        streamingDurationSource,
+        reasonCode: 'no_output_tokens'
+      };
+    } else if (rec.untrustedTiming === true || rec.timingUnlinked === true || segmentMismatch) {
+      streamingDetail = {
+        calculable: false,
+        speed: null,
+        rawSpeed: null,
+        reliability: 'unavailable',
+        isShortStream: false,
+        rawStreamingSec: effectiveStreamSec,
+        outputCountSource,
+        streamingDurationSource,
+        reasonCode: segmentMismatch ? 'segment_mismatch' : 'unlinked_timing'
+      };
+    } else if (isBatchArrival) {
+      streamingDetail = {
+        calculable: false,
+        speed: null,
+        rawSpeed: null,
+        reliability: 'unavailable',
+        isShortStream: false,
+        rawStreamingSec: effectiveStreamSec,
+        outputCountSource,
+        streamingDurationSource,
+        reasonCode: 'batch_arrival_non_streaming'
+      };
+    } else if (effectiveStreamSec === null || effectiveStreamSec <= 0) {
+      streamingDetail = {
+        calculable: false,
+        speed: null,
+        rawSpeed: null,
+        reliability: 'unavailable',
+        isShortStream: false,
+        rawStreamingSec: null,
+        outputCountSource,
+        streamingDurationSource,
+        reasonCode: 'missing_streaming_duration'
+      };
+    } else {
+      const rawStreamSpeed = outp / effectiveStreamSec;
+      const isShortStream = effectiveStreamSec < 0.2;
+      let reliability = 'measured';
+      let detailReason = null;
+      if (isShortStream) {
+        reliability = 'short_sample';
+        detailReason = 'short_streaming_window';
+      } else if (isCoarseTiming || rec.isObservedOnly === true) {
+        reliability = 'observed';
+        detailReason = isCoarseTiming ? 'coarse_timing_granularity' : 'observed_only';
+      }
+      streamingDetail = {
+        calculable: true,
+        speed: Number(rawStreamSpeed.toFixed(1)),
+        rawSpeed: rawStreamSpeed,
+        reliability,
+        isShortStream,
+        rawStreamingSec: effectiveStreamSec,
+        outputCountSource,
+        streamingDurationSource,
+        reasonCode: detailReason
+      };
+    }
+
+    if (isStreaming) {
+      return {
+        calculable: false,
+        hasValidE2e: false,
+        speed: null,
+        endToEndTps: null,
+        rawSpeed: null,
+        sortValue: null,
+        e2eSortValue: null,
+        source: 'streaming_live',
+        status: 'in_progress',
+        reasonCode: outp > 0 ? 'in_progress' : 'awaiting_first_token',
+        rawDurationSec,
+        durationSource,
+        outputTokens: outp,
+        streamingDetail
+      };
+    }
+
+    if (outp <= 0) {
+      return {
+        calculable: false,
+        hasValidE2e: false,
+        speed: null,
+        endToEndTps: null,
+        rawSpeed: null,
+        sortValue: null,
+        e2eSortValue: null,
+        source: 'unavailable',
+        status: 'unavailable',
+        reasonCode: 'no_output_tokens',
+        rawDurationSec,
+        durationSource,
+        outputTokens: 0,
+        streamingDetail
+      };
+    }
+
+    if (rawDurationSec === null || rawDurationSec <= 0 || segmentMismatch) {
+      return {
+        calculable: false,
+        hasValidE2e: false,
+        speed: null,
+        endToEndTps: null,
+        rawSpeed: null,
+        sortValue: null,
+        e2eSortValue: null,
+        source: 'unavailable',
+        status: 'unavailable',
+        reasonCode: segmentMismatch ? 'segment_mismatch' : (durationSource === 'unlinked' ? 'unlinked_timing' : 'missing_trusted_duration'),
+        rawDurationSec,
+        durationSource,
+        outputTokens: outp,
+        streamingDetail
+      };
+    }
+
+    const rawE2e = outp / rawDurationSec;
+    const roundedE2e = Number(rawE2e.toFixed(1));
+    return {
+      calculable: true,
+      hasValidE2e: true,
+      speed: roundedE2e,
+      endToEndTps: roundedE2e,
+      rawSpeed: rawE2e,
+      sortValue: rawE2e,
+      e2eSortValue: rawE2e,
+      source: 'e2e',
+      status: isCoarseTiming ? 'observed' : 'measured',
+      reasonCode: isCoarseTiming ? 'coarse_timing_granularity' : null,
+      rawDurationSec,
+      durationSource,
+      outputTokens: outp,
+      streamingDetail
+    };
+  }
+
+  /**
+   * 实时请求表「端到端速度」排序比较器：
+   * - 进行中置顶
+   * - 有效端到端样本按未舍入 rawSpeed 降序，与表格默认速度列共用同一未舍入值
+   * - 无有效输出或缺少可信起止时长的记录统一排在所有有效样本之后
+   */
+  function compareRequestRowsByE2eSpeed(a, b) {
+    const aLive = (a?.status === 'streaming' || String(a?.outcomeStatus || '').toLowerCase() === 'streaming') ? 1 : 0;
+    const bLive = (b?.status === 'streaming' || String(b?.outcomeStatus || '').toLowerCase() === 'streaming') ? 1 : 0;
+    if (bLive !== aLive) return bLive - aLive;
+    const sa = resolveRequestTableSpeed(a);
+    const sb = resolveRequestTableSpeed(b);
+    if (sb.calculable !== sa.calculable) return sb.calculable ? 1 : -1;
+    if (sa.calculable && sb.calculable) {
+      const diff = sb.sortValue - sa.sortValue;
+      if (Math.abs(diff) > 1e-12) return diff > 0 ? 1 : -1;
+    }
+    const tb = Number(b?.timestamp) || 0;
+    const ta = Number(a?.timestamp) || 0;
+    if (tb !== ta) return tb - ta;
+    return String(b?.callId || '').localeCompare(String(a?.callId || ''));
+  }
+
+  /**
+   * 逐条请求速率统一口径：默认保留向后兼容流式优先口径，传 { mode: 'e2e' } 返回实时请求表端到端速度；同时附带 e2e 与 streamingDetail
+   */
+  function resolveRequestRowSpeed(rec, opts = {}) {
+    if (opts && opts.mode === 'e2e') {
+      return resolveRequestTableSpeed(rec);
+    }
+    const tableInfo = resolveRequestTableSpeed(rec);
+    const attachE2eMeta = (obj) => ({
+      ...obj,
+      hasValidE2e: Boolean(tableInfo.hasValidE2e),
+      endToEndTps: tableInfo.endToEndTps ?? null,
+      e2eSortValue: tableInfo.e2eSortValue ?? null,
+      e2e: tableInfo,
+      streamingDetail: tableInfo.streamingDetail
+    });
+    if (!rec || typeof rec !== 'object') {
+      return attachE2eMeta({ calculable: false, speed: null, rawSpeed: null, source: 'unavailable', reasonCode: 'missing_record', isShortStream: false });
     }
     const outp = Math.max(0, Number(rec.outputTokens ?? 0) || 0);
     const isStreaming = rec.status === 'streaming' || String(rec.outcomeStatus || '').toLowerCase() === 'streaming';
@@ -3642,7 +3974,7 @@
     const tpsRaw = rec.tps != null && Number.isFinite(Number(rec.tps)) && Number(rec.tps) > 0 ? Number(rec.tps) : null;
 
     if (outp <= 0) {
-      return {
+      return attachE2eMeta({
         calculable: false,
         speed: null,
         rawSpeed: null,
@@ -3651,13 +3983,13 @@
         isShortStream: false,
         streamingSec: sSecRaw,
         durationSec: durRaw
-      };
+      });
     }
 
     if (sTpsRaw !== null && !(sSecRaw !== null && sSecRaw <= 0)) {
       const exactRaw = (sSecRaw !== null && sSecRaw > 0) ? (outp / sSecRaw) : sTpsRaw;
       const calcVal = (sSecRaw !== null && sSecRaw > 0) ? exactRaw : sTpsRaw;
-      return {
+      return attachE2eMeta({
         calculable: true,
         speed: Number(calcVal.toFixed(1)),
         rawSpeed: calcVal,
@@ -3666,12 +3998,12 @@
         isShortStream: sSecRaw !== null && sSecRaw < 0.2,
         streamingSec: sSecRaw,
         durationSec: durRaw
-      };
+      });
     }
 
     if (sSecRaw !== null && sSecRaw > 0) {
       const calcRaw = outp / sSecRaw;
-      return {
+      return attachE2eMeta({
         calculable: true,
         speed: Number(calcRaw.toFixed(1)),
         rawSpeed: calcRaw,
@@ -3680,11 +4012,11 @@
         isShortStream: sSecRaw < 0.2,
         streamingSec: sSecRaw,
         durationSec: durRaw
-      };
+      });
     }
 
     if ((sSecRaw !== null && sSecRaw <= 0) || (sSecRaw === null && ttftRaw !== null && durRaw !== null && durRaw <= ttftRaw)) {
-      return {
+      return attachE2eMeta({
         calculable: false,
         speed: null,
         rawSpeed: null,
@@ -3693,11 +4025,11 @@
         isShortStream: false,
         streamingSec: sSecRaw,
         durationSec: durRaw
-      };
+      });
     }
 
     if (durRaw === null || durRaw <= 0) {
-      return {
+      return attachE2eMeta({
         calculable: false,
         speed: null,
         rawSpeed: null,
@@ -3706,12 +4038,12 @@
         isShortStream: false,
         streamingSec: sSecRaw,
         durationSec: durRaw
-      };
+      });
     }
 
     if (!isStreaming && sSecRaw === null && tpsRaw !== null && outp >= 20) {
       const calcOverall = durRaw > 0 ? (outp / durRaw) : tpsRaw;
-      return {
+      return attachE2eMeta({
         calculable: true,
         speed: Number(calcOverall.toFixed(1)),
         rawSpeed: calcOverall,
@@ -3720,10 +4052,10 @@
         isShortStream: false,
         streamingSec: null,
         durationSec: durRaw
-      };
+      });
     }
 
-    return {
+    return attachE2eMeta({
       calculable: false,
       speed: null,
       rawSpeed: null,
@@ -3732,22 +4064,28 @@
       isShortStream: false,
       streamingSec: sSecRaw,
       durationSec: durRaw
-    };
+    });
   }
 
   /**
-   * 汇总当前会话的平均生成速度（与 ELV-91 纯流式口径对齐：优先累计输出 / 累计流式耗时，缺失流式耗时时回退整体平均）
+   * 汇总当前会话的平均/峰值/最近生成速度（与 ELV-91 纯流式口径对齐，同时保留端到端全套指标供 #114/#130 切换）
    */
   function summarizeSessionSpeed(sessionCalls, fallbackSpeed = null) {
     let count = 0;
     let totalOutputTokens = 0;
     let totalDurationSec = 0;
     let singleOverallTps = null;
+    let peakOverallTps = null;
+    let recentOverallTps = null;
+    let recentOverallAtMs = null;
 
     let streamCount = 0;
     let totalStreamTokens = 0;
     let totalStreamingSec = 0;
     let singleStreamTps = null;
+    let peakStreamTps = null;
+    let recentStreamTps = null;
+    let recentStreamAtMs = null;
 
     const list = Array.isArray(sessionCalls) ? sessionCalls : [];
     for (let i = 0; i < list.length; i++) {
@@ -3755,10 +4093,17 @@
       if (!isValidSpeedSample(c)) continue;
       const out = Number(c.outputTokens);
       const dur = Number(c.durationSec);
+      const ts = Number.isFinite(Number(c.timestamp)) && Number(c.timestamp) > 0 ? Number(c.timestamp) : null;
+      const sampleOverall = out / dur;
       count += 1;
       totalOutputTokens += out;
       totalDurationSec += dur;
       if (count === 1) singleOverallTps = c.tps;
+      if (peakOverallTps === null || sampleOverall > peakOverallTps) peakOverallTps = sampleOverall;
+      if (recentOverallAtMs === null || ts === null || ts >= recentOverallAtMs) {
+        recentOverallTps = sampleOverall;
+        recentOverallAtMs = ts ?? recentOverallAtMs;
+      }
 
       let sSec = Number(c.streamingSec);
       const sTps = Number(c.streamingTps ?? c.streamSpeed);
@@ -3766,10 +4111,18 @@
         sSec = out / sTps;
       }
       if (Number.isFinite(sSec) && sSec >= 0.05) {
+        const sampleStream = (Number.isFinite(sTps) && sTps > 0 && !(Number.isFinite(Number(c.streamingSec)) && Number(c.streamingSec) >= 0.05))
+          ? sTps
+          : (out / sSec);
         streamCount += 1;
         totalStreamTokens += out;
         totalStreamingSec += sSec;
         if (streamCount === 1) singleStreamTps = (Number.isFinite(sTps) && sTps > 0) ? sTps : null;
+        if (peakStreamTps === null || sampleStream > peakStreamTps) peakStreamTps = sampleStream;
+        if (recentStreamAtMs === null || ts === null || ts >= recentStreamAtMs) {
+          recentStreamTps = sampleStream;
+          recentStreamAtMs = ts ?? recentStreamAtMs;
+        }
       }
     }
 
@@ -3787,9 +4140,15 @@
         avgTps: avgStreamTps ?? avgOverallTps,
         avgStreamTps,
         avgOverallTps,
+        peakStreamTps: peakStreamTps !== null ? Number(peakStreamTps.toFixed(1)) : null,
+        peakOverallTps: peakOverallTps !== null ? Number(peakOverallTps.toFixed(1)) : null,
+        recentStreamTps: recentStreamTps !== null ? Number(recentStreamTps.toFixed(1)) : null,
+        recentOverallTps: recentOverallTps !== null ? Number(recentOverallTps.toFixed(1)) : null,
+        recentSampleAtMs: recentStreamAtMs ?? recentOverallAtMs ?? null,
         count,
         streamCount,
         totalOutputTokens,
+        totalStreamTokens: streamCount > 0 ? totalStreamTokens : 0,
         totalDurationSec: Number(totalDurationSec.toFixed(2)),
         totalStreamingSec: totalStreamingSec >= 0.05 ? Number(totalStreamingSec.toFixed(2)) : null,
         isFallback: false
@@ -3806,13 +4165,21 @@
         const fbOut = Number(fallbackSpeed.outputTokens);
         const fbDur = Number(fallbackSpeed.totalDurationSec ?? fallbackSpeed.durationSec ?? fallbackSpeed.duration);
         const fbStreamSec = Number(fallbackSpeed.streamingSec);
+        const cleanStream = (Number.isFinite(fbStreamTps) && fbStreamTps > 0) ? Number(fbStreamTps.toFixed(1)) : null;
+        const cleanOverall = (Number.isFinite(fbOverallTps) && fbOverallTps > 0) ? Number(fbOverallTps.toFixed(1)) : null;
         return {
           avgTps: fbHeadline,
-          avgStreamTps: (Number.isFinite(fbStreamTps) && fbStreamTps > 0) ? Number(fbStreamTps.toFixed(1)) : null,
-          avgOverallTps: (Number.isFinite(fbOverallTps) && fbOverallTps > 0) ? Number(fbOverallTps.toFixed(1)) : null,
+          avgStreamTps: cleanStream,
+          avgOverallTps: cleanOverall,
+          peakStreamTps: cleanStream,
+          peakOverallTps: cleanOverall,
+          recentStreamTps: cleanStream,
+          recentOverallTps: cleanOverall,
+          recentSampleAtMs: Number.isFinite(Number(fallbackSpeed.timestamp)) ? Number(fallbackSpeed.timestamp) : null,
           count: 1,
-          streamCount: (Number.isFinite(fbStreamTps) && fbStreamTps > 0) ? 1 : 0,
+          streamCount: cleanStream !== null ? 1 : 0,
           totalOutputTokens: Number.isFinite(fbOut) && fbOut > 0 ? fbOut : 0,
+          totalStreamTokens: (cleanStream !== null && Number.isFinite(fbOut) && fbOut > 0) ? fbOut : 0,
           totalDurationSec: Number.isFinite(fbDur) && fbDur > 0 ? Number(fbDur.toFixed(2)) : null,
           totalStreamingSec: Number.isFinite(fbStreamSec) && fbStreamSec >= 0.05 ? Number(fbStreamSec.toFixed(2)) : null,
           isFallback: true
@@ -3821,6 +4188,132 @@
     }
 
     return null;
+  }
+
+  function normalizeSpeedDisplayMode(mode) {
+    const raw = typeof mode === 'string' ? mode.trim().toLowerCase() : '';
+    return raw === 'e2e' ? 'e2e' : 'stream';
+  }
+
+  /**
+   * PR #130 / #114: 根据速度显示口径（stream/streaming 纯流式 / e2e 端到端）解析会话均速与单步主/辅对照指标
+   */
+  function resolveSpeedDisplayMetrics(avgSp, evalRes, mode = 'stream') {
+    const normalizedMode = normalizeSpeedDisplayMode(mode);
+    const hasAvgStream = avgSp?.avgStreamTps != null && Number.isFinite(Number(avgSp.avgStreamTps)) && Number(avgSp.avgStreamTps) > 0;
+    const hasAvgOverall = avgSp?.avgOverallTps != null && Number.isFinite(Number(avgSp.avgOverallTps)) && Number(avgSp.avgOverallTps) > 0;
+    const fallbackAvg = avgSp?.avgTps != null && Number.isFinite(Number(avgSp.avgTps)) && Number(avgSp.avgTps) > 0 ? Number(avgSp.avgTps) : null;
+
+    let sessionPrimaryTps = null;
+    let sessionSecondaryTps = null;
+    let sessionPrimaryKind = normalizedMode;
+    if (normalizedMode === 'e2e') {
+      if (hasAvgOverall) {
+        sessionPrimaryTps = Number(avgSp.avgOverallTps);
+        sessionSecondaryTps = hasAvgStream ? Number(avgSp.avgStreamTps) : null;
+        sessionPrimaryKind = 'e2e';
+      } else if (hasAvgStream) {
+        sessionPrimaryTps = Number(avgSp.avgStreamTps);
+        sessionSecondaryTps = null;
+        sessionPrimaryKind = 'stream';
+      } else if (fallbackAvg !== null) {
+        sessionPrimaryTps = fallbackAvg;
+        sessionPrimaryKind = 'e2e';
+      }
+    } else if (hasAvgStream) {
+      sessionPrimaryTps = Number(avgSp.avgStreamTps);
+      sessionSecondaryTps = hasAvgOverall ? Number(avgSp.avgOverallTps) : null;
+      sessionPrimaryKind = 'stream';
+    } else if (hasAvgOverall) {
+      sessionPrimaryTps = Number(avgSp.avgOverallTps);
+      sessionSecondaryTps = null;
+      sessionPrimaryKind = 'e2e';
+    } else if (fallbackAvg !== null) {
+      sessionPrimaryTps = fallbackAvg;
+      sessionPrimaryKind = 'stream';
+    }
+
+    const hasStepStream = evalRes?.streamSpeed != null && Number.isFinite(Number(evalRes.streamSpeed)) && Number(evalRes.streamSpeed) > 0;
+    const hasStepOverall = evalRes?.overallTps != null && Number.isFinite(Number(evalRes.overallTps)) && Number(evalRes.overallTps) > 0;
+    let stepPrimaryTps = null;
+    let stepSecondaryTps = null;
+    let stepPrimaryKind = normalizedMode;
+    if (normalizedMode === 'e2e') {
+      if (hasStepOverall) {
+        stepPrimaryTps = Number(evalRes.overallTps);
+        stepSecondaryTps = hasStepStream ? Number(evalRes.streamSpeed) : null;
+        stepPrimaryKind = 'e2e';
+      } else if (hasStepStream) {
+        stepPrimaryTps = Number(evalRes.streamSpeed);
+        stepSecondaryTps = null;
+        stepPrimaryKind = 'stream';
+      }
+    } else if (hasStepStream) {
+      stepPrimaryTps = Number(evalRes.streamSpeed);
+      stepSecondaryTps = hasStepOverall ? Number(evalRes.overallTps) : null;
+      stepPrimaryKind = 'stream';
+    } else if (hasStepOverall) {
+      stepPrimaryTps = Number(evalRes.overallTps);
+      stepSecondaryTps = null;
+      stepPrimaryKind = 'e2e';
+    }
+
+    return {
+      mode: normalizedMode,
+      sessionPrimaryTps,
+      sessionSecondaryTps,
+      sessionPrimaryKind,
+      stepPrimaryTps,
+      stepSecondaryTps,
+      stepPrimaryKind
+    };
+  }
+
+  /**
+   * 按口径提取单次调用展示速率（缺省回退至另一口径以兼容历史记录）
+   */
+  function pickCallDisplayTps(call, mode = 'stream') {
+    if (!call || typeof call !== 'object') return null;
+    const normalizedMode = normalizeSpeedDisplayMode(mode);
+    const candidates = normalizedMode === 'e2e'
+      ? [call.tps, call.overallTps, call.streamingTps, call.streamSpeed]
+      : [call.streamingTps, call.streamSpeed, call.tps, call.overallTps];
+    for (let i = 0; i < candidates.length; i++) {
+      const val = candidates[i];
+      if (val !== null && val !== undefined && val !== '') {
+        const num = Number(val);
+        if (Number.isFinite(num) && num > 0) return num;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 按同一速度口径 ('streaming' | 'e2e') 提取平均 / 峰值 / 最近三项指标，严禁混用口径
+   */
+  function resolveSessionSpeedByMode(summary, mode = 'streaming') {
+    const useE2e = mode === 'e2e';
+    if (!summary || typeof summary !== 'object') {
+      return { mode: useE2e ? 'e2e' : 'streaming', avg: null, peak: null, recent: null, sampleCount: 0, recentSampleAtMs: null };
+    }
+    if (useE2e) {
+      return {
+        mode: 'e2e',
+        avg: summary.avgOverallTps ?? null,
+        peak: summary.peakOverallTps ?? null,
+        recent: summary.recentOverallTps ?? null,
+        sampleCount: Number(summary.count || 0),
+        recentSampleAtMs: summary.recentSampleAtMs ?? null
+      };
+    }
+    return {
+      mode: 'streaming',
+      avg: summary.avgStreamTps ?? null,
+      peak: summary.peakStreamTps ?? null,
+      recent: summary.recentStreamTps ?? null,
+      sampleCount: Number(summary.streamCount || 0),
+      recentSampleAtMs: summary.recentSampleAtMs ?? null
+    };
   }
 
   function computeMedian(values) {
@@ -6714,14 +7207,20 @@
   }
 
   /**
-   * 计算指定日期集合的聚合费用与指标
+   * 计算指定日期集合的聚合费用与指标（统一单一权威口径：
+   * 优先直接累加逐请求精确模型+长上下文分档 costUSD，仅对缺失逐请求精确值的历史残余日回退参考模型估算）
    * @param {Object} dailyMap - 每日记录映射
    * @param {string[]} dateKeys - 参与统计的日期键列表 (YYYY-MM-DD)
-   * @param {string} [modelKey='gemini-3.8-flash'] - 参考模型标识
-   * @param {Object} [options={}] - 配置参数 (mode, pricingDate, todayStr)
+   * @param {string} [modelKey='gemini-3.8-flash'] - 参考模型标识（仅残余日回退使用）
+   * @param {Object} [options={}] - 配置参数 (mode, pricingDate, todayStr, dailyInsights, forceReferenceModel)
    */
-  function calculateIntervalCost(dailyMap = {}, dateKeys = [], modelKey = 'gemini-3.8-flash', options = {}) {
-    const todayStr = options.todayStr || (new Date().toISOString().slice(0, 10));
+  function calculateIntervalCost(dailyMap = {}, dateKeys = [], modelKey = 'gemini-3.8-flash', options = {}, dailyInsightsArg = null) {
+    const opts = (options && typeof options === 'object') ? options : {};
+    const todayStr = opts.todayStr || (new Date().toISOString().slice(0, 10));
+    const dailyInsights = (opts.dailyInsights && typeof opts.dailyInsights === 'object')
+      ? opts.dailyInsights
+      : ((dailyInsightsArg && typeof dailyInsightsArg === 'object') ? dailyInsightsArg : null);
+    const forceReferenceModel = opts.forceReferenceModel === true;
     let totalTokens = 0;
     let inputTokens = 0;
     let cacheTokens = 0;
@@ -6729,6 +7228,8 @@
     let totalCostUSD = 0;
     let pastDays = 0;
     let activeDays = 0;
+    let exactCostDays = 0;
+    let fallbackCostDays = 0;
 
     for (const key of dateKeys) {
       const isFuture = key > todayStr;
@@ -6736,21 +7237,46 @@
         pastDays++;
       }
       const rec = dailyMap[key];
-      if (rec && rec.total > 0) {
+      const insightRec = dailyInsights ? dailyInsights[key] : null;
+      const dayTotal = Number(rec?.total ?? insightRec?.tokens ?? 0);
+      if ((rec && rec.total > 0) || dayTotal > 0) {
         activeDays++;
-        totalTokens += rec.total;
-        inputTokens += (rec.input || 0);
-        cacheTokens += (rec.cache || 0);
-        outputTokens += (rec.output || 0);
+        totalTokens += dayTotal;
+        inputTokens += Number(rec?.input ?? insightRec?.input ?? 0);
+        cacheTokens += Number(rec?.cache ?? insightRec?.cache ?? 0);
+        outputTokens += Number(rec?.output ?? insightRec?.output ?? 0);
 
-        const cost = getDailyModelCost(rec, key, modelKey, options);
-        totalCostUSD += cost.costUSD;
+        const insightCostRaw = insightRec && Number.isFinite(Number(insightRec.costUSD)) && Number(insightRec.costUSD) > 0
+          ? Number(insightRec.costUSD)
+          : null;
+        const recCostRaw = rec && Number.isFinite(Number(rec.costUSD)) && Number(rec.costUSD) > 0
+          ? Number(rec.costUSD)
+          : null;
+        const exactDayCost = !forceReferenceModel ? (insightCostRaw ?? recCostRaw) : null;
+
+        if (exactDayCost !== null) {
+          totalCostUSD += exactDayCost;
+          exactCostDays++;
+        } else {
+          const fallbackRec = rec || {
+            input: Number(insightRec?.input || 0),
+            cache: Number(insightRec?.cache || 0),
+            output: Number(insightRec?.output || 0),
+            total: dayTotal
+          };
+          const cost = getDailyModelCost(fallbackRec, key, modelKey, opts);
+          totalCostUSD += cost.costUSD;
+          fallbackCostDays++;
+        }
       }
     }
 
     const safePastDays = Math.max(1, pastDays);
     const dailyAverageUSD = Number((totalCostUSD / safePastDays).toFixed(4));
     const activeDailyAverageUSD = activeDays > 0 ? Number((totalCostUSD / activeDays).toFixed(4)) : 0;
+    const costSource = exactCostDays > 0
+      ? (fallbackCostDays > 0 ? 'hybrid_exact' : 'per_request_exact')
+      : 'reference_fallback';
 
     return {
       totalTokens,
@@ -6761,8 +7287,22 @@
       pastDays,
       activeDays,
       dailyAverageUSD,
-      activeDailyAverageUSD
+      activeDailyAverageUSD,
+      exactCostDays,
+      fallbackCostDays,
+      costSource
     };
+  }
+
+  /**
+   * 全插件统一区间估价入口：确保详细上下文、跨会话洞察与个人主页对同一账本区间输出同一美元金额。
+   */
+  function calculateUnifiedIntervalCost(dailyMap = {}, dateKeys = [], options = {}) {
+    const keys = Array.isArray(dateKeys) && dateKeys.length
+      ? dateKeys
+      : Object.keys(dailyMap || {}).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k)).sort();
+    const modelKey = options.modelKey || 'gemini-3.8-flash';
+    return calculateIntervalCost(dailyMap, keys, modelKey, options);
   }
 
   /**
@@ -7043,6 +7583,7 @@
           isExhausted: parsedFrac.isExhausted,
           fractionSource: parsedFrac.source,
           hasResetTime: resetMeta.hasResetTime,
+          resetTime: resetMeta.resetTimeIso,
           resetTimeIso: resetMeta.resetTimeIso,
           resetAtMs: resetMeta.resetAtMs,
           resetTimeText: resetMeta.resetTimeText,
@@ -7051,12 +7592,28 @@
         };
       });
 
-      const title = String(g.displayName || g.name || g.groupId || `配额组 ${idx + 1}`).trim();
+      const title = String(g.displayName || g.display_name || g.name || g.groupId || `配额组 ${idx + 1}`).trim();
       let sharedKey = null;
-      const joinedHints = [g.groupId, title, desc, ...explicitModelNames].filter(Boolean).join(' ').toLowerCase();
-      if (joinedHints.includes('3p') || joinedHints.includes('claude') || joinedHints.includes('gpt-oss')) {
+      const titleLower = title.toLowerCase();
+      const bucketHints = buckets.map(b => `${b.bucketId || ''} ${b.windowLabel || ''}`).join(' ').toLowerCase();
+      const joinedHints = [g.groupId, title, desc, bucketHints, ...explicitModelNames].filter(Boolean).join(' ').toLowerCase();
+      const isDedicatedArgonTitle = (titleLower.includes('argon') || bucketHints.includes('argon'))
+        && !titleLower.includes('hydrogen')
+        && !titleLower.includes('neon')
+        && !titleLower.includes('flash')
+        && !explicitModelNames.some(n => /hydrogen|neon|flash/i.test(n));
+      const isDedicatedCarbonTitle = (titleLower.includes('carbon') || bucketHints.includes('carbon'))
+        && !titleLower.includes('hydrogen')
+        && !titleLower.includes('neon')
+        && !titleLower.includes('flash')
+        && !explicitModelNames.some(n => /hydrogen|neon|flash/i.test(n));
+      if (isDedicatedArgonTitle) {
+        sharedKey = 'shared_gemini_argon';
+      } else if (isDedicatedCarbonTitle) {
+        sharedKey = 'shared_gemini_carbon';
+      } else if (joinedHints.includes('3p') || joinedHints.includes('claude') || joinedHints.includes('gpt-oss') || joinedHints.includes('gpt')) {
         sharedKey = 'shared_3p_pool';
-      } else if (joinedHints.includes('hydrogen') || joinedHints.includes('neon') || joinedHints.includes('flash')) {
+      } else if (joinedHints.includes('hydrogen') || joinedHints.includes('neon') || joinedHints.includes('flash') || titleLower.includes('gemini') || bucketHints.includes('gemini')) {
         sharedKey = 'shared_gemini_main';
       } else if (joinedHints.includes('argon')) {
         sharedKey = 'shared_gemini_argon';
@@ -7140,7 +7697,9 @@
           unavailabilityReason: null,
           noticeTitle: null,
           noticeText: null,
+          decorativeBadgeTag: null,
           hasResetTime: false,
+          resetTime: null,
           resetTimeIso: null,
           resetAtMs: null,
           resetTimeText: null,
@@ -7166,6 +7725,9 @@
       if (avail.noticeText && !prod.noticeText) {
         prod.noticeTitle = avail.noticeTitle;
         prod.noticeText = avail.noticeText;
+      }
+      if (avail.decorativeBadgeTag && !prod.decorativeBadgeTag) {
+        prod.decorativeBadgeTag = avail.decorativeBadgeTag;
       }
 
       // 合并 config.quotaInfo
@@ -7219,6 +7781,7 @@
           noPermission: false,
           unavailabilityReason: null,
           hasResetTime: false,
+          resetTime: null,
           resetTimeIso: null,
           resetAtMs: null,
           resetTimeText: null,
@@ -7252,6 +7815,7 @@
         unavailabilityReason: prod.unavailabilityReason,
         noticeTitle: prod.noticeTitle,
         noticeText: prod.noticeText,
+        decorativeBadgeTag: prod.decorativeBadgeTag || null,
         remainingFraction: prod.remainingFraction,
         percentText: prod.percentText,
         isExhausted: prod.isExhausted
@@ -7317,6 +7881,7 @@
             isExhausted: minFrac === 0,
             fractionSource: validFracs.length > 0 ? 'client_config' : 'missing',
             hasResetTime: Boolean(earliestReset?.hasResetTime),
+            resetTime: earliestReset?.resetTimeIso || null,
             resetTimeIso: earliestReset?.resetTimeIso || null,
             resetAtMs: earliestReset?.resetAtMs || null,
             resetTimeText: earliestReset?.resetTimeText || null,
@@ -7335,6 +7900,7 @@
         pool.percentText = pb.percentText;
         pool.isExhausted = pb.isExhausted;
         pool.hasResetTime = pb.hasResetTime;
+        pool.resetTime = pb.resetTimeIso || pb.resetTime || null;
         pool.resetTimeIso = pb.resetTimeIso;
         pool.resetAtMs = pb.resetAtMs;
         pool.resetTimeText = pb.resetTimeText;
@@ -7353,6 +7919,7 @@
       } else if (pb) {
         pool.primaryBucket = pb;
         pool.hasResetTime = pb.hasResetTime;
+        pool.resetTime = pb.resetTimeIso || pb.resetTime || null;
         pool.resetTimeIso = pb.resetTimeIso;
         pool.resetAtMs = pb.resetAtMs;
         pool.resetTimeText = pb.resetTimeText;
@@ -8667,6 +9234,10 @@
         const pathname = u.pathname.replace(/\/+$/, '');
         return pathname === '';
       }
+      if (u.hostname === 'antigravity.google') {
+        const pathname = u.pathname.replace(/\/+$/, '');
+        return pathname === '/support' || pathname.startsWith('/support/');
+      }
       return false;
     } catch {
       return false;
@@ -9603,6 +10174,25 @@
   }
 
   /**
+   * PR #132: 对齐 agy CLI 报告总量（input + output），与包含缓存读取的处理总量分开展示
+   */
+  function summarizeCliReportedUsage(calls, cascadeId) {
+    const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalTokens: 0 };
+    let hasUsage = false;
+    for (const call of (Array.isArray(calls) ? calls : [])) {
+      if (!call || call.cascadeId !== cascadeId || call.source !== 'cli') continue;
+      if (call.inputTokens == null && (call.totalTokens || 0) > (call.outputTokens || 0)) return null;
+      if (call.inputTokens == null && call.outputTokens == null) continue;
+      hasUsage = true;
+      usage.inputTokens += call.inputTokens || 0;
+      usage.outputTokens += call.outputTokens || 0;
+      usage.cacheReadTokens += call.cacheReadTokens || 0;
+    }
+    usage.totalTokens = usage.inputTokens + usage.outputTokens;
+    return hasUsage ? usage : null;
+  }
+
+  /**
    * 按用户轮次（Turn）将当前会话主代理调用与可验证的子代理调用分组汇总。
    * 绝不凭时间接近猜测父子归属：未关联到父步骤的子代理调用放入独立 unlinkedSubagentCalls 列表。
    */
@@ -10322,7 +10912,41 @@
     }
 
     // 汇总主子 Agent 家族 · 按去重后的 allCalls 计算，主代理与子代理严格分离、绝不重复计入
+    // 子智能体使用自身最近可信记录及自身模型真实容量分母，严禁借用主窗口 sessionBudgetHint
     const sessionBudgetHint = Number(options.budgetTokens) > 0 ? Number(options.budgetTokens) : null;
+    const fleetCascadeConfigs = Array.isArray(options.cascadeModelConfigs) ? options.cascadeModelConfigs : [];
+    const fleetAvailableModels = options.availableModels && typeof options.availableModels === 'object' ? options.availableModels : null;
+    const lookupModelMaxTokens = (modelCandidates = []) => {
+      const cleanCands = modelCandidates
+        .filter(v => typeof v === 'string' && v.trim())
+        .map(v => v.trim().toLowerCase());
+      if (!cleanCands.length) return null;
+      const strippedCands = cleanCands.map(v => v.replace(/^model_/, ''));
+      for (const cfg of fleetCascadeConfigs) {
+        if (!cfg || typeof cfg !== 'object') continue;
+        const cap = Number(cfg.maxTokens ?? cfg.max_tokens ?? cfg.contextWindowTokens ?? cfg.serviceLimit);
+        if (!Number.isFinite(cap) || cap <= 0) continue;
+        const cfgKeys = [cfg.modelId, cfg.model, cfg.modelOrAlias?.model, cfg.modelOrAlias?.alias, cfg.label, cfg.modelDisplayName]
+          .filter(v => typeof v === 'string' && v.trim())
+          .map(v => v.trim().toLowerCase());
+        if (cfgKeys.some(k => cleanCands.includes(k) || strippedCands.includes(k.replace(/^model_/, '')))) {
+          return cap;
+        }
+      }
+      if (fleetAvailableModels) {
+        for (const [k, v] of Object.entries(fleetAvailableModels)) {
+          const cap = Number(v?.maxTokens ?? v?.max_tokens ?? v?.contextWindowTokens);
+          if (!Number.isFinite(cap) || cap <= 0) continue;
+          const kLow = String(k || '').trim().toLowerCase();
+          const dLow = String(v?.displayName || v?.label || '').trim().toLowerCase();
+          if (cleanCands.includes(kLow) || strippedCands.includes(kLow.replace(/^model_/, '')) || (dLow && cleanCands.includes(dLow))) {
+            return cap;
+          }
+        }
+      }
+      return null;
+    };
+
     const initAgentStats = (meta = {}) => ({
       ...meta,
       callCount: 0,
@@ -10336,6 +10960,9 @@
       costUSD: 0,
       latestContextTokens: 0,
       latestTimestamp: 0,
+      latestCallBudgetTokens: null,
+      latestModelCandidates: [],
+      validSpeedCalls: [],
       hasError: false,
       hasRunning: false,
       modelsSet: new Set(),
@@ -10346,8 +10973,29 @@
       const cap = Number(acc.cacheReadTokens || 0);
       const outp = Number(acc.outputTokens || 0);
       const tok = Math.max(1, inp + cap + outp);
+      const totalInput = inp + cap;
+      const cacheHitPct = totalInput > 0 ? Number(((cap / totalInput) * 100).toFixed(1)) : null;
       const ctxUsed = Number(acc.latestContextTokens || 0);
-      const ctxPct = (sessionBudgetHint && ctxUsed > 0) ? Math.min(100, Number(((ctxUsed / sessionBudgetHint) * 100).toFixed(1))) : null;
+      const isMainAgent = acc.role === 'main';
+      let ownBudgetTokens = null;
+      let contextBudgetSource = 'unknown';
+      if (Number.isFinite(Number(acc.latestCallBudgetTokens)) && Number(acc.latestCallBudgetTokens) > 0) {
+        ownBudgetTokens = Number(acc.latestCallBudgetTokens);
+        contextBudgetSource = 'call_record';
+      } else {
+        const fromConfig = lookupModelMaxTokens(acc.latestModelCandidates);
+        if (fromConfig !== null && fromConfig > 0) {
+          ownBudgetTokens = fromConfig;
+          contextBudgetSource = 'model_capability';
+        } else if (isMainAgent && sessionBudgetHint !== null) {
+          ownBudgetTokens = sessionBudgetHint;
+          contextBudgetSource = 'session_budget_hint';
+        }
+      }
+      const ctxPct = (ownBudgetTokens && ownBudgetTokens > 0 && ctxUsed > 0)
+        ? Math.min(100, Number(((ctxUsed / ownBudgetTokens) * 100).toFixed(1)))
+        : null;
+      const spdSummary = summarizeSessionSpeed(acc.validSpeedCalls);
       return {
         ...acc,
         modelLabel: Array.from(acc.modelsSet)[0] || '',
@@ -10360,8 +11008,13 @@
         durationSec: Number(acc.totalDurationSec.toFixed(2)),
         costUSD: Number(acc.costUSD.toFixed(4)),
         stepCount: acc.stepIndices.size || acc.callCount,
+        cacheHitPct,
+        avgStreamTps: spdSummary?.avgStreamTps ?? null,
+        avgOverallTps: spdSummary?.avgOverallTps ?? null,
+        speedSampleCount: spdSummary?.count ?? 0,
         contextUsedTokens: ctxUsed,
-        contextBudgetTokens: sessionBudgetHint,
+        contextBudgetTokens: ownBudgetTokens,
+        contextBudgetSource,
         contextPct: ctxPct,
         status: acc.hasRunning ? 'running' : (acc.hasError ? 'failed' : 'completed'),
         compositionRatios: {
@@ -10371,7 +11024,10 @@
         },
         stepIndices: undefined,
         modelsSet: undefined,
-        modelStatsMap: undefined
+        modelStatsMap: undefined,
+        latestCallBudgetTokens: undefined,
+        latestModelCandidates: undefined,
+        validSpeedCalls: undefined
       };
     };
     const mainAcc = initAgentStats({ role: 'main', agentId: cascadeId || 'main' });
@@ -10390,6 +11046,7 @@
         acc.streamingSec += Number(c.streamingSec || 0);
         const dur = Number(c.durationSec ?? ((Number(c.ttftSec) || 0) + (Number(c.streamingSec) || 0)));
         if (Number.isFinite(dur) && dur > 0) acc.totalDurationSec += dur;
+        if (isValidSpeedSample(c)) acc.validSpeedCalls.push(c);
         if (Number.isFinite(Number(c.costUSD))) {
           acc.costUSD += Number(c.costUSD);
         } else {
@@ -10398,11 +11055,20 @@
         }
         const tsNum = Number(c.timestamp || 0);
         const ctxTok = Number(c.contextWindowTokens ?? ((Number(c.inputTokens) || 0) + (Number(c.cacheReadTokens) || 0)));
+        const callBudgetCand = Number(c.contextBudgetTokens ?? c.serviceLimit ?? c.modelMaxTokens ?? c.maxTokens);
+        const callModelCands = [c.modelExactId, c.stableModelId, c.rawModelId, c.model, c.modelLabel, c.attributedModelLabel].filter(Boolean);
         if (ctxTok > 0 && tsNum >= acc.latestTimestamp) {
           acc.latestTimestamp = tsNum;
           acc.latestContextTokens = ctxTok;
+          if (Number.isFinite(callBudgetCand) && callBudgetCand > 0) acc.latestCallBudgetTokens = callBudgetCand;
+          if (callModelCands.length) acc.latestModelCandidates = callModelCands;
         } else if (ctxTok > 0 && acc.latestContextTokens === 0) {
           acc.latestContextTokens = ctxTok;
+          if (Number.isFinite(callBudgetCand) && callBudgetCand > 0) acc.latestCallBudgetTokens = callBudgetCand;
+          if (callModelCands.length) acc.latestModelCandidates = callModelCands;
+        } else if (acc.latestModelCandidates.length === 0 && callModelCands.length) {
+          acc.latestModelCandidates = callModelCands;
+          if (Number.isFinite(callBudgetCand) && callBudgetCand > 0 && !acc.latestCallBudgetTokens) acc.latestCallBudgetTokens = callBudgetCand;
         }
         if (c.status === 'streaming') acc.hasRunning = true;
         if (c.error || c.outcomeStatus === 'failed') acc.hasError = true;
@@ -10616,6 +11282,8 @@
     };
 
     const overallCacheSummary = summarizeCacheReadStats(allCalls);
+    // PR #132: agy reports input + output; existing processed totals include cache reads.
+    const cliReportedUsage = options.sessionSource === 'cli' ? summarizeCliReportedUsage(allCalls, cascadeId) : null;
     return {
       cascadeId,
       turns: resultTurns,
@@ -10625,6 +11293,7 @@
       subagentCallsCount: totalSubAll,
       modelBreakdown,
       sessionTokenTotals,
+      ...(cliReportedUsage ? { cliReportedUsage } : {}),
       cacheSummary: overallCacheSummary,
       contextDeltaSummary,
       timingSummary,
@@ -12154,7 +12823,580 @@
     };
   }
 
+  /**
+   * 压缩终态单调保护：已确认的 completed 绝不被迟到 cancelled / failed / working 覆写；
+   * 仅在明确 isNewTask 且 taskKey 变化时开启新代次；允许晚到可信完成证据纠正非用户主动取消的 cancelled / waiting_checkpoint。
+   */
+  function reconcileCompactionTerminalState(prevRecord, incomingPatch = {}, nowMs = Date.now()) {
+    const workingPhases = new Set(['accepted', 'compacting', 'waiting_checkpoint', 'rehydrating']);
+    const terminalPhases = new Set(['completed', 'cancelled', 'failed']);
+    const prev = (prevRecord && typeof prevRecord === 'object') ? { ...prevRecord } : null;
+    const patch = (incomingPatch && typeof incomingPatch === 'object') ? { ...incomingPatch } : {};
+    const nextPhase = patch.phase !== undefined ? patch.phase : (prev?.phase || 'idle');
+    const isNewTask = patch.isNewTask === true && (!prev || !patch.taskKey || patch.taskKey !== prev.taskKey);
+
+    if (prev && !isNewTask) {
+      if (prev.phase === 'completed') {
+        if (nextPhase !== 'completed') return { record: prev, ignored: true, reason: 'completed_terminal_protected' };
+        if (patch.allowMetricsEnrich !== true) return { record: prev, ignored: true, reason: 'already_completed' };
+      }
+      if (terminalPhases.has(prev.phase) && workingPhases.has(nextPhase)) {
+        return { record: prev, ignored: true, reason: 'settled_task_ignores_working' };
+      }
+      if (prev.phase === 'cancelled' && prev.terminalConfirmedBy === 'user_cancel' && nextPhase === 'completed' && patch.allowCorrection !== true) {
+        return { record: prev, ignored: true, reason: 'user_cancel_preserved' };
+      }
+    }
+
+    const cleanPatch = { ...patch };
+    delete cleanPatch.isNewTask;
+    delete cleanPatch.allowCorrection;
+    delete cleanPatch.allowMetricsEnrich;
+
+    const merged = {
+      ...(prev || {}),
+      ...cleanPatch,
+      phase: nextPhase,
+      updatedAtMs: nowMs
+    };
+    if (Number.isFinite(Number(merged.beforeTokens)) && Number(merged.beforeTokens) > 0
+      && Number.isFinite(Number(merged.afterTokens)) && Number(merged.afterTokens) >= 0) {
+      const rel = Math.max(0, Number(merged.beforeTokens) - Number(merged.afterTokens));
+      merged.releasedTokens = rel;
+      merged.releasedPct = Number(((rel / Number(merged.beforeTokens)) * 100).toFixed(1));
+    }
+    if (terminalPhases.has(nextPhase)) {
+      if (!(Number(merged.completedAtMs) > 0)) merged.completedAtMs = nowMs;
+      merged.settledTaskKey = merged.taskKey || prev?.taskKey || null;
+    } else if (isNewTask) {
+      merged.completedAtMs = null;
+      merged.settledTaskKey = null;
+      merged.terminalConfirmedBy = null;
+    }
+    return { record: merged, ignored: false, reason: null };
+  }
+
+  /**
+   * 汇总会话已确认压缩完成次数 (#34)：
+   * - 按 taskKey / checkpointIndexAfter 去重，严格排除 cancelled / failed / working
+   * - 区分完整历史 (full) 与局部裁剪历史 (partial)，检查点数不自动等同成功压缩次数
+   */
+  function summarizeSessionCompactions({ records = [], checkpoints = [], hasFullHistory = false } = {}) {
+    const seenKeys = new Set();
+    const completedItems = [];
+    let cancelledCount = 0;
+    let failedCount = 0;
+
+    for (const r of (Array.isArray(records) ? records : [])) {
+      if (!r || typeof r !== 'object') continue;
+      if (r.phase === 'cancelled') { cancelledCount += 1; continue; }
+      if (r.phase === 'failed') { failedCount += 1; continue; }
+      if (r.phase !== 'completed') continue;
+      const dedupeKey = r.checkpointIndexAfter != null && Number.isInteger(Number(r.checkpointIndexAfter))
+        ? `cp:${Number(r.checkpointIndexAfter)}`
+        : (r.taskKey ? `task:${String(r.taskKey)}` : null);
+      if (dedupeKey && seenKeys.has(dedupeKey)) continue;
+      if (dedupeKey) seenKeys.add(dedupeKey);
+      completedItems.push(r);
+    }
+
+    for (const cp of (Array.isArray(checkpoints) ? checkpoints : [])) {
+      if (!cp || typeof cp !== 'object') continue;
+      if (cp.completed !== true && cp.confirmed !== true) continue;
+      const cpIdx = Number.isInteger(Number(cp.checkpointIndex ?? cp.index)) ? Number(cp.checkpointIndex ?? cp.index) : null;
+      const dedupeKey = cpIdx !== null ? `cp:${cpIdx}` : (cp.eventId ? `ev:${cp.eventId}` : null);
+      if (!dedupeKey || seenKeys.has(dedupeKey)) continue;
+      seenKeys.add(dedupeKey);
+      completedItems.push({
+        taskKey: cp.eventId || dedupeKey,
+        phase: 'completed',
+        checkpointIndexAfter: cpIdx,
+        beforeTokens: cp.beforeTokens ?? null,
+        afterTokens: cp.afterTokens ?? null,
+        completedAtMs: cp.completedAtMs ?? cp.timestamp ?? null
+      });
+    }
+
+    return {
+      completedCount: completedItems.length,
+      cancelledCount,
+      failedCount,
+      isCompleteHistory: Boolean(hasFullHistory),
+      coverage: hasFullHistory ? 'full' : 'partial',
+      items: completedItems
+    };
+  }
+
+  /**
+   * 回复尾标模型归属解析 (含 Neon Medium M533 映射、加权防末尾辅助子调用挤掉主模型、真实回退与多模型保留)
+   */
+  function resolveTurnFooterModelAttribution(calls = [], options = {}) {
+    const list = Array.isArray(calls) ? calls.filter(Boolean) : [];
+    const isTurnAggregate = options.isTurnAggregate !== false && list.length > 1;
+    const cascadeConfigs = Array.isArray(options.cascadeModelConfigs) ? options.cascadeModelConfigs : [];
+    const availableModels = options.availableModels || null;
+
+    const resolveSingle = (c) => {
+      if (!c || typeof c !== 'object') return { label: '', rawId: '', source: 'missing' };
+      const direct = String(c.attributedModelLabel || c.modelLabel || '').trim();
+      if (direct && !/^(未知|未知模型|unknown|unknown model)$/i.test(direct) && !/^model_placeholder_/i.test(direct)) {
+        return { label: direct, rawId: String(c.modelExactId || c.model || ''), source: 'direct_label' };
+      }
+      const ph = resolvePlaceholderModelInfo(c, cascadeConfigs, availableModels);
+      if (ph?.displayName && !/^(未知|未知模型|unknown|unknown model)$/i.test(ph.displayName)) {
+        return { label: ph.displayName, rawId: ph.rawId || ph.rawPlaceholderId || '', source: ph.mappingSource || 'placeholder_map' };
+      }
+      const candidates = [c.modelExactId, c.stableModelId, c.rawModelId, c.modelRaw, c.model, c.chatModel?.modelDisplayName, c.chatModel?.responseModel, c.chatModel?.model]
+        .filter(v => typeof v === 'string' && v.trim());
+      for (const cand of candidates) {
+        const clean = cand.trim();
+        if (/^(未知|未知模型|unknown|unknown model)$/i.test(clean)) continue;
+        for (const lk of buildLookupKeysForModel(clean)) {
+          if (MODEL_USAGE_ID_FALLBACK_LABELS[lk]) {
+            return { label: MODEL_USAGE_ID_FALLBACK_LABELS[lk], rawId: clean, source: 'fallback_label_map' };
+          }
+        }
+        const bucket = resolveModelUsageBucket({ model: clean }, cascadeConfigs, availableModels);
+        if (bucket?.isAttributed && bucket.variantLabel) {
+          return { label: bucket.variantLabel, rawId: clean, source: 'usage_bucket' };
+        }
+        if (!/^model_placeholder_/i.test(clean) && !/^m\d+$/i.test(clean)) {
+          return { label: clean, rawId: clean, source: 'raw_model_id' };
+        }
+      }
+      return { label: '', rawId: candidates[0] || '', source: 'unresolved' };
+    };
+
+    if (!list.length) {
+      return { label: '未知模型', models: [], isMixed: false, hasFallback: false, unknownReason: '本轮无可用请求记录', source: 'empty' };
+    }
+
+    if (!isTurnAggregate) {
+      const target = list[list.length - 1];
+      const one = resolveSingle(target);
+      const reqText = String(target.requestedModel || '').trim();
+      const hasFallback = Boolean(reqText && one.label && reqText.toLowerCase() !== one.label.toLowerCase());
+      if (one.label) {
+        return { label: one.label, models: [one.label], isMixed: false, hasFallback, unknownReason: '', source: one.source };
+      }
+      return {
+        label: '未知模型',
+        models: [],
+        isMixed: false,
+        hasFallback: false,
+        unknownReason: one.rawId ? `未识别模型 ID · ${one.rawId}` : '该请求未返回可靠模型标识',
+        source: 'unresolved'
+      };
+    }
+
+    const weightByModel = new Map();
+    let missingCount = 0;
+    let hasFallback = false;
+    for (const c of list) {
+      const res = resolveSingle(c);
+      if (!res.label) {
+        missingCount += 1;
+        continue;
+      }
+      const reqText = String(c.requestedModel || '').trim();
+      if (reqText && reqText.toLowerCase() !== res.label.toLowerCase()) hasFallback = true;
+      const weight = Math.max(1, Number(c.outputTokens || 0) * 4 + Number(c.totalTokens || 0));
+      weightByModel.set(res.label, (weightByModel.get(res.label) || 0) + weight);
+    }
+    const sortedModels = Array.from(weightByModel.entries()).sort((a, b) => b[1] - a[1]).map(x => x[0]);
+    if (sortedModels.length === 1) {
+      return {
+        label: sortedModels[0],
+        models: sortedModels,
+        isMixed: false,
+        hasFallback,
+        unknownReason: missingCount > 0 ? `另有 ${missingCount} 条辅助子调用缺模型字段` : '',
+        source: 'weighted_single'
+      };
+    }
+    if (sortedModels.length > 1) {
+      const lastCallModel = resolveSingle(list[list.length - 1]).label || sortedModels[0];
+      return {
+        label: `多模型 · ${sortedModels[0]} · ${sortedModels.length}模型`,
+        models: sortedModels,
+        lastCallModel,
+        isMixed: true,
+        hasFallback,
+        unknownReason: '',
+        source: 'weighted_multi'
+      };
+    }
+    return {
+      label: '未知模型',
+      models: [],
+      isMixed: false,
+      hasFallback: false,
+      unknownReason: '本轮全部请求均缺少可核验模型标识',
+      source: 'unresolved'
+    };
+  }
+
+  /**
+   * Issue #140: 稳定对齐 DOM 回复工具栏与会话轮次列表。
+   * 当 M > T（例如新回复 B 的工具栏已渲染，但时间线仍滞后在上一轮 A）时，
+   * 绝不将 turns[0] 尾移错挂到最新工具栏；仅保留已有稳定归属或从头部顺序连续匹配的轮次，
+   * 尾部未回填的工具栏返回 null，待迟到回填到达后再精准填充对应回复。
+   */
+  function alignTurnFootersWithTurns(toolbarMetaList = [], turnsList = [], options = {}) {
+    const metas = Array.isArray(toolbarMetaList) ? toolbarMetaList : [];
+    const turns = Array.isArray(turnsList) ? turnsList : [];
+    const M = metas.length;
+    const T = turns.length;
+    const result = new Array(M).fill(null);
+    if (M === 0 || T === 0) return result;
+
+    const boundTurnKeys = new Set();
+    if (M <= T) {
+      // DOM 仅挂载末尾 M 条已生成回复时，从时间线尾部一对一精确对齐
+      const offset = T - M;
+      for (let i = 0; i < M; i++) {
+        const tr = turns[offset + i];
+        const k = tr?.turnKey ? String(tr.turnKey) : '';
+        if (!tr || (k && boundTurnKeys.has(k))) continue;
+        if (k) boundTurnKeys.add(k);
+        result[i] = tr;
+      }
+      return result;
+    }
+
+    // M > T：优先保持同一会话内已有稳定 DOM 绑定，避免时间线滞后时清空已归属回复或错挂到新回复
+    const targetSid = String(options.sessionId || '').trim();
+    const turnsByKey = new Map();
+    for (const tr of turns) {
+      const k = tr?.turnKey ? String(tr.turnKey) : '';
+      if (k && !turnsByKey.has(k)) turnsByKey.set(k, tr);
+    }
+
+    let preservedCount = 0;
+    for (let i = 0; i < M; i++) {
+      const meta = metas[i];
+      if (!meta || typeof meta !== 'object') continue;
+      const existingKey = String(meta.existingTurnKey || '').trim();
+      const existingSid = String(meta.existingSessionId || '').trim();
+      if (!existingKey) continue;
+      if (targetSid && existingSid && existingSid !== targetSid) continue;
+      const matched = turnsByKey.get(existingKey);
+      if (!matched || boundTurnKeys.has(existingKey)) continue;
+      boundTurnKeys.add(existingKey);
+      result[i] = matched;
+      preservedCount += 1;
+    }
+
+    // 兼容无权威时间线的纯 fallback 兜底（且无既有稳定绑定、无未入时间线的后续调用）：尾部单点对齐且绝不污染前置回复
+    if (options.turnsSource === 'fallback' && preservedCount === 0 && !options.hasUnmappedLaterCalls) {
+      const startIdx = M - T;
+      for (let i = startIdx; i < M; i++) {
+        const tr = turns[i - startIdx];
+        const k = tr?.turnKey ? String(tr.turnKey) : '';
+        if (!tr || (k && boundTurnKeys.has(k))) continue;
+        if (k) boundTurnKeys.add(k);
+        result[i] = tr;
+      }
+      return result;
+    }
+
+    // 剩余未绑定轮次仅在头部起始连续（turnIndex 从 1/0 开始或尚未出现矛盾绑定）时从前向后对齐，
+    // 尾部新到达的工具栏（i >= T）保持 null，绝不复用上一轮模型与 Token。
+    const firstTurnIdx = Number(turns[0]?.turnIndex);
+    const startsFromHead = !Number.isFinite(firstTurnIdx) || firstTurnIdx <= 1;
+    if (startsFromHead) {
+      let nextTurnCursor = 0;
+      for (let i = 0; i < M && nextTurnCursor < T; i++) {
+        if (result[i]) {
+          const boundIdx = turns.indexOf(result[i]);
+          if (boundIdx >= nextTurnCursor) nextTurnCursor = boundIdx + 1;
+          continue;
+        }
+        while (nextTurnCursor < T) {
+          const cand = turns[nextTurnCursor];
+          const k = cand?.turnKey ? String(cand.turnKey) : '';
+          nextTurnCursor += 1;
+          if (!cand || (k && boundTurnKeys.has(k))) continue;
+          if (k) boundTurnKeys.add(k);
+          result[i] = cand;
+          break;
+        }
+      }
+    } else if (preservedCount === 0) {
+      // 既无已有稳定绑定又无法确认起始轮次时，全部留空待权威时间线回填，绝不猜测尾移
+      return result;
+    }
+
+    return result;
+  }
+
+  /**
+   * 图三「本机已记录用量」与模型时间线统一口径聚合：
+   * - 同一日期范围、账号与来源筛选贯穿请求卡、Token 卡、费用卡与模型时间线
+   * - 费用均值分母仅计实际纳入估价请求数；模型成功率分母仅计确定成功或错误结局请求，无样本为 null 中性态
+   */
+  function buildUsageOverviewReconciliation(calls = [], filters = {}) {
+    const startDate = typeof filters.startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(filters.startDate) ? filters.startDate : null;
+    const endDate = typeof filters.endDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(filters.endDate) ? filters.endDate : null;
+    const accountScopeKey = filters.accountScopeKey || 'all';
+    const sourceFilter = filters.source || 'all';
+
+    const matched = [];
+    const seenIds = new Set();
+    for (const c of (Array.isArray(calls) ? calls : [])) {
+      if (!c || typeof c !== 'object') continue;
+      const cid = c.callId ? String(c.callId) : null;
+      if (cid && seenIds.has(cid)) continue;
+      if (cid) seenIds.add(cid);
+
+      const dKey = typeof c.date === 'string' && /^\d{4}-\d{2}-\d{2}/.test(c.date)
+        ? c.date.slice(0, 10)
+        : (Number.isFinite(Number(c.timestamp)) && Number(c.timestamp) > 0 ? formatLocalDateStr(new Date(Number(c.timestamp))) : null);
+      if (startDate && (!dKey || dKey < startDate)) continue;
+      if (endDate && (!dKey || dKey > endDate)) continue;
+
+      const cSrc = c.source === 'cli' ? 'cli' : 'desktop';
+      if (sourceFilter !== 'all' && cSrc !== sourceFilter) continue;
+
+      const cAcct = (typeof c.accountScopeKey === 'string' && c.accountScopeKey.trim() && c.accountAttributionConfidence !== 'unattributed')
+        ? c.accountScopeKey.trim()
+        : null;
+      if (accountScopeKey === 'unattributed') {
+        if (cAcct !== null) continue;
+      } else if (accountScopeKey !== 'all') {
+        if (cAcct !== accountScopeKey) continue;
+      }
+      matched.push({ ...c, _resolvedDate: dKey || 'unknown' });
+    }
+
+    const reqCard = { total: 0, success: 0, error: 0, canceled: 0, streaming: 0, unknown: 0 };
+    const tokCard = { grandTotal: 0, uncachedInput: 0, cacheRead: 0, totalInput: 0, output: 0, inputIncludesCache: true, cacheHitPct: null };
+    const costCard = { totalCostUSD: 0, pricedCount: 0, unpricedCount: 0, avgCostUSD: null };
+    const dailyBuckets = {};
+    const modelTimeline = {};
+
+    for (const c of matched) {
+      reqCard.total += 1;
+      const rawOut = String(c.outcomeStatus || '').toLowerCase();
+      let bucketOutcome = 'unknown';
+      if (c.status === 'streaming' || rawOut === 'streaming') bucketOutcome = 'streaming';
+      else if (rawOut === 'canceled' || rawOut === 'cancelled') bucketOutcome = 'canceled';
+      else if (c.error || ['failed', 'error', 'exceeded', 'rate_limited', 'quota_exhausted', 'network', 'service_unavailable', 'auth_error'].includes(rawOut)) bucketOutcome = 'error';
+      else if (rawOut === 'success' || rawOut === 'final' || (!rawOut && c.status === 'final')) bucketOutcome = 'success';
+      reqCard[bucketOutcome] += 1;
+
+      const inp = Math.max(0, Number(c.inputTokens || 0));
+      const cr = Math.max(0, Number(c.cacheReadTokens ?? c.cacheTokens ?? 0));
+      const outp = Math.max(0, Number(c.outputTokens || 0));
+      const tot = inp + cr + outp;
+      tokCard.uncachedInput += inp;
+      tokCard.cacheRead += cr;
+      tokCard.totalInput += (inp + cr);
+      tokCard.output += outp;
+      tokCard.grandTotal += tot;
+
+      let priced = Boolean(c.isPriced && Number.isFinite(Number(c.costUSD)));
+      let costVal = priced ? Number(c.costUSD) : 0;
+      if (!priced && tot > 0 && c.model) {
+        const calc = calculateRequestApiCost(c);
+        if (calc?.isPriced && Number.isFinite(Number(calc.costUSD))) {
+          priced = true;
+          costVal = Number(calc.costUSD);
+        }
+      }
+      if (priced) {
+        costCard.pricedCount += 1;
+        costCard.totalCostUSD += costVal;
+      } else {
+        costCard.unpricedCount += 1;
+      }
+
+      const dKey = c._resolvedDate;
+      if (!dailyBuckets[dKey]) {
+        dailyBuckets[dKey] = { date: dKey, requests: 0, tokens: 0, costUSD: 0, pricedCount: 0 };
+      }
+      dailyBuckets[dKey].requests += 1;
+      dailyBuckets[dKey].tokens += tot;
+      if (priced) {
+        dailyBuckets[dKey].costUSD += costVal;
+        dailyBuckets[dKey].pricedCount += 1;
+      }
+
+      const mKey = String(c.modelLabel || c.attributedModelLabel || c.modelExactId || c.model || '未知模型').trim();
+      if (!modelTimeline[mKey]) modelTimeline[mKey] = { model: mKey, total: 0, success: 0, error: 0, canceled: 0, streaming: 0, unknown: 0, decidedCount: 0, successRatePct: null, byDate: {} };
+      const mt = modelTimeline[mKey];
+      mt.total += 1;
+      mt[bucketOutcome] += 1;
+      if (!mt.byDate[dKey]) mt.byDate[dKey] = { date: dKey, total: 0, success: 0, error: 0, canceled: 0, streaming: 0, unknown: 0, decidedCount: 0, successRatePct: null };
+      mt.byDate[dKey].total += 1;
+      mt.byDate[dKey][bucketOutcome] += 1;
+    }
+
+    tokCard.cacheHitPct = tokCard.totalInput > 0 ? Number(((tokCard.cacheRead / tokCard.totalInput) * 100).toFixed(1)) : null;
+    costCard.totalCostUSD = Number(costCard.totalCostUSD.toFixed(6));
+    costCard.avgCostUSD = costCard.pricedCount > 0 ? Number((costCard.totalCostUSD / costCard.pricedCount).toFixed(6)) : null;
+
+    for (const d of Object.values(dailyBuckets)) {
+      d.costUSD = Number(d.costUSD.toFixed(6));
+    }
+    for (const mt of Object.values(modelTimeline)) {
+      mt.decidedCount = mt.success + mt.error;
+      mt.successRatePct = mt.decidedCount > 0 ? Number(((mt.success / mt.decidedCount) * 100).toFixed(1)) : null;
+      for (const bd of Object.values(mt.byDate)) {
+        bd.decidedCount = bd.success + bd.error;
+        bd.successRatePct = bd.decidedCount > 0 ? Number(((bd.success / bd.decidedCount) * 100).toFixed(1)) : null;
+      }
+    }
+
+    return {
+      filters: { startDate, endDate, accountScopeKey, source: sourceFilter },
+      isLocalRequestRecordOnly: true,
+      requests: reqCard,
+      tokens: tokCard,
+      cost: costCard,
+      dailyBuckets,
+      modelTimeline
+    };
+  }
+
+  /**
+   * Orchestrator 角色与交接事件严格提取器：
+   * - 配置只说明计划模型，绝不凭 Hydrogen、模型名、先后时间或下拉选项推断历史分工
+   * - 仅当 sessionCalls / trajectoryEvents 存在可核验的显式角色或交接字段时才输出运行分工、交接与各角色统计
+   * - 否则返回 configured_only / unrecorded，UI 展示已配置模型及「运行分工未记录」
+   */
+  function extractOrchestratorTelemetry({ cascadeModelConfigs = [], sessionCalls = [], trajectoryEvents = [] } = {}) {
+    const cfgs = Array.isArray(cascadeModelConfigs) ? cascadeModelConfigs : [];
+    const orchConfigs = cfgs.filter(c => c && (
+      /orchestrator/i.test(String(c.label || c.modelId || c.model || ''))
+      || c.orchestratorRole
+      || c.plannerModel
+      || c.executorModel
+    ));
+    let configuredPlannerModel = null;
+    let configuredExecutorModel = null;
+    for (const c of orchConfigs) {
+      if (!configuredPlannerModel && c.plannerModel) configuredPlannerModel = String(c.plannerModel);
+      if (!configuredExecutorModel && c.executorModel) configuredExecutorModel = String(c.executorModel);
+    }
+
+    const calls = Array.isArray(sessionCalls) ? sessionCalls : [];
+    const events = Array.isArray(trajectoryEvents) ? trajectoryEvents : [];
+    const seenCallIds = new Set();
+    const roleStats = {
+      planner: { role: 'planner', configuredModel: configuredPlannerModel, runtimeRecorded: false, callCount: 0, totalTokens: 0, durationSec: 0, costUSD: 0, activeIntervals: [], models: [] },
+      executor: { role: 'executor', configuredModel: configuredExecutorModel, runtimeRecorded: false, callCount: 0, totalTokens: 0, durationSec: 0, costUSD: 0, activeIntervals: [], models: [] }
+    };
+    const roleModelSets = { planner: new Set(), executor: new Set() };
+    const handoffs = [];
+    const unattributedCalls = [];
+
+    for (const c of calls) {
+      if (!c || typeof c !== 'object') continue;
+      const cid = String(c.callId || c.responseId || '').trim();
+      if (cid && seenCallIds.has(cid)) continue;
+      if (cid) seenCallIds.add(cid);
+
+      const rawRole = String(c.orchestratorRole || c.verifiedOrchestratorRole || '').trim().toLowerCase();
+      if (rawRole !== 'planner' && rawRole !== 'executor') {
+        unattributedCalls.push(cid || null);
+        continue;
+      }
+      const bucket = roleStats[rawRole];
+      bucket.runtimeRecorded = true;
+      bucket.callCount += 1;
+      bucket.totalTokens += Number(c.totalTokens || ((Number(c.inputTokens || 0) + Number(c.cacheReadTokens || 0) + Number(c.outputTokens || 0))));
+      const dur = Number(c.durationSec || 0);
+      if (Number.isFinite(dur) && dur > 0) bucket.durationSec += dur;
+      if (Number.isFinite(Number(c.costUSD))) bucket.costUSD += Number(c.costUSD);
+      const mLbl = String(c.modelLabel || c.modelExactId || c.model || '').trim();
+      if (mLbl) roleModelSets[rawRole].add(mLbl);
+      const stMs = Number(c.startedAtMs ?? c.timestamp);
+      const enMs = Number(c.completedAtMs ?? (Number.isFinite(stMs) && dur > 0 ? stMs + dur * 1000 : NaN));
+      if (Number.isFinite(stMs) && Number.isFinite(enMs) && enMs >= stMs) {
+        bucket.activeIntervals.push([stMs, enMs]);
+      }
+    }
+
+    const seenHandoffIds = new Set();
+    for (const ev of events) {
+      if (!ev || typeof ev !== 'object') continue;
+      const fromR = String(ev.fromRole || '').trim().toLowerCase();
+      const toR = String(ev.toRole || '').trim().toLowerCase();
+      if (!((fromR === 'planner' && toR === 'executor') || (fromR === 'executor' && toR === 'planner'))) continue;
+      const evId = String(ev.eventId || `${fromR}->${toR}:${ev.stepIndex ?? ''}:${ev.timestamp ?? ''}`);
+      if (seenHandoffIds.has(evId)) continue;
+      seenHandoffIds.add(evId);
+      handoffs.push({
+        eventId: evId,
+        fromRole: fromR,
+        toRole: toR,
+        actionLabel: String(ev.actionLabel || ev.summary || '').trim(),
+        stepIndex: ev.stepIndex ?? null,
+        timestamp: Number.isFinite(Number(ev.timestamp)) ? Number(ev.timestamp) : null
+      });
+    }
+    handoffs.sort((a, b) => (Number(a.timestamp || 0) - Number(b.timestamp || 0)) || (Number(a.stepIndex || 0) - Number(b.stepIndex || 0)));
+
+    let hasRoleOverlap = false;
+    for (const [pStart, pEnd] of roleStats.planner.activeIntervals) {
+      for (const [eStart, eEnd] of roleStats.executor.activeIntervals) {
+        if (pStart < eEnd && eStart < pEnd) { hasRoleOverlap = true; break; }
+      }
+      if (hasRoleOverlap) break;
+    }
+
+    for (const rKey of ['planner', 'executor']) {
+      roleStats[rKey].models = Array.from(roleModelSets[rKey]);
+      roleStats[rKey].durationSec = Number(roleStats[rKey].durationSec.toFixed(2));
+      roleStats[rKey].costUSD = Number(roleStats[rKey].costUSD.toFixed(6));
+    }
+
+    const normalizedEvents = handoffs.map(h => ({
+      eventId: h.eventId,
+      traceEventId: h.eventId,
+      role: h.fromRole,
+      type: 'handoff',
+      from: h.fromRole,
+      to: h.toRole,
+      summary: h.actionLabel,
+      stepIndex: h.stepIndex,
+      timestamp: h.timestamp
+    }));
+    const plannerBusy = calls.some(c => c && String(c.orchestratorRole || c.verifiedOrchestratorRole || '').toLowerCase() === 'planner' && c.status === 'streaming');
+    const executorBusy = calls.some(c => c && String(c.orchestratorRole || c.verifiedOrchestratorRole || '').toLowerCase() === 'executor' && c.status === 'streaming');
+
+    const runtimeRecorded = roleStats.planner.runtimeRecorded || roleStats.executor.runtimeRecorded || handoffs.length > 0;
+    const hasConfig = orchConfigs.length > 0 || Boolean(configuredPlannerModel || configuredExecutorModel);
+    const status = runtimeRecorded ? 'recorded' : (hasConfig ? 'configured_only' : 'unrecorded');
+
+    return {
+      status,
+      runtimeRecorded,
+      hasConfig,
+      hasRoleOverlap,
+      plannerBusy,
+      executorBusy,
+      configuredPresets: orchConfigs.map(c => ({ modelId: c.modelId || c.model || null, label: c.label || null })),
+      roles: roleStats,
+      handoffs,
+      events: normalizedEvents,
+      unattributedCallCount: unattributedCalls.length
+    };
+  }
+
   const api = {
+    formatQuotaWindowDisplayTag,
+    resolveRequestTableSpeed,
+    compareRequestRowsByE2eSpeed,
+    resolveSessionSpeedByMode,
+    reconcileCompactionTerminalState,
+    summarizeSessionCompactions,
+    resolveTurnFooterModelAttribution,
+    alignTurnFootersWithTurns,
+    summarizeCliReportedUsage,
+    buildUsageOverviewReconciliation,
+    extractOrchestratorTelemetry,
     summarize,
     classifyRequestError,
     resolveModelQuota,
@@ -12166,6 +13408,7 @@
     formatQuotaResetMeta,
     classifyModelQuotaAvailability,
     isDecorativeBadgeTagTitle,
+    normalizeDecorativeBadgeTagTitle,
     selectPrimaryQuotaBucket,
     resolveQuotaWindowBucketPair,
     buildModelQuotaSnapshot,
@@ -12258,6 +13501,9 @@
     isValidSpeedSample,
     resolveRequestRowSpeed,
     summarizeSessionSpeed,
+    normalizeSpeedDisplayMode,
+    resolveSpeedDisplayMetrics,
+    pickCallDisplayTps,
     computeMedian,
     summarizeSpeedByModel,
     parseSpeedDateRange,
@@ -12288,6 +13534,7 @@
     computeCumulativeStripSummary,
     getDailyModelCost,
     calculateIntervalCost,
+    calculateUnifiedIntervalCost,
     clearDailyCostCache,
     parseSemver,
     compareVersions,

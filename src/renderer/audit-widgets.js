@@ -8,7 +8,7 @@ const EVENT_TYPE_COLORS = {
   inject: '#F472B6',
   error: '#F43F5E',
   model: '#10B981',
-  mode: '#A855F7',
+  mode: '#0EA5E9',
   unknown_drop: '#FB923C'
 };
 
@@ -73,8 +73,8 @@ function renderTokenBreakdownWidget(tl, activeCall) {
   const parts = [
     { key: 'fresh', label: t('session.dual.cacheFresh'), color: '#10B981', val: freshIn },
     { key: 'cache', label: t('session.dual.cacheRead'), color: '#FB923C', val: cacheRead },
-    { key: 'output', label: t('heat.output'), color: '#C084FC', val: output },
-    ...(thinking > 0 ? [{ key: 'thinking', label: t('session.comp.cat.thinking'), color: '#8B5CF6', val: thinking }] : [])
+    { key: 'output', label: t('heat.output'), color: 'var(--ag-host-accent, var(--primary, #3274f6))', val: output },
+    ...(thinking > 0 ? [{ key: 'thinking', label: t('session.comp.cat.thinking'), color: '#14B8A6', val: thinking }] : [])
   ];
   const sum = parts.reduce((acc, p) => acc + p.val, 0);
 

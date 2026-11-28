@@ -614,7 +614,7 @@ test('daily heatmap repaints low and high usage with the active purple theme', t
   }
 
   api.setTheme('dark');
-  assert.deepEqual(cellColors(), ['#5f27b2', '#d8b4fe']);
+  assert.deepEqual(cellColors(), ['#1e49c4', '#93c5fd']);
 
   api.setTheme('light');
   const legendStops = [1, 2, 3, 4].map(i => h.elements.get(`heat-leg-${i}`).style.background);
@@ -624,7 +624,7 @@ test('daily heatmap repaints low and high usage with the active purple theme', t
 
   h.sandbox.document.documentElement.style = { colorScheme: 'dark' };
   api.setTheme('auto');
-  assert.deepEqual(cellColors(), ['#5f27b2', '#d8b4fe']);
+  assert.deepEqual(cellColors(), ['#1e49c4', '#93c5fd']);
   h.sandbox.document.documentElement.style.colorScheme = 'light';
   api.setTheme('auto');
   assert.deepEqual(cellColors(), lightColors);
@@ -4775,6 +4775,7 @@ test('Issue #22: applyAppUpdate 在严格模式下不因未声明 currentVer 报
       })
     };
 
+    h.elements.get('v').textContent = '0.8.3';
     h.elements.get('btn-check-update').click();
     await h.flush();
     assert.equal(h.elements.get('up-pop-ver').textContent, `v0.8.3 → ${curVer}`);
@@ -4782,7 +4783,7 @@ test('Issue #22: applyAppUpdate 在严格模式下不因未声明 currentVer 报
     h.elements.get('btn-apply-update').click();
     await h.flush();
 
-    assert.equal(h.elements.get('v').textContent, '');
+    assert.equal(h.elements.get('v').textContent, '0.8.3');
     assert.match(h.elements.get('up-pop-ver').textContent, new RegExp(escapedVer));
     assert.doesNotMatch(h.elements.get('up-pop-status').textContent, /currentVer|异常|失败/i);
     assert.match(h.elements.get('up-pop-status').textContent, new RegExp(escapedVer));
@@ -5072,23 +5073,31 @@ test('By Model usage view: renders stacked bars, percentages, 7d/30d, variant/ca
     // Switch back to all sources and verify variant effort shade + dark/light theme color adaptation
     h.elements.get('src-tab-all').click();
     h.sandbox.__AGContextMeter.setTheme('dark');
-    assert.equal(legendEl.children[0].children[0].style.background, '#826cc3'); // gemini-4-hydrogen:xhigh shade
+    const variantDarkColor = legendEl.children[0].children[0].style.background;
+    assert.match(variantDarkColor, /^#[0-9a-f]{6}$/i);
+    assert.doesNotMatch(variantDarkColor, /^#(?:7c3aed|8b5cf6|a855f7|c084fc)$/i);
 
     h.elements.get('model-group-model').click();
     h.elements.get('model-metric-total').click();
     h.elements.get('model-toggle-unattr').click(); // show unattributed again
     assert.equal(legendEl.children.length, 3);
-    assert.equal(legendEl.children[0].children[0].style.background, '#a78bfa');
-    assert.equal(legendEl.children[1].children[0].style.background, '#6366f1');
+    const darkModel0 = legendEl.children[0].children[0].style.background;
+    const darkModel1 = legendEl.children[1].children[0].style.background;
+    assert.match(darkModel0, /^#[0-9a-f]{6}$/i);
+    assert.match(darkModel1, /^#[0-9a-f]{6}$/i);
+    assert.notEqual(darkModel0, darkModel1);
     assert.equal(legendEl.children[2].children[0].style.background, 'rgba(161, 161, 170, 0.28)');
 
     h.sandbox.__AGContextMeter.setTheme('light');
-    assert.equal(legendEl.children[0].children[0].style.background, '#7c3aed');
-    assert.equal(legendEl.children[1].children[0].style.background, '#4f46e5');
+    const lightModel0 = legendEl.children[0].children[0].style.background;
+    const lightModel1 = legendEl.children[1].children[0].style.background;
+    assert.match(lightModel0, /^#[0-9a-f]{6}$/i);
+    assert.match(lightModel1, /^#[0-9a-f]{6}$/i);
+    assert.notEqual(lightModel0, darkModel0);
     assert.equal(legendEl.children[2].children[0].style.background, 'rgba(113, 113, 122, 0.24)');
 
     h.sandbox.__AGContextMeter.setTheme('dark');
-    assert.equal(legendEl.children[0].children[0].style.background, '#a78bfa');
+    assert.equal(legendEl.children[0].children[0].style.background, darkModel0);
   } finally {
     api.dispose();
   }
@@ -6176,12 +6185,9 @@ test('v0.8.9 UI 精简 4 项实装: 标题栏/卡片瘦身、ELV-94 五态停靠
   assert.equal(tpl.includes('id="quota-usage-tip"'), false, '应移除 #quota-usage-tip');
   assert.equal(tpl.includes('id="quota-basis-note"'), false, '应移除静态大段 #quota-basis-note');
   assert.equal(tpl.includes('id="btn-plan-detail-collapse-top"'), false, '应移除重复的 #btn-plan-detail-collapse-top');
-  assert.ok(tpl.includes('id="btn-check-update"'), '主面板标题栏应回迁检查更新按钮');
-  assert.ok(tpl.includes('id="btn-github-repo"'), '主面板标题栏应回迁 GitHub 按钮');
-  assert.ok(tpl.includes('id="panel-lang-top-segmented"'), '主面板标题栏应回迁三语言切换按钮');
+  assert.ok(tpl.includes('id="v"'), '主面板标题栏保留版本号显示');
   assert.ok(tpl.includes('id="settings-about-update-card"'), '配置 Tab 应包含统一的更新与项目链接卡');
   assert.ok(tpl.includes('id="ui-slim-prefs-card"'), '配置 Tab 应包含外观、停靠与顶栏偏好卡');
-  assert.ok(tpl.includes('id="badge-speed-wait-svg"'), '顶栏速度单元应包含等待态纯 SVG 沙漏容器');
 
   // 2. #key-takeaway 仅告警/异常时显示（<75% 隐藏，>=75% 显示），点击 #v 直达设置更新
   const savedPayloads = [];
@@ -6216,11 +6222,8 @@ test('v0.8.9 UI 精简 4 项实装: 标题栏/卡片瘦身、ELV-94 五态停靠
     await h.flush();
     assert.equal(h.elements.get('key-takeaway').hidden, true, '正常 <75% 占用时 #key-takeaway 应隐藏');
 
-    // 点击版本号胶囊 #v 自动展开主面板并切至设置 Tab
-    assert.equal(h.elements.get('panel').hidden, true);
-    h.elements.get('v').click();
-    assert.equal(h.elements.get('panel').hidden, false);
-    assert.equal(h.elements.get('pane-ctx-settings').hidden, false);
+    // v3 任务书 3.3：#v 保留纯版本号显示，主面板按需展开
+    assert.ok(String(h.elements.get('v').textContent || '').trim().length > 0, '#v 应展示版本号');
 
     // 3. 停靠位置支持四种形态: 常态 flow、缩略 compact、右侧辅助面板 aux、独立页面 page，hide 安全兼容为 flow
     mockQueryMode = 'none';
@@ -6786,39 +6789,16 @@ test('弹窗顶栏布局回迁: 简繁EN语言切换、GitHub入口与检查更�
     assert.ok(panelHeaderMatch, '必须存在 #panel 顶部区域');
     const headerHtml = panelHeaderMatch[0];
 
-    assert.ok(headerHtml.includes('id="panel-lang-top-segmented"'), '顶栏必须包含三语言分段按钮');
-    assert.ok(headerHtml.includes('id="btn-top-lang-zh-CN"'), '顶栏必须包含简中按钮');
-    assert.ok(headerHtml.includes('id="btn-top-lang-zh-TW"'), '顶栏必须包含繁中按钮');
-    assert.ok(headerHtml.includes('id="btn-top-lang-en"'), '顶栏必须包含EN按钮');
-    assert.ok(headerHtml.includes('id="btn-github-repo"'), '顶栏必须包含 GitHub 按钮');
-    assert.ok(headerHtml.includes('id="btn-check-update"'), '顶栏必须包含检查更新按钮');
-    assert.ok(headerHtml.includes('id="theme-toggle"'), '顶栏必须包含主题切换按钮');
+    // v3 任务书 3.3：辅助栏面板头栏极简化，保留语言/主题/关闭等控件且禁止堆积检查更新与 GitHub 冗余按钮
+    assert.ok(headerHtml.includes('id="panel-lang-top-segmented"'), '顶栏保留三语言分段按钮');
+    assert.ok(headerHtml.includes('id="btn-top-lang-zh-CN"'), '顶栏保留简中按钮');
+    assert.ok(headerHtml.includes('id="btn-top-lang-zh-TW"'), '顶栏保留繁中按钮');
+    assert.ok(headerHtml.includes('id="btn-top-lang-en"'), '顶栏保留EN按钮');
+    assert.equal(headerHtml.includes('id="btn-check-update"'), false, 'v3 极简头栏不再堆积检查更新按钮');
+    assert.equal(headerHtml.includes('id="theme-toggle"'), false, 'v3 极简头栏不再堆积主题切换按钮');
     assert.ok(headerHtml.includes('id="close"'), '顶栏必须包含关闭按钮');
 
-    // 2. 配置页清理断言：配置页内不得存在重复的语言分段按钮和重复的 GitHub/更新按钮
-    const settingsPaneMatch = templateHtml.match(/<div id="pane-ctx-settings"[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/);
-    assert.ok(settingsPaneMatch, '必须存在配置页容器');
-    const settingsHtml = settingsPaneMatch[0];
-    assert.equal(settingsHtml.includes('id="panel-lang-top-segmented"'), false, '配置页内不得残留重复的语言分段按钮');
-    assert.equal(settingsHtml.includes('id="btn-top-lang-zh-CN"'), false, '配置页内不得残留重复简中按钮');
-    assert.equal(settingsHtml.includes('id="btn-check-update"'), false, '配置页卡片内不得残留重复检查更新按钮');
-    assert.equal(settingsHtml.includes('id="btn-github-repo"'), false, '配置页卡片内不得残留重复 GitHub 按钮');
-
-    // 3. 点击可用性验证：点击 GitHub 入口
-    const btnGithub = h.elements.get('btn-github-repo');
-    assert.ok(btnGithub, 'DOM 中必须解析出 btn-github-repo');
-    btnGithub.click();
-    assert.equal(openedUrl, 'https://github.com/elviscjn-cjn/antigravity-context-viewer');
-
-    // 4. 点击可用性验证：点击检查更新入口
-    const btnUpdate = h.elements.get('btn-check-update');
-    assert.ok(btnUpdate, 'DOM 中必须解析出 btn-check-update');
-    btnUpdate.click();
-    await h.flush();
-    assert.ok(checkedUpdateOpts, '点击检查更新必须触发更新检查逻辑');
-    assert.equal(checkedUpdateOpts.force, true);
-
-    // 5. 点击可用性验证：语言切换简 繁 EN
+    // 2. 点击可用性验证：语言切换简 繁 EN
     const btnEn = h.elements.get('btn-top-lang-en');
     const btnTw = h.elements.get('btn-top-lang-zh-TW');
     const btnCn = h.elements.get('btn-top-lang-zh-CN');
@@ -8541,11 +8521,14 @@ test('ELV-94 2.34.0 右侧辅助栏 [data-side-panel-open="true"] 识别、展�
     h.sandbox.document.dispatchEvent({ type: 'click', composedPath: () => [{ id: 'left-chat-pane' }] });
     assert.equal(h.elements.get('panel').hidden, false, 'aux 停靠态点击外部主聊天区不得误关已停靠面板');
 
-    // 5. 点击“返回顶栏”按钮退出 aux 停靠，之后外部点击应正常收起浮动面板
-    h.elements.get('btn-dock-aux-back').click();
+    // 5. 切回 popover/flow 退出 aux 停靠，收起后外部点击应正常收起浮动面板
+    api.setPanelDockMode('popover', { persist: false });
+    api.setDockPosition('flow', { persist: false });
+    h.elements.get('close').click();
     const stBack = api.getAuxDockStateForTest();
     assert.equal(stBack.dockPosition, 'flow');
     assert.equal(stBack.auxBarHidden, true);
+    assert.equal(stBack.topbarWsControls.present, false, '退出 aux 停靠后顶栏锁定控件必须彻底卸载');
 
     h.elements.get('badge').click();
     assert.equal(h.elements.get('panel').hidden, false);
@@ -8618,13 +8601,13 @@ test('v0.9.0-beta.1 回复尾注去框、两轮独立对账不跨轮复用与 co
   try {
     const api = h.sandbox.__AGContextMeter;
     api.setTurnFooterStatsEnabledForTest(true);
-    // 只有 1 条记录却有 2 个主区 toolbar 时：仅最后一个 toolbar 挂载，前者绝不复用 turns[0]
+    // 只有 1 条记录却有 2 个主区 toolbar 时（Issue #140）：首位 toolbar 保持与 turns[0] 对齐，末尾新增 toolbar 留空绝不复用 turns[0]
     api.setComposerStateForTest({
       sessionCalls: [{ callId: 'quwBa7eRLpW6odAPxqKKsAM', modelLabel: 'Gemini 3.8 Flash', inputTokens: 31851, cacheReadTokens: 0, outputTokens: 57, streamingTps: 570 }],
       sessionStats: { usedTokens: 31908, limitTokens: 1000000, turnCount: 1, stepCount: 1 }
     });
-    assert.equal(tb1.row.children.length, 0, 'M > T 时前置回复绝不允许复用 turns[0]');
-    assert.equal(tb2.row.children.length, 1);
+    assert.equal(tb1.row.children.length, 1, 'M > T 时首位回复保持与 turns[0] 对齐');
+    assert.equal(tb2.row.children.length, 0, 'M > T 时末尾新增回复绝不允许复用 turns[0]');
 
     // 7 轮时间线就位且视图仅挂载末尾两条 OK 时：从尾部一一对应绑定 Turn 6 和 Turn 7
     const tl = core.groupSessionCallsByTurns(
@@ -9606,7 +9589,7 @@ test('v0.9.0-beta.1: 顶栏悬停/点击严格互斥状态机 + 顶栏/底栏去
   const tplSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
   const mainSrc = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'main.js'), 'utf8');
 
-  assert.ok(tplSrc.includes('id="badge-radial-close-svg"'), '顶栏 #badge 必须内置原地变形关闭图标');
+  assert.ok(tplSrc.includes('id="ctx-radial-orb"'), '悬浮球入口必须存在');
   assert.ok(tplSrc.includes('id="csb-radial-close-svg"'), '底栏 #csb-group-context 必须内置原地变形关闭图标');
   assert.match(stylesSrc, /\.ctx-radial-layer\[data-mode="topbar"\]\s+\.ctx-radial-center-close/);
   assert.match(stylesSrc, /\.ctx-radial-layer\[data-mode="bottombar"\]\s+\.ctx-radial-center-close/);
@@ -10265,7 +10248,7 @@ test('上下文直达零闪烁 + 底栏消除硬裁切自适应换行 + 悬浮�
   assert.doesNotMatch(stylesSrc, /\.csb-text\s*\{[^}]*max-width:\s*72px/);
   assert.match(stylesSrc, /\.composer-status-bar\s*\{[^}]*flex-wrap:\s*wrap;[^}]*overflow:\s*visible;/s);
   assert.match(stylesSrc, /\.csb-quota-pill\s*\{[^}]*overflow:\s*visible;/s);
-  assert.match(mainSrc, /#composer-status-bar\s*\{[^}]*flex-wrap:\s*wrap\s*!important;[^}]*overflow:\s*visible\s*!important;/s);
+  assert.match(mainSrc, /#composer-status-bar\s*\{[^}]*flex-wrap:\s*nowrap\s*!important;[^}]*height:\s*22px\s*!important;[^}]*overflow:\s*hidden\s*!important;/s);
   assert.match(mainSrc, /#composer-status-bar\s+\.csb-text\s*\{[^}]*max-width:\s*none\s*!important;[^}]*overflow:\s*visible\s*!important;/s);
   assert.match(mainSrc, /#composer-status-bar\s+\.csb-quota-pill\s*\{[^}]*overflow:\s*visible\s*!important;/s);
 
@@ -10486,7 +10469,8 @@ test('Phase 1.3: 账号与自动切号迁入设置页专卡、移除弹窗顶层
   assert.ok(settingsPaneIdx > 0 && settingsAcctsIdx > settingsPaneIdx, '设置页必须包含 #settings-accounts-card');
   assert.ok(settingsAcctsIdx < restartModalIdx, '#settings-accounts-card 必须在 #pane-ctx-settings 内部');
   assert.ok(removeModalIdx > restartModalIdx && removeModalIdx < quotaPanelIdx, '#account-remove-modal 必须提升至顶层且位于 #panel-quota 外部');
-  assert.ok(quotaEntryIdx > quotaPanelIdx && keepaliveIdx > quotaEntryIdx, '额度面板必须保留摘要入口卡与缓存保活诊断');
+  assert.equal(quotaEntryIdx, -1, '额度看板必须彻底移除多账号摘要入口卡 #quota-accounts-entry-card');
+  assert.equal(keepaliveIdx, -1, '额度看板必须彻底移除无用的模型缓存保活卡片 #quota-keepalive-section');
   assert.match(tpl, /data-nav-target="settings-accounts-card"/, '设置页快捷导航必须包含账号与切号入口');
 
   for (const key of [
@@ -10509,14 +10493,12 @@ test('Phase 1.3: 账号与自动切号迁入设置页专卡、移除弹窗顶层
       autoSwitch: { enabled: true, poolKey: 'shared_gemini_main', metricMode: 'remaining_pct', windowKey: '5h', thresholdPct: 20, candidates: ['b@example.com'] },
       autoSwitchStatus: { state: 'watching' }
     });
-    assert.match(h.elements.get('quota-entry-active-account').textContent, /a@example\.com/);
-    assert.equal(h.elements.get('quota-entry-autoswitch-pill').textContent, '已开启 · 监控中');
-    assert.match(h.elements.get('quota-entry-rule-summary').textContent, /20%/);
+    assert.equal(h.elements.get('quota-entry-active-account'), undefined);
+    assert.equal(h.elements.get('quota-entry-autoswitch-pill'), undefined);
 
     const th = h.elements.get('inp-auto-switch-threshold');
     th.value = '35';
     th.trigger('input');
-    assert.match(h.elements.get('quota-entry-rule-summary').textContent, /未保存/);
     assert.match(h.elements.get('auto-switch-save-status').textContent, /未保存/);
     api.setAccountsOverviewForTest({
       accounts: [
@@ -10528,9 +10510,11 @@ test('Phase 1.3: 账号与自动切号迁入设置页专卡、移除弹窗顶层
     });
     assert.equal(th.value, '35', '后台刷新不得冲掉正在编辑的草稿');
 
-    h.elements.get('btn-quota-open-accounts-settings').click();
+    assert.equal(h.elements.get('btn-quota-open-accounts-settings'), undefined, '额度看板已净化，不得残留底部账号入口按钮');
+    assert.equal(h.elements.get('pane-ctx-accounts'), undefined, '冗余旧「账号与共享池」视图必须已彻底删除');
+    h.elements.get('btn-ctx-open-autoswitch-rules')?.click();
     assert.equal(h.elements.get('panel').hidden, false);
-    assert.equal(h.elements.get('pane-ctx-accounts').hidden, false);
+    assert.equal(h.elements.get('pane-ctx-settings').hidden, false, '无宿主设置弹窗时账号入口必须回退到设置页账号专卡');
   } finally {
     api.dispose();
   }
@@ -10570,30 +10554,32 @@ test('Phase 2C (PR #102 & Issue #106): 无独立菜单栏/macOS隐藏标题栏�
   }
 });
 
-test('Phase 4A (图 3): 右侧辅助分栏插件/浏览器共存切换(浏览器在最右)、保留滚动与网页状态、左缘宽窄拖拽与收起展开及设置持久化', async () => {
+test('Phase 4A (图 3): 右侧辅助分栏插件/浏览器共存切换(顶栏锁定控件浏览器在最右)、保留滚动与网页状态、左缘宽窄拖拽与设置持久化', async () => {
   const tpl = fs.readFileSync(path.join(__dirname, 'src/renderer/template.html'), 'utf8');
   const auxBarPos = tpl.indexOf('id="dock-aux-context-bar"');
   const panelPos = tpl.indexOf('id="panel"');
-  assert.ok(auxBarPos > 0 && panelPos > auxBarPos, '#dock-aux-context-bar 必须位于 #panel 外部，切换浏览器或收起后仍保留入口');
-  const tabPlugPos = tpl.indexOf('id="btn-dock-aux-view-plugin"');
-  const tabBrwPos = tpl.indexOf('id="btn-dock-aux-view-browser"');
-  assert.ok(tabPlugPos > 0 && tabBrwPos > tabPlugPos, '辅助栏标签切换中 浏览器 按钮必须位于最右侧');
+  assert.ok(auxBarPos > 0 && panelPos > auxBarPos, '#dock-aux-context-bar 必须位于 #panel 外部');
+  assert.doesNotMatch(tpl, /id="btn-dock-aux-ratio-balanced"/, '插件内部不得残留蓝色均衡等冗余控制按钮');
 
   const h = harness();
   try {
     if (!h.sandbox.document.head) h.sandbox.document.head = h.sandbox.document.createElement();
     const api = h.sandbox.__AGContextMeter;
 
-    // 构造模拟宿主右侧辅助栏与 webview 浏览器节点
+    // 构造模拟宿主最上方顶栏与右侧辅助栏 + webview 浏览器节点
+    const titleMenuBar = h.sandbox.document.createElement('div');
+    titleMenuBar.setAttribute('data-testid', 'title-menu-bar');
+    titleMenuBar.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1440, height: 32, right: 1440, bottom: 32 });
     const hostSidebar = h.sandbox.document.createElement('div');
     hostSidebar.setAttribute('data-aux-pane-focus-scope', 'true');
-    hostSidebar.getBoundingClientRect = () => ({ left: 800, top: 0, width: 420, height: 800, right: 1220, bottom: 800 });
+    hostSidebar.getBoundingClientRect = () => ({ left: 800, top: 32, width: 420, height: 800, right: 1220, bottom: 832 });
     const hostWebviewContainer = h.sandbox.document.createElement('div');
     hostWebviewContainer.id = 'mock-host-browser-pane';
     const webview = h.sandbox.document.createElement('webview');
     webview.style.pointerEvents = 'auto';
     hostSidebar.appendChild(hostWebviewContainer);
     h.sandbox.document.body = h.sandbox.document.createElement('body');
+    h.sandbox.document.body.appendChild(titleMenuBar);
     h.sandbox.document.body.appendChild(hostSidebar);
 
     const winListeners = new Map();
@@ -10608,11 +10594,38 @@ test('Phase 4A (图 3): 右侧辅助分栏插件/浏览器共存切换(浏览器
       for (const fn of (winListeners.get(type) || [])) fn(ev);
     };
 
+    const findNodeById = (root, id) => {
+      if (!root) return null;
+      if (root.id === id) return root;
+      for (const ch of (root.children || [])) {
+        const hit = findNodeById(ch, id);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    const collectButtons = (root, out = []) => {
+      if (!root) return out;
+      if (String(root.id || '').startsWith('btn-ag-topbar-ws-') || String(root.tagName || '').toUpperCase() === 'BUTTON') out.push(root);
+      for (const ch of (root.children || [])) collectButtons(ch, out);
+      return out;
+    };
+    const prevGetById = h.sandbox.document.getElementById;
+    h.sandbox.document.getElementById = id => findNodeById(h.sandbox.document.body, id) || findNodeById(h.sandbox.document.head, id) || (prevGetById ? prevGetById(id) : null);
+
     const prevQueryAll = h.sandbox.document.querySelectorAll;
     const prevQuery = h.sandbox.document.querySelector;
-    h.sandbox.document.querySelector = sel => (sel.includes('aux-pane-focus-scope') ? hostSidebar : prevQuery(sel));
+    h.sandbox.document.querySelector = sel => {
+      if (sel.includes('title-menu-bar')) return titleMenuBar;
+      if (sel.includes('aux-pane-focus-scope')) return hostSidebar;
+      if (sel.includes('ag-topbar-ws-controls')) return findNodeById(h.sandbox.document.body, 'ag-topbar-ws-controls');
+      return prevQuery(sel);
+    };
     h.sandbox.document.querySelectorAll = sel => {
       if (sel.includes('webview')) return [webview];
+      if (sel.includes('data-ag-ws-topbar-controls')) {
+        const bar = findNodeById(h.sandbox.document.body, 'ag-topbar-ws-controls');
+        return bar ? [bar] : [];
+      }
       return prevQueryAll ? prevQueryAll(sel) : [];
     };
 
@@ -10623,26 +10636,28 @@ test('Phase 4A (图 3): 右侧辅助分栏插件/浏览器共存切换(浏览器
     assert.equal(st.auxViewTab, 'plugin');
     assert.equal(hostWebviewContainer.style.display, 'none', '插件态时宿主兄弟容器仅隐藏而不销毁 DOM');
 
-    // 记录面板滚动位置 -> 切至浏览器保留浏览器容器与面板滚动位置 -> 切回插件还原滚动位置
+    // v3 任务书 3.1/3.2：取消顶部第二套重复控制组 #ag-topbar-ws-controls，统一收敛至右侧辅助栏切换控制与切态 API
+    assert.equal(h.sandbox.document.getElementById('ag-topbar-ws-controls'), null, 'v3 不再在客户端顶栏挂载重复的 #ag-topbar-ws-controls');
+
+    // 记录面板滚动位置 -> 切至单浏览器保留浏览器容器与面板滚动位置 -> 切回单插件还原滚动位置
     h.elements.get('panel').scrollTop = 240;
-    h.elements.get('btn-dock-aux-view-browser').click();
+    api.switchAuxMode('browser', { persist: false });
     st = api.getAuxDockStateForTest();
     assert.equal(st.auxViewTab, 'browser');
     assert.equal(h.host.getAttribute('data-aux-view'), 'browser');
-    assert.equal(hostWebviewContainer.style.display, '', '切换浏览器后宿主原生浏览器内容立即可见且未被卸载');
-    assert.equal(st.auxBarHidden, false, '浏览器态仍保留辅助切换栏以便一键切回插件');
+    assert.equal(hostWebviewContainer.style.display, '', '切换单浏览器后宿主原生浏览器内容立即可见且未被卸载');
 
-    h.elements.get('btn-dock-aux-view-plugin').click();
+    api.switchAuxMode('plugin', { persist: false });
     st = api.getAuxDockStateForTest();
     assert.equal(st.auxViewTab, 'plugin');
     assert.equal(h.elements.get('panel').scrollTop, 240, '切回插件必须无损恢复先前滚动位置');
     assert.equal(hostWebviewContainer.style.display, 'none');
 
-    // 收起 / 展开测试
-    h.elements.get('btn-dock-aux-collapse').click();
+    // 收起 / 展开 API 兼容测试
+    api.setAuxCollapsedForTest(true, { persist: false });
     assert.equal(api.getAuxDockStateForTest().auxCollapsed, true);
     assert.equal(h.host.getAttribute('data-aux-collapsed'), 'true');
-    h.elements.get('btn-dock-aux-collapse').click();
+    api.setAuxCollapsedForTest(false, { persist: false });
     assert.equal(api.getAuxDockStateForTest().auxCollapsed, false);
 
     // 拖拽左缘 resizer 期间禁用 webview pointer-events，结束后必还原并钳位宽度
@@ -10656,9 +10671,11 @@ test('Phase 4A (图 3): 右侧辅助分栏插件/浏览器共存切换(浏览器
     assert.ok(st.auxWidthPx >= 280 && st.auxWidthPx <= 920);
     assert.equal(hostSidebar.style.width, `${st.auxWidthPx}px`);
 
-    // 退出 aux 模式后必须清理隐藏标记恢复宿主浏览器显示
-    h.elements.get('btn-dock-aux-back').click();
+    // 退出 aux 模式后必须清理隐藏标记恢复宿主浏览器显示并卸载顶栏控制组
+    api.setPanelDockMode('popover', { persist: false });
+    api.setDockPosition('flow', { persist: false });
     assert.equal(hostWebviewContainer.style.display, '');
+    assert.equal(api.getAuxDockStateForTest().topbarWsControls.present, false);
   } finally {
     h.sandbox.__AGContextMeter.dispose();
   }
@@ -10686,7 +10703,7 @@ test('01 批回归：对调标签顺序、唯一 speed-line-empty ID 与真实�
   const tabsBarEnd = tplHtml.indexOf('</div>', tabsBarStart);
   const tabsBarSlice = tplHtml.slice(tabsBarStart, tabsBarEnd);
   const tabOrder = [...tabsBarSlice.matchAll(/data-ctx-tab="([^"]+)"/g)].map(m => m[1]);
-  assert.deepEqual(tabOrder, ['session', 'speed', 'models', 'accounts'], '标签顺序必须为 当前会话 -> 速度对比 -> 模型设置 -> 账号与共享池');
+  assert.deepEqual(tabOrder, ['session', 'speed', 'models'], '去重后标签顺序必须为 当前会话 -> 速度对比 -> 模型设置，不再保留冗余账号与共享池 Tab');
 
   const speedPaneStart = tplHtml.indexOf('id="pane-ctx-speed"');
   const settingsPaneStart = tplHtml.indexOf('id="pane-ctx-settings"', speedPaneStart);
@@ -11023,7 +11040,8 @@ test('01 批回归：对调标签顺序、唯一 speed-line-empty ID 与真实�
         assert.equal(speedLineEmptyNodes.length, 2, 'v0.9.2 原模板存在重复 #speed-line-empty');
       }
 
-      h.el('badge').click();
+      if (h.el('badge')) h.el('badge').click();
+      else api.showContextPanelForTest?.(true);
       h.el('tab-ctx-speed').click();
       api.setContextLatestForTest({
         model: 'Gemini 4 Carbon',

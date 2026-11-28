@@ -1327,6 +1327,7 @@ test('10. v0.8.7 集成对齐：modules.json 损坏 fail-closed 保护 & 同版�
 
 test('11. POSIX 词法 PATH 解析（保留 Homebrew 符号链接不落入 Cellar）、ok:true 探测缓存与 skipPythonProbe 验证', async () => {
   const childProcess = require('node:child_process');
+  const origExistsSync = fs.existsSync;
   const origStatSync = fs.statSync;
   const origAccessSync = fs.accessSync;
   const origRealpathSync = fs.realpathSync;
@@ -1343,6 +1344,19 @@ test('11. POSIX 词法 PATH 解析（保留 Homebrew 符号链接不落入 Cella
   let mockProbeOutput = `3.12|${fakeCellarPy}\n`;
 
   try {
+    fs.existsSync = (target, ...rest) => {
+      const s = String(target);
+      if (
+        s === '/opt/homebrew/bin/python3' ||
+        s === '/usr/local/bin/python3' ||
+        s === '/usr/bin/python3' ||
+        s.endsWith('/runtimes/python/bin/python3') ||
+        s.endsWith('/dependencies/python/bin/python3')
+      ) {
+        return false;
+      }
+      return origExistsSync.call(fs, target, ...rest);
+    };
     fs.statSync = (target, ...rest) => {
       const s = String(target);
       if (s === 'python3' || s === 'node_modules/.bin/python3' || s === fakeBrewPy || s === fakeCellarPy) {
@@ -1419,6 +1433,19 @@ test('11. POSIX 词法 PATH 解析（保留 Homebrew 符号链接不落入 Cella
     assert.equal(winRes.ok, true);
     assert.equal(winRes.command, 'python');
 
+    // 4b. darwin 下即使宿主机存在 /opt/homebrew/bin/python3 固定路径，也必须保留该词法符号链接而非 Cellar 路径
+    fs.existsSync = (target, ...rest) => {
+      if (String(target) === '/opt/homebrew/bin/python3') return true;
+      if (String(target) === '/usr/local/bin/python3' || String(target) === '/usr/bin/python3') return false;
+      return origExistsSync.call(fs, target, ...rest);
+    };
+    rehydrate.clearPythonProbeCache();
+    mockProbeOutput = `3.12|${fakeCellarPy}\n`;
+    const brewFixedRes = rehydrate.resolvePython310({ platform: 'darwin', envPath: mockEnvPath });
+    assert.equal(brewFixedRes.ok, true);
+    assert.equal(brewFixedRes.command, '/opt/homebrew/bin/python3');
+    assert.equal(brewFixedRes.command.includes('Cellar'), false);
+
     // 5. restoreRehydrate / restoreRehydrateAsync 支持 skipPythonProbe: true（零次探测调用）
     const env = createTmpIsolatedEnv('ag-rh-skip-probe-');
     const prevStateDir = process.env.AG_METER_STATE_DIR;
@@ -1469,6 +1496,7 @@ test('11. POSIX 词法 PATH 解析（保留 Homebrew 符号链接不落入 Cella
       env.cleanup();
     }
   } finally {
+    fs.existsSync = origExistsSync;
     fs.statSync = origStatSync;
     fs.accessSync = origAccessSync;
     fs.realpathSync = origRealpathSync;

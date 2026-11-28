@@ -19,20 +19,52 @@ const COCKPIT_WIDGET_DEFS = Object.freeze([
 ]);
 
 const COCKPIT_VALID_WIDGET_IDS = new Set(COCKPIT_WIDGET_DEFS.map(d => d.id));
-const COCKPIT_VALID_SPANS = [4, 6, 8, 12];
+const COCKPIT_VALID_SPANS = [3, 4, 6, 8, 12];
 const COCKPIT_VALID_HEIGHTS = ['compact', 'standard', 'expanded'];
-const COCKPIT_MIN_WIDTH = 200;
-const COCKPIT_MIN_HEIGHT = 180;
-const COCKPIT_MAX_HEIGHT = 680;
+const COCKPIT_MIN_WIDTH = 72;
+const COCKPIT_MIN_HEIGHT = 48;
+const COCKPIT_MAX_HEIGHT = 1600;
 const COCKPIT_FLIP_EASING = 'cubic-bezier(0.2, 1.08, 0.32, 1)';
-// 2D Skyline 自动排版参数
+// 2D 自由画布 + Skyline 自动排版参数
 const COCKPIT_SKYLINE_GAP = 10;
 const COCKPIT_SINGLE_COLUMN_BREAKPOINT = 520;
+const COCKPIT_SINGLE_COLUMN_HYSTERESIS_PX = 14;
 const COCKPIT_ROW_SLIVER_PX = 24;
 const COCKPIT_CARD_COMPACT_MAX = 360;
 const COCKPIT_CARD_WIDE_MIN = 560;
-const COCKPIT_MAGNET_DISTANCE = 8;
-const COCKPIT_MAGNET_PREVIEW_DISTANCE = 32;
+const COCKPIT_CARD_SIZE_HYSTERESIS_PX = 10;
+const COCKPIT_MAGNET_DISTANCE = 6;
+const COCKPIT_MAGNET_PREVIEW_DISTANCE = 28;
+let cockpitLayoutTraceEnabled = false;
+const cockpitLayoutTraceLog = [];
+let cockpitLayoutApplyCount = 0;
+let cockpitLayoutLightResizeCount = 0;
+let cockpitLastSingleColumn = null;
+
+function isWorkspacePaneResizingNow(grid = null) {
+  try {
+    if (typeof wsActiveDragging !== 'undefined' && wsActiveDragging) return true;
+    if (grid?.getAttribute?.('data-pane-resizing') === 'true') return true;
+    const panelEl = typeof el === 'function' ? el('panel') : null;
+    if (panelEl?.getAttribute?.('data-pane-resizing') === 'true') return true;
+    if (typeof host !== 'undefined' && host?.getAttribute?.('data-pane-resizing') === 'true') return true;
+    if (typeof document !== 'undefined' && document?.documentElement?.getAttribute?.('data-pane-resizing') === 'true') return true;
+  } catch { }
+  return false;
+}
+
+function getCockpitPerfStatsForTest() {
+  return {
+    applyCount: cockpitLayoutApplyCount,
+    lightResizeCount: cockpitLayoutLightResizeCount,
+    lastSingleColumn: cockpitLastSingleColumn
+  };
+}
+
+function resetCockpitPerfStatsForTest() {
+  cockpitLayoutApplyCount = 0;
+  cockpitLayoutLightResizeCount = 0;
+}
 
 function nearestCockpitGuide(proposals, preview = false) {
   let best = null;
@@ -215,9 +247,20 @@ let stopCockpitManagerPositioning = null;
 
 const BUILTIN_COCKPIT_PRESET_IDS = Object.freeze(['cockpit', 'minimal', 'debug', 'speed_cost', 'collab']);
 
-function normalizeCockpitPresetOrder(rawOrder, customPresets = []) {
+function normalizeCockpitPresetOrder(rawOrder, customPresets = [], deletedPresetIds = []) {
+  const upg = typeof window !== 'undefined' ? window.AGPresetBoardUpgrades : null;
+  if (upg && typeof upg.normalizePresetCatalog === 'function') {
+    const cat = upg.normalizePresetCatalog({
+      presetOrder: rawOrder,
+      customPresets,
+      deletedPresetIds
+    }, BUILTIN_COCKPIT_PRESET_IDS);
+    return Array.isArray(cat?.order) ? cat.order : [];
+  }
+  const deletedSet = new Set((Array.isArray(deletedPresetIds) ? deletedPresetIds : []).map(id => String(id || '').trim()).filter(Boolean));
   const customIds = Array.isArray(customPresets) ? customPresets.map(p => String(p?.id || '').trim()).filter(Boolean) : [];
-  const validIds = new Set([...BUILTIN_COCKPIT_PRESET_IDS, ...customIds]);
+  const activeBuiltins = BUILTIN_COCKPIT_PRESET_IDS.filter(id => !deletedSet.has(id));
+  const validIds = new Set([...activeBuiltins, ...customIds]);
   const seen = new Set();
   const out = [];
   for (const rawId of (Array.isArray(rawOrder) ? rawOrder : [])) {
@@ -226,13 +269,68 @@ function normalizeCockpitPresetOrder(rawOrder, customPresets = []) {
     seen.add(pid);
     out.push(pid);
   }
-  for (const bId of BUILTIN_COCKPIT_PRESET_IDS) {
+  for (const bId of activeBuiltins) {
     if (!seen.has(bId)) { seen.add(bId); out.push(bId); }
   }
   for (const cId of customIds) {
     if (!seen.has(cId)) { seen.add(cId); out.push(cId); }
   }
   return out;
+}
+
+function normalizeCockpitFreeRect(rawRect) {
+  if (!rawRect || typeof rawRect !== 'object' || Array.isArray(rawRect)) return null;
+  const x = Number(rawRect.x);
+  const y = Number(rawRect.y);
+  const w = Number(rawRect.w);
+  const h = Number(rawRect.h);
+  const xRatio = Number(rawRect.xRatio);
+  const wRatio = Number(rawRect.wRatio);
+  const baseW = Number(rawRect.baseW);
+  const hasPixels = Number.isFinite(w) && w >= COCKPIT_MIN_WIDTH && Number.isFinite(h) && h >= COCKPIT_MIN_HEIGHT;
+  const hasRatios = Number.isFinite(wRatio) && wRatio > 0 && wRatio <= 1 && Number.isFinite(h) && h >= COCKPIT_MIN_HEIGHT;
+  if (!hasPixels && !hasRatios) return null;
+  const safeBaseW = Number.isFinite(baseW) && baseW > 0 ? Math.round(baseW) : null;
+  const safeW = hasPixels ? Math.max(COCKPIT_MIN_WIDTH, Math.round(w)) : (safeBaseW ? Math.max(COCKPIT_MIN_WIDTH, Math.round(wRatio * safeBaseW)) : COCKPIT_MIN_WIDTH);
+  const safeH = Math.max(COCKPIT_MIN_HEIGHT, Math.min(COCKPIT_MAX_HEIGHT, Math.round(h)));
+  const safeX = Number.isFinite(x) ? Math.max(0, Math.round(x)) : (safeBaseW && Number.isFinite(xRatio) ? Math.max(0, Math.round(xRatio * safeBaseW)) : 0);
+  const safeY = Number.isFinite(y) ? Math.max(0, Math.round(y)) : 0;
+  const safeXRatio = Number.isFinite(xRatio) && xRatio >= 0 && xRatio <= 1
+    ? Math.round(xRatio * 10000) / 10000
+    : (safeBaseW ? Math.round(Math.max(0, Math.min(1, safeX / safeBaseW)) * 10000) / 10000 : 0);
+  const safeWRatio = Number.isFinite(wRatio) && wRatio > 0 && wRatio <= 1
+    ? Math.round(wRatio * 10000) / 10000
+    : (safeBaseW ? Math.round(Math.max(0.04, Math.min(1, safeW / safeBaseW)) * 10000) / 10000 : 1);
+  return {
+    x: safeX,
+    y: safeY,
+    w: safeW,
+    h: safeH,
+    xRatio: safeXRatio,
+    wRatio: safeWRatio,
+    ...(safeBaseW ? { baseW: safeBaseW } : {})
+  };
+}
+
+function clampFreestyleRectForGrid(rect, containerWidth, opts = {}) {
+  const upg = typeof window !== 'undefined' ? window.AGPresetBoardUpgrades : null;
+  if (upg && typeof upg.clampFreestyleRect === 'function') {
+    return upg.clampFreestyleRect(rect, containerWidth, {
+      minWidth: COCKPIT_MIN_WIDTH,
+      minHeight: COCKPIT_MIN_HEIGHT,
+      maxHeight: COCKPIT_MAX_HEIGHT,
+      ...opts
+    });
+  }
+  const cw = Math.max(1, Math.floor(Number(containerWidth) || 0));
+  const minW = Math.min(Number(opts.minWidth) || COCKPIT_MIN_WIDTH, cw);
+  const minH = Number(opts.minHeight) || COCKPIT_MIN_HEIGHT;
+  const maxH = Number(opts.maxHeight) || COCKPIT_MAX_HEIGHT;
+  const w = Math.max(minW, Math.min(cw, Math.round(Number(rect?.w) || cw)));
+  const h = Math.max(minH, Math.min(maxH, Math.round(Number(rect?.h) || minH)));
+  const x = Math.max(0, Math.min(cw - w, Math.round(Number(rect?.x) || 0)));
+  const y = Math.max(0, Math.round(Number(rect?.y) || 0));
+  return { x, y, w, h };
 }
 
 function buildDefaultCockpitLayout(presetId = 'cockpit') {
@@ -261,6 +359,17 @@ function normalizeCockpitLayout(raw, includePresets = true) {
     ? raw.presetId
     : 'cockpit';
   const base = buildDefaultCockpitLayout(presetId);
+  const hasExplicitModules = Array.isArray(raw.modules);
+  const explicitModulesSet = hasExplicitModules
+    ? new Set(raw.modules.map(m => String(m || '').trim()).filter(id => COCKPIT_VALID_WIDGET_IDS.has(id)))
+    : null;
+  // 严格区分「用户主动删空 / 显式新建 0 模块空分组」与「首次初始化 / 缺失字段的旧配置」：
+  // 仅当显式声明 emptyGroup === true、userClearedAll === true 或 emptyPresetCatalog === true 时才允许 0 模块空态
+  const isExplicitEmptyGroup = Boolean(
+    raw.emptyGroup === true
+    || raw.userClearedAll === true
+    || raw.emptyPresetCatalog === true
+  );
   let srcList = Array.isArray(raw.widgets) ? raw.widgets : [];
   if (srcList.length === 0 && Array.isArray(raw.order) && raw.order.length > 0) {
     const hiddenSet = new Set(Array.isArray(raw.hiddenIds) ? raw.hiddenIds : []);
@@ -268,11 +377,19 @@ function normalizeCockpitLayout(raw, includePresets = true) {
       id,
       span: raw.spans?.[id],
       height: raw.heights?.[id],
-      visible: !hiddenSet.has(id),
+      visible: hasExplicitModules && (explicitModulesSet.size > 0 || isExplicitEmptyGroup)
+        ? explicitModulesSet.has(id)
+        : (isExplicitEmptyGroup ? false : !hiddenSet.has(id)),
       customHeightPx: raw.heightPx?.[id] ?? null
     }));
   }
-  if (srcList.length === 0) srcList = base.widgets;
+  if (srcList.length === 0) {
+    srcList = isExplicitEmptyGroup
+      ? base.widgets.map(w => ({ ...w, visible: false }))
+      : (hasExplicitModules && explicitModulesSet.size > 0
+        ? base.widgets.map(w => ({ ...w, visible: explicitModulesSet.has(w.id) }))
+        : base.widgets);
+  }
 
   const baseMap = new Map(base.widgets.map(w => [w.id, w]));
   const seen = new Set();
@@ -288,16 +405,21 @@ function normalizeCockpitLayout(raw, includePresets = true) {
     const customWidth = item.customWidth === true && Number.isInteger(spanNum) && spanNum >= 1 && spanNum <= 12;
     const span = customWidth || COCKPIT_VALID_SPANS.includes(spanNum) ? spanNum : fb.span;
     const height = COCKPIT_VALID_HEIGHTS.includes(item.height) ? item.height : fb.height;
-    const visible = typeof item.visible === 'boolean' ? item.visible : fb.visible;
+    const visible = typeof item.visible === 'boolean'
+      ? item.visible
+      : (hasExplicitModules && (explicitModulesSet.size > 0 || isExplicitEmptyGroup)
+        ? explicitModulesSet.has(id)
+        : (isExplicitEmptyGroup ? false : fb.visible));
     const rawPx = Number(item.customHeightPx ?? item.heightPx);
-    const customHeightPx = Number.isFinite(rawPx) && rawPx >= 100
+    const customHeightPx = Number.isFinite(rawPx) && rawPx >= COCKPIT_MIN_HEIGHT
       ? Math.max(COCKPIT_MIN_HEIGHT, Math.min(COCKPIT_MAX_HEIGHT, Math.round(rawPx)))
       : null;
-    // P1-1：自由缩放宽度必须原样保留（有限数值且落在 (0, 1]），否则重载后退回 span 推导
+    // 自由缩放宽度原样保留（有限数值且落在 (0, 1]），解除不合理的最小宽高硬锁
     const rawRatio = Number(item.widthRatio);
     const widthRatio = Number.isFinite(rawRatio) && rawRatio > 0 && rawRatio <= 1
       ? rawRatio
       : null;
+    const freeRect = normalizeCockpitFreeRect(item.freeRect);
     normalized.push({
       id,
       span,
@@ -306,22 +428,43 @@ function normalizeCockpitLayout(raw, includePresets = true) {
       customHeightPx,
       ...(customWidth ? { customWidth } : {}),
       ...(widthRatio != null ? { widthRatio } : {}),
-      ...(customHeightPx != null ? { heightPx: customHeightPx } : {})
+      ...(customHeightPx != null ? { heightPx: customHeightPx } : {}),
+      ...(freeRect ? { freeRect } : {})
     });
   }
 
   for (const fb of base.widgets) {
     if (!seen.has(fb.id)) {
+      const nextVis = hasExplicitModules && (explicitModulesSet.size > 0 || isExplicitEmptyGroup)
+        ? explicitModulesSet.has(fb.id)
+        : (isExplicitEmptyGroup ? false : fb.visible);
       const index = fb.id === 'request-cost' && presetId === 'speed_cost'
         ? normalized.findIndex(item => item.id === 'token-breakdown') : -1;
-      if (index >= 0) normalized.splice(index + 1, 0, { ...fb });
-      else normalized.push({ ...fb });
+      const entry = { ...fb, visible: nextVis };
+      if (index >= 0) normalized.splice(index + 1, 0, entry);
+      else normalized.push(entry);
     }
   }
+
+  // 防初次打开误显空态：非显式空分组 / 非用户主动清零时，若全部模块意外为 false，自动恢复该预设默认模块集
+  let visibleModules = normalized.filter(w => w.visible).map(w => w.id);
+  if (visibleModules.length === 0 && !isExplicitEmptyGroup) {
+    for (const w of normalized) {
+      const fb = baseMap.get(w.id);
+      w.visible = fb ? fb.visible !== false : true;
+    }
+    visibleModules = normalized.filter(w => w.visible).map(w => w.id);
+  }
+  const allHidden = visibleModules.length === 0;
+  const hasFreestyle = normalized.some(w => w.visible && w.freeRect);
   const result = {
     version: 1,
     presetId,
-    widgets: normalized
+    widgets: normalized,
+    modules: visibleModules,
+    layoutMode: hasFreestyle ? 'freestyle' : 'flow',
+    ...(allHidden ? { emptyGroup: true } : {}),
+    ...(allHidden && raw.userClearedAll === true ? { userClearedAll: true } : {})
   };
   if (!includePresets) return result;
   const seenPresets = new Set();
@@ -337,26 +480,82 @@ function normalizeCockpitLayout(raw, includePresets = true) {
     if (customPresets.length) result.customPresets = customPresets;
     if (seenPresets.has(raw.activeCustomId)) result.activeCustomId = raw.activeCustomId;
   }
-  result.presetOrder = normalizeCockpitPresetOrder(raw.presetOrder, customPresets);
+  const deletedPresetIds = Array.isArray(raw.deletedPresetIds)
+    ? Array.from(new Set(raw.deletedPresetIds.map(id => String(id || '').trim()).filter(id => BUILTIN_COCKPIT_PRESET_IDS.includes(id))))
+    : [];
+  if (deletedPresetIds.length) result.deletedPresetIds = deletedPresetIds;
+  result.presetOrder = normalizeCockpitPresetOrder(raw.presetOrder, customPresets, deletedPresetIds);
+  if (result.presetOrder.length === 0) {
+    result.presetId = null;
+    result.emptyPresetCatalog = true;
+  } else if (!result.activeCustomId && !result.presetOrder.includes(result.presetId)) {
+    const firstId = result.presetOrder[0];
+    if (seenPresets.has(firstId)) result.activeCustomId = firstId;
+    else result.presetId = firstId;
+  }
   return result;
 }
 
-let presetSortMode = false;
+function createPresetSixDotGripElement() {
+  const grip = document.createElement('span');
+  grip.className = 'ctx-preset-grip ag-preset-handle';
+  grip.setAttribute('aria-hidden', 'true');
+  try {
+    grip.innerHTML = '<svg width="8" height="12" viewBox="0 0 8 12" fill="currentColor" aria-hidden="true"><circle cx="2" cy="2" r="1"/><circle cx="6" cy="2" r="1"/><circle cx="2" cy="6" r="1"/><circle cx="6" cy="6" r="1"/><circle cx="2" cy="10" r="1"/><circle cx="6" cy="10" r="1"/></svg>';
+  } catch {
+    grip.textContent = '⋮⋮';
+  }
+  return grip;
+}
+
+function createPresetAddButtonElement() {
+  const btn = document.createElement('button');
+  btn.id = 'btn-ctx-preset-new-group';
+  btn.type = 'button';
+  btn.className = 'ag-preset-add-btn';
+  btn.setAttribute('data-custom-preset-action', 'new-empty-group');
+  const plus = document.createElement('span');
+  plus.className = 'ag-preset-add-plus';
+  plus.setAttribute('aria-hidden', 'true');
+  plus.textContent = '+';
+  const lbl = document.createElement('span');
+  lbl.className = 'ag-preset-add-label';
+  lbl.setAttribute('data-i18n', 'session.preset.newGroup');
+  lbl.textContent = t('session.preset.newGroup');
+  btn.appendChild?.(plus);
+  btn.appendChild?.(lbl);
+  return btn;
+}
+
+let presetDragInProgress = false;
+let lastCommittedPresetOrderAt = 0;
+
+function ensurePresetUpgradeStyleInjected() {
+  try {
+    const upg = typeof window !== 'undefined' ? window.AGPresetBoardUpgrades : null;
+    if (!upg || typeof upg.PRESET_UPGRADE_CSS !== 'string') return;
+    const rootNode = (typeof shadow !== 'undefined' && shadow) || (typeof document !== 'undefined' ? document.head : null);
+    if (!rootNode || typeof rootNode.querySelector !== 'function' || typeof document === 'undefined') return;
+    if (rootNode.querySelector('#ag-preset-board-upgrades-style')) return;
+    const st = document.createElement('style');
+    st.id = 'ag-preset-board-upgrades-style';
+    st.textContent = upg.PRESET_UPGRADE_CSS;
+    rootNode.appendChild?.(st);
+  } catch { }
+}
 
 function renderCockpitPresetsTrack(layout) {
+  if (presetDragInProgress) return;
+  ensurePresetUpgradeStyleInjected();
   const track = el('ctx-cockpit-presets-track') || el('ctx-cockpit-toolbar')?.querySelector?.('.ctx-cockpit-presets');
-  const sortToggleBtn = el('btn-ctx-preset-sort');
-  if (sortToggleBtn) {
-    sortToggleBtn.setAttribute('aria-pressed', presetSortMode ? 'true' : 'false');
-    sortToggleBtn.classList?.toggle?.('active', presetSortMode);
-    sortToggleBtn.textContent = presetSortMode ? t('session.preset.sortDone') : t('session.preset.sort');
-  }
   const activeId = layout.activeCustomId || layout.presetId;
+  const deletedPresetIds = Array.isArray(layout.deletedPresetIds) ? layout.deletedPresetIds : [];
+  const customList = Array.isArray(layout.customPresets) ? layout.customPresets : [];
+  const order = normalizeCockpitPresetOrder(layout.presetOrder, customList, deletedPresetIds);
+  const langTag = typeof currentLang !== 'undefined' ? String(currentLang) : (typeof lang !== 'undefined' ? String(lang) : 'zh-CN');
   if (track) {
-    const customList = Array.isArray(layout.customPresets) ? layout.customPresets : [];
     const customMap = new Map(customList.map(c => [c.id, c]));
-    const order = normalizeCockpitPresetOrder(layout.presetOrder, customList);
-    const sig = JSON.stringify([activeId, presetSortMode, order, customList.map(c => [c.id, c.name])]);
+    const sig = JSON.stringify([langTag, activeId, order, deletedPresetIds, customList.map(c => [c.id, c.name])]);
     if (track._presetTrackSignature !== sig) {
       track._presetTrackSignature = sig;
       const builtinBtnIdMap = {
@@ -382,7 +581,6 @@ function renderCockpitPresetsTrack(layout) {
           }
         }
       }
-      track.setAttribute?.('data-sort-mode', presetSortMode ? 'true' : 'false');
       const items = [];
       for (let i = 0; i < order.length; i++) {
         const pid = order[i];
@@ -393,84 +591,216 @@ function renderCockpitPresetsTrack(layout) {
         if (!btn) {
           btn = document.createElement('button');
           btn.type = 'button';
-          btn.className = 'ctx-preset-btn';
+          btn.className = 'ctx-preset-btn ctx-preset-pill ag-preset-pill';
           btn.setAttribute('data-cockpit-preset', pid);
+        } else {
+          btn.classList?.add?.('ctx-preset-btn', 'ctx-preset-pill', 'ag-preset-pill');
         }
+        const labelText = customMeta ? customMeta.name : (meta ? t(meta.labelKey) : pid);
         if (customMeta) {
-          btn.textContent = customMeta.name;
           btn.title = customMeta.name;
           btn.setAttribute?.('data-custom-preset', 'true');
         } else if (meta) {
           btn.removeAttribute?.('data-custom-preset');
-          btn.textContent = t(meta.labelKey);
+        }
+        if (typeof document.createElement === 'function' && typeof btn.replaceChildren === 'function' && btn.tagName) {
+          let labelSpan = btn.querySelector?.('.ctx-preset-label');
+          if (!labelSpan) {
+            const grip = createPresetSixDotGripElement();
+            labelSpan = document.createElement('span');
+            labelSpan.className = 'ctx-preset-label ag-preset-label';
+            btn.textContent = '';
+            btn.replaceChildren(grip, labelSpan);
+          }
+          if (meta && !customMeta) {
+            labelSpan.setAttribute?.('data-i18n', meta.labelKey);
+            btn.removeAttribute?.('data-i18n');
+          } else {
+            labelSpan.removeAttribute?.('data-i18n');
+          }
+          labelSpan.textContent = labelText;
+        } else {
+          btn.textContent = labelText;
         }
         const isAct = pid === activeId;
         btn.setAttribute?.('aria-pressed', isAct ? 'true' : 'false');
         btn.classList?.toggle?.('active', isAct);
-
-        if (presetSortMode) {
-          const wrap = document.createElement('span');
-          wrap.className = 'ctx-preset-chip-group';
-          wrap.setAttribute('data-preset-chip-id', pid);
-          const leftBtn = document.createElement('button');
-          leftBtn.type = 'button';
-          leftBtn.className = 'ctx-preset-sort-step';
-          leftBtn.setAttribute('data-preset-move', '-1');
-          leftBtn.setAttribute('data-preset-move-id', pid);
-          leftBtn.setAttribute('aria-label', t('session.preset.moveLeftAria'));
-          leftBtn.textContent = '‹';
-          leftBtn.disabled = i === 0;
-          const rightBtn = document.createElement('button');
-          rightBtn.type = 'button';
-          rightBtn.className = 'ctx-preset-sort-step';
-          rightBtn.setAttribute('data-preset-move', '1');
-          rightBtn.setAttribute('data-preset-move-id', pid);
-          rightBtn.setAttribute('aria-label', t('session.preset.moveRightAria'));
-          rightBtn.textContent = '›';
-          rightBtn.disabled = i === order.length - 1;
-          wrap.appendChild(leftBtn);
-          wrap.appendChild(btn);
-          wrap.appendChild(rightBtn);
-          items.push(wrap);
+        btn.classList?.toggle?.('is-active', isAct);
+        items.push(btn);
+      }
+      let addBtn = el('btn-ctx-preset-new-group') || track.querySelector?.('.ag-preset-add-btn');
+      if (!addBtn && typeof document.createElement === 'function') {
+        addBtn = createPresetAddButtonElement();
+      } else if (addBtn) {
+        addBtn.classList?.add?.('ag-preset-add-btn');
+        addBtn.setAttribute?.('data-custom-preset-action', 'new-empty-group');
+        const lbl = addBtn.querySelector?.('.ag-preset-add-label');
+        if (lbl) {
+          lbl.textContent = t('session.preset.newGroup');
+        } else if (typeof document.createElement === 'function' && typeof addBtn.replaceChildren === 'function' && addBtn.tagName) {
+          const plus = document.createElement('span');
+          plus.className = 'ag-preset-add-plus';
+          plus.setAttribute('aria-hidden', 'true');
+          plus.textContent = '+';
+          const nl = document.createElement('span');
+          nl.className = 'ag-preset-add-label';
+          nl.setAttribute('data-i18n', 'session.preset.newGroup');
+          nl.textContent = t('session.preset.newGroup');
+          addBtn.replaceChildren(plus, nl);
         } else {
-          items.push(btn);
+          addBtn.textContent = t('session.preset.newGroup');
         }
       }
+      if (addBtn) items.push(addBtn);
       if (typeof track.replaceChildren === 'function') {
         track.replaceChildren(...items);
       }
     }
   }
   const actions = el('ctx-custom-preset-actions');
-  if (actions) actions.hidden = !layout.activeCustomId;
+  if (actions) {
+    const upg = typeof window !== 'undefined' ? window.AGPresetBoardUpgrades : null;
+    if (upg && typeof upg.normalizePresetCatalog === 'function' && typeof upg.syncPresetActionPillsDom === 'function') {
+      const cat = upg.normalizePresetCatalog({
+        presetOrder: order,
+        customPresets: customList,
+        deletedPresetIds,
+        activeCustomId: layout.activeCustomId || null,
+        presetId: layout.presetId || null
+      }, BUILTIN_COCKPIT_PRESET_IDS);
+      upg.syncPresetActionPillsDom(actions, cat, langTag);
+    } else {
+      actions.hidden = !activeId;
+    }
+  }
 }
 
 function renderCustomCockpitPresets(layout) {
   renderCockpitPresetsTrack(layout);
 }
 
-function updateCustomCockpitPreset(action, name = '') {
+function createEmptyCustomCockpitGroup({ name = '', persist = true } = {}) {
   const layout = getCockpitLayout();
   const presets = layout.customPresets || [];
+  const deletedPresetIds = Array.isArray(layout.deletedPresetIds) ? layout.deletedPresetIds : [];
+  const curOrder = normalizeCockpitPresetOrder(layout.presetOrder, presets, deletedPresetIds);
+  const existingNames = new Set(presets.map(p => String(p?.name || '').trim()));
+  let finalName = String(name || '').replace(/[（）()]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!finalName) {
+    let seq = presets.length + 1;
+    while (seq < 999) {
+      const cand = t('session.preset.newGroupDefaultName', { n: seq });
+      if (!existingNames.has(cand)) {
+        finalName = cand;
+        break;
+      }
+      seq += 1;
+    }
+    if (!finalName) finalName = `Group ${Date.now().toString(36)}`;
+  }
+  const id = `custom-${window.crypto?.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36).slice(2, 8)}`;
+  const emptyWidgets = buildDefaultCockpitLayout('cockpit').widgets.map(w => ({ ...w, visible: false }));
+  const entry = {
+    id,
+    name: finalName,
+    presetId: 'cockpit',
+    widgets: emptyWidgets,
+    modules: [],
+    emptyGroup: true
+  };
+  const nextCustoms = [...presets, entry];
+  const nextOrder = normalizeCockpitPresetOrder([...curOrder, id], nextCustoms, deletedPresetIds);
+  const saved = persistCockpitLayout({
+    ...layout,
+    presetId: 'cockpit',
+    widgets: emptyWidgets,
+    modules: [],
+    emptyGroup: true,
+    activeCustomId: id,
+    customPresets: nextCustoms,
+    deletedPresetIds,
+    presetOrder: nextOrder
+  }, { persistHost: persist });
+  applyCockpitLayoutToDom();
+  return saved;
+}
+
+function updateCustomCockpitPreset(action, name = '') {
+  if (action === 'new-empty-group') {
+    return createEmptyCustomCockpitGroup({ name, persist: true });
+  }
+  const layout = getCockpitLayout();
+  const presets = layout.customPresets || [];
+  const deletedPresetIds = Array.isArray(layout.deletedPresetIds) ? layout.deletedPresetIds : [];
   const active = presets.find(item => item.id === layout.activeCustomId);
-  const curOrder = normalizeCockpitPresetOrder(layout.presetOrder, presets);
-  if (action === 'delete' && active) {
-    const nextCustoms = presets.filter(item => item !== active);
-    const nextOrder = curOrder.filter(id => id !== active.id);
-    return applyCockpitPreset('cockpit', { customPresets: nextCustoms, presetOrder: nextOrder });
+  const activeTargetId = layout.activeCustomId || layout.presetId || null;
+  const curOrder = normalizeCockpitPresetOrder(layout.presetOrder, presets, deletedPresetIds);
+  const visibleModules = (layout.widgets || []).filter(w => w.visible).map(w => w.id);
+  const emptyFlag = visibleModules.length === 0 ? { emptyGroup: true } : {};
+  if (action === 'delete' && activeTargetId) {
+    const upg = typeof window !== 'undefined' ? window.AGPresetBoardUpgrades : null;
+    if (upg && typeof upg.deletePresetFromCatalog === 'function') {
+      const delRes = upg.deletePresetFromCatalog({
+        ...layout,
+        customPresets: presets,
+        deletedPresetIds,
+        presetOrder: curOrder
+      }, activeTargetId, BUILTIN_COCKPIT_PRESET_IDS);
+      if (delRes?.changed && delRes.nextLayout) {
+        if (delRes.nextActiveId) {
+          return applyCockpitPreset(delRes.nextActiveId, {
+            customPresets: delRes.nextLayout.customPresets || [],
+            presetOrder: delRes.nextLayout.presetOrder || [],
+            deletedPresetIds: delRes.nextLayout.deletedPresetIds || []
+          });
+        }
+        const savedEmpty = persistCockpitLayout({
+          ...delRes.nextLayout,
+          widgets: buildDefaultCockpitLayout('cockpit').widgets.map(w => ({ ...w, visible: false })),
+          modules: [],
+          emptyGroup: true
+        });
+        applyCockpitLayoutToDom();
+        return savedEmpty;
+      }
+    }
+    if (active) {
+      const nextCustoms = presets.filter(item => item !== active);
+      const nextOrder = curOrder.filter(id => id !== active.id);
+      return applyCockpitPreset(nextOrder[0] || 'cockpit', { customPresets: nextCustoms, presetOrder: nextOrder, deletedPresetIds });
+    }
   }
   if (action === 'save') {
     const id = `custom-${window.crypto?.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36).slice(2)}`;
-    const entry = { id, name, presetId: layout.presetId, widgets: layout.widgets };
+    const entry = { id, name, presetId: layout.presetId || 'cockpit', widgets: layout.widgets, modules: visibleModules, ...emptyFlag };
     const nextCustoms = [...presets, entry];
-    const nextOrder = normalizeCockpitPresetOrder([...curOrder, id], nextCustoms);
-    persistCockpitLayout({ ...layout, activeCustomId: id, customPresets: nextCustoms, presetOrder: nextOrder });
+    const nextOrder = normalizeCockpitPresetOrder([...curOrder, id], nextCustoms, deletedPresetIds);
+    persistCockpitLayout({ ...layout, modules: visibleModules, ...emptyFlag, activeCustomId: id, customPresets: nextCustoms, deletedPresetIds, presetOrder: nextOrder });
   } else if (active) {
-    const entry = action === 'rename' ? { ...active, name } : { ...active, widgets: layout.widgets };
-    persistCockpitLayout({ ...layout, customPresets: presets.map(item => item === active ? entry : item), presetOrder: curOrder });
+    const entry = action === 'rename'
+      ? { ...active, name }
+      : { ...active, widgets: layout.widgets, modules: visibleModules, ...emptyFlag };
+    if (action !== 'rename' && visibleModules.length > 0) delete entry.emptyGroup;
+    persistCockpitLayout({ ...layout, modules: visibleModules, ...emptyFlag, customPresets: presets.map(item => item === active ? entry : item), deletedPresetIds, presetOrder: curOrder });
   }
   applyCockpitLayoutToDom();
   return getCockpitLayout();
+}
+
+function swapCockpitPresets(sourceId, targetId, { persist = true } = {}) {
+  const layout = getCockpitLayout();
+  const customs = layout.customPresets || [];
+  const order = normalizeCockpitPresetOrder(layout.presetOrder, customs).slice();
+  const fromIdx = order.indexOf(sourceId);
+  const toIdx = order.indexOf(targetId);
+  if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return layout;
+  const tmp = order[fromIdx];
+  order[fromIdx] = order[toIdx];
+  order[toIdx] = tmp;
+  lastCommittedPresetOrderAt = Date.now();
+  const saved = persistCockpitLayout({ ...layout, presetOrder: order }, { persistHost: persist });
+  renderCockpitPresetsTrack(saved);
+  return saved;
 }
 
 function reorderCockpitPresets(sourceId, targetId, insertAfter = false, { persist = true } = {}) {
@@ -480,11 +810,10 @@ function reorderCockpitPresets(sourceId, targetId, insertAfter = false, { persis
   const fromIdx = order.indexOf(sourceId);
   const toIdxOrig = order.indexOf(targetId);
   if (fromIdx < 0 || toIdxOrig < 0 || sourceId === targetId) return layout;
-  order.splice(fromIdx, 1);
-  let targetIdx = order.indexOf(targetId);
-  if (targetIdx < 0) return layout;
-  if (insertAfter) targetIdx += 1;
-  order.splice(targetIdx, 0, sourceId);
+  const tmp = order[fromIdx];
+  order[fromIdx] = order[toIdxOrig];
+  order[toIdxOrig] = tmp;
+  lastCommittedPresetOrderAt = Date.now();
   const saved = persistCockpitLayout({ ...layout, presetOrder: order }, { persistHost: persist });
   renderCockpitPresetsTrack(saved);
   return saved;
@@ -498,8 +827,10 @@ function moveCockpitPresetByOffset(presetId, offset, { persist = true } = {}) {
   const delta = Number(offset) || 0;
   const nextIdx = idx + delta;
   if (idx < 0 || delta === 0 || nextIdx < 0 || nextIdx >= order.length) return layout;
-  order.splice(idx, 1);
-  order.splice(nextIdx, 0, presetId);
+  const tmp = order[idx];
+  order[idx] = order[nextIdx];
+  order[nextIdx] = tmp;
+  lastCommittedPresetOrderAt = Date.now();
   const saved = persistCockpitLayout({ ...layout, presetOrder: order }, { persistHost: persist });
   renderCockpitPresetsTrack(saved);
   return saved;
@@ -561,10 +892,10 @@ function measureCockpitGrid(grid) {
   };
 }
 
-// 严格锁死合法吸格列数：xl 仅 4/6/8/12，wide 与 medium 仅 6/12，narrow 锁死 12 列仅调高度
+// 合法吸格列数：宽容器支持 3 列四卡同行（3×4=12），narrow 收敛为 12 列单栏
 const COCKPIT_LEGAL_SPANS = Object.freeze({
-  xl: [4, 6, 8, 12],
-  wide: [6, 12],
+  xl: [3, 4, 6, 8, 12],
+  wide: [3, 4, 6, 12],
   medium: [6, 12],
   narrow: [12],
   compact: [12],
@@ -641,16 +972,24 @@ function applyCockpitCardWidth(card, widget, metrics) {
 // 轻量 2D Skyline 紧凑自动排版（确定性、无重叠、可单测）
 // ============================================================================
 
-/** 窄容器（< 520px）收敛为单列 100% 宽 */
-function isSkylineSingleColumn(containerWidth) {
-  return !(Number(containerWidth) >= COCKPIT_SINGLE_COLUMN_BREAKPOINT);
+/** 窄容器（< 520px）收敛为单列 100% 宽；传入 prevSingle 时应用 ±14px 滞回，防止拖拽临界点加滚动条闪切 */
+function isSkylineSingleColumn(containerWidth, prevSingle = null) {
+  const w = Number(containerWidth) || 0;
+  if (prevSingle === true) {
+    return !(w >= COCKPIT_SINGLE_COLUMN_BREAKPOINT + COCKPIT_SINGLE_COLUMN_HYSTERESIS_PX);
+  }
+  if (prevSingle === false) {
+    return w < COCKPIT_SINGLE_COLUMN_BREAKPOINT - COCKPIT_SINGLE_COLUMN_HYSTERESIS_PX;
+  }
+  return !(w >= COCKPIT_SINGLE_COLUMN_BREAKPOINT);
 }
 
 /** 由 widthRatio / span 解析出该卡在给定容器宽下的像素宽 */
-function resolveSkylineCardWidth(widget, containerWidth, gap = 10) {
+function resolveSkylineCardWidth(widget, containerWidth, gap = 10, singleOverride = null) {
   const container = Number(containerWidth) || 0;
   if (container <= 0) return 0;
-  if (isSkylineSingleColumn(container)) return container;
+  const single = typeof singleOverride === 'boolean' ? singleOverride : isSkylineSingleColumn(container);
+  if (single) return container;
   const ratio = Number(widget?.widthRatio);
   if (Number.isFinite(ratio) && ratio > 0) {
     return Math.max(Math.min(COCKPIT_MIN_WIDTH, container), Math.min(container, Math.round(ratio * container)));
@@ -660,72 +999,112 @@ function resolveSkylineCardWidth(widget, containerWidth, gap = 10) {
 }
 
 /**
- * Skyline 紧凑装箱：按顺序为每个盒子找「最高（y 最小）且能放下」的水平空位。
- * 候选 y 取 0 与所有已放置盒子的底边 + 间距；候选 x 取 0 与所有已放置盒子的右边缘 + 间距。
- * 结果确定性、绝不纵向重叠。
+ * 行级规整装箱：同行统一顶边与行底对齐（杜绝短卡下方悬挂空洞），下一行从上一行最大底边 + gap 开始，
+ * 支持四张卡同一行（4×3列或自由宽度）并在行尾小余量时贴齐右缘。
  */
-function packSkylineBoxes(boxes, containerWidth, gap = 10, { fillSlivers = true } = {}) {
+function packSkylineBoxes(boxes, containerWidth, gap = 10, { fillSlivers = true, equalizeRows = true, singleColumn = null } = {}) {
   const container = Number(containerWidth) || 0;
   const safeGap = Number.isFinite(Number(gap)) ? Math.max(0, Number(gap)) : 10;
   const list = Array.isArray(boxes) ? boxes : [];
-  if (container <= 0) return list.map(() => ({ x: 0, y: 0, w: 0, h: 0 }));
-  const single = isSkylineSingleColumn(container);
-  const placed = [];
-  const out = [];
-  for (const box of list) {
-    const w = single ? container : Math.max(1, Math.min(container, Math.round(Number(box?.w) || container)));
+  if (container <= 0) return list.map(() => ({ x: 0, y: 0, w: 0, h: 0, rowHeight: 0 }));
+  const single = typeof singleColumn === 'boolean' ? singleColumn : isSkylineSingleColumn(container);
+  if (single) {
+    let cursorY = 0;
+    return list.map(box => {
+      const h = Math.max(1, Math.ceil(Number(box?.h) || 0));
+      const placed = { x: 0, y: cursorY, w: container, h, rowHeight: h };
+      cursorY += h + safeGap;
+      return placed;
+    });
+  }
+
+  // 按顺序分组成行，确保同行顶边对齐、下一行严格在上一行最大底边 + safeGap 之下
+  const rows = [];
+  let curRow = [];
+  let curRowWidth = 0;
+  const out = new Array(list.length);
+
+  const flushRow = () => {
+    if (!curRow.length) return;
+    rows.push(curRow);
+    curRow = [];
+    curRowWidth = 0;
+  };
+
+  for (let i = 0; i < list.length; i++) {
+    const box = list[i];
+    const w = Math.max(1, Math.min(container, Math.round(Number(box?.w) || container)));
     const h = Math.max(1, Math.ceil(Number(box?.h) || 0));
-    const above = !single && Number.isInteger(box?.alignBelow) ? placed[box.alignBelow] : null;
-    const align = above && above.x + w <= container ? above : null;
-    const minY = align ? align.y + align.h + safeGap : 0;
-    const candidateYs = [minY];
-    for (const p of placed) candidateYs.push(p.y + p.h + safeGap);
-    const ys = Array.from(new Set(candidateYs)).sort((a, b) => a - b);
-    let chosen = null;
-    for (const y of ys) {
-      if (y < minY) continue;
-      const candidateXs = align ? [align.x] : [0];
-      if (!align) for (const p of placed) candidateXs.push(p.x + p.w + safeGap);
-      const xs = Array.from(new Set(candidateXs)).sort((a, b) => a - b);
-      for (const x of xs) {
-        if (x + w > container + 0.5) continue;
-        const collides = placed.some(p =>
-          x < p.x + p.w + safeGap - 0.01 &&
-          x + w + safeGap - 0.01 > p.x &&
-          y < p.y + p.h + safeGap - 0.01 &&
-          y + h + safeGap - 0.01 > p.y);
-        if (!collides) {
-          chosen = { x, y, w, h };
-          break;
+    const forceNewRow = Boolean(Number.isInteger(box?.alignBelow) && curRow.some(item => item.idx === box.alignBelow));
+    const needed = curRow.length === 0 ? w : (curRowWidth + safeGap + w);
+    if (curRow.length > 0 && (forceNewRow || needed > container + 0.5)) {
+      flushRow();
+    }
+    const x = curRow.length === 0 ? 0 : (curRowWidth + safeGap);
+    curRow.push({ idx: i, x, w, h });
+    curRowWidth = x + w;
+  }
+  flushRow();
+
+  let cursorY = 0;
+  for (const row of rows) {
+    const rowMaxH = row.reduce((m, item) => Math.max(m, item.h), 1);
+    if (fillSlivers && row.length > 0) {
+      const last = row[row.length - 1];
+      const rightMost = last.x + last.w;
+      const leftover = container - rightMost;
+      // 极小碎缝（< 24px）直接贴齐最右卡；多卡同行且剩余不足以再放一张卡（1~2 列内余量）按比例弹性补齐
+      if (leftover > 0.5 && leftover < COCKPIT_ROW_SLIVER_PX) {
+        last.w = Math.min(container - last.x, last.w + leftover);
+      } else if (row.length >= 2 && leftover >= COCKPIT_ROW_SLIVER_PX && leftover < COCKPIT_MIN_WIDTH) {
+        const extraEach = Math.floor(leftover / row.length);
+        let rem = leftover - extraEach * row.length;
+        let runX = 0;
+        for (let k = 0; k < row.length; k++) {
+          const add = extraEach + (k === row.length - 1 ? rem : 0);
+          row[k].x = runX;
+          row[k].w = Math.min(container - runX, row[k].w + add);
+          runX += row[k].w + safeGap;
         }
       }
-      if (chosen) break;
     }
-    if (!chosen) {
-      const maxBottom = placed.reduce((m, p) => Math.max(m, p.y + p.h + safeGap), 0);
-      chosen = { x: 0, y: maxBottom, w, h };
+    for (const item of row) {
+      out[item.idx] = {
+        x: item.x,
+        y: cursorY,
+        w: item.w,
+        h: item.h,
+        rowHeight: equalizeRows ? rowMaxH : item.h
+      };
     }
-    placed.push(chosen);
-    out.push({ ...chosen });
-  }
-  // 行尾极小缝隙（< 24px）微调贴齐右缘，彻底消除自由缩放后的右侧碎缝
-  if (fillSlivers && !single) {
-    const rows = new Map();
-    for (const p of out) {
-      const key = `${p.y}`;
-      if (!rows.has(key)) rows.set(key, []);
-      rows.get(key).push(p);
-    }
-    for (const rowBoxes of rows.values()) {
-      const rightMost = rowBoxes.reduce((m, p) => Math.max(m, p.x + p.w), 0);
-      const leftover = container - rightMost;
-      if (leftover > 0.5 && leftover < COCKPIT_ROW_SLIVER_PX) {
-        const target = rowBoxes.reduce((best, p) => (p.x + p.w === rightMost && (!best || p.w > best.w) ? p : best), null);
-        if (target) target.w = Math.min(container - target.x, target.w + leftover);
-      }
-    }
+    cursorY += rowMaxH + safeGap;
   }
   return out;
+}
+
+/**
+ * 带滞回（±10px）计算卡片密度档位，防止 360px / 560px 阈值边界处因滚动条或子像素取整造成持续闪切
+ */
+function resolveCardSizeTierWithHysteresis(card, width) {
+  const prev = card?.getAttribute?.('data-card-size') || '';
+  const h = COCKPIT_CARD_SIZE_HYSTERESIS_PX;
+  if (prev === 'compact') {
+    if (width < COCKPIT_CARD_COMPACT_MAX + h) return 'compact';
+    return width < COCKPIT_CARD_WIDE_MIN ? 'regular' : 'wide';
+  }
+  if (prev === 'regular') {
+    if (width < COCKPIT_CARD_COMPACT_MAX - h) return 'compact';
+    if (width >= COCKPIT_CARD_WIDE_MIN + h) return 'wide';
+    return 'regular';
+  }
+  if (prev === 'wide') {
+    if (width < COCKPIT_CARD_COMPACT_MAX - h) return 'compact';
+    if (width < COCKPIT_CARD_WIDE_MIN - h) return 'regular';
+    return 'wide';
+  }
+  return width < COCKPIT_CARD_COMPACT_MAX
+    ? 'compact'
+    : (width < COCKPIT_CARD_WIDE_MIN ? 'regular' : 'wide');
 }
 
 function aabbOverlaps(a, b, gap = 0) {
@@ -736,12 +1115,103 @@ function aabbOverlaps(a, b, gap = 0) {
 }
 
 
-function applyCockpitLayoutToDom({ renderManager = true } = {}) {
+function syncCardAdaptiveAttrs(card, width, height, { lightDrag = false } = {}) {
+  if (!card) return 'regular';
+  const curSize = card.getAttribute?.('data-card-size') || '';
+  const nextSize = (lightDrag && curSize) ? curSize : resolveCardSizeTierWithHysteresis(card, width);
+  if (!lightDrag && curSize !== nextSize) {
+    card.setAttribute?.('data-card-size', nextSize);
+  }
+  const upg = typeof window !== 'undefined' ? window.AGPresetBoardUpgrades : null;
+  const cls = (upg && typeof upg.classifyCardLayoutState === 'function')
+    ? upg.classifyCardLayoutState(width, height)
+    : (() => {
+      const w = Math.max(0, Number(width) || 0);
+      const h = Math.max(0, Number(height) || 0);
+      let density = 'wide';
+      if (w < 150 || h < 88) density = 'micro';
+      else if (w < 220 || h < 130) density = 'nano';
+      else if (w < 360) density = 'compact';
+      else if (w < 560) density = 'regular';
+      let shape = 'standard';
+      if (w <= 160 && h <= 120) shape = 'micro-tile';
+      else if (h <= 115 && w >= 220) shape = 'wide-strip';
+      else if (w <= 210 && h >= 220) shape = 'tall-strip';
+      return { density, shape };
+    })();
+  if (!lightDrag) {
+    if (card.getAttribute?.('data-card-density') !== cls.density) {
+      card.setAttribute?.('data-card-density', cls.density);
+    }
+    if (card.getAttribute?.('data-card-shape') !== cls.shape) {
+      card.setAttribute?.('data-card-shape', cls.shape);
+    }
+    card.classList?.toggle?.('is-card-micro', cls.density === 'micro');
+    card.classList?.toggle?.('is-card-nano', cls.density === 'nano');
+    card.classList?.toggle?.('is-card-compact', cls.density === 'compact' || cls.density === 'nano' || cls.density === 'micro');
+    card.classList?.toggle?.('is-card-wide-strip', cls.shape === 'wide-strip');
+    card.classList?.toggle?.('is-card-tall-strip', cls.shape === 'tall-strip');
+  }
+  return nextSize;
+}
+
+function resolveFreestyleCardRect(cfg, containerW, fallbackH = COCKPIT_MIN_HEIGHT) {
+  const fr = cfg?.freeRect;
+  if (!fr || typeof fr !== 'object') return null;
+  const baseW = Number(fr.baseW);
+  const sameContainer = Number.isFinite(baseW) && baseW > 0 && Math.abs(containerW - baseW) <= 2;
+  let rawW;
+  let rawX;
+  if (sameContainer && Number.isFinite(Number(fr.w))) {
+    rawW = Number(fr.w);
+    rawX = Number.isFinite(Number(fr.x)) ? Number(fr.x) : 0;
+  } else if (Number.isFinite(Number(fr.wRatio)) && Number(fr.wRatio) > 0) {
+    rawW = Math.round(Number(fr.wRatio) * containerW);
+    rawX = Number.isFinite(Number(fr.xRatio)) ? Math.round(Number(fr.xRatio) * containerW) : 0;
+  } else {
+    rawW = Number.isFinite(Number(fr.w)) ? Number(fr.w) : containerW;
+    rawX = Number.isFinite(Number(fr.x)) ? Number(fr.x) : 0;
+  }
+  const rawY = Number.isFinite(Number(fr.y)) ? Number(fr.y) : 0;
+  const rawH = Number.isFinite(Number(fr.h)) ? Number(fr.h) : Math.max(COCKPIT_MIN_HEIGHT, Number(fallbackH) || COCKPIT_MIN_HEIGHT);
+  return clampFreestyleRectForGrid({ x: rawX, y: rawY, w: rawW, h: rawH }, containerW);
+}
+
+function ensureCockpitEmptyRestoreButton() {
+  const emptyState = el('ctx-cockpit-empty-state');
+  if (!emptyState || typeof document === 'undefined' || typeof document.createElement !== 'function') return null;
+  let restoreBtn = el('btn-ctx-empty-restore-default') || emptyState.querySelector?.('#btn-ctx-empty-restore-default') || null;
+  const langTag = typeof currentLang !== 'undefined' ? String(currentLang) : (typeof lang !== 'undefined' ? String(lang) : 'zh-CN');
+  const upg = typeof window !== 'undefined' ? window.AGPresetBoardUpgrades : null;
+  const label = (upg && typeof upg.formatCopy === 'function' ? upg.formatCopy(langTag, 'restoreDefaultModules') : '') || '恢复默认模块';
+  if (!restoreBtn) {
+    restoreBtn = document.createElement('button');
+    restoreBtn.id = 'btn-ctx-empty-restore-default';
+    restoreBtn.type = 'button';
+    restoreBtn.className = 'ctx-action-pill ctx-empty-restore-btn';
+    restoreBtn.setAttribute('data-cockpit-empty-action', 'restore-default');
+    const actionsWrap = emptyState.querySelector?.('.ctx-cockpit-empty-actions');
+    if (actionsWrap) actionsWrap.appendChild?.(restoreBtn);
+    else emptyState.appendChild?.(restoreBtn);
+  }
+  if (restoreBtn.textContent !== label) restoreBtn.textContent = label;
+  if (!restoreBtn._cockpitRestoreBound) {
+    restoreBtn._cockpitRestoreBound = true;
+    restoreBtn.addEventListener?.('click', (e) => {
+      e?.stopPropagation?.();
+      restoreDefaultCockpitModules({ persist: true });
+    });
+  }
+  return restoreBtn;
+}
+
+function applyCockpitLayoutToDom({ renderManager = true, lightResize = false } = {}) {
   const layout = getCockpitLayout();
   const grid = el('ctx-bento-grid');
   const toolbar = el('ctx-cockpit-toolbar');
+  const paneResizing = Boolean(lightResize || isWorkspacePaneResizingNow(grid));
 
-  if (toolbar) {
+  if (toolbar && !paneResizing) {
     renderCustomCockpitPresets(layout);
     toolbar.querySelectorAll?.('[data-cockpit-preset]')?.forEach(btn => {
       const pId = btn.getAttribute('data-cockpit-preset');
@@ -762,58 +1232,135 @@ function applyCockpitLayoutToDom({ renderManager = true } = {}) {
     if (wId) cardsById.set(wId, node);
   });
 
-  // 按最新排序重排网格子卡片 DOM 顺序并同步列宽、高度模式与显隐
+  // 按最新排序重排网格子卡片 DOM 顺序并同步列宽、高度模式与显隐（拖拽降载帧跳过重复写不变的静态属性与按钮文案）
   const packItems = [];
+  let configuredVisibleCount = 0;
   for (let i = 0; i < layout.widgets.length; i++) {
     const cfg = layout.widgets[i];
+    if (cfg.visible) configuredVisibleCount += 1;
     const card = cardsById.get(cfg.id);
     if (!card) continue;
 
-    if (!grid.hasAttribute?.('data-widget-gesture') && grid.children?.[i] !== card) {
-      if (typeof grid.insertBefore === 'function') grid.insertBefore(card, grid.children?.[i] || null);
-      else grid.appendChild?.(card);
-    }
+    if (!paneResizing) {
+      if (!grid.hasAttribute?.('data-widget-gesture') && grid.children?.[i] !== card) {
+        if (typeof grid.insertBefore === 'function') grid.insertBefore(card, grid.children?.[i] || null);
+        else grid.appendChild?.(card);
+      }
 
-    card.hidden = !cfg.visible;
-    card.style.display = cfg.visible ? '' : 'none';
-    card.setAttribute?.('data-span', String(cfg.span));
-    card.setAttribute?.('data-height-mode', cfg.height);
-    card.classList?.remove?.('is-height-compact', 'is-height-standard', 'is-height-expanded');
-    card.classList?.add?.(`is-height-${cfg.height}`);
+      if (card.hidden !== !cfg.visible) card.hidden = !cfg.visible;
+      const nextDisp = cfg.visible ? '' : 'none';
+      if (card.style.display !== nextDisp) card.style.display = nextDisp;
+      const spanStr = String(cfg.span);
+      if (card.getAttribute?.('data-span') !== spanStr) card.setAttribute?.('data-span', spanStr);
+      if (card.getAttribute?.('data-height-mode') !== cfg.height) {
+        card.setAttribute?.('data-height-mode', cfg.height);
+        card.classList?.remove?.('is-height-compact', 'is-height-standard', 'is-height-expanded');
+        card.classList?.add?.(`is-height-${cfg.height}`);
+      }
 
-    const fixedHeight = cfg.heightPx != null ? cfg.heightPx : cfg.customHeightPx;
-    card.classList?.toggle?.('is-custom-height', fixedHeight != null);
-    if (!card.classList?.contains?.('is-resizing')) {
-      card.style.height = fixedHeight != null ? `${fixedHeight}px` : '';
-    }
+      const fixedHeight = cfg.freeRect?.h != null
+        ? cfg.freeRect.h
+        : (cfg.heightPx != null ? cfg.heightPx : cfg.customHeightPx);
+      card.classList?.toggle?.('is-custom-height', fixedHeight != null);
+      card.classList?.toggle?.('is-freestyle-card', Boolean(cfg.freeRect));
+      if (!card.classList?.contains?.('is-resizing')) {
+        const nextH = fixedHeight != null ? `${fixedHeight}px` : '';
+        if (card.style.height !== nextH) card.style.height = nextH;
+      }
 
-    const heightBtn = card.querySelector?.('[data-widget-action="cycle-height"]');
-    if (heightBtn) {
-      heightBtn.textContent = t(`session.widget.height.${cfg.height}`);
-      heightBtn.title = t('session.widget.heightTitle');
+      if (!card.__agHeightBtn) card.__agHeightBtn = card.querySelector?.('[data-widget-action="cycle-height"]') || null;
+      const heightBtn = card.__agHeightBtn;
+      if (heightBtn) {
+        const hTxt = t(`session.widget.height.${cfg.height}`);
+        if (heightBtn.textContent !== hTxt) heightBtn.textContent = hTxt;
+        heightBtn.title = t('session.widget.heightTitle');
+      }
+      if (cfg.visible) packItems.push({ cfg, card, fixedHeight });
+    } else if (cfg.visible) {
+      const fixedHeight = cfg.freeRect?.h != null
+        ? cfg.freeRect.h
+        : (cfg.heightPx != null ? cfg.heightPx : cfg.customHeightPx);
+      packItems.push({ cfg, card, fixedHeight });
     }
-    if (cfg.visible) packItems.push({ cfg, card, fixedHeight });
   }
 
-  applySkylineLayout(grid, packItems, metrics);
+  if (!paneResizing) {
+    const emptyState = el('ctx-cockpit-empty-state');
+    const isExplicitEmpty = Boolean(layout.emptyGroup || layout.userClearedAll || layout.emptyPresetCatalog);
+    const shouldShowEmpty = configuredVisibleCount === 0 && isExplicitEmpty;
+    if (emptyState) {
+      ensureCockpitEmptyRestoreButton();
+      if (emptyState.hidden !== !shouldShowEmpty) emptyState.hidden = !shouldShowEmpty;
+    }
+  }
 
-  if (renderManager) renderCockpitWidgetManagerPopover();
+  applySkylineLayout(grid, packItems, metrics, { lightResize: paneResizing });
+
+  if (renderManager && !paneResizing) renderCockpitWidgetManagerPopover();
   return layout;
 }
 
+let cockpitAwaitingSizeObserver = null;
+
+function ensureCockpitAwaitingSizeObserver(grid) {
+  if (!grid || typeof ResizeObserver !== 'function') return;
+  if (cockpitAwaitingSizeObserver) {
+    try { cockpitAwaitingSizeObserver.observe(grid); } catch { }
+    return;
+  }
+  try {
+    cockpitAwaitingSizeObserver = new ResizeObserver((entries) => {
+      if (typeof state !== 'undefined' && state?.disposed) return;
+      let becameNonZero = false;
+      for (const entry of entries) {
+        const w = Math.round(entry?.contentRect?.width || entry?.target?.clientWidth || 0);
+        const h = Math.round(entry?.contentRect?.height || entry?.target?.clientHeight || 0);
+        if (w > 0 && h > 0 && entry?.target?.getAttribute?.('data-om-awaiting-size') === 'true') {
+          becameNonZero = true;
+          break;
+        }
+      }
+      if (!becameNonZero) return;
+      grid.removeAttribute?.('data-om-awaiting-size');
+      if (typeof applyCockpitLayoutToDom === 'function') {
+        applyCockpitLayoutToDom({ renderManager: false, lightResize: false });
+      }
+      if (typeof renderContextTrendCard === 'function') renderContextTrendCard({ force: true });
+      if (typeof renderSessionBentoSections === 'function') renderSessionBentoSections();
+    });
+    cockpitAwaitingSizeObserver.observe(grid);
+    if (typeof activeDisposers !== 'undefined') {
+      activeDisposers.add(() => {
+        try { cockpitAwaitingSizeObserver?.disconnect?.(); } catch { }
+        cockpitAwaitingSizeObserver = null;
+      });
+    }
+  } catch { }
+}
+
 /**
- * 落地 2D Skyline 排版：先定宽并量自然高，再装箱、写 left/top/容器总高。
- * 宽网格保留自由缩放预览的位置，单列网格在预览时同步下移后续卡片。
+ * 落地 2D 自由画布 / Skyline 排版：
+ * - 自由画布态（存在 freeRect）：精准还原并按容器宽度实时严格钳制每张卡片的 (x, y, w, h)，
+ *   支持首行及任意行并排放 2/3/4/5/N 个模块、任意合法长宽比，绝不强制踢到下一行或越出容器边界。
+ * - 预设自动流态（无 freeRect）：严格三阶段批量读写分离，零重叠装箱与同排对齐。
  */
-function applySkylineLayout(grid, items, metrics) {
+function applySkylineLayout(grid, items, metrics, { lightResize = false } = {}) {
   const containerW = Math.floor(metrics?.width || 0);
   const gap = COCKPIT_SKYLINE_GAP;
-  grid.setAttribute?.('data-layout-engine', 'skyline');
+  if (grid.getAttribute?.('data-layout-engine') !== 'skyline') {
+    grid.setAttribute?.('data-layout-engine', 'skyline');
+  }
   if (!containerW || !items.length) {
-    // 容器尚未量出宽度（首屏 / 面板隐藏）时绝不落到绝对定位，否则卡片会塌成一条细缝
+    // 容器尚未量出宽度（首屏 / 面板隐藏 / display:none）时绝不落到绝对定位，否则卡片会塌成一条细缝
     grid.removeAttribute?.('data-layout-engine');
+    grid.removeAttribute?.('data-freestyle-active');
     if (grid.style) grid.style.height = '';
-    // 面板随后展开时宽度才会出现，这里做有限次 rAF 重试让 2D 排版真正接管
+    if (containerW <= 0 && items.length) {
+      grid.setAttribute?.('data-om-awaiting-size', 'true');
+      ensureCockpitAwaitingSizeObserver(grid);
+    } else {
+      grid.removeAttribute?.('data-om-awaiting-size');
+    }
     const retryKey = '__agSkylineRetry';
     const attempt = Number(grid[retryKey] || 0);
     if (containerW <= 0 && items.length && attempt < 20 && typeof requestAnimationFrame === 'function') {
@@ -825,84 +1372,297 @@ function applySkylineLayout(grid, items, metrics) {
     return [];
   }
 
+  grid.removeAttribute?.('data-om-awaiting-size');
   grid.__agSkylineRetry = 0;
-  const singleColumn = isSkylineSingleColumn(containerW);
-  const sizeCard = (card, width) => {
-    card.style.width = `${width}px`;
-    card.setAttribute?.('data-card-size', width < COCKPIT_CARD_COMPACT_MAX
-      ? 'compact'
-      : (width < COCKPIT_CARD_WIDE_MIN ? 'regular' : 'wide'));
-  };
-  const measureCardHeight = (card) => {
-    // offsetHeight ignores transforms and includes borders and CSS min-height.
-    const height = card.offsetHeight || card.getBoundingClientRect?.()?.height || 0;
-    return Math.max(COCKPIT_MIN_HEIGHT, Math.ceil(height));
-  };
-  // Install widths before reading heights, so wrapping and container queries are current.
-  for (const item of items) {
-    const { cfg, card } = item;
-    item.width = resolveSkylineCardWidth(cfg, containerW, gap);
-    item.resizing = card.classList?.contains?.('is-resizing');
-    if (item.resizing) continue;
-    card.style.position = 'absolute';
-    card.style.gridColumn = '';
-    card.style.justifySelf = '';
-    sizeCard(card, item.width);
-  }
-  for (const item of items) {
-    if (item.resizing && !singleColumn) {
-      item.width = item.card.offsetWidth || item.card.getBoundingClientRect?.()?.width || item.width;
+  grid.__agLayoutApplying = true;
+  cockpitLayoutApplyCount += 1;
+  try {
+    const isLightDrag = Boolean(lightResize || isWorkspacePaneResizingNow(grid));
+    const hasFreestyleCards = items.some(it => it.cfg.freeRect && typeof it.cfg.freeRect === 'object');
+    grid.setAttribute?.('data-freestyle-active', hasFreestyleCards ? 'true' : 'false');
+
+    if (hasFreestyleCards) {
+      if (isLightDrag) cockpitLayoutLightResizeCount += 1;
+      const placements = new Array(items.length);
+      let maxBottom = 0;
+
+      // 第一轮：先放置全部已有 freeRect 的自由画布卡片并严格钳制到 [0, containerW] 与 y >= 0
+      const pendingIndices = [];
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        item.resizing = Boolean(item.card.classList?.contains?.('is-resizing'));
+        const resolved = resolveFreestyleCardRect(item.cfg, containerW, item.fixedHeight || item.card.__agLastNaturalH || 180);
+        if (resolved) {
+          placements[i] = { ...resolved, rowHeight: resolved.h };
+          maxBottom = Math.max(maxBottom, resolved.y + resolved.h);
+        } else {
+          pendingIndices.push(i);
+        }
+      }
+
+      // 第二轮：为自由模式下新勾选加入且尚无 freeRect 的卡片在画布底部顺序落位
+      let cursorY = maxBottom > 0 ? maxBottom + gap : 0;
+      for (const idx of pendingIndices) {
+        const item = items[idx];
+        const rawW = resolveSkylineCardWidth(item.cfg, containerW, gap, false);
+        const rawH = item.fixedHeight != null
+          ? Math.max(COCKPIT_MIN_HEIGHT, Math.ceil(Number(item.fixedHeight)))
+          : Math.max(COCKPIT_MIN_HEIGHT, Math.ceil(Number(item.card.__agLastNaturalH) || item.card.offsetHeight || 180));
+        const clamped = clampFreestyleRectForGrid({ x: 0, y: cursorY, w: rawW, h: rawH }, containerW);
+        placements[idx] = { ...clamped, rowHeight: clamped.h };
+        cursorY = clamped.y + clamped.h + gap;
+        maxBottom = Math.max(maxBottom, clamped.y + clamped.h);
+      }
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const place = placements[i];
+        if (!place) continue;
+        if (item.resizing) {
+          const curTop = Number.parseFloat(item.card.style?.top || '0') || 0;
+          const curH = Number.parseFloat(item.card.style?.height || '0') || place.h;
+          maxBottom = Math.max(maxBottom, Math.ceil(curTop + curH));
+          continue;
+        }
+        if (isLightDrag && item.card.getAttribute?.('data-ag-drag-offscreen') === 'true') continue;
+        if (item.card.style.position !== 'absolute') item.card.style.position = 'absolute';
+        if (item.card.style.gridColumn !== '') item.card.style.gridColumn = '';
+        if (item.card.style.justifySelf) item.card.style.justifySelf = '';
+        const leftCss = `${place.x}px`;
+        const topCss = `${place.y}px`;
+        const widthCss = `${place.w}px`;
+        const heightCss = `${place.h}px`;
+        if (item.card.style.left !== leftCss) item.card.style.left = leftCss;
+        if (item.card.style.top !== topCss) item.card.style.top = topCss;
+        if (item.card.style.width !== widthCss) item.card.style.width = widthCss;
+        if (item.card.style.height !== heightCss) item.card.style.height = heightCss;
+        if (item.card.style.minHeight) item.card.style.minHeight = '';
+        item.card.__agLastNaturalH = place.h;
+        syncCardAdaptiveAttrs(item.card, place.w, place.h, { lightDrag: isLightDrag });
+        if (!isLightDrag) {
+          if (item.card.__agSpanBtn === undefined) {
+            item.card.__agSpanBtn = item.card.querySelector?.('[data-widget-action="cycle-span"]') || null;
+          }
+          const spanBtn = item.card.__agSpanBtn;
+          if (spanBtn) {
+            const spine = Math.max(1, Math.min(12, Math.round((place.w / containerW) * 12)));
+            const label = t('session.widget.spanLabel', { n: spine });
+            if (spanBtn.textContent !== label) spanBtn.textContent = label;
+            spanBtn.title = t('session.widget.spanTitle');
+          }
+        }
+      }
+
+      const nextGridH = `${Math.max(0, Math.ceil(maxBottom))}px`;
+      if (grid.style.height !== nextGridH) grid.style.height = nextGridH;
+      const nextHeightAttr = String(Math.max(0, Math.ceil(maxBottom)));
+      if (grid.getAttribute?.('data-layout-height') !== nextHeightAttr) {
+        grid.setAttribute?.('data-layout-height', nextHeightAttr);
+      }
+      grid.__agLastAppliedWidth = containerW;
+      return placements;
     }
-    item.height = measureCardHeight(item.card);
-  }
-  const boxes = () => items.map((item, index) => ({
-    w: item.width, h: item.height,
-    alignBelow: item.cfg.id === 'request-cost' && items[index - 1]?.cfg.id === 'token-breakdown' ? index - 1 : null
-  }));
-  let placements = packSkylineBoxes(boxes(), containerW, gap);
-  const widened = [];
-  items.forEach((item, index) => {
-    const width = placements[index].w;
-    if (item.resizing || width === item.width) return;
-    item.width = width;
-    sizeCard(item.card, width);
-    widened.push(item);
-  });
-  if (widened.length) {
-    for (const item of widened) item.height = measureCardHeight(item.card);
-    placements = packSkylineBoxes(boxes(), containerW, gap, { fillSlivers: false });
-  }
-  let maxBottom = 0;
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    const place = placements[i];
-    if (!place) continue;
-    maxBottom = Math.max(maxBottom, place.y + place.h);
-    if (item.resizing && !singleColumn) continue;
-    item.card.style.left = `${place.x}px`;
-    item.card.style.top = `${place.y}px`;
-    if (item.resizing) continue;
-    // 列数按钮文案必须跟随实测宽度并走三语词条，杜绝英文界面泄漏「12列」这类硬编码
-    const spanBtn = item.card.querySelector?.('[data-widget-action="cycle-span"]');
-    if (spanBtn) {
-      const spine = Math.max(1, Math.min(12, Math.round((place.w / containerW) * 12)));
-      const label = t('session.widget.spanLabel', { n: spine });
-      if (spanBtn.textContent !== label) spanBtn.textContent = label;
-      spanBtn.title = t('session.widget.spanTitle');
+
+    // 拖拽期间启用 ±14px 单双列滞回，防止临界点加滚动条来回抖动；松手终态校准按精确 520px 落位
+    const prevSingle = isLightDrag ? cockpitLastSingleColumn : null;
+    const singleColumn = isSkylineSingleColumn(containerW, prevSingle);
+    const colModeChanged = cockpitLastSingleColumn !== null && cockpitLastSingleColumn !== singleColumn;
+    cockpitLastSingleColumn = singleColumn;
+
+    // 1. 纯内存预计算最终行宽度（不触碰任何 DOM 读写）
+    const preBoxes = items.map((item, index) => {
+      const resizing = Boolean(item.card.classList?.contains?.('is-resizing'));
+      item.resizing = resizing;
+      const rawW = resizing && !singleColumn
+        ? (item.card.offsetWidth || item.card.getBoundingClientRect?.()?.width || resolveSkylineCardWidth(item.cfg, containerW, gap, singleColumn))
+        : resolveSkylineCardWidth(item.cfg, containerW, gap, singleColumn);
+      item.width = rawW;
+      return {
+        w: rawW,
+        h: COCKPIT_MIN_HEIGHT,
+        alignBelow: item.cfg.id === 'request-cost' && items[index - 1]?.cfg.id === 'token-breakdown' ? index - 1 : null
+      };
+    });
+    const prePlacements = packSkylineBoxes(preBoxes, containerW, gap, { fillSlivers: true, equalizeRows: false, singleColumn });
+
+    let cardSizeChanged = false;
+    const nextCardSizes = new Array(items.length);
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const finalW = item.resizing ? item.width : (prePlacements[i]?.w || item.width);
+      item.width = finalW;
+      const curSize = item.card.getAttribute?.('data-card-size') || '';
+      const nextSize = (isLightDrag && curSize) ? curSize : resolveCardSizeTierWithHysteresis(item.card, finalW);
+      nextCardSizes[i] = nextSize;
+      if (curSize !== nextSize) cardSizeChanged = true;
     }
+
+    const canReuseCachedHeights = isLightDrag
+      || (!colModeChanged
+        && !cardSizeChanged
+        && items.every(it => it.fixedHeight != null || it.resizing || Number(it.card.__agLastNaturalH) >= COCKPIT_MIN_HEIGHT)
+        && false);
+
+    if (isLightDrag) {
+      cockpitLayoutLightResizeCount += 1;
+    }
+
+    // 2. 阶段 1（纯写批次）：一次性提交所有卡片宽度、密度档位；拖拽期间跳过已冻结的屏外卡片，彻底零无效重排
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.resizing) continue;
+      if (isLightDrag && item.card.getAttribute?.('data-ag-drag-offscreen') === 'true') continue;
+      if (item.card.style.position !== 'absolute') item.card.style.position = 'absolute';
+      if (item.card.style.gridColumn !== '') item.card.style.gridColumn = '';
+      if (item.card.style.justifySelf) item.card.style.justifySelf = '';
+      const widthCss = `${item.width}px`;
+      if (item.card.style.width !== widthCss) item.card.style.width = widthCss;
+      const nextSize = nextCardSizes[i];
+      if (!isLightDrag && item.card.getAttribute?.('data-card-size') !== nextSize) {
+        item.card.setAttribute?.('data-card-size', nextSize);
+      }
+      if (!canReuseCachedHeights && item.fixedHeight == null && item.card.style.minHeight) {
+        item.card.style.minHeight = '';
+      }
+    }
+
+    // 3. 阶段 2（纯读批次）：拖拽期间严格 0 次 offsetHeight 同步回流；非拖拽松手一次性精确测高
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.resizing) {
+        const inlineH = Number.parseFloat(item.card.style?.height || '');
+        if (Number.isFinite(inlineH) && inlineH > 0) {
+          item.height = Math.max(COCKPIT_MIN_HEIGHT, Math.ceil(inlineH));
+          continue;
+        }
+      }
+      if (item.fixedHeight != null) {
+        item.height = Math.max(COCKPIT_MIN_HEIGHT, Math.ceil(Number(item.fixedHeight)));
+        item.card.__agLastNaturalH = item.height;
+        continue;
+      }
+      if (canReuseCachedHeights) {
+        const cachedH = Number(item.card.__agLastNaturalH);
+        item.height = Math.max(COCKPIT_MIN_HEIGHT, Math.ceil(Number.isFinite(cachedH) && cachedH >= COCKPIT_MIN_HEIGHT ? cachedH : COCKPIT_MIN_HEIGHT));
+        continue;
+      }
+      const measured = item.card.offsetHeight || item.card.getBoundingClientRect?.()?.height || 0;
+      const clampedH = Math.max(COCKPIT_MIN_HEIGHT, Math.ceil(measured));
+      item.height = clampedH;
+      item.card.__agLastNaturalH = clampedH;
+    }
+
+    // 4. 内存中最终装箱 + 同行统一顶边与行底对齐（纯计算，零 DOM 访问）
+    const finalBoxes = items.map((item, index) => ({
+      w: item.width,
+      h: item.height,
+      alignBelow: item.cfg.id === 'request-cost' && items[index - 1]?.cfg.id === 'token-breakdown' ? index - 1 : null
+    }));
+    const placements = packSkylineBoxes(finalBoxes, containerW, gap, { fillSlivers: false, equalizeRows: true, singleColumn });
+
+    // 5. 阶段 3（纯写批次）：签名去重与幂等 DOM 提交
+    const layoutSig = `${containerW}|${singleColumn ? '1' : 'm'}|${placements.map((p, i) => `${items[i].cfg.id}:${p.x},${p.y},${p.w},${p.rowHeight || p.h},${nextCardSizes[i]}`).join(';')}`;
+    let maxBottom = 0;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const place = placements[i];
+      if (!place) continue;
+      const boxH = place.rowHeight || place.h;
+      maxBottom = Math.max(maxBottom, place.y + boxH);
+      // 正在自由缩放的卡片或拖拽期屏外冻结卡片保持不动，松手统一校准
+      if (item.resizing) continue;
+      if (isLightDrag && item.card.getAttribute?.('data-ag-drag-offscreen') === 'true') continue;
+      const leftCss = `${place.x}px`;
+      const topCss = `${place.y}px`;
+      if (item.card.style.left !== leftCss) item.card.style.left = leftCss;
+      if (item.card.style.top !== topCss) item.card.style.top = topCss;
+      if (item.fixedHeight == null) {
+        const minHCss = !singleColumn && boxH > item.height ? `${boxH}px` : '';
+        if (item.card.style.minHeight !== minHCss) item.card.style.minHeight = minHCss;
+      }
+      syncCardAdaptiveAttrs(item.card, place.w, boxH, { lightDrag: isLightDrag });
+      if (!isLightDrag) {
+        if (item.card.__agSpanBtn === undefined) {
+          item.card.__agSpanBtn = item.card.querySelector?.('[data-widget-action="cycle-span"]') || null;
+        }
+        const spanBtn = item.card.__agSpanBtn;
+        if (spanBtn) {
+          const spine = Math.max(1, Math.min(12, Math.round((place.w / containerW) * 12)));
+          const label = t('session.widget.spanLabel', { n: spine });
+          if (spanBtn.textContent !== label) spanBtn.textContent = label;
+          spanBtn.title = t('session.widget.spanTitle');
+        }
+      }
+    }
+    if (grid.style.height !== `${Math.max(0, maxBottom)}px`) {
+      grid.style.height = `${Math.max(0, maxBottom)}px`;
+    }
+    const nextHeightAttr = String(Math.max(0, maxBottom));
+    if (grid.getAttribute?.('data-layout-height') !== nextHeightAttr) {
+      grid.setAttribute?.('data-layout-height', nextHeightAttr);
+    }
+    grid.__agLastLayoutSig = layoutSig;
+    grid.__agLastAppliedWidth = containerW;
+    if (cockpitLayoutTraceEnabled) {
+      cockpitLayoutTraceLog.push({
+        ts: Date.now(),
+        containerW,
+        maxBottom,
+        lightResize: isLightDrag,
+        reusedHeights: canReuseCachedHeights,
+        cards: items.map((it, idx) => ({
+          id: it.cfg.id,
+          x: placements[idx]?.x,
+          y: placements[idx]?.y,
+          w: placements[idx]?.w,
+          h: placements[idx]?.rowHeight || placements[idx]?.h,
+          heightMode: it.cfg.height,
+          cardSize: it.card.getAttribute?.('data-card-size')
+        }))
+      });
+      if (cockpitLayoutTraceLog.length > 200) cockpitLayoutTraceLog.shift();
+    }
+    return placements;
+  } finally {
+    grid.__agLayoutApplying = false;
   }
-  grid.style.height = `${Math.max(0, maxBottom)}px`;
-  grid.setAttribute?.('data-layout-height', String(Math.max(0, maxBottom)));
-  return placements;
 }
 
-function applyCockpitPreset(presetId, { persist = true, customPresets = getCockpitLayout().customPresets, presetOrder = getCockpitLayout().presetOrder } = {}) {
+/**
+ * 分隔线拖拽松手后执行一次精确终态校准：同步宽度档位、实测全部卡片自然高并对齐行底，按需刷新趋势 SVG，同时锁定滚动条不乱跳。
+ */
+function flushCockpitLayoutAfterPaneResize() {
+  const grid = el('ctx-bento-grid');
+  const pEl = el('panel');
+  if (!grid || !pEl || pEl.hidden) return;
+  const savedScrollTop = typeof pEl.scrollTop === 'number' ? pEl.scrollTop : 0;
+  if (typeof syncContextPanelContainerWidthTier === 'function') syncContextPanelContainerWidthTier();
+  cockpitLastSingleColumn = null;
+  applyCockpitLayoutToDom({ renderManager: false, lightResize: false });
+  if (typeof activeContextTab === 'undefined' || activeContextTab === 'session') {
+    if (typeof renderContextTrendCard === 'function') renderContextTrendCard();
+  }
+  if (typeof pEl.scrollTop === 'number' && Math.abs(pEl.scrollTop - savedScrollTop) > 2) {
+    try { pEl.scrollTop = savedScrollTop; } catch { }
+  }
+}
+
+function applyCockpitPreset(presetId, { persist = true, customPresets = getCockpitLayout().customPresets, presetOrder = getCockpitLayout().presetOrder, deletedPresetIds = getCockpitLayout().deletedPresetIds } = {}) {
   const custom = customPresets?.find(item => item.id === presetId);
   const safeId = custom?.presetId || (Object.prototype.hasOwnProperty.call(COCKPIT_PRESET_LAYOUTS, presetId) ? presetId : 'cockpit');
-  const nextOrder = normalizeCockpitPresetOrder(presetOrder, customPresets);
+  const nextOrder = normalizeCockpitPresetOrder(presetOrder, customPresets, deletedPresetIds);
   const next = custom
-    ? { presetId: safeId, widgets: custom.widgets, activeCustomId: custom.id, customPresets, presetOrder: nextOrder }
-    : { ...buildDefaultCockpitLayout(safeId), customPresets, presetOrder: nextOrder };
+    ? {
+      presetId: safeId,
+      widgets: custom.widgets,
+      ...(Array.isArray(custom.modules) ? { modules: custom.modules } : {}),
+      ...(custom.emptyGroup ? { emptyGroup: true } : {}),
+      activeCustomId: custom.id,
+      customPresets,
+      deletedPresetIds,
+      presetOrder: nextOrder
+    }
+    : { ...buildDefaultCockpitLayout(safeId), customPresets, deletedPresetIds, presetOrder: nextOrder };
   persistCockpitLayout(next, { persistHost: persist });
 
   if (safeId === 'speed_cost') {
@@ -953,13 +1713,16 @@ function setCockpitWidgetSpan(widgetId, nextSpan = null) {
   const nextWidgets = cur.widgets.map(w => {
     if (w.id !== widgetId) return { ...w };
     const isXl = state.ctxWidthTier === 'xl';
-    const cyclePool = isXl ? [4, 6, 8, 12] : [6, 12];
+    const cyclePool = isXl ? [3, 4, 6, 8, 12] : [6, 12];
     let target = Number(nextSpan);
     if (!COCKPIT_VALID_SPANS.includes(target)) {
       const idx = cyclePool.indexOf(w.span);
       target = cyclePool[(idx + 1) % cyclePool.length];
     }
-    return { ...w, span: target, customWidth: false };
+    const next = { ...w, span: target, customWidth: false };
+    delete next.widthRatio;
+    delete next.freeRect;
+    return next;
   });
   const saved = persistCockpitLayout({ ...cur, widgets: nextWidgets });
   applyCockpitLayoutToDom();
@@ -978,7 +1741,12 @@ function setCockpitWidgetHeight(widgetId, nextHeight = null, customHeightPx = un
       target = COCKPIT_VALID_HEIGHTS[(idx + 1) % COCKPIT_VALID_HEIGHTS.length];
     }
     const px = customHeightPx !== undefined ? customHeightPx : null;
-    return { ...w, height: target, customHeightPx: px };
+    const next = { ...w, height: target, customHeightPx: px };
+    if (px == null) {
+      delete next.heightPx;
+      delete next.freeRect;
+    }
+    return next;
   });
   const saved = persistCockpitLayout({ ...cur, widgets: nextWidgets });
   applyCockpitLayoutToDom();
@@ -993,11 +1761,51 @@ function toggleCockpitWidgetVisibility(widgetId, forceVisible = null) {
     const nextVis = typeof forceVisible === 'boolean' ? forceVisible : !w.visible;
     return { ...w, visible: nextVis };
   });
-  if (!nextWidgets.some(w => w.visible)) {
-    const ov = nextWidgets.find(w => w.id === 'overview-kpi') || nextWidgets[0];
-    if (ov) ov.visible = true;
+  const visibleModules = nextWidgets.filter(w => w.visible).map(w => w.id);
+  const allCleared = visibleModules.length === 0;
+  const payload = {
+    ...cur,
+    widgets: nextWidgets,
+    modules: visibleModules
+  };
+  if (allCleared) {
+    payload.emptyGroup = true;
+    payload.userClearedAll = true;
+  } else {
+    delete payload.emptyGroup;
+    delete payload.userClearedAll;
   }
-  const saved = persistCockpitLayout({ ...cur, widgets: nextWidgets });
+  const saved = persistCockpitLayout(payload);
+  applyCockpitLayoutToDom();
+  if (typeof renderContextTrendCard === 'function') renderContextTrendCard();
+  if (typeof renderSessionBentoSections === 'function') renderSessionBentoSections();
+  if (typeof positionFloatingPanels === 'function') positionFloatingPanels();
+  return saved;
+}
+
+function restoreDefaultCockpitModules({ persist = true } = {}) {
+  const cur = getCockpitLayout();
+  const targetPreset = (cur.presetId && Object.prototype.hasOwnProperty.call(COCKPIT_PRESET_LAYOUTS, cur.presetId))
+    ? cur.presetId
+    : 'cockpit';
+  const nextDeleted = cur.emptyPresetCatalog ? [] : (Array.isArray(cur.deletedPresetIds) ? cur.deletedPresetIds : []);
+  const nextOrder = normalizeCockpitPresetOrder(
+    cur.emptyPresetCatalog ? [...BUILTIN_COCKPIT_PRESET_IDS] : cur.presetOrder,
+    cur.customPresets || [],
+    nextDeleted
+  );
+  const defaults = buildDefaultCockpitLayout(targetPreset);
+  const next = {
+    ...defaults,
+    customPresets: cur.customPresets || [],
+    deletedPresetIds: nextDeleted,
+    presetOrder: nextOrder,
+    activeCustomId: null
+  };
+  delete next.emptyGroup;
+  delete next.userClearedAll;
+  delete next.emptyPresetCatalog;
+  const saved = persistCockpitLayout(next, { persistHost: persist });
   applyCockpitLayoutToDom();
   if (typeof renderContextTrendCard === 'function') renderContextTrendCard();
   if (typeof renderSessionBentoSections === 'function') renderSessionBentoSections();
@@ -1488,10 +2296,24 @@ function initSessionCockpitGrid() {
       updateCustomCockpitPreset(editAction, name);
       editor.hidden = true;
     });
+    const emptyOpenBtn = el('btn-ctx-empty-open-mgr');
+    if (emptyOpenBtn && !emptyOpenBtn._cockpitBound) {
+      emptyOpenBtn._cockpitBound = true;
+      emptyOpenBtn.addEventListener('click', (e) => {
+        e?.stopPropagation?.();
+        cockpitManagerOpen = true;
+        renderCockpitWidgetManagerPopover();
+      });
+    }
     toolbar.addEventListener('click', (e) => {
       const target = e?.target;
       const action = target?.closest?.('[data-custom-preset-action]')?.getAttribute('data-custom-preset-action');
       if (action) {
+        if (action === 'new-empty-group') {
+          editor && (editor.hidden = true);
+          createEmptyCustomCockpitGroup({ persist: true });
+          return;
+        }
         if (action === 'save' || action === 'rename') {
           editAction = action;
           const layout = getCockpitLayout();
@@ -1503,18 +2325,6 @@ function initSessionCockpitGrid() {
           editor.hidden = true;
           if (action !== 'cancel') updateCustomCockpitPreset(action);
         }
-        return;
-      }
-      const moveBtn = target?.closest?.('[data-preset-move]');
-      if (moveBtn) {
-        const moveId = moveBtn.getAttribute('data-preset-move-id');
-        const delta = Number(moveBtn.getAttribute('data-preset-move') || 0);
-        if (moveId && delta) moveCockpitPresetByOffset(moveId, delta, { persist: true });
-        return;
-      }
-      if (target?.closest?.('#btn-ctx-preset-sort')) {
-        presetSortMode = !presetSortMode;
-        renderCockpitPresetsTrack(getCockpitLayout());
         return;
       }
       const presetBtn = target?.closest?.('[data-cockpit-preset]');
@@ -1540,103 +2350,627 @@ function initSessionCockpitGrid() {
       }
     });
 
-    // 预设条长按指针拖拽重排 + 键盘左右方向键辅助排序
+    // 预设条 2D 点对点直接互换拖拽：严格对齐 2d.html 与本轮硬参数
+    // 5px / 140ms 激活 · 11px / 22% 内缩 · 140ms 冷却 · 250ms FLIP · 3.5deg 低通倾角 · 0.02 拉伸 · 末尾新建分组永不参与交换且零高亮
     const presetTrack = el('ctx-cockpit-presets-track') || toolbar.querySelector?.('.ctx-cockpit-presets');
+    const presetShell = el('ctx-cockpit-presets-shell') || presetTrack?.parentElement || null;
     if (presetTrack && !presetTrack._presetDragBound) {
       presetTrack._presetDragBound = true;
       let pDrag = null;
-      const clearPDrag = () => {
+      const PRESET_LONG_PRESS_MS = 140;
+      const PRESET_DRAG_THRESHOLD_PX = 5;
+      const PRESET_DEADZONE_PX = 11;
+      const PRESET_COOLDOWN_MS = 140;
+      const PRESET_FLIP_MS = 250;
+      const PRESET_MAX_TILT_DEG = 0;
+      const PRESET_POINTER_WEIGHT = 0.65;
+      const PRESET_GHOST_CENTER_WEIGHT = 0.35;
+      const PRESET_LOWPASS_KEEP = 0.72;
+      const PRESET_LOWPASS_NEW = 0.28;
+      const PRESET_MAX_STRETCH = 0;
+      const isPresetReducedMotion = () => Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
+
+      const getAddBtnNode = () => el('btn-ctx-preset-new-group') || presetTrack.querySelector?.('.ag-preset-add-btn') || null;
+      const ensureAddBtnLast = () => {
+        const addBtn = getAddBtnNode();
+        if (addBtn && presetTrack.lastElementChild !== addBtn) {
+          presetTrack.appendChild?.(addBtn);
+        }
+      };
+      const getTrackChipNodes = () => Array.from(presetTrack.children || []).filter((n) => {
+        if (!n) return false;
+        if (n.id === 'btn-ctx-preset-new-group' || n.classList?.contains?.('ag-preset-add-btn')) return false;
+        return Boolean(n.getAttribute?.('data-cockpit-preset'));
+      });
+      const getChipPresetId = (node) => node?.getAttribute?.('data-cockpit-preset') || '';
+
+      const ensurePresetGhostPortalStyle = () => {
+        try {
+          if (typeof document === 'undefined' || !document.head) return;
+          if (document.getElementById('ag-pbar-ghost-portal-style')) return;
+          const st = document.createElement('style');
+          st.id = 'ag-pbar-ghost-portal-style';
+          st.textContent = `
+            #ag-pbar-ghost-portal.ag-pbar-ghost-layer {
+              position: fixed !important;
+              inset: 0 !important;
+              pointer-events: none !important;
+              z-index: 2147483647 !important;
+              overflow: visible !important;
+              contain: none !important;
+            }
+            #ag-pbar-ghost-portal .ag-preset-drag-ghost {
+              position: fixed !important;
+              left: 0;
+              top: 0;
+              margin: 0 !important;
+              pointer-events: none !important;
+              z-index: 2147483647 !important;
+              display: inline-flex !important;
+              align-items: center !important;
+              gap: 5px !important;
+              height: 30px !important;
+              padding: 0 10px 0 7px !important;
+              border-radius: 7px !important;
+              box-sizing: border-box !important;
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif !important;
+              font-size: 12px !important;
+              font-weight: 500 !important;
+              line-height: 1 !important;
+              white-space: nowrap !important;
+              background: #1f1f24 !important;
+              color: #e4e4e7 !important;
+              border: 1px solid rgba(255, 255, 255, 0.22) !important;
+              box-shadow: 0 12px 30px -6px rgba(0, 0, 0, 0.55), 0 4px 12px -2px rgba(0, 0, 0, 0.32), 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
+              opacity: 0.98 !important;
+              transform-origin: center center !important;
+              will-change: transform !important;
+              transition: box-shadow 140ms ease, opacity 140ms ease !important;
+            }
+            #ag-pbar-ghost-portal[data-theme="light"] .ag-preset-drag-ghost {
+              background: #ffffff !important;
+              color: #18181b !important;
+              border-color: rgba(24, 24, 27, 0.20) !important;
+              box-shadow: 0 12px 28px -6px rgba(15, 23, 42, 0.20), 0 4px 10px -2px rgba(15, 23, 42, 0.10), 0 0 0 1px rgba(15, 23, 42, 0.06) !important;
+            }
+            #ag-pbar-ghost-portal .ag-preset-drag-ghost.is-dropping {
+              box-shadow: 0 2px 6px rgba(0, 0, 0, 0.14) !important;
+              opacity: 1 !important;
+            }
+            #ag-pbar-ghost-portal .ag-preset-drag-ghost .ag-preset-grip {
+              display: inline-flex !important;
+              align-items: center !important;
+              justify-content: center !important;
+              width: 14px !important;
+              height: 20px !important;
+              flex: 0 0 14px !important;
+              color: inherit !important;
+              opacity: 0.72 !important;
+            }
+            #ag-pbar-ghost-portal .ag-preset-drag-ghost .ag-preset-label {
+              white-space: nowrap !important;
+            }
+            #ag-pbar-ghost-portal .ag-preset-drag-ghost .ctx-preset-pill-del {
+              display: none !important;
+            }
+          `;
+          document.head.appendChild(st);
+        } catch { }
+      };
+
+      const ensurePresetGhostLayer = () => {
+        const canPortalBody = Boolean(
+          typeof document !== 'undefined'
+          && document.body
+          && typeof document.body.appendChild === 'function'
+          && document.head
+          && typeof window?.getComputedStyle === 'function'
+          && host?.isConnected !== false
+        );
+        if (canPortalBody) {
+          ensurePresetGhostPortalStyle();
+          let portal = document.getElementById?.('ag-pbar-ghost-portal') || null;
+          if (!portal && typeof document.createElement === 'function') {
+            portal = document.createElement('div');
+            portal.id = 'ag-pbar-ghost-portal';
+            portal.className = 'ag-pbar-ghost-layer';
+            portal.setAttribute?.('aria-hidden', 'true');
+            document.body.appendChild(portal);
+          } else if (portal && portal.parentElement !== document.body) {
+            document.body.appendChild(portal);
+          }
+          if (portal) {
+            const themeVal = host?.getAttribute?.('data-theme') || 'dark';
+            portal.setAttribute?.('data-theme', themeVal);
+            return portal;
+          }
+        }
+        const ghostRoot = (typeof shadow !== 'undefined' && shadow) ? shadow : document.body;
+        if (!ghostRoot) return null;
+        let layer = ghostRoot.querySelector?.('.ag-pbar-ghost-layer') || null;
+        if (!layer && typeof document.createElement === 'function') {
+          layer = document.createElement('div');
+          layer.className = 'ag-pbar-ghost-layer';
+          layer.setAttribute?.('aria-hidden', 'true');
+          ghostRoot.appendChild?.(layer);
+        }
+        return layer || ghostRoot;
+      };
+
+      const triggerSwapPartnerPulse = (partnerEl) => {
+        if (!partnerEl || isPresetReducedMotion()) return;
+        partnerEl.classList?.remove?.('is-swap-partner');
+        try { void partnerEl.offsetWidth; } catch { }
+        partnerEl.classList?.add?.('is-swap-partner');
+        setTimeout(() => { partnerEl?.classList?.remove?.('is-swap-partner'); }, 440);
+      };
+
+      let shellHeightTimer = null;
+      const animatePresetShellHeight = (prevH, nextH) => {
+        if (!presetShell || !presetShell.style || Math.abs(prevH - nextH) < 1) return;
+        if (shellHeightTimer) clearTimeout(shellHeightTimer);
+        presetShell.style.transition = 'none';
+        presetShell.style.height = `${prevH}px`;
+        try { void presetShell.offsetHeight; } catch { }
+        const dur = isPresetReducedMotion() ? 100 : Math.min(260, PRESET_FLIP_MS);
+        presetShell.style.transition = `height ${dur}ms cubic-bezier(0.22, 1, 0.36, 1)`;
+        presetShell.style.height = `${nextH}px`;
+        shellHeightTimer = setTimeout(() => {
+          if (presetShell.style) {
+            presetShell.style.height = '';
+            presetShell.style.transition = '';
+          }
+        }, dur + 30);
+      };
+
+      const flipTimers = new WeakMap();
+      const applyPresetOrderWithFLIP = (orderedIds) => {
+        const nodes = getTrackChipNodes();
+        const addBtn = getAddBtnNode();
+        const byId = new Map();
+        for (const n of nodes) {
+          const id = getChipPresetId(n);
+          if (id) byId.set(id, n);
+        }
+        const flipTargets = nodes.filter(n => !pDrag || n !== pDrag.chipEl);
+        if (addBtn) flipTargets.push(addBtn);
+
+        const reduced = isPresetReducedMotion();
+        const firstRects = new Map();
+        const prevH = presetShell?.getBoundingClientRect?.()?.height || 0;
+        if (!reduced) {
+          for (const n of flipTargets) {
+            const oldT = flipTimers.get(n);
+            if (oldT) clearTimeout(oldT);
+            if (typeof n.getBoundingClientRect === 'function') {
+              n.style.transition = 'none';
+              n.style.transform = '';
+              firstRects.set(n, n.getBoundingClientRect());
+            }
+          }
+        }
+        for (const id of orderedIds) {
+          const n = byId.get(id);
+          if (n) {
+            if (addBtn && addBtn.parentElement === presetTrack && typeof presetTrack.insertBefore === 'function') {
+              presetTrack.insertBefore(n, addBtn);
+            } else {
+              presetTrack.appendChild?.(n);
+            }
+          }
+        }
+        ensureAddBtnLast();
+        if (presetShell?.style) presetShell.style.height = '';
+        const nextH = presetShell?.getBoundingClientRect?.()?.height || 0;
+        if (prevH > 0 && nextH > 0) animatePresetShellHeight(prevH, nextH);
+
+        if (reduced || !firstRects.size) return;
+        const moved = [];
+        for (const [n, first] of firstRects.entries()) {
+          const last = n.getBoundingClientRect();
+          const dx = first.left - last.left;
+          const dy = first.top - last.top;
+          if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+            n.style.transition = 'none';
+            n.style.transform = `translate3d(${dx.toFixed(2)}px, ${dy.toFixed(2)}px, 0)`;
+            moved.push(n);
+          }
+        }
+        if (!moved.length) return;
+        try { void presetTrack.offsetHeight; } catch { }
+        const startAnim = () => {
+          for (const n of moved) {
+            n.style.transition = `transform ${PRESET_FLIP_MS}ms cubic-bezier(0.22, 1.28, 0.36, 1)`;
+            n.style.transform = 'translate3d(0, 0, 0)';
+            const timer = setTimeout(() => {
+              n.style.transition = '';
+              n.style.transform = '';
+            }, PRESET_FLIP_MS + 35);
+            flipTimers.set(n, timer);
+          }
+        };
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(startAnim);
+        else startAnim();
+      };
+
+      const hitTestFrozenHomeSlots = (hitX, hitY, homeSlots, deadzonePx = PRESET_DEADZONE_PX) => {
+        if (!Array.isArray(homeSlots) || homeSlots.length === 0) return -1;
+        for (let i = 0; i < homeSlots.length; i++) {
+          const slot = homeSlots[i];
+          const r = slot?.rect;
+          if (!r) continue;
+          const insetX = Math.min(deadzonePx, r.width * 0.22);
+          const insetY = Math.min(deadzonePx * 0.4, r.height * 0.22);
+          if (
+            hitX >= r.left + insetX
+            && hitX <= r.right - insetX
+            && hitY >= r.top + insetY
+            && hitY <= r.bottom - insetY
+          ) {
+            return slot.index !== undefined ? slot.index : i;
+          }
+        }
+        return -1;
+      };
+
+      const applyDirectSwapOrder = (targetIdx) => {
+        if (!pDrag || !pDrag.active) return;
+        if (targetIdx < 0 || targetIdx >= pDrag.baseOrder.length) return;
+        if (targetIdx === pDrag.currentTargetIndex) return;
+        const prevTargetIdx = pDrag.currentTargetIndex;
+        pDrag.currentTargetIndex = targetIdx;
+        const nextOrder = pDrag.baseOrder.slice();
+        if (targetIdx !== pDrag.originIndex) {
+          const tmp = nextOrder[pDrag.originIndex];
+          nextOrder[pDrag.originIndex] = nextOrder[targetIdx];
+          nextOrder[targetIdx] = tmp;
+        }
+        pDrag.previewOrder = nextOrder;
+        applyPresetOrderWithFLIP(nextOrder);
+        if (targetIdx !== pDrag.originIndex) {
+          triggerSwapPartnerPulse(pDrag.homeSlots?.[targetIdx]?.el);
+        } else if (prevTargetIdx !== pDrag.originIndex) {
+          triggerSwapPartnerPulse(pDrag.homeSlots?.[prevTargetIdx]?.el);
+        }
+        pDrag.lastReorderAt = Date.now();
+      };
+
+      // 挂载算法与参数供测试定向验证
+      presetTrack.__agPresetSwapApi = {
+        hitTestFrozenHomeSlots,
+        params: {
+          mode: 'swap',
+          longPressMs: PRESET_LONG_PRESS_MS,
+          dragThresholdPx: PRESET_DRAG_THRESHOLD_PX,
+          deadzonePx: PRESET_DEADZONE_PX,
+          cooldownMs: PRESET_COOLDOWN_MS,
+          flipMs: PRESET_FLIP_MS,
+          maxTiltDeg: PRESET_MAX_TILT_DEG,
+          pointerWeight: PRESET_POINTER_WEIGHT,
+          ghostCenterWeight: PRESET_GHOST_CENTER_WEIGHT,
+          lowpassKeep: PRESET_LOWPASS_KEEP,
+          lowpassNew: PRESET_LOWPASS_NEW,
+          maxStretch: PRESET_MAX_STRETCH
+        }
+      };
+
+      const isPresetImmediateEnv = () => Boolean(
+        (typeof process !== 'undefined' && process.env?.NODE_TEST_CONTEXT)
+        || typeof HTMLElement === 'undefined'
+        || !(presetTrack instanceof HTMLElement)
+      );
+
+      let activePresetDrop = null;
+      const finalizeActivePresetDropNow = () => {
+        if (activePresetDrop && typeof activePresetDrop.finalize === 'function') {
+          activePresetDrop.finalize();
+        }
+      };
+
+      const activatePresetDrag = (clientX, clientY) => {
+        if (!pDrag || pDrag.active) return;
+        if (pDrag.pressTimer) {
+          clearTimeout(pDrag.pressTimer);
+          pDrag.pressTimer = null;
+        }
+        const chipNodes = getTrackChipNodes();
+        const originIndex = chipNodes.indexOf(pDrag.chipEl);
+        const homeSlots = chipNodes.map((node, index) => {
+          const r = typeof node.getBoundingClientRect === 'function'
+            ? node.getBoundingClientRect()
+            : { left: index * 86, right: (index + 1) * 86 - 7, top: 0, bottom: 30, width: 79, height: 30 };
+          return { index, id: getChipPresetId(node), el: node, rect: r };
+        });
+        const baseOrder = homeSlots.map(s => s.id).filter(Boolean);
+        const rect = (originIndex >= 0 && homeSlots[originIndex]?.rect)
+          ? homeSlots[originIndex].rect
+          : (typeof pDrag.chipEl?.getBoundingClientRect === 'function'
+            ? pDrag.chipEl.getBoundingClientRect()
+            : { left: clientX - 24, top: clientY - 12, width: 84, height: 30 });
+
+        pDrag.armed = true;
+        pDrag.active = true;
+        presetDragInProgress = true;
+        pDrag.baseOrder = baseOrder.length === pDrag.initialOrder.length ? baseOrder : pDrag.initialOrder.slice();
+        pDrag.originIndex = originIndex >= 0 ? originIndex : Math.max(0, pDrag.baseOrder.indexOf(pDrag.presetId));
+        pDrag.currentTargetIndex = pDrag.originIndex;
+        pDrag.homeSlots = homeSlots;
+        pDrag.offsetX = clientX - rect.left;
+        pDrag.offsetY = clientY - rect.top;
+        pDrag.ghostW = rect.width > 0 ? rect.width : 84;
+        pDrag.ghostH = rect.height > 0 ? rect.height : 30;
+        pDrag.lastMoveX = clientX;
+        pDrag.smoothVx = 0;
+        pDrag.ghostX = rect.left;
+        pDrag.ghostY = rect.top;
+        try {
+          if (pDrag.pointerId != null) pDrag.chipEl?.setPointerCapture?.(pDrag.pointerId);
+        } catch { }
+        try {
+          const sel = window.getSelection?.();
+          if (sel && sel.rangeCount > 0) sel.removeAllRanges?.();
+        } catch { }
+        host?.setAttribute?.('data-preset-dragging', 'true');
+        pDrag.chipEl?.classList?.remove?.('is-jelly-settling');
+        pDrag.chipEl?.classList?.add?.('is-dragging', 'is-drag-placeholder');
+
+        const ghostLayer = ensurePresetGhostLayer();
+        if (ghostLayer && typeof document.createElement === 'function') {
+          const reduced = isPresetReducedMotion();
+          const ghost = document.createElement('div');
+          ghost.className = 'ctx-preset-drag-ghost ag-preset-drag-ghost';
+          ghost.setAttribute?.('data-preset-drag-ghost', pDrag.presetId);
+          ghost.style.width = `${pDrag.ghostW}px`;
+          ghost.style.height = `${pDrag.ghostH}px`;
+          ghost.style.zIndex = '2147483647';
+          ghost.style.pointerEvents = 'none';
+          ghost.style.transform = `translate3d(${rect.left.toFixed(2)}px, ${rect.top.toFixed(2)}px, 0)`;
+
+          const tiltWrap = document.createElement('div');
+          tiltWrap.className = 'ag-ghost-tilt';
+
+          const surface = document.createElement('div');
+          const isActivePill = Boolean(pDrag.chipEl?.classList?.contains?.('active') || pDrag.chipEl?.classList?.contains?.('is-active'));
+          surface.className = `ctx-preset-btn ctx-preset-pill ag-ghost-surface${isActivePill ? ' active is-active-style' : ''}${reduced ? ' is-reduced-lift' : ''}`;
+          const gripSpan = createPresetSixDotGripElement();
+          const lblSpan = document.createElement('span');
+          lblSpan.className = 'ctx-preset-label ag-preset-label';
+          lblSpan.textContent = String(
+            pDrag.chipEl?.querySelector?.('.ctx-preset-label')?.textContent
+            || pDrag.chipEl?.textContent
+            || ''
+          ).replace(/[‹›⋮]/g, '').trim();
+          surface.appendChild?.(gripSpan);
+          surface.appendChild?.(lblSpan);
+
+          tiltWrap.appendChild?.(surface);
+          ghost.appendChild?.(tiltWrap);
+          ghostLayer.appendChild?.(ghost);
+          if (typeof requestAnimationFrame === 'function' && !isPresetImmediateEnv()) {
+            requestAnimationFrame(() => {
+              if (surface.isConnected) surface.classList?.add?.('is-shadow-visible');
+            });
+          } else {
+            surface.classList?.add?.('is-shadow-visible');
+          }
+          pDrag.ghostEl = ghost;
+          pDrag.ghostTiltEl = tiltWrap;
+          pDrag.ghostSurfaceEl = surface;
+        }
+      };
+
+      const finishPresetDragWithDrop = ({ restoreOriginal = false, commitOrder = null } = {}) => {
         if (!pDrag) return;
-        if (pDrag.pressTimer) clearTimeout(pDrag.pressTimer);
-        if (pDrag.chipEl) pDrag.chipEl.classList?.remove?.('is-dragging');
+        const dragSnap = pDrag;
+        if (dragSnap.pressTimer) clearTimeout(dragSnap.pressTimer);
         window.removeEventListener?.('pointermove', onPMove);
         window.removeEventListener?.('pointerup', onPUp);
-        window.removeEventListener?.('pointercancel', clearPDrag);
+        window.removeEventListener?.('pointercancel', onPCancel);
+        window.removeEventListener?.('blur', onPCancel);
         window.removeEventListener?.('keydown', onPEsc, true);
         pDrag = null;
+        host?.removeAttribute?.('data-preset-dragging');
+
+        if (restoreOriginal && dragSnap.active && Array.isArray(dragSnap.baseOrder || dragSnap.initialOrder)) {
+          applyPresetOrderWithFLIP(dragSnap.baseOrder || dragSnap.initialOrder);
+        }
+
+        const commitNow = () => {
+          if (dragSnap.ghostEl) {
+            try { dragSnap.ghostEl.remove?.(); } catch { }
+          }
+          if (dragSnap.chipEl) {
+            dragSnap.chipEl.classList?.remove?.('is-dragging', 'is-drag-placeholder');
+          }
+          presetDragInProgress = false;
+          if (dragSnap.active) {
+            if (Array.isArray(commitOrder)) {
+              lastCommittedPresetOrderAt = Date.now();
+              const layout = getCockpitLayout();
+              const saved = persistCockpitLayout({ ...layout, presetOrder: commitOrder }, { persistHost: true });
+              renderCockpitPresetsTrack(saved);
+            } else if (dragSnap.presetId) {
+              renderCockpitPresetsTrack(getCockpitLayout());
+            }
+          }
+        };
+
+        if (!dragSnap.active || !dragSnap.ghostEl || isPresetImmediateEnv()) {
+          commitNow();
+          return;
+        }
+
+        const reduced = isPresetReducedMotion();
+        const dropMs = reduced ? 110 : 200;
+        const targetRect = typeof dragSnap.chipEl?.getBoundingClientRect === 'function'
+          ? dragSnap.chipEl.getBoundingClientRect()
+          : null;
+        if (!targetRect || targetRect.width <= 0) {
+          commitNow();
+          return;
+        }
+        let settled = false;
+        const finalize = () => {
+          if (settled) return;
+          settled = true;
+          if (activePresetDrop && activePresetDrop.timer) clearTimeout(activePresetDrop.timer);
+          if (activePresetDrop && activePresetDrop.finalize === finalize) activePresetDrop = null;
+          commitNow();
+        };
+        dragSnap.ghostEl.classList?.add?.('is-dropping');
+        if (reduced) dragSnap.ghostEl.classList?.add?.('is-reduced');
+        if (dragSnap.ghostTiltEl) dragSnap.ghostTiltEl.style.transform = 'rotate(0deg) scale(1, 1)';
+        dragSnap.ghostEl.style.transform = `translate3d(${targetRect.left.toFixed(2)}px, ${targetRect.top.toFixed(2)}px, 0)`;
+        const timer = setTimeout(finalize, dropMs + 25);
+        activePresetDrop = { finalize, timer };
       };
+
+      const clearPDrag = ({ restoreOriginal = false } = {}) => {
+        finalizeActivePresetDropNow();
+        finishPresetDragWithDrop({ restoreOriginal, commitOrder: null });
+      };
+      const onPCancel = () => finishPresetDragWithDrop({ restoreOriginal: true, commitOrder: null });
       const onPEsc = (ev) => {
         if (ev.key === 'Escape' && pDrag) {
           ev.preventDefault?.();
-          clearPDrag();
+          ev.stopPropagation?.();
+          finishPresetDragWithDrop({ restoreOriginal: true, commitOrder: null });
         }
       };
       const onPMove = (ev) => {
         if (!pDrag) return;
-        const dx = Math.abs((ev.clientX || 0) - pDrag.startX);
-        const dy = Math.abs((ev.clientY || 0) - pDrag.startY);
-        if (!pDrag.active && (dx > 6 || dy > 6)) {
-          if (!pDrag.armed) { clearPDrag(); return; }
-          pDrag.active = true;
-          pDrag.chipEl?.classList?.add?.('is-dragging');
+        const cx = ev.clientX || 0;
+        const cy = ev.clientY || 0;
+        const dist = Math.hypot(cx - pDrag.startX, cy - pDrag.startY);
+        if (!pDrag.active && dist > PRESET_DRAG_THRESHOLD_PX) {
+          ev.preventDefault?.();
+          activatePresetDrag(cx, cy);
         }
         if (!pDrag.active) return;
-        const btns = Array.from(presetTrack.querySelectorAll?.('[data-cockpit-preset]') || []);
-        for (const cand of btns) {
-          const cid = cand.getAttribute?.('data-cockpit-preset');
-          if (!cid || cid === pDrag.presetId || typeof cand.getBoundingClientRect !== 'function') continue;
-          const r = cand.getBoundingClientRect();
-          if ((ev.clientX || 0) >= r.left && (ev.clientX || 0) <= r.right) {
-            pDrag.targetId = cid;
-            pDrag.insertAfter = (ev.clientX || 0) >= (r.left + r.width / 2);
-            break;
+        ev.preventDefault?.();
+        const left = cx - pDrag.offsetX;
+        const top = cy - pDrag.offsetY;
+        pDrag.ghostX = left;
+        pDrag.ghostY = top;
+        const vx = cx - (pDrag.lastMoveX ?? cx);
+        pDrag.lastMoveX = cx;
+        pDrag.smoothVx = (pDrag.smoothVx || 0) * PRESET_LOWPASS_KEEP + vx * PRESET_LOWPASS_NEW;
+        if (Math.abs(pDrag.smoothVx) < 0.02) pDrag.smoothVx = 0;
+
+        if (pDrag.ghostEl) {
+          pDrag.ghostEl.style.transform = `translate3d(${left.toFixed(2)}px, ${top.toFixed(2)}px, 0)`;
+          if (pDrag.ghostTiltEl) {
+            if (!isPresetReducedMotion()) {
+              const tiltDeg = Math.max(-PRESET_MAX_TILT_DEG, Math.min(PRESET_MAX_TILT_DEG, pDrag.smoothVx * 0.35));
+              const stretch = Math.min(PRESET_MAX_STRETCH, Math.abs(pDrag.smoothVx) * 0.0014);
+              pDrag.ghostTiltEl.style.transform =
+                `rotate(${tiltDeg.toFixed(2)}deg) scale(${(1 + stretch).toFixed(4)}, ${(1 - stretch * 0.7).toFixed(4)})`;
+            } else {
+              pDrag.ghostTiltEl.style.transform = '';
+            }
           }
+        }
+        const now = Date.now();
+        if (now - (pDrag.lastReorderAt || 0) < PRESET_COOLDOWN_MS) return;
+
+        const ghostCX = left + pDrag.ghostW * 0.5;
+        const ghostCY = top + pDrag.ghostH * 0.5;
+        const trackRect = typeof presetTrack.getBoundingClientRect === 'function' ? presetTrack.getBoundingClientRect() : null;
+        const outMargin = 54;
+        const outsideTrack = Boolean(
+          trackRect && trackRect.width > 0 && trackRect.height > 0 && (
+            cx < trackRect.left - outMargin || cx > trackRect.right + outMargin
+            || cy < trackRect.top - outMargin || cy > trackRect.bottom + outMargin
+          )
+        );
+        if (outsideTrack) {
+          if (pDrag.outsideValid !== true) {
+            pDrag.outsideValid = true;
+            if (pDrag.currentTargetIndex !== pDrag.originIndex) {
+              applyDirectSwapOrder(pDrag.originIndex);
+            }
+          }
+          return;
+        }
+        pDrag.outsideValid = false;
+        const hitX = cx * PRESET_POINTER_WEIGHT + ghostCX * PRESET_GHOST_CENTER_WEIGHT;
+        const hitY = cy * PRESET_POINTER_WEIGHT + ghostCY * PRESET_GHOST_CENTER_WEIGHT;
+        const hitIdx = hitTestFrozenHomeSlots(hitX, hitY, pDrag.homeSlots, PRESET_DEADZONE_PX);
+        if (hitIdx !== -1 && hitIdx !== pDrag.currentTargetIndex) {
+          applyDirectSwapOrder(hitIdx);
         }
       };
       const onPUp = () => {
         if (!pDrag) return;
-        const { active, presetId, targetId, insertAfter } = pDrag;
-        clearPDrag();
+        const { active, baseOrder, initialOrder, previewOrder, outsideValid } = pDrag;
+        const refBase = baseOrder || initialOrder;
+        const changed = Boolean(active && !outsideValid && Array.isArray(previewOrder) && JSON.stringify(previewOrder) !== JSON.stringify(refBase));
         if (active) {
           toolbar._suppressPresetClick = true;
-          setTimeout(() => { toolbar._suppressPresetClick = false; }, 120);
-          if (targetId && targetId !== presetId) {
-            reorderCockpitPresets(presetId, targetId, insertAfter, { persist: true });
-          }
+          setTimeout(() => { toolbar._suppressPresetClick = false; }, 260);
         }
+        finishPresetDragWithDrop({
+          restoreOriginal: Boolean(active && outsideValid),
+          commitOrder: changed ? previewOrder : null
+        });
       };
       presetTrack.addEventListener?.('pointerdown', (ev) => {
         if (ev.isPrimary === false || (ev.button != null && ev.button !== 0)) return;
-        if (ev.target?.closest?.('.ctx-preset-sort-step')) return;
+        if (ev.target?.closest?.('.ag-preset-add-btn, #btn-ctx-preset-new-group')) return;
         const btn = ev.target?.closest?.('[data-cockpit-preset]');
         const pid = btn?.getAttribute?.('data-cockpit-preset');
         if (!pid) return;
         clearPDrag();
+        const layout = getCockpitLayout();
+        const curOrder = normalizeCockpitPresetOrder(layout.presetOrder, layout.customPresets || []).slice();
         pDrag = {
           presetId: pid,
-          chipEl: btn.closest?.('.ctx-preset-chip-group') || btn,
+          pointerId: ev.pointerId ?? null,
+          chipEl: btn,
           startX: ev.clientX || 0,
           startY: ev.clientY || 0,
+          offsetX: 0,
+          offsetY: 0,
+          ghostW: 84,
+          ghostH: 30,
+          ghostX: 0,
+          ghostY: 0,
+          lastMoveX: ev.clientX || 0,
+          smoothVx: 0,
+          ghostEl: null,
+          ghostTiltEl: null,
+          ghostSurfaceEl: null,
           armed: false,
           active: false,
-          targetId: null,
-          insertAfter: false,
+          outsideValid: false,
+          lastReorderAt: 0,
+          initialOrder: curOrder,
+          baseOrder: curOrder.slice(),
+          originIndex: Math.max(0, curOrder.indexOf(pid)),
+          currentTargetIndex: Math.max(0, curOrder.indexOf(pid)),
+          homeSlots: [],
+          previewOrder: curOrder.slice(),
           pressTimer: setTimeout(() => {
             if (!pDrag || pDrag.presetId !== pid) return;
-            pDrag.armed = true;
-            pDrag.active = true;
-            pDrag.chipEl?.classList?.add?.('is-dragging');
-          }, 180)
+            activatePresetDrag(pDrag.startX, pDrag.startY);
+          }, PRESET_LONG_PRESS_MS)
         };
-        window.addEventListener?.('pointermove', onPMove);
+        window.addEventListener?.('pointermove', onPMove, { passive: false });
         window.addEventListener?.('pointerup', onPUp);
-        window.addEventListener?.('pointercancel', clearPDrag);
+        window.addEventListener?.('pointercancel', onPCancel);
+        window.addEventListener?.('blur', onPCancel);
         window.addEventListener?.('keydown', onPEsc, true);
       });
       presetTrack.addEventListener?.('keydown', (ev) => {
-        if (!presetSortMode) return;
         const btn = ev.target?.closest?.('[data-cockpit-preset]');
         const pid = btn?.getAttribute?.('data-cockpit-preset');
         if (!pid) return;
-        if (ev.key === 'ArrowLeft') {
+        if (ev.key === 'Enter' || ev.key === ' ') {
           ev.preventDefault?.();
-          moveCockpitPresetByOffset(pid, -1, { persist: true });
-        } else if (ev.key === 'ArrowRight') {
-          ev.preventDefault?.();
-          moveCockpitPresetByOffset(pid, 1, { persist: true });
+          applyCockpitPreset(pid, { persist: true });
         }
       });
-      activeDisposers.add(clearPDrag);
+      activeDisposers.add(() => clearPDrag({ restoreOriginal: false }));
     }
   }
 
@@ -1651,16 +2985,59 @@ function initSessionCockpitGrid() {
 
   if (grid && !grid._cockpitBound) {
     grid._cockpitBound = true;
-    for (const card of Array.from(grid.children || [])) {
-      if (!card.querySelector?.('.ag-widget-resize-handle')) continue;
-      for (const side of ['left', 'right']) {
+    const ensureCardEightDirHandles = (card) => {
+      if (!card || !card.getAttribute?.('data-widget-id') || card._ag8DirHandlesReady) return;
+      card._ag8DirHandlesReady = true;
+      // 1. 复用或补建右下角（se）柄并标注全向属性
+      let seHandle = card.querySelector?.('.ag-widget-resize-handle:not([data-resize-edge]):not([data-resize-vertical])')
+        || card.querySelector?.('.ag-widget-resize-handle[data-resize-vertical="bottom"][data-resize-edge="right"]');
+      if (!seHandle) {
+        seHandle = document.createElement('div');
+        seHandle.className = 'ctx-widget-resize-handle ag-widget-resize-handle';
+        card.appendChild(seHandle);
+      }
+      seHandle.setAttribute('data-resize-vertical', 'bottom');
+      seHandle.setAttribute('data-resize-edge', 'right');
+      seHandle.setAttribute('data-resize-axis', 'both');
+      seHandle.setAttribute('data-resize-dir', 'se');
+      seHandle.setAttribute('aria-hidden', 'true');
+
+      // 2. 补齐其余 3 个角柄（nw / ne / sw）
+      const extraCorners = [
+        { vertical: 'top', edge: 'left', dir: 'nw' },
+        { vertical: 'top', edge: 'right', dir: 'ne' },
+        { vertical: 'bottom', edge: 'left', dir: 'sw' }
+      ];
+      for (const spec of extraCorners) {
         const grip = document.createElement('div');
         grip.className = 'ctx-widget-resize-handle ag-widget-resize-handle';
-        grip.setAttribute('data-resize-vertical', 'top');
-        grip.setAttribute('data-resize-edge', side);
+        grip.setAttribute('data-resize-vertical', spec.vertical);
+        grip.setAttribute('data-resize-edge', spec.edge);
+        grip.setAttribute('data-resize-axis', 'both');
+        grip.setAttribute('data-resize-dir', spec.dir);
         grip.setAttribute('aria-hidden', 'true');
         card.appendChild(grip);
       }
+      // 3. 补齐 4 条纯边柄（n / s 仅改高、w / e 仅改宽）
+      const edges = [
+        { axis: 'y', vertical: 'top', dir: 'n' },
+        { axis: 'y', vertical: 'bottom', dir: 's' },
+        { axis: 'x', edge: 'left', dir: 'w' },
+        { axis: 'x', edge: 'right', dir: 'e' }
+      ];
+      for (const edgeSpec of edges) {
+        const edgeEl = document.createElement('div');
+        edgeEl.className = 'ctx-widget-resize-edge ag-widget-resize-edge';
+        edgeEl.setAttribute('data-resize-axis', edgeSpec.axis);
+        edgeEl.setAttribute('data-resize-dir', edgeSpec.dir);
+        if (edgeSpec.vertical) edgeEl.setAttribute('data-resize-vertical', edgeSpec.vertical);
+        if (edgeSpec.edge) edgeEl.setAttribute('data-resize-edge', edgeSpec.edge);
+        edgeEl.setAttribute('aria-hidden', 'true');
+        card.appendChild(edgeEl);
+      }
+    };
+    for (const card of Array.from(grid.children || [])) {
+      ensureCardEightDirHandles(card);
     }
 
     grid.addEventListener('click', (e) => {
@@ -1774,26 +3151,35 @@ function initSessionCockpitGrid() {
       const sizes = new WeakMap();
       let gridWidth = null;
       let repackFrame = null;
+      let chartRedrawTimer = null;
       const observer = new ResizeObserver(entries => {
-        let changed = false;
+        // 切断反馈环：布局提交自身或拖拽分隔线期间完全由统一拖拽通道接管，严禁 12 个卡片 ResizeObserver 反向唤醒重排风暴
+        if (grid.__agLayoutApplying || activeDrag != null) return;
+        const paneResizing = isWorkspacePaneResizingNow(grid);
+        if (paneResizing) return;
+        let widthChanged = false;
         let needsRepack = false;
         for (const { target, contentRect } of entries) {
-          const { width, height } = contentRect;
+          const width = Math.round(contentRect.width);
+          const height = Math.round(contentRect.height);
           if (target === grid) {
-            // 宽度从 0 变为 >0（面板首次展开）时必须立刻装箱，不能只等短时 rAF 轮询
             const engineEngaged = grid.getAttribute?.('data-layout-engine') === 'skyline';
-            if (width > 0 && (width !== gridWidth || !engineEngaged)) {
+            const wasAwaitingSize = grid.getAttribute?.('data-om-awaiting-size') === 'true' || !grid.__agLastAppliedWidth;
+            if (width > 0 && (gridWidth === null || gridWidth === 0 || wasAwaitingSize || Math.abs(width - gridWidth) >= 2 || !engineEngaged)) {
               gridWidth = width;
+              widthChanged = true;
               needsRepack = true;
+              if (wasAwaitingSize) grid.removeAttribute?.('data-om-awaiting-size');
+            } else if (width === 0) {
+              gridWidth = 0;
             }
             continue;
           }
           if (!width || !height || target.classList?.contains?.('is-resizing')) continue;
-          const stamp = `${Math.round(width)}:${Math.round(height)}`;
-          if (sizes.get(target) !== stamp) {
-            sizes.set(target, stamp);
-            changed = true;
-            // 卡片自身拿到真实尺寸就说明面板已展开，必须让 Skyline 立刻接管
+          const prev = sizes.get(target);
+          if (!prev || Math.abs(prev.w - width) >= 2 || Math.abs(prev.h - height) >= 2) {
+            if (!prev || Math.abs(prev.w - width) >= 2) widthChanged = true;
+            sizes.set(target, { w: width, h: height });
             needsRepack = true;
           }
           if (grid.getAttribute?.('data-layout-engine') !== 'skyline') needsRepack = true;
@@ -1802,18 +3188,23 @@ function initSessionCockpitGrid() {
           repackFrame = requestFrame(() => {
             repackFrame = null;
             if (state.disposed || activeDrag) return;
-            const reflow = () => { applyCockpitLayoutToDom({ renderManager: false }); };
+            if (grid.__agLayoutApplying) return;
+            if (isWorkspacePaneResizingNow(grid)) return;
+            const reflow = () => { applyCockpitLayoutToDom({ renderManager: false, lightResize: false }); };
             try {
               if (isSkyline()) reflow();
               else flipLayout(visibleCards(), reflow);
             } catch { reflow(); }
           });
         }
-        if (!changed || geometryFrame != null) return;
-        geometryFrame = requestFrame(() => {
-          geometryFrame = null;
+        // 非插件自控拖拽（例如拖宿主原生双会话线或调整主窗口宽）时对图表重建做 120ms 尾缘防抖，避免每帧销毁重建 SVG 造成卡顿
+        if (!widthChanged) return;
+        if (chartRedrawTimer) clearTimeout(chartRedrawTimer);
+        chartRedrawTimer = setTimeout(() => {
+          chartRedrawTimer = null;
+          if (state.disposed || grid.__agLayoutApplying || isWorkspacePaneResizingNow(grid)) return;
           if (!el('panel')?.hidden) redrawCardCharts();
-        });
+        }, 120);
       });
       for (const card of Array.from(grid.children || [])) {
         if (card.getAttribute?.('data-widget-id')) observer.observe(card);
@@ -1823,6 +3214,7 @@ function initSessionCockpitGrid() {
         activeDisposers.add(() => {
           observer.disconnect();
           if (repackFrame != null) cancelFrame(repackFrame);
+          if (chartRedrawTimer != null) clearTimeout(chartRedrawTimer);
         });
       }
     }
@@ -1860,10 +3252,13 @@ function initSessionCockpitGrid() {
       magnetLines.clear();
       grid.removeAttribute?.('data-gesture-height-locked');
       if (drag.mode === 'resize') {
-        const { card, originalHeight } = drag;
+        const { card, originalHeight, originalWidth, originalLeft, originalTop } = drag;
         card.classList.remove('is-resizing');
         card.removeAttribute?.('data-resizing');
         card.style.height = originalHeight;
+        if (originalWidth !== undefined) card.style.width = originalWidth;
+        if (originalLeft !== undefined) card.style.left = originalLeft;
+        if (originalTop !== undefined) card.style.top = originalTop;
       }
       if (drag.mode === 'reorder') {
         const c = drag.card;
@@ -1935,6 +3330,34 @@ function initSessionCockpitGrid() {
       });
     };
 
+    const snapshotVisibleCardsToFreestyle = (layout, gridW, excludeId = null) => {
+      if (!layout || !Array.isArray(layout.widgets) || !(gridW > 0)) return;
+      const gridRect = grid.getBoundingClientRect?.() || { left: 0, top: 0 };
+      const byId = new Map(layout.widgets.map(w => [w.id, w]));
+      for (const node of visibleCards()) {
+        const wId = node.getAttribute?.('data-widget-id');
+        if (!wId || wId === excludeId) continue;
+        const cfg = byId.get(wId);
+        if (!cfg || !cfg.visible || cfg.freeRect) continue;
+        const box = node.getBoundingClientRect?.();
+        const styleL = Number.parseFloat(node.style?.left);
+        const styleT = Number.parseFloat(node.style?.top);
+        const styleW = Number.parseFloat(node.style?.width);
+        const styleH = Number.parseFloat(node.style?.height);
+        const rawX = Number.isFinite(styleL) ? styleL : (box ? box.left - gridRect.left : 0);
+        const rawY = Number.isFinite(styleT) ? styleT : (box ? box.top - gridRect.top : 0);
+        const rawW = Number.isFinite(styleW) && styleW > 0 ? styleW : (box?.width || gridW);
+        const rawH = Number.isFinite(styleH) && styleH > 0 ? styleH : (node.offsetHeight || box?.height || 180);
+        const clamped = clampFreestyleRectForGrid({ x: rawX, y: rawY, w: rawW, h: rawH }, gridW);
+        const wRatio = Math.round(clamp(clamped.w / gridW, 0.04, 1) * 10000) / 10000;
+        const xRatio = Math.round(clamp(clamped.x / gridW, 0, 1) * 10000) / 10000;
+        cfg.freeRect = { ...clamped, xRatio, wRatio, baseW: gridW };
+        cfg.widthRatio = wRatio;
+        cfg.heightPx = clamped.h;
+        cfg.customHeightPx = clamped.h;
+      }
+    };
+
     const startReorderSession = (card, wId, pointerEv) => {
       flipAnimations.get(card)?.cancel();
       card.classList.remove('is-settling');
@@ -1950,11 +3373,22 @@ function initSessionCockpitGrid() {
       const offsetX = startX - rect.left;
       const offsetY = startY - rect.top;
       const gridRect = grid.getBoundingClientRect();
+      const gridW = Math.floor(measureCockpitGrid(grid).width || gridRect.width || 0);
+      const startGridLeft = Math.max(0, Number.isFinite(Number.parseFloat(card.style?.left))
+        ? Number.parseFloat(card.style.left)
+        : (rect.left - gridRect.left));
+      const startGridTop = Math.max(0, Number.isFinite(Number.parseFloat(card.style?.top))
+        ? Number.parseFloat(card.style.top)
+        : (rect.top - gridRect.top));
 
+      const captureEl = activeDrag?.captureTarget || card.querySelector?.('.ctx-widget-hdr') || card;
+      if (pointerEv?.pointerId != null && captureEl && !captureEl.hasPointerCapture?.(pointerEv.pointerId)) {
+        try { captureEl.setPointerCapture?.(pointerEv.pointerId); } catch { }
+      }
       activeDrag = {
         mode: 'reorder',
         pointerId: pointerEv.pointerId,
-        captureTarget: activeDrag?.captureTarget,
+        captureTarget: captureEl,
         scroller: grid.closest?.('.ag-panel-body, #panel, .ctx-bento-grid-scroll') || grid.parentElement,
         scrolling: 0,
         card,
@@ -1967,6 +3401,12 @@ function initSessionCockpitGrid() {
         offsetY,
         originLeft: rect.left,
         originTop: rect.top,
+        startGridLeft,
+        startGridTop,
+        gridW,
+        finalLeft: startGridLeft,
+        finalTop: startGridTop,
+        hasMoved: false,
         neighbors: isSkyline() ? readMagnetNeighbors(card, gridRect) : null,
         cardW: rect.width,
         cardH: rect.height,
@@ -2035,26 +3475,90 @@ function initSessionCockpitGrid() {
       }
       const drag = activeDrag;
       const { x, y } = drag.pointer;
-      const { startX, startY, startW, startH, gridW, gridLeft, gridTop, fromLeft, fromTop } = drag;
+      const { startX, startY, startW, startH, gridW, gridLeft, gridTop, fromLeft, fromTop, resizeAxis = 'both' } = drag;
       const scrollAccum = drag.scrollAccum || 0;
-      // Narrow boards stay single-column during the gesture as well as on commit.
-      const horizontalDelta = fromLeft ? startX - x : x - startX;
-      let width = drag.singleColumn ? gridW
-        : clamp(startW + horizontalDelta, Math.min(COCKPIT_MIN_WIDTH, gridW), gridW);
-      const deltaY = y - startY + scrollAccum;
-      let height = clamp(Math.round(startH + (fromTop ? -deltaY : deltaY)), COCKPIT_MIN_HEIGHT, COCKPIT_MAX_HEIGHT);
-      const leftForWidth = value => fromLeft
-        ? clamp(gridLeft + startW - value, 0, Math.max(0, gridW - value))
-        : Math.min(gridLeft, Math.max(0, gridW - value));
-      const topForHeight = value => fromTop ? Math.max(0, gridTop + startH - value) : gridTop;
-      if (drag.neighbors) {
-        const guides = cockpitResizeMagnets(drag, width, height, leftForWidth(width), topForHeight(height));
-        if (guides.x?.snapped) width = guides.x.size;
-        if (guides.y?.snapped) height = guides.y.size;
-        drawMagnet('x', guides.x);
-        drawMagnet('y', guides.y);
+      const allowX = resizeAxis !== 'y';
+      const allowY = resizeAxis !== 'x';
+      const minFreeW = Math.min(COCKPIT_MIN_WIDTH, gridW);
+      const upg = typeof window !== 'undefined' ? window.AGPresetBoardUpgrades : null;
+      let width;
+      let height;
+      let anchorLeft;
+      let anchorTop;
+      if (upg && typeof upg.resolveFreeResizeGeometry === 'function') {
+        const freeGeo = upg.resolveFreeResizeGeometry(drag, { x, y }, {
+          minWidth: minFreeW,
+          minHeight: COCKPIT_MIN_HEIGHT,
+          maxHeight: COCKPIT_MAX_HEIGHT,
+          freePosition: true
+        });
+        width = freeGeo.width;
+        height = freeGeo.height;
+        anchorLeft = freeGeo.left;
+        anchorTop = freeGeo.top;
+      } else {
+        const anchorRight = clamp(Math.round(gridLeft + startW), minFreeW, gridW);
+        const anchorBottom = Math.max(COCKPIT_MIN_HEIGHT, Math.round(gridTop + startH));
+        if (allowX) {
+          if (fromLeft) {
+            width = Math.round(clamp(startW + (startX - x), minFreeW, anchorRight));
+            anchorLeft = Math.max(0, anchorRight - width);
+          } else {
+            anchorLeft = clamp(Math.round(gridLeft), 0, Math.max(0, gridW - minFreeW));
+            width = Math.round(clamp(startW + (x - startX), minFreeW, Math.max(minFreeW, gridW - anchorLeft)));
+          }
+        } else {
+          width = Math.round(clamp(startW, minFreeW, gridW));
+          anchorLeft = clamp(Math.round(gridLeft), 0, Math.max(0, gridW - width));
+        }
+        const deltaY = y - startY + scrollAccum;
+        if (allowY) {
+          if (fromTop) {
+            const maxTopH = Math.min(COCKPIT_MAX_HEIGHT, anchorBottom);
+            height = Math.round(clamp(startH - deltaY, COCKPIT_MIN_HEIGHT, maxTopH));
+            anchorTop = Math.max(0, anchorBottom - height);
+          } else {
+            anchorTop = Math.max(0, Math.round(gridTop));
+            height = Math.round(clamp(startH + deltaY, COCKPIT_MIN_HEIGHT, COCKPIT_MAX_HEIGHT));
+          }
+        } else {
+          anchorTop = Math.max(0, Math.round(gridTop));
+          height = Math.round(clamp(startH, COCKPIT_MIN_HEIGHT, COCKPIT_MAX_HEIGHT));
+        }
       }
-      const anchorLeft = leftForWidth(width);
+
+      if (drag.neighbors) {
+        const guides = cockpitResizeMagnets(drag, width, height, anchorLeft, anchorTop);
+        if (allowX && guides.x?.snapped) {
+          const snappedW = Math.round(guides.x.size);
+          if (fromLeft) {
+            const anchorRight = clamp(Math.round(gridLeft + startW), minFreeW, gridW);
+            width = clamp(snappedW, minFreeW, anchorRight);
+            anchorLeft = Math.max(0, anchorRight - width);
+          } else {
+            width = clamp(snappedW, minFreeW, Math.max(minFreeW, gridW - anchorLeft));
+          }
+        }
+        if (allowY && guides.y?.snapped) {
+          const snappedH = Math.round(guides.y.size);
+          if (fromTop) {
+            const anchorBottom = Math.max(COCKPIT_MIN_HEIGHT, Math.round(gridTop + startH));
+            height = clamp(snappedH, COCKPIT_MIN_HEIGHT, Math.min(COCKPIT_MAX_HEIGHT, anchorBottom));
+            anchorTop = Math.max(0, anchorBottom - height);
+          } else {
+            height = clamp(snappedH, COCKPIT_MIN_HEIGHT, COCKPIT_MAX_HEIGHT);
+          }
+        }
+        drawMagnet('x', allowX ? guides.x : null);
+        drawMagnet('y', allowY ? guides.y : null);
+      }
+
+      // 终态硬约束边界钳制：严禁任何一边越出 [0, gridW] 或负 y 坐标
+      const clamped = clampFreestyleRectForGrid({ x: anchorLeft, y: anchorTop, w: width, h: height }, gridW);
+      anchorLeft = clamped.x;
+      anchorTop = clamped.y;
+      width = clamped.w;
+      height = clamped.h;
 
       if (!resizeBadgeEl) {
         resizeBadgeEl = document.createElement('div');
@@ -2068,13 +3572,19 @@ function initSessionCockpitGrid() {
 
       drag.finalW = width;
       drag.finalH = height;
+      drag.finalLeft = anchorLeft;
+      drag.finalTop = anchorTop;
       resizeBadgeEl.textContent = `${Math.round(width)} × ${height}px`;
       positionResizeBadge(x, y);
       drag.card.style.left = `${anchorLeft}px`;
-      drag.card.style.top = `${topForHeight(height)}px`;
+      drag.card.style.top = `${anchorTop}px`;
       drag.card.style.width = `${width}px`;
       drag.card.style.height = `${height}px`;
-      if (drag.singleColumn) applyCockpitLayoutToDom({ renderManager: false });
+      syncCardAdaptiveAttrs(drag.card, width, height);
+      const curGridH = Number.parseFloat(grid.style.height || '0') || 0;
+      if (anchorTop + height > curGridH) {
+        grid.style.height = `${Math.ceil(anchorTop + height)}px`;
+      }
     };
 
     const updateReorderTarget = (px, py) => {
@@ -2115,7 +3625,17 @@ function initSessionCockpitGrid() {
         const offset = scroller.scrollTop - previous;
         if (isSkyline()) {
           activeDrag.originTop -= offset;
-          activeDrag.card.style.translate = `${Math.round(lastMoveX - activeDrag.offsetX - activeDrag.originLeft)}px ${Math.round(lastMoveY - activeDrag.offsetY - activeDrag.originTop)}px`;
+          const rect = grid.getBoundingClientRect();
+          const gridW = Math.max(1, Math.floor(activeDrag.gridW || rect.width || measureCockpitGrid(grid).width || 1));
+          const rawLeft = lastMoveX - activeDrag.offsetX - rect.left;
+          const rawTop = lastMoveY - activeDrag.offsetY - rect.top;
+          const clampedPos = clampFreestyleRectForGrid({ x: rawLeft, y: rawTop, w: activeDrag.cardW, h: activeDrag.cardH }, gridW);
+          activeDrag.finalLeft = clampedPos.x;
+          activeDrag.finalTop = clampedPos.y;
+          activeDrag.hasMoved = true;
+          const dx = clampedPos.x - activeDrag.startGridLeft;
+          const dy = clampedPos.y - activeDrag.startGridTop;
+          activeDrag.card.style.translate = `${Math.round(dx)}px ${Math.round(dy)}px`;
         }
         updateReorderTarget(lastMoveX, lastMoveY);
         scrollFrame = requestFrame(updateReorderScroll);
@@ -2216,14 +3736,14 @@ function initSessionCockpitGrid() {
         return;
       }
 
-      // 拖拽重排
+      // 自由拖拽定位（严格容器边界钳制 + 柔和边缘磁吸对齐，不踢行不重排兄弟）
       if (activeDrag.mode === 'reorder') {
         const px = ev.clientX || 0;
         const py = ev.clientY || 0;
         const targetX = px - activeDrag.offsetX;
         const targetY = py - activeDrag.offsetY;
 
-        // 惯性形变计算
+        // 惯性微动效计算
         const now = Date.now();
         const dt = Math.max(1, now - activeDrag.lastMoveTime);
         const instVx = ((px - activeDrag.lastMoveX) / dt) * 10;
@@ -2234,35 +3754,49 @@ function initSessionCockpitGrid() {
         activeDrag.lastMoveY = py;
         activeDrag.lastMoveTime = now;
 
-        const tiltDeg = Math.max(-2.5, Math.min(2.5, activeDrag.vx * 0.4));
-        const scaleX = Math.max(0.965, Math.min(1.035, 1 + activeDrag.vy * 0.002));
-        const scaleY = Math.max(0.965, Math.min(1.035, 1 - activeDrag.vy * 0.002));
+        const tiltDeg = Math.max(-1.8, Math.min(1.8, activeDrag.vx * 0.28));
+        const scaleX = Math.max(0.98, Math.min(1.02, 1 + activeDrag.vy * 0.0014));
+        const scaleY = Math.max(0.98, Math.min(1.02, 1 - activeDrag.vy * 0.0014));
 
         if (activeDrag.card) {
-          let dx = targetX - activeDrag.originLeft;
-          let dy = targetY - activeDrag.originTop;
+          const rect = grid.getBoundingClientRect();
+          const gridW = Math.max(1, Math.floor(activeDrag.gridW || rect.width || measureCockpitGrid(grid).width || 1));
+          let left = targetX - rect.left;
+          let top = targetY - rect.top;
           if (activeDrag.neighbors) {
-            const rect = grid.getBoundingClientRect();
-            const left = targetX - rect.left;
-            const top = targetY - rect.top;
             const right = left + activeDrag.cardW;
             const bottom = top + activeDrag.cardH;
             const pairEdges = (a, b, start, end) => [a, b].flatMap(edge => [start, end].map(at => ({ at, delta: at - edge })));
-            const x = pairEdges(left, right, 0, rect.width);
+            const x = pairEdges(left, right, 0, gridW);
             const y = [{ at: 0, delta: -top }];
             for (const other of activeDrag.neighbors) {
               x.push(...pairEdges(left, right, other.x, other.x + other.w));
+              x.push({ at: other.x + other.w + COCKPIT_SKYLINE_GAP, delta: (other.x + other.w + COCKPIT_SKYLINE_GAP) - left });
+              x.push({ at: other.x - COCKPIT_SKYLINE_GAP, delta: (other.x - COCKPIT_SKYLINE_GAP) - right });
               y.push(...pairEdges(top, bottom, other.y, other.y + other.h));
+              y.push({ at: other.y + other.h + COCKPIT_SKYLINE_GAP, delta: (other.y + other.h + COCKPIT_SKYLINE_GAP) - top });
+              y.push({ at: other.y - COCKPIT_SKYLINE_GAP, delta: (other.y - COCKPIT_SKYLINE_GAP) - bottom });
             }
             const xGuide = nearestCockpitGuide(x);
             const yGuide = nearestCockpitGuide(y);
-            dx += xGuide?.delta || 0;
-            dy += yGuide?.delta || 0;
+            left += xGuide?.delta || 0;
+            top += yGuide?.delta || 0;
             drawMagnet('x', xGuide);
             drawMagnet('y', yGuide);
           }
+          // 严格容器边界钳制：拖拽期间绝不越出左/右/上边界
+          const clampedPos = clampFreestyleRectForGrid({ x: left, y: top, w: activeDrag.cardW, h: activeDrag.cardH }, gridW);
+          activeDrag.finalLeft = clampedPos.x;
+          activeDrag.finalTop = clampedPos.y;
+          activeDrag.hasMoved = true;
+          const dx = clampedPos.x - activeDrag.startGridLeft;
+          const dy = clampedPos.y - activeDrag.startGridTop;
           activeDrag.card.style.translate = `${Math.round(dx)}px ${Math.round(dy)}px`;
           activeDrag.card.style.transform = `rotate(${tiltDeg.toFixed(2)}deg) scale(${scaleX.toFixed(3)}, ${scaleY.toFixed(3)})`;
+          const curGridH = Number.parseFloat(grid.style.height || '0') || 0;
+          if (clampedPos.y + activeDrag.cardH > curGridH) {
+            grid.style.height = `${Math.ceil(clampedPos.y + activeDrag.cardH)}px`;
+          }
         }
 
         const scroller = activeDrag.scroller;
@@ -2319,26 +3853,41 @@ function initSessionCockpitGrid() {
           activeDrag.pointer = { x: event.clientX, y: event.clientY };
         }
         updateResizePreview();
-        const { card, widgetId, finalW, finalH, gridW, singleColumn } = activeDrag;
-        if (finalH == null) {
+        const { card, widgetId, finalW, finalH, finalLeft, finalTop, gridW, singleColumn, resizeAxis = 'both' } = activeDrag;
+        if (finalH == null || finalW == null) {
           cleanupDrag();
           return;
         }
         suppressClickFromGesture(event);
         const commitResize = () => {
-          cleanupDrag({ repack: false });
           const layout = getCockpitLayout();
+          // 先在清理前锁定兄弟卡片当前坐标，防止任意缩放引起邻居被踢行或重排
+          snapshotVisibleCardsToFreestyle(layout, gridW, widgetId);
+          cleanupDrag({ repack: false });
           const widget = layout.widgets.find(item => item.id === widgetId);
           if (widget) {
-            if (!singleColumn) {
-              const ratio = clamp(finalW / gridW, 0.08, 1);
+            const clamped = clampFreestyleRectForGrid(
+              { x: finalLeft ?? 0, y: finalTop ?? 0, w: finalW, h: finalH },
+              gridW
+            );
+            const ratio = clamp(clamped.w / gridW, 0.04, 1);
+            const xRatio = clamp(clamped.x / gridW, 0, 1);
+            widget.freeRect = {
+              ...clamped,
+              xRatio: Math.round(xRatio * 10000) / 10000,
+              wRatio: Math.round(ratio * 10000) / 10000,
+              baseW: gridW
+            };
+            if (resizeAxis !== 'y') {
               widget.widthRatio = Math.round(ratio * 10000) / 10000;
               widget.span = Math.max(1, Math.min(12, Math.round(ratio * 12)));
               widget.customWidth = ratio < 0.999;
             }
-            widget.height = 'expanded';
-            widget.heightPx = Math.round(finalH);
-            widget.customHeightPx = Math.round(finalH);
+            if (resizeAxis !== 'x') {
+              widget.height = 'expanded';
+              widget.heightPx = clamped.h;
+              widget.customHeightPx = clamped.h;
+            }
             persistCockpitLayout(layout);
           }
           applyCockpitLayoutToDom();
@@ -2353,22 +3902,41 @@ function initSessionCockpitGrid() {
         if (Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
           updateReorderTarget(event.clientX, event.clientY);
         }
-        const { card, scroller, widgetId, targetId, insertAfter } = activeDrag;
-        const before = getCockpitLayout();
-        cleanupDrag({ repack: false });
-        if (reorderCockpitWidget(widgetId, targetId, insertAfter) === before) {
+        const { card, scroller, widgetId, finalLeft, finalTop, cardW, cardH, gridW, hasMoved } = activeDrag;
+        const safeGridW = Math.max(1, Math.floor(gridW || measureCockpitGrid(grid).width || 1));
+        const layout = getCockpitLayout();
+        if (isSkyline() && hasMoved) {
+          snapshotVisibleCardsToFreestyle(layout, safeGridW, widgetId);
+          const widget = layout.widgets.find(item => item.id === widgetId);
+          if (widget) {
+            const clamped = clampFreestyleRectForGrid({ x: finalLeft, y: finalTop, w: cardW, h: cardH }, safeGridW);
+            const wRatio = Math.round(clamp(clamped.w / safeGridW, 0.04, 1) * 10000) / 10000;
+            const xRatio = Math.round(clamp(clamped.x / safeGridW, 0, 1) * 10000) / 10000;
+            widget.freeRect = { ...clamped, xRatio, wRatio, baseW: safeGridW };
+            widget.widthRatio = wRatio;
+            widget.heightPx = clamped.h;
+            widget.customHeightPx = clamped.h;
+            persistCockpitLayout(layout);
+          }
+          cleanupDrag({ repack: false });
           applyCockpitLayoutToDom({ renderManager: false });
         } else {
-          const rect = card.getBoundingClientRect();
-          const viewport = scroller?.getBoundingClientRect?.();
-          if (viewport) {
-            const header = hostPanel?.querySelector?.('.panel-header-bar')?.getBoundingClientRect?.();
-            const visibleTop = Math.max(viewport.top, header?.bottom ?? viewport.top);
-            if (rect.top < visibleTop) {
-              scroller.scrollTop += rect.top - visibleTop;
-            } else if (rect.bottom > viewport.bottom && rect.height <= viewport.bottom - visibleTop) {
-              scroller.scrollTop += rect.bottom - viewport.bottom;
-            }
+          const { targetId, insertAfter } = activeDrag;
+          const before = getCockpitLayout();
+          cleanupDrag({ repack: false });
+          if (reorderCockpitWidget(widgetId, targetId, insertAfter) === before) {
+            applyCockpitLayoutToDom({ renderManager: false });
+          }
+        }
+        const rect = card.getBoundingClientRect();
+        const viewport = scroller?.getBoundingClientRect?.();
+        if (viewport) {
+          const header = hostPanel?.querySelector?.('.panel-header-bar')?.getBoundingClientRect?.();
+          const visibleTop = Math.max(viewport.top, header?.bottom ?? viewport.top);
+          if (rect.top < visibleTop) {
+            scroller.scrollTop += rect.top - visibleTop;
+          } else if (rect.bottom > viewport.bottom && rect.height <= viewport.bottom - visibleTop) {
+            scroller.scrollTop += rect.bottom - viewport.bottom;
           }
         }
         return;
@@ -2381,7 +3949,11 @@ function initSessionCockpitGrid() {
       if (event.key === 'Escape') cleanupDrag();
     };
     const onPointerInterrupted = (event) => {
-      if (activeDrag?.pointerId === event.pointerId) cleanupDrag();
+      if (!activeDrag || activeDrag.pointerId !== event.pointerId) return;
+      if (event?.type === 'lostpointercapture' && event.target && activeDrag.captureTarget && event.target !== activeDrag.captureTarget) {
+        return;
+      }
+      cleanupDrag();
     };
     const onDocumentHidden = () => {
       if (document.hidden) cleanupDrag();
@@ -2421,12 +3993,11 @@ function initSessionCockpitGrid() {
       if (activeDrag || e.isPrimary === false) return;
       if (e.button !== 0 && e.pointerType === 'mouse') return;
 
-      const resizeHandle = e?.target?.closest?.('.ag-widget-resize-handle, .ctx-widget-resize-handle');
+      const resizeHandle = e?.target?.closest?.('.ag-widget-resize-handle, .ctx-widget-resize-handle, .ag-widget-resize-edge, .ctx-widget-resize-edge');
       if (resizeHandle) {
         const card = resizeHandle.closest?.('[data-widget-id]');
         const wId = card?.getAttribute?.('data-widget-id');
-        const bodyEl = card?.querySelector?.('.ctx-widget-body');
-        if (!wId || !bodyEl) return;
+        if (!wId) return;
         e.preventDefault?.();
         clearSelectionSafe();
         flipAnimations.get(card)?.cancel();
@@ -2436,25 +4007,39 @@ function initSessionCockpitGrid() {
         const gridW = Math.floor(measureCockpitGrid(grid).width);
         if (!gridW || !cardRect.width) return;
         try { resizeHandle.setPointerCapture?.(e.pointerId); } catch { }
+        const rawAxis = resizeHandle.getAttribute?.('data-resize-axis');
+        const resizeAxis = rawAxis === 'x' || rawAxis === 'y' ? rawAxis : 'both';
+        const styleL = Number.parseFloat(card.style?.left);
+        const styleT = Number.parseFloat(card.style?.top);
+        const gridLeft = Math.max(0, Number.isFinite(styleL) ? styleL : (cardRect.left - gridRect.left));
+        const gridTop = Math.max(0, Number.isFinite(styleT) ? styleT : (cardRect.top - gridRect.top));
         activeDrag = {
           mode: 'resize',
           pointerId: e.pointerId,
           captureTarget: resizeHandle,
           card,
           widgetId: wId,
+          resizeAxis,
+          resizeDir: resizeHandle.getAttribute?.('data-resize-dir') || '',
           startX: e.clientX ?? 0,
           startY: e.clientY ?? 0,
           startW: cardRect.width,
           startH: cardRect.height,
           originalHeight: card.style.height || '',
+          originalWidth: card.style.width || '',
+          originalLeft: card.style.left || '',
+          originalTop: card.style.top || '',
           gridW,
           singleColumn: isSkylineSingleColumn(gridW),
-          gridLeft: Math.max(0, cardRect.left - gridRect.left),
-          gridTop: Math.max(0, cardRect.top - gridRect.top),
+          gridLeft,
+          gridTop,
           fromLeft: resizeHandle.getAttribute?.('data-resize-edge') === 'left',
           fromTop: resizeHandle.getAttribute?.('data-resize-vertical') === 'top',
           neighbors: isSkyline() && grid.offsetWidth > 0 ? readMagnetNeighbors(card, gridRect) : null,
           finalH: null,
+          finalW: null,
+          finalLeft: gridLeft,
+          finalTop: gridTop,
           scroller: grid.closest?.('.ag-panel-body, #panel, .ctx-bento-grid-scroll') || grid.parentElement,
           scrolling: 0,
           scrollTime: null,
@@ -2515,7 +4100,7 @@ function initSessionCockpitGrid() {
 
     // 双击缩放手柄还原预设
     grid.addEventListener('dblclick', (e) => {
-      const resizeHandle = e?.target?.closest?.('.ag-widget-resize-handle, .ctx-widget-resize-handle');
+      const resizeHandle = e?.target?.closest?.('.ag-widget-resize-handle, .ctx-widget-resize-handle, .ag-widget-resize-edge, .ctx-widget-resize-edge');
       if (resizeHandle) {
         const card = resizeHandle.closest?.('[data-widget-id]');
         const wId = card?.getAttribute?.('data-widget-id');

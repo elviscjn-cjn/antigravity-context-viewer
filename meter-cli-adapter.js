@@ -169,7 +169,11 @@ function getShortPath(targetPath) {
  * 3. 若路径含空格且无法获取 8.3 短名，则生成专属 acm-statusline.cmd 引导脚本.
  */
 function buildCompatibleStatusLineCommand(cliJsPath, options = {}) {
-  const normPath = path.resolve(cliJsPath);
+  const rawInput = String(cliJsPath || '').trim();
+  const isWinDrivePath = /^[a-zA-Z]:[\\/]/.test(rawInput);
+  const normPath = isWinDrivePath && process.platform !== 'win32'
+    ? rawInput.replace(/\\/g, '/')
+    : path.resolve(rawInput);
   const shortPath = getShortPath(normPath);
   const cleanPath = shortPath.replace(/\\/g, '/');
 

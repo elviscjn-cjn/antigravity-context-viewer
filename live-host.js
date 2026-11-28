@@ -4,7 +4,14 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
-const { connect, normalizeLoopbackOrigin, getAppDataDir } = require('./local-api');
+const {
+  connect,
+  normalizeLoopbackOrigin,
+  parseExplicitPort,
+  getAppDataDir,
+  discoverAntigravityCdp,
+  createCdpClient
+} = require('./local-api');
 const {
   collect,
   collectTurnState,
@@ -162,6 +169,10 @@ const ALLOWED_ROUTES = [
   '/accounts-action',
   '/sync-pricing',
   '/open-dashboard-browser',
+  '/host-guard-status',
+  '/host-guard-action',
+  '/host-theme',
+  '/host-install-path',
   '/shutdown',
   '/restart-host'
 ];
@@ -186,7 +197,10 @@ const LIVE_CAPABILITIES = {
   applyUpdate: true,
   restartHost: false,
   hotReload: true,
-  syncPricing: true
+  syncPricing: true,
+  hostGuard: true,
+  hostTheme: true,
+  hostInstallPath: true
 };
 
 function timingSafeTokenEqual(provided, expected) {
@@ -674,6 +688,8 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           const targetOrigin = allowedSet.has(reqTargetOrigin) ? reqTargetOrigin : reqOrigin;
           const resData = await fetchQuotaSnapshotFromHost({
             force: request.force === true,
+            source: typeof request?.source === 'string' ? request.source : undefined,
+            expectedAccountScopeKey: typeof request?.expectedAccountScopeKey === 'string' ? request.expectedAccountScopeKey : undefined,
             origin: targetOrigin,
             backendSource: 'live-host',
             currentModel: request.currentModel || null,
@@ -681,11 +697,19 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           });
           const { _raw, ...safeData } = resData || {};
           let accountSyncResult = null;
+          let syncedAccountsOverview = null;
           try {
             const { getSharedAccountsManager, deriveTrustedAutoSwitchQuotaContext } = require('./meter-accounts');
             const mgr = getSharedAccountsManager({ origin: targetOrigin });
             const switchInFlight = Boolean(mgr.isSwitchInFlight?.());
-            const sourceEmail = !switchInFlight
+            const isDiscardedOrInvalidIdentity = Boolean(
+              resData?.staleDiscarded === true ||
+              resData?.accountIdentityMismatch === true ||
+              resData?.identityVerified === false ||
+              resData?.errorKind === 'account_mismatch' ||
+              resData?.errorKind === 'unverified_account'
+            );
+            const sourceEmail = (!switchInFlight && !isDiscardedOrInvalidIdentity)
               ? (resData?.email || _raw?.planStatus?.email || _raw?.userStatus?.email || _raw?.email || resData?.planStatus?.email || null)
               : null;
             const activeDetectedEmail = !switchInFlight
@@ -696,11 +720,18 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
               raw: _raw,
               activeEmail: activeDetectedEmail
             });
-            if (!switchInFlight && trustCtx.trusted && trustCtx.email && resData?.snapshot) {
+            const shouldSkipAutoSwitchEval = Boolean(
+              isDiscardedOrInvalidIdentity ||
+              trustCtx.syncState === 'stale_discarded' ||
+              trustCtx.syncState === 'account_mismatch' ||
+              trustCtx.syncState === 'unverified_account'
+            );
+            if (!switchInFlight && !shouldSkipAutoSwitchEval && trustCtx.trusted && trustCtx.email && resData?.snapshot) {
               mgr.syncActiveHostQuotaSnapshot(resData, trustCtx.email);
+              syncedAccountsOverview = mgr.getOverviewState();
             }
-            const ov = mgr.getOverviewState();
-            if (!switchInFlight && ov.autoSwitch?.enabled) {
+            const ov = syncedAccountsOverview || mgr.getOverviewState();
+            if (!switchInFlight && !shouldSkipAutoSwitchEval && ov.autoSwitch?.enabled) {
               const requiresClientRestart = compareVersions(resolveLiveHostTargetVersion(), '2.34.0') >= 0;
               const evalSyncState = trustCtx.trusted
                 ? 'fresh'
@@ -721,7 +752,7 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
             }
           } catch { }
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ ok: true, data: safeData, accountSyncResult }));
+          res.end(JSON.stringify({ ok: true, data: safeData, accountSyncResult, ...(syncedAccountsOverview ? { accountsOverview: syncedAccountsOverview } : {}) }));
           return;
         }
         if (req.url === '/accounts-overview') {
@@ -729,6 +760,9 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           const targetOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
           const mgr = getSharedAccountsManager({ origin: targetOrigin });
           await mgr.detectCurrentActiveAccount();
+          if (typeof mgr.hydrateMissingAvatars === 'function') {
+            void mgr.hydrateMissingAvatars({ limit: 4, allowRemoteFetch: false }).catch(() => { });
+          }
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(mgr.getOverviewState()));
           return;
@@ -740,7 +774,15 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           const requiresClientRestart = compareVersions(resolveLiveHostTargetVersion(), '2.34.0') >= 0;
           const outRes = await dispatchAccountsAction(mgr, request || {}, {
             requiresClientRestart,
-            allowManualRestartPending: requiresClientRestart
+            deferRestart: request?.deferRestart === true,
+            allowManualRestartPending: true,
+            persistOnVerifyMismatch: request?.persistOnVerifyMismatch !== false,
+            fetchActiveHostSnapshot: async ({ force, manual }) => fetchQuotaSnapshotFromHost({
+              origin: targetOrigin,
+              force: Boolean(force),
+              manual: manual !== false,
+              source: manual !== false ? 'manual_account_refresh' : 'auto_poll'
+            })
           });
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(outRes));
@@ -761,19 +803,119 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           }));
           return;
         }
+        if (req.url === '/host-guard-status') {
+          const { getHostGuardOverview } = require('./host-guard');
+          const out = getHostGuardOverview({
+            asarPath: typeof request?.asarPath === 'string' ? request.asarPath : undefined
+          });
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ...out, backendVersion: PROJECT_VERSION, backendSource: 'live-host' }));
+          return;
+        }
+        if (req.url === '/host-guard-action') {
+          const action = String(request?.action || '').trim().toLowerCase();
+          const { enableHostGuard, disableHostGuard, getHostGuardOverview } = require('./host-guard');
+          const { recoverHostInstallation } = require('./host-recovery');
+          let out;
+          if (action === 'enable') {
+            out = await enableHostGuard({
+              asarPath: typeof request?.asarPath === 'string' ? request.asarPath : undefined,
+              port: request?.port ? Number(request.port) : undefined,
+              liveOnly: Boolean(request?.liveOnly)
+            });
+          } else if (action === 'disable') {
+            out = await disableHostGuard({
+              asarPath: typeof request?.asarPath === 'string' ? request.asarPath : undefined
+            });
+          } else if (action === 'recover') {
+            const rec = await recoverHostInstallation({
+              asarPath: typeof request?.asarPath === 'string' ? request.asarPath : undefined,
+              noHotInject: true
+            });
+            out = { ...rec, overview: getHostGuardOverview({}) };
+          } else if (action === 'check' || action === 'status') {
+            out = { ok: true, overview: getHostGuardOverview({}) };
+          } else {
+            out = { ok: false, error: '不支持的恢复操作' };
+          }
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ...out, backendVersion: PROJECT_VERSION, backendSource: 'live-host' }));
+          return;
+        }
+        if (req.url === '/host-theme') {
+          const { readHostThemeConfig, writeHostThemeMode } = require('./local-api');
+          const action = String(request?.action || 'get').trim().toLowerCase();
+          const out = action === 'set'
+            ? await writeHostThemeMode(request?.mode, { origin: effectiveOrigin })
+            : readHostThemeConfig();
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ...out, backendVersion: PROJECT_VERSION, backendSource: 'live-host' }));
+          return;
+        }
+        if (req.url === '/host-install-path') {
+          const {
+            resolveAsarTarget,
+            getConfiguredCustomAsarPath,
+            saveConfiguredCustomAsarPath,
+            clearConfiguredCustomAsarPath
+          } = require('./asar-engine');
+          const action = String(request?.action || 'get').trim().toLowerCase();
+          let out;
+          if (action === 'browse') {
+            out = { ok: false, supported: false, error: '当前热挂载桥接不支持原生目录选择器，请直接输入或粘贴安装路径' };
+          } else if (action === 'set') {
+            const resSave = saveConfiguredCustomAsarPath(request?.path || '');
+            out = { ...resSave, resolved: resolveAsarTarget(null, {}) };
+          } else if (action === 'clear') {
+            const resClr = clearConfiguredCustomAsarPath();
+            out = { ...resClr, resolved: resolveAsarTarget(null, {}) };
+          } else {
+            const customPath = getConfiguredCustomAsarPath();
+            const resolved = resolveAsarTarget(null, {});
+            out = {
+              ok: true,
+              customPath: customPath || null,
+              effectiveAsarPath: resolved?.asarPath || null,
+              effectiveSource: resolved?.source || 'not_found',
+              recordedTargetMissing: Boolean(resolved?.recordedTargetMissing),
+              recordedTargetPath: resolved?.recordedTargetPath || null
+            };
+          }
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ...out, backendVersion: PROJECT_VERSION, backendSource: 'live-host' }));
+          return;
+        }
         if (req.url === '/predict-next-prompt') {
           const settings = getPluginSettings();
-          if (settings.nextPromptEnabled !== true) {
+          if (settings.nextPromptEnabled !== true && request?.allowWhenDisabled !== true) {
             res.setHeader('Content-Type', 'application/json');
             res.end(JSON.stringify({ ok: true, abstained: true, suggestion: '', reason: 'feature_disabled', requestCount: 0 }));
             return;
           }
-          const { predictNextPromptAsync } = require('./meter-next-prompt');
+          const { predictNextPromptAsync, extractTurnsFromRawSteps } = require('./meter-next-prompt');
+          let turns = Array.isArray(request?.turns) ? request.turns : [];
+          let turnsSource = turns.length > 0 ? 'renderer_turns' : 'none';
+          const hasValidPair = turns.some(t => t && (t.role === 'user' || t.sourceType === 'user') && (t.text || t.content))
+            && turns.some(t => t && (t.role === 'assistant' || t.sourceType === 'assistant') && (t.text || t.content));
+          if (!hasValidPair && typeof request?.cascadeId === 'string' && request.cascadeId.trim()) {
+            try {
+              const tl = await collectSessionTimelineAsync(request.cascadeId.trim(), { force: true });
+              const recentTurns = Array.isArray(tl?.recentConversationTurns) && tl.recentConversationTurns.length > 0
+                ? tl.recentConversationTurns
+                : extractTurnsFromRawSteps(tl?.rawSteps || [], 8);
+              if (recentTurns.length > 0) {
+                turns = recentTurns;
+                turnsSource = Array.isArray(tl?.recentConversationTurns) && tl.recentConversationTurns.length > 0
+                  ? 'timeline_recent_turns'
+                  : 'timeline_raw_steps';
+              }
+            } catch { }
+          }
           const safeInput = {
             cascadeId: typeof request?.cascadeId === 'string' ? request.cascadeId : undefined,
             turnId: typeof request?.turnId === 'string' ? request.turnId : undefined,
             language: typeof request?.language === 'string' ? request.language : undefined,
-            turns: Array.isArray(request?.turns) ? request.turns : [],
+            turns,
             preferences: Array.isArray(request?.preferences) ? request.preferences : [],
             verificationEvidence: typeof request?.verificationEvidence === 'string' ? request.verificationEvidence : undefined,
             taskMarkdown: typeof request?.taskMarkdown === 'string' ? request.taskMarkdown : undefined
@@ -781,10 +923,10 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           const predRes = await predictNextPromptAsync(safeInput, {
             origin: effectiveOrigin,
             model: typeof request?.model === 'string' && request.model.trim() ? request.model.trim() : undefined,
-            allowGetModelResponseFallback: request?.allowGetModelResponseFallback === true
+            allowGetModelResponseFallback: request?.allowGetModelResponseFallback !== false
           });
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ ...predRes, backendVersion: PROJECT_VERSION, backendSource: 'live-host' }));
+          res.end(JSON.stringify({ ...predRes, turnsSource, backendVersion: PROJECT_VERSION, backendSource: 'live-host' }));
           return;
         }
         const data = await collect(effectiveOrigin, request.id, { force: request.force === true });
@@ -829,35 +971,157 @@ function parseInitialOriginsEnv() {
   return Array.from(new Set(raw.split(/[,;\s]+/).map(normalizeLoopbackOrigin).filter(Boolean)));
 }
 
-function discoverCdpPageOrigins() {
-  return new Promise((resolve) => {
-    try {
-      const portFile = path.join(getAppDataDir(), 'Antigravity', 'DevToolsActivePort');
-      if (!fs.existsSync(portFile)) return resolve([]);
-      const port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
-      if (!Number.isFinite(port) || port <= 0) return resolve([]);
-      const req = http.get(`http://127.0.0.1:${port}/json/list`, { agent: false }, res => {
-        let d = '';
-        res.on('data', c => d += c);
-        res.on('end', () => {
-          try {
-            const pages = JSON.parse(d);
-            const list = Array.from(new Set(
-              (Array.isArray(pages) ? pages : [])
-                .filter(item => item && item.type === 'page' && /^https?:\/\/127\.0\.0\.1:\d+\//.test(item.url))
-                .map(item => normalizeLoopbackOrigin(item.url))
-                .filter(Boolean)
-            ));
-            resolve(list);
-          } catch { resolve([]); }
-        });
-      });
-      req.setTimeout(2000, () => { req.destroy(); resolve([]); });
-      req.on('error', () => resolve([]));
-    } catch {
-      resolve([]);
+async function inspectLiveCdpState(options = {}) {
+  const discoverFn = typeof options._discoverCdp === 'function' ? options._discoverCdp : discoverAntigravityCdp;
+  try {
+    const discovered = await discoverFn(options);
+    const pages = Array.isArray(discovered?.pages) ? discovered.pages : [];
+    const origins = Array.from(new Set(pages.map(p => normalizeLoopbackOrigin(p?.url)).filter(Boolean)));
+    return {
+      cdpPortAlive: true,
+      port: discovered?.port || parseExplicitPort(options.port) || null,
+      pages,
+      origins
+    };
+  } catch (err) {
+    if (
+      err &&
+      (err.code === 'NO_PAGE_TARGETS' || String(err.message || '').includes('未找到 Antigravity 主窗口'))
+    ) {
+      const inferredPort = err.cdpPort || parseExplicitPort(options.port) || (() => {
+        try {
+          const portFile = path.join(getAppDataDir(options), 'Antigravity', 'DevToolsActivePort');
+          if (!fs.existsSync(portFile)) return null;
+          const p = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
+          return Number.isFinite(p) && p > 0 ? p : null;
+        } catch {
+          return null;
+        }
+      })();
+      if (inferredPort) {
+        return {
+          cdpPortAlive: true,
+          port: inferredPort,
+          pages: [],
+          origins: []
+        };
+      }
     }
+    return {
+      cdpPortAlive: false,
+      port: null,
+      pages: [],
+      origins: []
+    };
+  }
+}
+
+async function discoverCdpPageOrigins(options = {}) {
+  const st = await inspectLiveCdpState(options);
+  return st.origins;
+}
+
+function isExternalWatchDaemonRunning(stateDir = null) {
+  try {
+    const pidFile = path.join(stateDir || getStateDir(), 'watch.pid');
+    if (!fs.existsSync(pidFile)) return false;
+    const raw = fs.readFileSync(pidFile, 'utf8').trim();
+    if (!raw) return false;
+    const pid = raw.startsWith('{') ? Number(JSON.parse(raw)?.pid) : parseInt(raw, 10);
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function reinjectMissingCdpPagesIfNeeded(cdpState, liveSessionInfo, options = {}) {
+  if (!cdpState || !Array.isArray(cdpState.pages) || cdpState.pages.length === 0) {
+    return { checked: 0, reinjected: false };
+  }
+  const stateDir = options.stateDir || getStateDir();
+  if (!options._ignoreWatchLock && isExternalWatchDaemonRunning(stateDir)) {
+    return { checked: 0, reinjected: false, skippedReason: 'watch_active' };
+  }
+  try {
+    const { loadModulesConfig } = require('./modules-config');
+    const cfg = loadModulesConfig({ stateDir });
+    if (cfg?.modules?.meter?.enabled === false) {
+      return { checked: 0, reinjected: false, skippedReason: 'meter_disabled' };
+    }
+  } catch { }
+
+  const verifiedPageMap = options.verifiedPageMap instanceof Map ? options.verifiedPageMap : null;
+  const reverifyIntervalMs = options.reverifyIntervalMs ?? 6000;
+  const now = Date.now();
+  const cdpClientFactory = typeof options._createCdpClient === 'function' ? options._createCdpClient : createCdpClient;
+  const expectedVer = liveSessionInfo?.version || PROJECT_VERSION;
+  const expectedPort = Number(liveSessionInfo?.port || 0);
+
+  if (verifiedPageMap) {
+    const aliveIds = new Set(cdpState.pages.map(p => p?.id).filter(Boolean));
+    for (const id of Array.from(verifiedPageMap.keys())) {
+      if (!aliveIds.has(id)) verifiedPageMap.delete(id);
+    }
+  }
+
+  let needsReinject = false;
+  let checked = 0;
+  for (const page of cdpState.pages) {
+    if (!page || !page.webSocketDebuggerUrl) continue;
+    const pageId = page.id || page.webSocketDebuggerUrl;
+    const prev = verifiedPageMap ? verifiedPageMap.get(pageId) : null;
+    if (prev && prev.url === page.url && now - prev.verifiedAt < reverifyIntervalMs) {
+      continue;
+    }
+    checked += 1;
+    let client = null;
+    try {
+      client = await cdpClientFactory(page.webSocketDebuggerUrl, { timeoutMs: 2500 });
+      const mounted = await client.evaluateValue(
+        `Boolean(window.__AGContextMeter && document.getElementById("ag-context-meter") && window.__AGContextMeter.version === ${JSON.stringify(expectedVer)} && window.__AGContextMeterLive && Number(window.__AGContextMeterLive.port) === ${expectedPort})`,
+        { timeoutMs: 2500 }
+      );
+      if (mounted === true) {
+        if (verifiedPageMap) verifiedPageMap.set(pageId, { url: page.url, verifiedAt: Date.now() });
+      } else {
+        needsReinject = true;
+        break;
+      }
+    } catch {
+      // 页面尚在初始化导航中，留待下一轮检查
+    } finally {
+      if (client) {
+        try { client.close(); } catch { }
+      }
+    }
+  }
+
+  if (!needsReinject) {
+    return { checked, reinjected: false };
+  }
+
+  const hotInjectFn = typeof options._hotInject === 'function'
+    ? options._hotInject
+    : require('./install').tryHotInjectDetailed;
+  const report = await hotInjectFn({
+    ...(cdpState.port ? { port: cdpState.port } : {}),
+    stateDir,
+    bundleDir: options.bundleDir || __dirname,
+    source: 'live-host-reopen',
+    liveInfo: liveSessionInfo,
+    liveVerified: true,
+    preferLiveHost: true
   });
+  if (report?.ok && verifiedPageMap) {
+    const ts = Date.now();
+    for (const page of cdpState.pages) {
+      const pageId = page?.id || page?.webSocketDebuggerUrl;
+      if (pageId) verifiedPageMap.set(pageId, { url: page.url, verifiedAt: ts });
+    }
+  }
+  return { checked, reinjected: Boolean(report?.ok), report };
 }
 
 function probeOriginAlive(origin) {
@@ -915,10 +1179,14 @@ async function startLiveHost() {
     : path.join(getStateDir(), '.live-session.json');
   const hostPidRaw = Number(process.env.AG_LIVE_HOST_PID || getCliArgValue('--host-pid') || 0);
   const watchHostPid = Number.isInteger(hostPidRaw) && hostPidRaw > 0 ? hostPidRaw : null;
+  const initialCdpPort = parseExplicitPort(process.env.AG_LIVE_CDP_PORT || getCliArgValue('--cdp-port'));
+  let activeCdpPort = initialCdpPort;
 
   let checkTimer = null;
   let server = null;
   let shuttingDown = false;
+  let liveSessionInfo = null;
+  const verifiedPageMap = new Map();
   const shutdownGracefully = () => {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -955,6 +1223,13 @@ async function startLiveHost() {
     startedAt: LIVE_HOST_STARTED_AT
   }));
 
+  const persistLiveStamp = (infoObj) => {
+    fs.mkdirSync(path.dirname(stamp), { recursive: true });
+    const tmpStamp = `${stamp}.tmp-${process.pid}`;
+    fs.writeFileSync(tmpStamp, JSON.stringify(infoObj, null, 2));
+    fs.renameSync(tmpStamp, stamp);
+  };
+
   server.listen(0, '127.0.0.1', () => {
     const info = {
       port: server.address().port,
@@ -971,16 +1246,16 @@ async function startLiveHost() {
       capabilities: Object.keys(LIVE_CAPABILITIES).filter(k => LIVE_CAPABILITIES[k]),
       startedAt: LIVE_HOST_STARTED_AT
     };
-    fs.mkdirSync(path.dirname(stamp), { recursive: true });
-    const tmpStamp = `${stamp}.tmp-${process.pid}`;
-    fs.writeFileSync(tmpStamp, JSON.stringify(info, null, 2));
-    fs.renameSync(tmpStamp, stamp);
+    liveSessionInfo = info;
+    persistLiveStamp(info);
     console.log('Context Meter local bridge ready on loopback port ' + info.port);
   });
 
   let misses = 0;
+  let checkBusy = false;
   checkTimer = setInterval(async () => {
-    if (shuttingDown) return;
+    if (shuttingDown || checkBusy) return;
+    checkBusy = true;
     try {
       if (watchHostPid) {
         try { process.kill(watchHostPid, 0); } catch {
@@ -988,9 +1263,30 @@ async function startLiveHost() {
           return;
         }
       }
-      const cdpOrigins = await discoverCdpPageOrigins();
-      if (cdpOrigins.length > 0) {
-        currentOrigins = Array.from(new Set([...cdpOrigins, ...envOrigins]));
+      const cdpState = await inspectLiveCdpState(activeCdpPort ? { port: activeCdpPort } : {});
+      if (cdpState.port) {
+        activeCdpPort = cdpState.port;
+      }
+      if (cdpState.origins.length > 0) {
+        const nextOrigins = Array.from(new Set([...cdpState.origins, ...currentOrigins, ...envOrigins]));
+        const originsChanged = nextOrigins.length !== currentOrigins.length || nextOrigins.some((o, i) => o !== currentOrigins[i]);
+        currentOrigins = nextOrigins;
+        if (liveSessionInfo) {
+          liveSessionInfo = { ...liveSessionInfo, origins: currentOrigins };
+          if (originsChanged) {
+            try { persistLiveStamp(liveSessionInfo); } catch { }
+          }
+          await reinjectMissingCdpPagesIfNeeded(cdpState, liveSessionInfo, {
+            stateDir: getStateDir(),
+            bundleDir: __dirname,
+            verifiedPageMap
+          });
+        }
+        misses = 0;
+        return;
+      }
+      if (cdpState.cdpPortAlive) {
+        verifiedPageMap.clear();
         misses = 0;
         return;
       }
@@ -1003,11 +1299,13 @@ async function startLiveHost() {
       }
       throw new Error('No live Antigravity origins available');
     } catch {
-      if (++misses >= 3) {
+      if (++misses >= 6) {
         shutdownGracefully();
       }
+    } finally {
+      checkBusy = false;
     }
-  }, 10000);
+  }, 2500);
 }
 
 if (require.main === module) {
@@ -1021,5 +1319,9 @@ module.exports = {
   buildLiveRuntimeModulesMeta,
   createLiveRequestHandler,
   parseInitialOriginsEnv,
+  inspectLiveCdpState,
+  discoverCdpPageOrigins,
+  isExternalWatchDaemonRunning,
+  reinjectMissingCdpPagesIfNeeded,
   startLiveHost
 };

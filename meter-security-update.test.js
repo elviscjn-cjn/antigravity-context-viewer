@@ -749,7 +749,11 @@ test('子进程更新 3.2：防重复点击并发控制', async () => {
   await p1;
 });
 
-test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码与热注入状态精确报告', async () => {
+test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码与热注入状态精确报告', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-update-subprocess-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const targetPath = path.join(tmpDir, 'app.asar');
+
   const osName = process.platform === 'win32' ? 'windows' : (process.platform === 'darwin' ? 'darwin' : 'linux');
   const archName = (process.arch === 'x64' || process.arch === 'amd64') ? 'amd64' : 'arm64';
   const pkgName = `antigravity-context-viewer_0.9.0_${osName}_${archName}.zip`;
@@ -799,13 +803,19 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
     fs.writeFileSync(path.join(extractDir, 'cli.js'), '// mock cli entry\n', 'utf8');
     return { status: 0 };
   };
+  const updateOptions = {
+    version: '0.9.0',
+    currentVersion: '0.8.10',
+    allowBetaUpdates: false,
+    targetPath,
+    _requestGithubUrl: mockFetcher,
+    _extractZip: mockExtractZip
+  };
 
   // 1. 解压后缺少 cli.js：终止安装并报错
   const mockExtractNoCli = async (zipPath, extractDir) => ({ status: 0 });
   const resNoCli = await applyUpdateAsync({
-    version: '0.9.0',
-    currentVersion: '0.8.10',
-    _requestGithubUrl: mockFetcher,
+    ...updateOptions,
     _extractZip: mockExtractNoCli
   });
   assert.equal(resNoCli.ok, false);
@@ -816,10 +826,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   setImmediate(() => { eventLoopTicked = true; });
   const spawnerNormal = createMockSpawner(0, '✅ ASAR 持久化注入完成\n✅ 运行中窗口热挂载状态: 已即时生效（无需重启）\n', '', 25);
   const resNormal = await applyUpdateAsync({
-    version: '0.9.0',
-    currentVersion: '0.8.10',
-    _requestGithubUrl: mockFetcher,
-    _extractZip: mockExtractZip,
+    ...updateOptions,
     _spawn: spawnerNormal
   });
   assert.equal(resNormal.ok, true);
@@ -828,10 +835,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   // 3. 覆盖断言二：非零退出码返回错误
   const spawnerFail = createMockSpawner(1, '', '磁盘空间不足，写入失败', 10);
   const resFail = await applyUpdateAsync({
-    version: '0.9.0',
-    currentVersion: '0.8.10',
-    _requestGithubUrl: mockFetcher,
-    _extractZip: mockExtractZip,
+    ...updateOptions,
     _spawn: spawnerFail
   });
   assert.equal(resFail.ok, false);
@@ -850,10 +854,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
     return ee;
   };
   const resTimeout = await applyUpdateAsync({
-    version: '0.9.0',
-    currentVersion: '0.8.10',
-    _requestGithubUrl: mockFetcher,
-    _extractZip: mockExtractZip,
+    ...updateOptions,
     _spawn: spawnerTimeout,
     _timeoutMs: 30
   });
@@ -864,10 +865,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   // 5. 覆盖断言四：liveInjected 为 true 与 false 的精确解析与临时目录清理
   const spawnerLiveTrue = createMockSpawner(0, '✅ ASAR 持久化注入完成\n✅ 运行中窗口热挂载状态: 已即时生效（无需重启）\n', '', 10);
   const resTrue = await applyUpdateAsync({
-    version: '0.9.0',
-    currentVersion: '0.8.10',
-    _requestGithubUrl: mockFetcher,
-    _extractZip: mockExtractZip,
+    ...updateOptions,
     _spawn: spawnerLiveTrue
   });
   assert.equal(resTrue.ok, true);
@@ -875,10 +873,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
 
   const spawnerLiveFalse = createMockSpawner(0, '✅ ASAR 持久化注入完成\n✅ 运行中窗口热挂载状态: 将在下次启动 Antigravity 时自动生效\n', '', 10);
   const resFalse = await applyUpdateAsync({
-    version: '0.9.0',
-    currentVersion: '0.8.10',
-    _requestGithubUrl: mockFetcher,
-    _extractZip: mockExtractZip,
+    ...updateOptions,
     _spawn: spawnerLiveFalse
   });
   assert.equal(resFalse.ok, true);
@@ -895,16 +890,12 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
     return ee;
   };
   await applyUpdateAsync({
-    version: '0.9.0',
-    currentVersion: '0.8.10',
-    targetPath: 'D:\\custom\\antigravity\\resources\\app.asar',
-    _requestGithubUrl: mockFetcher,
-    _extractZip: mockExtractZip,
+    ...updateOptions,
     _spawn: spawnerInspectArgs
   });
   assert.ok(Array.isArray(capturedArgs));
   assert.ok(capturedArgs.includes('--path'));
-  assert.equal(capturedArgs[capturedArgs.indexOf('--path') + 1], 'D:\\custom\\antigravity\\resources\\app.asar');
+  assert.equal(capturedArgs[capturedArgs.indexOf('--path') + 1], targetPath);
 });
 
 // ============================================================================
@@ -1215,7 +1206,7 @@ test('界面状态 5.7：汉化状态检测在随后面板打开时即时自愈�
   // 1. 初始展开抽屉，由于此时宿主尚未翻译，显示待重启
   toggleBtn.click();
   await h.flush();
-  assert.match(badge.textContent, /⏳ 待重启客户端生效/);
+  assert.match(badge.textContent, /待重启应用中文/);
 
   // 2. 模拟随后宿主汉化完成（注入运行时数据）
   h.sandbox.window.__AGY_I18N_DATA__ = { loaded: true };
@@ -1226,7 +1217,7 @@ test('界面状态 5.7：汉化状态检测在随后面板打开时即时自愈�
   toggleBtn.click(); // 再次展开，触发即时刷新
   await h.flush();
 
-  assert.match(badge.textContent, /🟢 已翻译生效/);
+  assert.match(badge.textContent, /当前是中文客户端/);
   h.sandbox.__AGContextMeter?.dispose();
 });
 

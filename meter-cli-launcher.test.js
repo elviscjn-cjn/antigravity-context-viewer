@@ -642,3 +642,50 @@ test('CLI 启动模块 11: launchCliSession 与 cli.js launch-cli --account 隔�
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('CLI 启动模块 12 (PR #137 / Issue #109): resolveCliExecutable 支持自定义非默认盘、中文空格路径与 macOS .app 解析 agy', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-custom-install-'));
+  try {
+    const emptyHome = path.join(tmpDir, 'empty-home');
+    fs.mkdirSync(emptyHome, { recursive: true });
+    // 1. 非 C 盘 + 中文空格路径
+    const installRoot = path.join(tmpDir, 'F盘模拟 空间', 'Antigravity 客户端');
+    const resDir = path.join(installRoot, 'resources');
+    const binDir = path.join(installRoot, 'bin');
+    fs.mkdirSync(resDir, { recursive: true });
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(resDir, 'app.asar'), 'stub', 'utf8');
+    const cliFile = path.join(binDir, process.platform === 'win32' ? 'agy.exe' : 'agy');
+    fs.writeFileSync(cliFile, 'stub', { mode: 0o755 });
+
+    const res = resolveCliExecutable(null, {
+      platform: process.platform === 'darwin' ? 'linux' : process.platform,
+      homeDir: emptyHome,
+      env: { USERPROFILE: emptyHome, LOCALAPPDATA: emptyHome, APPDATA: emptyHome, PATH: '' },
+      customInstallPath: installRoot
+    });
+    assert.equal(res.ok, true);
+    assert.equal(path.resolve(res.cliPath), path.resolve(cliFile));
+
+    // 2. macOS 自定义 .app 路径
+    const macApp = path.join(tmpDir, 'CustomApps', 'Antigravity.app');
+    const macRes = path.join(macApp, 'Contents', 'Resources');
+    const macBin = path.join(macRes, 'app', 'bin');
+    fs.mkdirSync(macBin, { recursive: true });
+    fs.writeFileSync(path.join(macRes, 'app.asar'), 'stub', 'utf8');
+    const macCli = path.join(macBin, 'agy');
+    fs.writeFileSync(macCli, '#!/bin/sh\n', { mode: 0o755 });
+
+    const macResCli = resolveCliExecutable(null, {
+      platform: 'darwin',
+      homeDir: emptyHome,
+      macAppRoots: [],
+      env: { HOME: emptyHome, PATH: '' },
+      customInstallPath: macApp
+    });
+    assert.equal(macResCli.ok, true);
+    assert.equal(path.resolve(macResCli.cliPath), path.resolve(macCli));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

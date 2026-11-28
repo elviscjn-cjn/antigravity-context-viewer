@@ -75,14 +75,38 @@ function buildRenderer(options = {}) {
   const nextPrompt = readVerifiedRendererSource(effSrcDir, 'next-prompt.js').trim();
   const contextSettingsUi = readVerifiedRendererSource(effSrcDir, 'context-settings-ui.js').trim();
   const hostSettings = readVerifiedRendererSource(effSrcDir, 'host-settings.js').trim();
+  const effSidebarAccountDir = fs.existsSync(path.join(effSrcDir, 'sidebar-account.js')) ? effSrcDir : srcDir;
+  const sidebarAccount = readVerifiedRendererSource(effSidebarAccountDir, 'sidebar-account.js').trim();
   if (!contextSettingsUi) throw new Error('[构建中止] 必需渲染模块为空: ' + path.join(effSrcDir, 'context-settings-ui.js'));
   if (!hostSettings) throw new Error('[构建中止] 必需渲染模块为空: ' + path.join(effSrcDir, 'host-settings.js'));
+  if (!sidebarAccount) throw new Error('[构建中止] 必需渲染模块为空: ' + path.join(effSrcDir, 'sidebar-account.js'));
   const trendPulse = readVerifiedRendererSource(effSrcDir, 'trend-pulse.js').trim();
   const contextInspector = readVerifiedRendererSource(effSrcDir, 'context-inspector.js').trim();
   const executionTrace = readVerifiedRendererSource(effSrcDir, 'execution-trace.js').trim();
   const agentCollabHub = readVerifiedRendererSource(effSrcDir, 'agent-collab-hub.js').trim();
   const auditWidgets = readVerifiedRendererSource(effSrcDir, 'audit-widgets.js').trim();
   const crossSessionInsights = readVerifiedRendererSource(effSrcDir, 'cross-session-insights.js').trim();
+  const quotaBoard = readVerifiedRendererSource(effSrcDir, 'quota-board.js').trim();
+  const readOptionalRendererModule = (fileName, fallbackDir = effSrcDir) => {
+    const p1 = path.join(effSrcDir, fileName);
+    const p2 = path.join(fallbackDir, fileName);
+    const p3 = path.join(srcDir, fileName);
+    const target = fs.existsSync(p1) ? p1 : (fs.existsSync(p2) ? p2 : (fs.existsSync(p3) ? p3 : null));
+    if (!target) return '';
+    const raw = fs.readFileSync(target, 'utf8');
+    assertNoTruncationMarker(target, raw);
+    return raw.replace(/\r\n/g, '\n').trim();
+  };
+  const taskQuotaMod = readOptionalRendererModule('meter-task-quota.js', effRootDir);
+  const quotaScrollGuard = readOptionalRendererModule('quota-scroll-guard.js');
+  const auxQuickSwitch = readOptionalRendererModule('aux-quick-switch.js');
+  const hostSettingsNavAlign = readOptionalRendererModule('host-settings-nav-align.js');
+  const reqSortDropdown = readOptionalRendererModule('req-sort-dropdown.js');
+  const presetBoardUpgrades = readOptionalRendererModule('preset-board-upgrades.js');
+  const morphIndicatorToolbar = readOptionalRendererModule('morph-indicator-toolbar.js');
+  const nextPromptAlignment = readOptionalRendererModule('next-prompt-alignment.js');
+  const orbPositioning = readOptionalRendererModule('orb-positioning.js');
+  const insightsAndViews = readOptionalRendererModule('insights-and-views.js');
   let mainTemplate = readVerifiedRendererSource(effSrcDir, 'main.js');
   if (!mainTemplate.trim()) throw new Error('Renderer entry point is empty: ' + path.join(effSrcDir, 'main.js'));
   const effAntigravitySvgPath = path.join(effSrcDir, 'assets', 'antigravity-color.svg');
@@ -119,12 +143,24 @@ function buildRenderer(options = {}) {
     .replace('  /* @INSERT_NEXT_PROMPT_MODULE */', () => nextPrompt)
     .replace('  /* @INSERT_CONTEXT_SETTINGS_UI_MODULE */', () => contextSettingsUi)
     .replace('  /* @INSERT_HOST_SETTINGS_MODULE */', () => hostSettings)
+    .replace('  /* @INSERT_SIDEBAR_ACCOUNT_MODULE */', () => sidebarAccount)
     .replace('  /* @INSERT_TREND_PULSE_MODULE */', () => trendPulse)
     .replace('  /* @INSERT_CONTEXT_INSPECTOR_MODULE */', () => contextInspector)
     .replace('  /* @INSERT_EXECUTION_TRACE_MODULE */', () => executionTrace)
     .replace('  /* @INSERT_AGENT_COLLAB_MODULE */', () => agentCollabHub)
     .replace('  /* @INSERT_AUDIT_WIDGETS_MODULE */', () => auditWidgets)
     .replace('  /* @INSERT_CROSS_SESSION_INSIGHTS_MODULE */', () => crossSessionInsights)
+    .replace('  /* @INSERT_QUOTA_BOARD_MODULE */', () => quotaBoard)
+    .replace('  /* @INSERT_TASK_QUOTA_MODULE */', () => taskQuotaMod)
+    .replace('  /* @INSERT_QUOTA_SCROLL_GUARD_MODULE */', () => quotaScrollGuard)
+    .replace('  /* @INSERT_AUX_QUICK_SWITCH_MODULE */', () => auxQuickSwitch)
+    .replace('  /* @INSERT_HOST_SETTINGS_NAV_ALIGN_MODULE */', () => hostSettingsNavAlign)
+    .replace('  /* @INSERT_REQ_SORT_DROPDOWN_MODULE */', () => reqSortDropdown)
+    .replace('  /* @INSERT_PRESET_BOARD_UPGRADES_MODULE */', () => presetBoardUpgrades)
+    .replace('  /* @INSERT_MORPH_INDICATOR_TOOLBAR_MODULE */', () => morphIndicatorToolbar)
+    .replace('  /* @INSERT_NEXT_PROMPT_ALIGNMENT_MODULE */', () => nextPromptAlignment)
+    .replace('  /* @INSERT_ORB_POSITIONING_MODULE */', () => orbPositioning)
+    .replace('  /* @INSERT_INSIGHTS_AND_VIEWS_MODULE */', () => insightsAndViews)
     .replace('  /* @INSERT_HEATMAP_MODULE */', () => heatmap)
     .replace('__AG_ANTIGRAVITY_COLOR_SVG_DATA_URI__', () => antigravitySvgDataUri);
 

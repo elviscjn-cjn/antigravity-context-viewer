@@ -1,82 +1,4 @@
-<!-- 顶部基本单元 0: 模型额度圆环入口（工具组最左侧） -->
-<button id="badge-quota" class="ag-unit ag-unit-quota" type="button" aria-label="模型剩余额度与重置状态"
-  data-i18n-aria="badge.quota.aria" aria-expanded="false" data-quota-state="unknown" title="模型额度看板"
-  data-i18n-title="quota.panel.aria">
-  <svg id="quota-ring-svg" class="quota-ring-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-    <circle id="quota-ring-track" class="quota-ring-track" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1">
-    </circle>
-    <circle id="quota-ring-fill" class="quota-ring-fill" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1"
-      stroke-linecap="round" transform="rotate(-90 9 9)" stroke-dasharray="10 30.84" stroke-dashoffset="0"></circle>
-    <circle id="quota-ring-pace-dot" class="quota-ring-pace-dot" cx="9" cy="2.5" r="1.45" hidden></circle>
-  </svg>
-  <span class="quota-badge-metric">
-    <span id="quota-badge-val" class="quota-badge-val" data-i18n="quota.state.unknown">未知</span>
-    <span id="quota-badge-tag" class="quota-badge-tag" hidden></span>
-    <span id="quota-badge-dual" class="quota-badge-dual" hidden></span>
-  </span>
-</button>
-
-<!-- 顶部基本单元 1: 上下文小圆环（与速度入口紧邻） -->
-<button id="badge" class="ag-unit ag-unit-ring" type="button" aria-label="会话与上下文统计" data-i18n-aria="badge.aria"
-  aria-describedby="context-tooltip" aria-expanded="false">
-  <span class="ag-ring-morph-wrap">
-    <svg id="ring-svg" class="ring-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-      <circle id="ring-track" class="ring-track" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1"></circle>
-      <circle id="ring-fill" class="ring-fill" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1"
-        stroke-linecap="round" transform="rotate(-90 9 9)" stroke-dasharray="3.2 4.97"></circle>
-    </svg>
-    <svg id="badge-radial-close-svg" class="ag-ring-close-svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
-      <line x1="12" y1="5" x2="12" y2="19"></line>
-      <line x1="5" y1="12" x2="19" y2="12"></line>
-    </svg>
-  </span>
-  <span id="badge-pct-val" class="badge-pct-val">--%</span>
-  <span id="badge-scope-tag" class="badge-scope-tag" hidden></span>
-  <div id="bar-wrap" class="sr-only" aria-hidden="true">
-    <div id="bar-fill" class="meter-bar-fill"></div>
-  </div>
-  <span id="amount" class="sr-only" data-i18n="badge.reading">读取中…</span>
-  <span id="hover-wrap" class="sr-only"><span id="hover-extra"></span></span>
-</button>
-
-<!-- 顶部基本单元 2: 输出速度 (tok/s) / 等待纯动效沙漏 -->
-<button id="badge-speed" class="ag-unit" type="button" aria-label="模型输出速度与耗时统计" data-i18n-aria="badge.speed.aria"
-  aria-expanded="false">
-  <span id="badge-speed-icon" class="speed-icon" aria-hidden="true">⚡</span>
-  <span id="badge-speed-wait-svg" class="speed-wait-svg" hidden aria-hidden="true">
-    <svg class="ag-hourglass-svg" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor"
-      stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M3.2 2.2h7.6M3.2 11.8h7.6M4 2.2c0 2.5 3 4.2 3 4.8s-3 2.3-3 4.8M10 2.2c0 2.5-3 4.2-3 4.8s3 2.3 3 4.8"
-        opacity="0.88" />
-      <path class="ag-hourglass-sand-top" d="M4.8 3.2h4.4L7 6.1z" fill="currentColor" stroke="none" />
-      <line class="ag-hourglass-stream" x1="7" y1="6.7" x2="7" y2="9.4" stroke-dasharray="1 1.2" stroke-width="1.2" />
-      <path class="ag-hourglass-sand-bot" d="M4.8 11.1h4.4L7 8.4z" fill="currentColor" stroke="none" />
-    </svg>
-  </span>
-  <span id="speed-amount">-- tok/s</span>
-  <span id="speed-hover-extra" class="sr-only"></span>
-</button>
-
-<!-- 顶部基本单元 3: 累计 Token 用量（细线统计图标） -->
-<button id="badge-tokens" class="ag-unit" type="button" aria-label="Token 用量一览" data-i18n-aria="badge.tokens.aria"
-  aria-expanded="false">
-  <span class="token-fire-dot" aria-hidden="true"><svg viewBox="0 0 16 16" width="13" height="13" fill="none"
-      stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M3 13V9M8 13V4M13 13V7"></path>
-    </svg></span>
-  <span id="token-amount">--</span>
-  <span id="token-hover-extra" class="sr-only"></span>
-</button>
-
-<!-- 顶部基本单元 4: 一键启动 CLI 模式 -->
-<button id="badge-cli" class="ag-unit" type="button" aria-label="启动 CLI" data-i18n-aria="badge.cli.aria"
-  title="一键启动 Antigravity CLI 终端并进入当前项目目录" data-i18n-title="badge.cli.title">
-  <span class="cli-icon" aria-hidden="true">&gt;_</span>
-  <span id="cli-label">CLI</span>
-</button>
-
-<!-- 顶部基本单元 5: 窄屏溢出菜单按钮 -->
+<!-- 顶部溢出菜单按钮（旧 5 段会话头平铺条已在源码级删除） -->
 <button id="badge-overflow" class="ag-unit" type="button" aria-label="更多统计指标" data-i18n-aria="badge.overflow.aria"
   aria-expanded="false">
   <svg class="overflow-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
@@ -266,31 +188,22 @@
   </div>
 </div>
 
-<!-- 右侧辅助栏左缘宽窄拖拽条（仅 aux 且未回退时显示） -->
-<div id="dock-aux-resizer" class="dock-aux-resizer" role="separator" aria-orientation="vertical"
-  aria-label="拖拽调整右侧辅助面板宽度" data-i18n-aria="settings.dock.auxResizeAria" title="左右拖拽调整宽度"
-  data-i18n-title="settings.dock.auxResizeTitle" hidden></div>
+<!-- 右侧辅助栏外层宽窄拖拽条：还原原生客户端极细中性灰分隔线 + 7px 透明可抓热区 -->
+<div id="dock-aux-resizer" class="dock-aux-resizer ag-v2-splitter" role="separator" aria-orientation="vertical"
+  aria-label="拖拽调整右侧辅助面板宽度" data-i18n-aria="settings.dock.auxResizeAria" title="拖动调节相邻分栏宽度，双击复位"
+  data-i18n-title="settings.dock.auxOuterSplitterTitle" hidden></div>
+<!-- 三栏共存时插件与浏览器之间的内部分隔条：还原原生客户端极细中性灰分隔线 + 7px 透明可抓热区 -->
+<div id="dock-aux-inner-resizer" class="dock-aux-inner-resizer ag-v2-splitter" role="separator" aria-orientation="vertical"
+  aria-label="拖拽调整插件与浏览器分栏比例" data-i18n-aria="settings.dock.auxInnerResizeAria" title="拖动调节相邻分栏宽度，双击复位"
+  data-i18n-title="settings.dock.auxOuterSplitterTitle" hidden></div>
+<!-- 拖拽期间实时悬浮尺寸标尺 -->
+<div id="ag-ws-drag-ruler" class="ag-ws-drag-ruler" aria-live="off" hidden></div>
 
-<!-- 右侧辅助栏停靠控制条：置于面板外部顶层以保证切至浏览器或收起时仍可随时切换/恢复 -->
+<!-- 右侧辅助栏顶栏唯一布局入口容器（标签页 / 并排，并排时追加互换） -->
 <div id="dock-aux-context-bar" class="dock-aux-context-bar" hidden>
-  <span id="dock-aux-session-label" class="dock-aux-session-label"
+  <span id="dock-aux-session-label" class="dock-aux-session-label sr-only"
     data-i18n="settings.dock.auxUnresolved">当前未解析会话</span>
-  <div id="dock-aux-tab-switch" class="ctx-segmented dock-aux-tab-switch" role="tablist" aria-label="右侧辅助视图">
-    <button id="btn-dock-aux-view-plugin" class="ctx-seg-btn active" type="button" role="tab" aria-selected="true"
-      data-aux-view="plugin" data-i18n="settings.dock.auxTabPlugin">插件</button>
-    <button id="btn-dock-aux-view-browser" class="ctx-seg-btn" type="button" role="tab" aria-selected="false"
-      data-aux-view="browser" data-i18n="settings.dock.auxTabBrowser">浏览器</button>
-  </div>
-  <div class="dock-aux-actions">
-    <button id="btn-dock-aux-collapse" class="dock-aux-btn" type="button" aria-expanded="true"
-      data-i18n="settings.dock.auxCollapse">收起</button>
-    <button id="btn-dock-aux-copy-url" class="dock-aux-btn" type="button"
-      data-i18n="settings.dock.auxCopyUrl">复制链接</button>
-    <button id="btn-dock-aux-external" class="dock-aux-btn" type="button"
-      data-i18n="settings.dock.auxExternal">外部浏览器</button>
-    <button id="btn-dock-aux-back" class="dock-aux-btn dock-aux-btn-back" type="button" title="退出右侧停靠，返回顶部工具栏"
-      data-i18n-title="settings.dock.auxBackTitle" data-i18n="settings.dock.auxBack">返回顶栏</button>
-  </div>
+  <span id="dock-aux-tier-badge" class="dock-aux-tier-badge sr-only" aria-live="off">窄栏</span>
 </div>
 
 <!-- 弹出式面板 1: 会话上下文与速度监控 (#panel, 450px) -->
@@ -300,19 +213,18 @@
       <span class="panel-title-text" style="font-size:13px;font-weight:600;color:var(--ag-text-primary)"
         data-i18n="panel.ctx.title" title="Antigravity Context Meter" data-i18n-title="panel.ctx.fullName"
         aria-label="Antigravity Context Meter" data-i18n-aria="panel.ctx.fullName">💬 当前会话上下文</span>
-      <span id="v" class="version-pill-btn" role="button" tabindex="0" title="点击跳转到版本更新与关于设置"
-        data-i18n-title="header.versionBtn.title">0.9.0</span>
     </div>
     <div class="panel-header-actions ctx-header-actions">
+      <span id="v" class="panel-version-text">0.9.3</span>
       <!-- 插件面板三语言快速切换分段按钮 -->
       <div id="panel-lang-top-segmented" class="ctx-segmented ctx-lang-top-segmented" role="group" aria-label="插件面板语言"
         data-i18n-aria="settings.panelLang.aria">
-        <button id="btn-top-lang-zh-CN" class="ctx-seg-btn active" type="button" data-panel-lang="zh-CN" title="简体中文"
-          aria-label="简体中文">简</button>
-        <button id="btn-top-lang-zh-TW" class="ctx-seg-btn" type="button" data-panel-lang="zh-TW" title="繁體中文"
-          aria-label="繁體中文">繁</button>
-        <button id="btn-top-lang-en" class="ctx-seg-btn" type="button" data-panel-lang="en" title="English"
-          aria-label="English">EN</button>
+        <button id="btn-top-lang-zh-CN" class="ctx-seg-btn lang-btn active" type="button" data-panel-lang="zh-CN"
+          data-lang="zh-CN" title="简体中文" aria-label="简体中文">简</button>
+        <button id="btn-top-lang-zh-TW" class="ctx-seg-btn lang-btn" type="button" data-panel-lang="zh-TW"
+          data-lang="zh-TW" title="繁體中文" aria-label="繁體中文">繁</button>
+        <button id="btn-top-lang-en" class="ctx-seg-btn lang-btn" type="button" data-panel-lang="en"
+          data-lang="en" title="English" aria-label="English">EN</button>
       </div>
       <button id="btn-github-repo" class="panel-icon-btn" type="button" aria-label="打开 GitHub 仓库"
         data-i18n-aria="header.github.aria" title="打开 GitHub 仓库" data-i18n-title="header.github.aria">
@@ -322,30 +234,13 @@
           </path>
         </svg>
       </button>
-      <button id="btn-check-update" class="panel-icon-btn update-btn" type="button" aria-label="检查插件更新"
-        data-i18n-aria="header.update.aria" title="检查插件更新" data-i18n-title="header.update.aria"
-        style="position:relative">
-        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6"
-          stroke-linecap="round" stroke-linejoin="round">
-          <path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path>
-        </svg>
-        <span id="update-badge-dot" class="update-badge-dot" style="display:none"></span>
-      </button>
-      <button id="theme-toggle" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题"
-        data-i18n-aria="header.theme.aria" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）"
-        data-i18n-title="header.theme.title">🌓</button>
-      <button id="btn-open-right-panel" class="panel-icon-btn" type="button" aria-label="在右侧打开当前会话"
-        data-i18n-aria="settings.dock.openRightAria" title="在右侧打开并定位当前会话"
-        data-i18n-title="settings.dock.openRightTitle">◫</button>
-      <button id="btn-quick-settings" class="panel-icon-btn" type="button" aria-label="配置"
-        data-i18n-aria="settings.quickSettings" title="配置与首选项" data-i18n-title="settings.quickSettings">⚙️</button>
       <button id="close" class="panel-icon-btn" type="button" aria-label="收起详情"
         data-i18n-aria="header.close.aria">×</button>
     </div>
   </div>
 
   <div id="view-context">
-    <!-- 顶部 4 分页标签栏 -->
+    <!-- 顶部 3 分页标签栏（账号与额度已统一收口至宿主设置同级独立页与左下角胶囊） -->
     <div id="ctx-tabs-bar" class="ctx-tabs-bar" role="tablist" aria-label="上下文面板分页" data-i18n-aria="tabs.aria">
       <button id="tab-ctx-session" class="ctx-tab-btn active" type="button" role="tab" aria-selected="true"
         data-ctx-tab="session" data-i18n="tab.session">当前会话</button>
@@ -353,8 +248,6 @@
         data-i18n="tab.speed">速度对比</button>
       <button id="tab-ctx-models" class="ctx-tab-btn" type="button" role="tab" aria-selected="false"
         data-ctx-tab="models" data-i18n="tab.models">模型设置</button>
-      <button id="tab-ctx-accounts" class="ctx-tab-btn" type="button" role="tab" aria-selected="false"
-        data-ctx-tab="accounts" data-i18n="tab.accounts">账号与共享池</button>
     </div>
 
     <!-- 分页 1: 当前会话（12 列自适应自由拖拽 Bento 全景驾驶舱） -->
@@ -363,44 +256,38 @@
         data-i18n-aria="scope.bar.aria">
         <div id="ctx-scope-pills" class="ctx-scope-pills" role="tablist" aria-label="同屏会话列表"
           data-i18n-aria="scope.pills.aria"></div>
-        <button id="btn-ctx-scope-follow" class="ctx-scope-follow-btn" type="button" data-following="true"
-          title="仅切换面板查看视角，不切换客户端当前对话" data-i18n-title="scope.follow.title">
-          <span class="ctx-scope-follow-dot" aria-hidden="true"></span><span id="ctx-scope-follow-label"
-            data-i18n="scope.follow.auto">跟随焦点</span>
-        </button>
       </div>
 
       <!-- 驾驶舱顶部预设工具条与模块管理浮层 -->
       <div id="ctx-cockpit-toolbar" class="ctx-cockpit-toolbar">
-        <div class="ctx-cockpit-presets-wrap">
-          <div id="ctx-cockpit-presets-track" class="ctx-cockpit-presets" role="group" aria-label="布局预设"
+        <div class="ctx-cockpit-presets-wrap ag-preset-shell" id="ctx-cockpit-presets-shell">
+          <div id="ctx-cockpit-presets-track" class="ctx-cockpit-presets ag-preset-bar" role="group" aria-label="布局预设"
             data-i18n-aria="session.preset.label">
-            <button id="btn-preset-cockpit" class="ctx-preset-btn active" type="button" data-cockpit-preset="cockpit"
+            <button id="btn-preset-cockpit" class="ctx-preset-btn ctx-preset-pill active" type="button" data-cockpit-preset="cockpit"
               aria-pressed="true" data-i18n="session.preset.cockpit">会话总览</button>
-            <button id="btn-preset-minimal" class="ctx-preset-btn" type="button" data-cockpit-preset="minimal"
+            <button id="btn-preset-minimal" class="ctx-preset-btn ctx-preset-pill" type="button" data-cockpit-preset="minimal"
               aria-pressed="false" data-i18n="session.preset.minimal">极简遥测</button>
-            <button id="btn-preset-debug" class="ctx-preset-btn" type="button" data-cockpit-preset="debug"
+            <button id="btn-preset-debug" class="ctx-preset-btn ctx-preset-pill" type="button" data-cockpit-preset="debug"
               aria-pressed="false" data-i18n="session.preset.debug">深度排障</button>
-            <button id="btn-preset-speed-cost" class="ctx-preset-btn" type="button" data-cockpit-preset="speed_cost"
+            <button id="btn-preset-speed-cost" class="ctx-preset-btn ctx-preset-pill" type="button" data-cockpit-preset="speed_cost"
               aria-pressed="false" data-i18n="session.preset.speedCost">速度与成本</button>
-            <button id="btn-preset-collab" class="ctx-preset-btn" type="button" data-cockpit-preset="collab"
+            <button id="btn-preset-collab" class="ctx-preset-btn ctx-preset-pill" type="button" data-cockpit-preset="collab"
               aria-pressed="false" data-i18n="session.preset.collab">多代理协作</button>
+            <button id="btn-ctx-preset-new-group" class="ag-preset-add-btn" type="button"
+              data-custom-preset-action="new-empty-group" data-i18n="session.preset.newGroup">新建分组</button>
           </div>
           <div id="ctx-custom-presets" class="ctx-custom-presets" hidden aria-hidden="true"></div>
-          <button id="btn-ctx-preset-sort" class="ctx-action-pill ctx-preset-sort-toggle" type="button"
-            aria-pressed="false" title="长按预设标签拖拽排序或点击进入按键重排" data-i18n-title="session.preset.sortTitle"
-            data-i18n="session.preset.sort">排序</button>
         </div>
         <div class="ctx-cockpit-toolbar-right" id="ctx-widget-mgr-wrap">
           <div class="ctx-custom-preset-controls">
-            <button class="ctx-action-pill" type="button" data-custom-preset-action="save"
-              data-i18n="session.preset.saveNew">+ 保存为预设</button>
+            <button id="btn-ctx-preset-save" class="ctx-action-pill" type="button" data-custom-preset-action="save"
+              data-i18n="session.preset.saveNew">保存</button>
             <div id="ctx-custom-preset-actions" class="ctx-custom-preset-actions" hidden>
-              <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="overwrite"
+              <button class="ctx-action-pill" type="button" data-custom-preset-action="overwrite"
                 data-i18n="session.preset.overwrite">覆盖保存</button>
-              <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="rename"
+              <button class="ctx-action-pill" type="button" data-custom-preset-action="rename"
                 data-i18n="session.preset.rename">重命名</button>
-              <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="delete"
+              <button class="ctx-action-pill ctx-action-pill--danger-hover" type="button" data-custom-preset-action="delete"
                 data-i18n="session.preset.delete">删除预设</button>
             </div>
           </div>
@@ -408,7 +295,7 @@
             <input id="ctx-custom-preset-name" type="text" maxlength="60" placeholder="预设名称"
               data-i18n-placeholder="session.preset.name" />
             <button class="ctx-action-pill" type="submit" data-i18n="session.preset.submit">保存</button>
-            <button class="ctx-mini-link-btn" type="button" data-custom-preset-action="cancel"
+            <button class="ctx-action-pill" type="button" data-custom-preset-action="cancel"
               data-i18n="session.preset.cancel">取消</button>
           </form>
           <button id="btn-ctx-widget-mgr" class="ctx-action-pill" type="button" aria-expanded="false" title="显示或调整模块顺序"
@@ -423,6 +310,18 @@
             </div>
             <div id="ctx-widget-mgr-list" class="ctx-widget-mgr-list"></div>
           </div>
+        </div>
+      </div>
+
+      <!-- 0 模块空分组克制提示与快捷添加 / 一键恢复默认入口 -->
+      <div id="ctx-cockpit-empty-state" class="ctx-cockpit-empty-state" hidden role="status">
+        <div class="ctx-cockpit-empty-title" data-i18n="session.preset.emptyTitle">当前分组暂无模块</div>
+        <div class="ctx-cockpit-empty-desc" data-i18n="session.preset.emptyDesc">打开模块管理从零勾选需要的卡片，随后点击保存即可固化此分组。</div>
+        <div class="ctx-cockpit-empty-actions">
+          <button id="btn-ctx-empty-open-mgr" class="ctx-action-pill" type="button"
+            data-i18n="session.preset.emptyOpenMgr">打开模块管理</button>
+          <button id="btn-ctx-empty-restore-default" class="ctx-action-pill ctx-empty-restore-btn" type="button"
+            data-cockpit-empty-action="restore-default">恢复默认模块</button>
         </div>
       </div>
 
@@ -1748,98 +1647,8 @@
 
     </div>
 
-    <!-- 分页 4: 账号与共享池 -->
-    <div id="pane-ctx-accounts" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-accounts" hidden>
-      <!-- 块 1: 账号切换 -->
-      <div class="ctx-settings-card ctx-accounts-block" id="ctx-accounts-switch-section">
-        <div class="quota-subsec-header">
-          <span class="quota-subsec-title" data-i18n="accountsTab.switchTitle">👤 账号切换</span>
-          <div class="quota-subsec-actions">
-            <button id="btn-tab-acct-refresh" class="switch-pill-btn" type="button"
-              data-i18n="accounts.refreshEntry">刷新账号</button>
-            <button id="btn-tab-acct-import-current" class="switch-pill-btn" type="button"
-              data-i18n="accounts.importCurrent">导入当前</button>
-            <button id="btn-tab-acct-import-tools" class="switch-pill-btn" type="button" hidden
-              data-i18n="accounts.importTools">导入 Tools</button>
-            <button id="btn-tab-acct-oauth-add" class="switch-pill-btn active" type="button"
-              data-i18n="accounts.oauthAdd">+ 登录添加</button>
-          </div>
-        </div>
-        <div id="ctx-acct-active-summary" class="quota-acct-meta"></div>
-        <div id="ctx-acct-feedback" class="quota-acct-feedback" hidden></div>
-        <div id="ctx-accounts-list" class="quota-accounts-list"></div>
-
-        <div id="ctx-autoswitch-summary-card" class="quota-subcard" style="margin-top:6px">
-          <div class="quota-subcard-row">
-            <span class="quota-subsec-title" data-i18n="accountsTab.autoSwitchTitle">自动切号状态与规则摘要</span>
-            <span id="ctx-autoswitch-status-pill" class="key-pill pill-muted"
-              data-i18n="accounts.status.disabled">已关闭</span>
-          </div>
-          <div id="ctx-autoswitch-reason" class="quota-muted-note"></div>
-          <div id="ctx-autoswitch-rule-summary" class="quota-muted-note"></div>
-          <div class="quota-subsec-actions" style="margin-top:4px">
-            <button id="btn-ctx-open-autoswitch-rules" class="switch-pill-btn active" type="button"
-              data-i18n="accounts.editRulesBtn">编辑自动切号规则</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- 块 2: 共享额度池 -->
-      <div class="ctx-settings-card ctx-accounts-block" id="ctx-shared-pools-section">
-        <div class="quota-subsec-header">
-          <span class="quota-subsec-title" data-i18n="accountsTab.poolsTitle">◔ 共享额度池</span>
-          <div class="quota-subsec-actions">
-            <span id="ctx-pools-account-tag" class="key-pill pill-muted"></span>
-            <span id="ctx-pools-updated-at" class="quota-muted-note"></span>
-            <button id="btn-ctx-pools-refresh" class="switch-pill-btn" type="button"
-              data-i18n="quota.refresh.btn">刷新</button>
-            <button id="btn-ctx-open-quota-board" class="switch-pill-btn" type="button"
-              data-i18n="accountsTab.openQuotaBoardBtn">查看模型额度</button>
-          </div>
-        </div>
-        <div id="ctx-pools-banner" class="quota-banner" hidden>
-          <span id="ctx-pools-banner-text"></span>
-          <button id="btn-ctx-pools-retry" class="switch-pill-btn" type="button" data-i18n="quota.retry">重试</button>
-        </div>
-
-        <div id="ctx-pools-current-card" class="quota-current-card">
-          <div class="key-header">
-            <div style="min-width:0;flex:1">
-              <div style="font-size:10.5px;color:var(--ag-text-muted)" data-i18n="accountsTab.mainPoolLabel">当前账号主池
-              </div>
-              <div id="ctx-pools-cur-model" class="quota-cur-model-name">—</div>
-              <div id="ctx-pools-cur-pool" class="quota-cur-pool-sub"></div>
-            </div>
-            <div style="display:flex;align-items:center;gap:5px;flex-shrink:0">
-              <span id="ctx-pools-cur-status" class="key-pill pill-muted" data-i18n="quota.state.unknown">未知</span>
-            </div>
-          </div>
-          <div id="ctx-pools-cur-alert" class="quota-cur-alert" hidden></div>
-          <div id="ctx-pools-cur-buckets" class="quota-buckets-list"></div>
-          <div id="ctx-pools-cur-models-chips" class="quota-models-chips" hidden></div>
-        </div>
-
-        <div class="quota-pools-header" style="margin-top:8px">
-          <span id="ctx-pools-others-heading" style="font-size:11.5px;font-weight:600;color:var(--ag-text-secondary)"
-            data-i18n="quota.pools.othersHeading">其他共享额度池</span>
-          <span id="ctx-pools-others-browse-hint" style="font-size:10.5px;color:var(--ag-text-muted)"
-            data-i18n="accountsTab.poolsBrowseHint">分窗口余量摘要 · 完整进度条请点查看模型额度</span>
-        </div>
-        <div id="ctx-pools-others-list" class="quota-pools-list"></div>
-
-        <div class="quota-subsec-header" style="margin-top:10px">
-          <span class="quota-subsec-title" data-i18n="quota.compareTitle">📊 本机消耗与共享账号额度对照</span>
-        </div>
-        <div id="quota-compare-note" class="quota-muted-note" style="margin-bottom:5px"
-          data-i18n="quota.compareDisclaimer">
-          按同一账号与共享池统计。账面百分点下降受多设备使用、取整、重置与滚动恢复影响，不等同于本机单独消耗占比。
-        </div>
-        <div id="quota-compare-list" class="quota-compare-list"></div>
-      </div>
-    </div>
-
     <!-- 设置与系统配置（默认挂载于宿主设置独立页，无法识别宿主结构时作为降级工作区展示） -->
-    <div id="pane-ctx-settings" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-accounts" hidden>
+    <div id="pane-ctx-settings" class="ctx-tab-pane" role="tabpanel" aria-labelledby="tab-ctx-session" hidden>
       <div id="settings-fallback-banner" class="ctx-settings-fallback-banner" hidden>
         <div class="ctx-settings-fallback-text">
           <strong data-i18n="settings.fallback.title">当前使用插件内配置降级视图</strong>
@@ -2026,11 +1835,11 @@
                     <button id="btn-quota-mode-auto" class="ctx-seg-btn active" type="button"
                       data-quota-window-mode="auto" data-i18n="settings.quotaBadgeMode.auto">自动最紧缩</button>
                     <button id="btn-quota-mode-5h" class="ctx-seg-btn" type="button" data-quota-window-mode="5h"
-                      data-i18n="settings.quotaBadgeMode.5h">5h 窗口</button>
+                      data-i18n="settings.quotaBadgeMode.5h">5H 窗口</button>
                     <button id="btn-quota-mode-weekly" class="ctx-seg-btn" type="button" data-quota-window-mode="weekly"
-                      data-i18n="settings.quotaBadgeMode.weekly">周额度</button>
+                      data-i18n="settings.quotaBadgeMode.weekly">7D 窗口</button>
                     <button id="btn-quota-mode-both" class="ctx-seg-btn" type="button" data-quota-window-mode="both"
-                      data-i18n="settings.quotaBadgeMode.both">5h 与周双显</button>
+                      data-i18n="settings.quotaBadgeMode.both">5H 与 7D 双显</button>
                   </div>
                 </div>
               </div>
@@ -2148,8 +1957,7 @@
                   <input id="chk-auto-switch-enabled" type="checkbox" />
                   <span data-i18n="accounts.autoSwitchEnable">启用阈值自动切号，默认关闭</span>
                 </label>
-                <span id="auto-switch-status-pill" class="key-pill pill-muted"
-                  data-i18n="accounts.status.disabled">已关闭</span>
+                <span id="auto-switch-status-pill" class="key-pill pill-muted" hidden></span>
               </div>
               <div id="auto-switch-config-body" class="auto-switch-grid">
                 <div class="quota-field-lbl"><span data-i18n="accounts.quotaTargetLabel">监控额度</span>
@@ -2665,7 +2473,7 @@
               <div class="color-item">
                 <span class="color-item-lbl" data-i18n="settings.colors.tokenTotal">累计 token 用量</span>
                 <div class="color-item-ctrls">
-                  <input id="color-tokenTotal" class="color-picker" type="color" value="#c084fc"
+                  <input id="color-tokenTotal" class="color-picker" type="color" value="#3274f6"
                     data-i18n-aria="settings.colors.tokenTotal" aria-label="累计 token 用量颜色" />
                   <button id="swatch-tokenTotal" class="color-swatch-btn" type="button" data-color-slot="tokenTotal"
                     data-color-label="累计 token 用量" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
@@ -2676,7 +2484,7 @@
               <div class="color-item">
                 <span class="color-item-lbl" data-i18n="settings.colors.tokenAccent">其他 token 指标</span>
                 <div class="color-item-ctrls">
-                  <input id="color-tokenAccent" class="color-picker" type="color" value="#a78bfa"
+                  <input id="color-tokenAccent" class="color-picker" type="color" value="#38bdf8"
                     data-i18n-aria="settings.colors.tokenAccent" aria-label="其他 token 指标颜色" />
                   <button id="swatch-tokenAccent" class="color-swatch-btn" type="button" data-color-slot="tokenAccent"
                     data-color-label="其他 token 指标" data-i18n-title="colors.swatchTitle" title="点击打开颜色选取器"></button>
@@ -2761,13 +2569,9 @@
       <span id="panel-tokens-title"
         style="font-size:13px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))"
         data-i18n="tokens.title">本机已记录用量</span>
-      <span id="v-tokens" class="version-pill-btn" role="button" tabindex="0" title="点击跳转到版本更新与关于设置"
-        data-i18n-title="header.versionBtn.title">0.9.0</span>
     </div>
     <div class="panel-header-actions">
-      <button id="theme-toggle-tokens" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题"
-        data-i18n-aria="header.theme.aria" title="当前：跟随IDE（点击切换：浅色 / 深色 / 自动）"
-        data-i18n-title="header.theme.title">🌓</button>
+      <span id="v-tokens" class="panel-version-text">0.9.3</span>
       <button id="close-tokens" class="panel-icon-btn" type="button" aria-label="收起详情"
         data-i18n-aria="header.close.aria">×</button>
     </div>
@@ -2848,7 +2652,7 @@
       <dl class="plan-detail-dl">
         <dt data-i18n="plan.dt.plan">当前套餐</dt>
         <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
-          <span id="p-det-name" style="display:none">Google AI Pro</span>
+          <span id="p-det-name" style="display:none" data-i18n="plan.tier.pending">待识别</span>
           <select id="direct-tier-select" aria-label="套餐规格与档位覆盖" data-i18n-aria="plan.tier.aria" style="display:none">
             <option value="auto" data-i18n="plan.tier.auto">✨ 自动检测</option>
             <option value="free" data-i18n="plan.tier.free">免费版</option>
@@ -3498,19 +3302,8 @@
             <button id="req-filter-error" class="switch-pill-btn" type="button"
               data-i18n="reqLog.filterError">异常</button>
           </div>
-          <div id="req-sort-bar" class="source-switch-bar req-sort-bar" role="group" aria-label="排序方式"
-            data-i18n-aria="reqLog.sortAria">
-            <button id="req-sort-time" class="switch-pill-btn active" type="button" data-req-sort="time_desc"
-              data-i18n="reqLog.sortTime">时间</button>
-            <button id="req-sort-tokens" class="switch-pill-btn" type="button" data-req-sort="tokens_desc"
-              data-i18n="reqLog.sortTokens">Token</button>
-            <button id="req-sort-cost" class="switch-pill-btn" type="button" data-req-sort="cost_desc"
-              data-i18n="reqLog.sortCost">费用</button>
-            <button id="req-sort-duration" class="switch-pill-btn" type="button" data-req-sort="duration_desc"
-              data-i18n="reqLog.sortDuration">耗时</button>
-            <button id="req-sort-speed" class="switch-pill-btn" type="button" data-req-sort="speed_desc"
-              data-i18n="reqLog.sortSpeed">速度</button>
-          </div>
+          <div id="req-sort-bar" class="source-switch-bar req-sort-bar" data-req-sort-dropdown-slot="true" role="group"
+            aria-label="排序方式" data-i18n-aria="reqLog.sortAria"></div>
           <button id="btn-req-sync-pricing" class="req-sync-pricing-btn" type="button"
             title="从 models.dev 与 LiteLLM 同步最新模型定价" data-i18n-title="reqLog.syncPricingTitle"
             data-i18n="reqLog.syncPricing">同步价格</button>
@@ -3533,7 +3326,7 @@
               <th class="req-col-num" data-i18n="reqLog.col.cost">费用</th>
               <th class="req-col-num" data-i18n="reqLog.col.ttft">首字耗时</th>
               <th class="req-col-num" data-i18n="reqLog.col.duration">耗时</th>
-              <th class="req-col-num" data-i18n="reqLog.col.speed">速度</th>
+              <th class="req-col-num" data-i18n="reqLog.col.speed">端到端速度</th>
               <th class="req-col-status" data-i18n="reqLog.col.status">状态</th>
             </tr>
           </thead>
@@ -3673,7 +3466,7 @@
           <div id="h-sum-sub-ratio-wrap" class="heat-sum-item" style="display:none">
             <span class="heat-sum-label" data-i18n="tokens.heat.sumSubRatio">订阅性价比:</span>
             <span id="h-sum-sub-ratio" class="heat-sum-val"
-              style="color:var(--ag-token-accent-default,#a78bfa)">--</span>
+              style="color:var(--ag-token-accent-default,#3274f6)">--</span>
           </div>
         </div>
         <div class="heat-cost-disclaimer" data-i18n="tokens.heat.disclaimer">
@@ -3721,7 +3514,7 @@
               <button class="heat-preset-btn" type="button" data-heat-preset="purple" data-active="true">
                 <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#3f1e6b"></i><i
                     style="background:#652ab7"></i><i style="background:#9053f8"></i><i
-                    style="background:#c084fc"></i></span>
+                    style="background:#818cf8"></i></span>
                 <span data-i18n="tokens.heat.presetPurple">紫色系</span>
               </button>
               <button class="heat-preset-btn" type="button" data-heat-preset="yellow" data-active="false">
@@ -3806,7 +3599,7 @@
               <div class="heat-lvl-item">
                 <span class="heat-lvl-lbl" data-i18n="tokens.heat.lvl4">5档 · 多/峰</span>
                 <div class="color-item-ctrls">
-                  <input id="color-heatLvl4" class="color-picker" type="color" value="#c084fc" aria-label="热力图第5档颜色"
+                  <input id="color-heatLvl4" class="color-picker" type="color" value="#3274f6" aria-label="热力图第5档颜色"
                     data-i18n-aria-label="tokens.heat.lvl4Aria" />
                   <button id="swatch-heatLvl4" class="color-swatch-btn" type="button" data-color-slot="heatLvl4"
                     data-color-label="色阶第 5 档（多/峰值用量）" data-i18n-color-label="tokens.heat.lvl4Swatch"></button>
@@ -3832,7 +3625,7 @@
             <div class="color-item">
               <span class="color-item-lbl" data-i18n="tokens.heat.highEnd">色阶「多」端颜色（自动插值）</span>
               <div class="color-item-ctrls">
-                <input id="color-heatHigh" class="color-picker" type="color" value="#c084fc" aria-label="热力图多端颜色"
+                <input id="color-heatHigh" class="color-picker" type="color" value="#3274f6" aria-label="热力图多端颜色"
                   data-i18n-aria-label="tokens.heat.highEndAria" />
                 <button id="swatch-heatHigh" class="color-swatch-btn" type="button" data-color-slot="heatHigh"
                   data-color-label="热力图「多」端颜色" data-i18n-color-label="tokens.heat.highEndSwatch"></button>
@@ -3948,8 +3741,8 @@
         title="#06B6D4"></button>
       <button class="cp-preset-dot" type="button" data-cp-hex="#3b82f6" style="background:#3b82f6"
         title="#3B82F6"></button>
-      <button class="cp-preset-dot" type="button" data-cp-hex="#a855f7" style="background:#a855f7"
-        title="#A855F7"></button>
+      <button class="cp-preset-dot" type="button" data-cp-hex="#38bdf8" style="background:#38bdf8"
+        title="#38BDF8"></button>
     </div>
   </div>
   <div class="cp-stage">
@@ -4029,20 +3822,26 @@
   <div class="pop-det" id="heat-pop-det"></div>
 </div>
 
-<!-- 弹出式面板 3: 模型额度看板 (#panel-quota, 460px) -->
+<!-- 弹出式面板 3: 模型额度看板 (#panel-quota · 10.html 纯平十阶双池四行看板) -->
 <section id="panel-quota" class="ag-panel ag-panel-flex" hidden aria-label="模型额度看板" data-i18n-aria="quota.panel.aria">
   <div class="panel-header-bar">
     <div class="panel-title">
-      <span class="panel-title-text" style="font-size:13px;font-weight:600;color:var(--ag-text-primary)"
+      <span class="panel-title-text" style="font-size:13px;font-weight:700;color:var(--ag-text-primary)"
         data-i18n="quota.panel.title">◔ 模型额度看板</span>
       <span id="quota-plan-tier-pill" class="key-pill pill-muted" hidden></span>
+      <span id="quota-updated-meta" class="quota-header-updated">
+        <span data-i18n="quota.board.updatedLabel">上次更新</span>
+        <span id="quota-time-updated" class="quota-header-updated-val">—</span>
+      </span>
     </div>
     <div class="panel-header-actions">
       <span id="quota-refresh-feedback" class="quota-refresh-feedback" hidden
         data-i18n="quota.refresh.upToDate">已更新</span>
-      <button id="btn-quota-refresh" class="panel-icon-btn quota-refresh-btn" type="button" aria-label="手动刷新模型额度"
+      <button id="btn-quota-refresh" class="panel-icon-btn quota-refresh-btn" type="button" data-refresh-state="idle" aria-label="手动刷新模型额度"
         data-i18n-aria="quota.refresh.aria" title="手动刷新模型额度" data-i18n-title="quota.refresh.aria">
-        <span class="quota-refresh-icon" aria-hidden="true">↻</span>
+        <svg id="quota-refresh-icon-svg" class="quota-refresh-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M13.5 8a5.5 5.5 0 1 1-1.42-3.7M13.5 2.5v2.75h-2.75" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
         <span id="quota-refresh-text" data-i18n="quota.refresh.btn">刷新</span>
       </button>
       <button id="close-quota" class="panel-icon-btn" type="button" aria-label="收起详情"
@@ -4058,84 +3857,41 @@
         data-i18n="quota.restartBtn">重启客户端</button>
     </div>
 
-    <!-- 独立三时间分列展示（数据更新时间 / 下次自动刷新 / 当前额度重置） -->
-    <div id="quota-times-grid" class="quota-times-grid">
-      <div class="quota-time-cell">
-        <div class="quota-time-label" data-i18n="quota.time.updated">数据更新时间</div>
-        <div id="quota-time-updated" class="quota-time-val">—</div>
+    <!-- 紧凑会话与周期摘要条 (保留当前模型、状态、三时间与口径提示，不抢主看板视觉重心) -->
+    <div id="quota-session-strip" class="quota-session-strip">
+      <div class="quota-session-left">
+        <span class="quota-session-label" data-i18n="quota.current.label">当前会话模型</span>
+        <span id="quota-cur-model" class="quota-session-model">—</span>
+        <span id="quota-cur-status" class="key-pill pill-muted" data-i18n="quota.state.unknown">未知</span>
+        <button id="quota-basis-help" class="quota-help-btn" type="button" data-i18n-title="quota.basisNote"
+          data-i18n-aria="quota.basisNote" title="百分比与重置时间来自宿主接口；「约剩余 Token」按本机输入+缓存+输出原始 Token 统计。">?</button>
       </div>
-      <div class="quota-time-cell">
-        <div class="quota-time-label" data-i18n="quota.time.nextRefresh">下次自动刷新</div>
-        <div id="quota-time-next" class="quota-time-val">—</div>
-      </div>
-      <div class="quota-time-cell">
-        <div class="quota-time-label" data-i18n="quota.time.reset">当前额度重置</div>
-        <div id="quota-time-reset" class="quota-time-val">—</div>
-      </div>
-    </div>
-
-    <!-- 当前会话模型额度总览 -->
-    <div id="quota-current-card" class="quota-current-card">
-      <div class="key-header">
-        <div style="min-width:0;flex:1">
-          <div style="font-size:10.5px;color:var(--ag-text-muted)" data-i18n="quota.current.label">当前会话模型</div>
-          <div id="quota-cur-model" class="quota-cur-model-name">—</div>
-          <div id="quota-cur-pool" class="quota-cur-pool-sub"></div>
-          <div id="quota-cur-est" class="quota-cur-est" hidden></div>
-        </div>
-        <div style="display:flex;align-items:center;gap:5px;flex-shrink:0">
-          <button id="quota-basis-help" class="quota-help-btn" type="button" data-i18n-title="quota.basisNote"
-            data-i18n-aria="quota.basisNote" title="百分比与重置时间来自宿主接口；「约剩余 Token」按本机输入+缓存+输出原始 Token 统计。">?</button>
-          <span id="quota-cur-status" class="key-pill pill-muted" data-i18n="quota.state.unknown">未知</span>
-          <span id="quota-cur-pace-pill" class="quota-pace-tier-pill" hidden></span>
-        </div>
-      </div>
-      <div id="quota-cur-alert" class="quota-cur-alert" hidden></div>
-      <div id="quota-cur-buckets" class="quota-buckets-list"></div>
-      <div id="quota-cur-models-chips" class="quota-models-chips" hidden></div>
-    </div>
-
-    <!-- 共享额度池清单（主池仅显示上方唯一双轨，此处展示其余共享额度池并支持点击展开） -->
-    <div class="quota-pools-header">
-      <span id="quota-pools-heading" style="font-size:11.5px;font-weight:600;color:var(--ag-text-secondary)"
-        data-i18n="quota.pools.othersHeading">其他共享额度池</span>
-      <span id="quota-pools-browse-hint" style="font-size:10.5px;color:var(--ag-text-muted)"
-        data-i18n="quota.pools.browseHint">点击可查看详情（不切换当前会话模型）</span>
-    </div>
-    <div id="quota-pools-list" class="quota-pools-list"></div>
-
-    <!-- 多账号与自动切号摘要直达入口（共用设置页账号状态与未保存草稿） -->
-    <div id="quota-accounts-entry-card" class="quota-subcard quota-accounts-entry-card">
-      <div class="quota-subcard-row">
-        <span class="quota-subsec-title" data-i18n="accounts.panelTitle">👤 多账号切换与阈值自动切号</span>
-        <span id="quota-entry-autoswitch-pill" class="key-pill pill-muted"
-          data-i18n="accounts.status.disabled">已关闭</span>
-      </div>
-      <div id="quota-entry-active-account" class="quota-acct-meta"></div>
-      <div id="quota-entry-rule-summary" class="quota-muted-note"></div>
-      <div class="quota-subsec-actions" style="margin-top:4px">
-        <button id="btn-quota-open-accounts-settings" class="switch-pill-btn active" type="button"
-          data-i18n="accounts.manageBtn">管理账号</button>
-        <button id="btn-quota-entry-refresh-accts" class="switch-pill-btn" type="button"
-          data-i18n="accounts.refreshEntry">刷新账号</button>
+      <div class="quota-session-times">
+        <span class="quota-strip-time">
+          <span class="quota-strip-time-label" data-i18n="quota.time.nextRefresh">下次自动刷新</span>
+          <span id="quota-time-next" class="quota-strip-time-val">—</span>
+        </span>
+        <span class="quota-strip-sep" aria-hidden="true">·</span>
+        <span class="quota-strip-time">
+          <span class="quota-strip-time-label" data-i18n="quota.time.reset">当前额度重置</span>
+          <span id="quota-time-reset" class="quota-strip-time-val">—</span>
+        </span>
       </div>
     </div>
+    <div id="quota-cur-alert" class="quota-cur-alert" hidden></div>
 
-    <!-- 模型 Prompt Cache 保活协议与保障（保留在额度面板内作为诊断信息） -->
-    <div id="quota-keepalive-section" class="quota-accounts-section">
-      <div class="quota-subsec-header">
-        <span class="quota-subsec-title" data-i18n="keepalive.title">🧊 模型缓存保活状态与协议核查</span>
-        <span id="keepalive-status-pill" class="key-pill pill-muted" data-i18n="accounts.keepaliveOff">默认关闭</span>
-      </div>
-      <div class="quota-subcard">
-        <div id="keepalive-protocol-summary" class="quota-muted-note"></div>
-        <div id="keepalive-experiment-summary" class="quota-muted-note" style="margin-top:4px"></div>
-        <div class="quota-subcard-row" style="margin-top:6px">
-          <span id="keepalive-runtime-note" class="quota-muted-note"></span>
-          <button id="btn-keepalive-stop" class="switch-pill-btn" type="button" hidden
-            data-i18n="keepalive.stopBtn">立即停止保活</button>
+    <!-- 原样移植自 10.html 的扁平双池四行主配额看板 (含正式双色阶切换) -->
+    <div id="quota-board-panel" class="quota-panel" aria-label="配额明细看板">
+      <div class="quota-panel-header">
+        <strong data-i18n="quota.board.panelHeader">Gemini 独立池 · Claude / GPT 共用池</strong>
+        <div id="quota-color-mode-segmented" class="ctx-segmented ctx-seg-pill quota-color-mode-segmented" role="group" aria-label="色彩呈现模式" data-i18n-aria="quota.board.colorModeAria">
+          <button id="quota-color-mode-uniform" class="ctx-seg-btn active" type="button" data-color-mode="uniform" aria-pressed="true"
+            data-i18n="quota.board.colorUniform">整条随档位变色</button>
+          <button id="quota-color-mode-progressive" class="ctx-seg-btn" type="button" data-color-mode="progressive" aria-pressed="false"
+            data-i18n="quota.board.colorProgressive">条内 10 阶逐段加深</button>
         </div>
       </div>
+      <div id="quota-main-board" class="quota-board" data-color-mode="uniform"></div>
     </div>
   </div>
 </section>
@@ -4162,60 +3918,7 @@
     <span id="csb-speed-text" class="csb-text">—</span>
   </button>
 
-  <!-- 组 2: Token 用量与缓存命中率胶囊 (悬停预览 + 单击直达实时请求) -->
-  <div id="csb-group-tokens" class="csb-pill csb-tokens-pill" tabindex="0" role="button" aria-haspopup="dialog"
-    aria-expanded="false" aria-label="Token usage & cache stats" data-i18n-aria="composer.tokensAria">
-    <svg class="csb-svg-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <ellipse cx="12" cy="5" rx="8" ry="3"></ellipse>
-      <path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"></path>
-      <path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"></path>
-    </svg>
-    <span id="csb-tokens-text" class="csb-text">—</span>
-
-    <!-- 正上方 5 行卡片（居中锚定、含上下文分段进度条与阈值告警） -->
-    <div id="token-five-line-card" class="token-five-line-card" role="dialog" aria-label="Token usage & cache breakdown"
-      data-i18n-aria="composer.cardAria" hidden>
-      <div class="tfl-row tfl-hdr">
-        <span class="tfl-label" data-i18n="composer.card.tokenUsage">Token Usage</span>
-        <span id="tfl-val-total" class="tfl-val tfl-bold">—</span>
-      </div>
-      <div class="tfl-row">
-        <span class="tfl-label" data-i18n="composer.card.cacheHit">Cache Hit</span>
-        <span id="tfl-val-hit" class="tfl-val">—</span>
-      </div>
-      <div class="tfl-row">
-        <span class="tfl-label" data-i18n="composer.card.uncachedInput">Uncached Input</span>
-        <span id="tfl-val-uncached" class="tfl-val">—</span>
-      </div>
-      <div class="tfl-row">
-        <span class="tfl-label" data-i18n="composer.card.cacheRead">Cache Read</span>
-        <span id="tfl-val-cached" class="tfl-val">—</span>
-      </div>
-      <div class="tfl-row">
-        <span class="tfl-label" data-i18n="composer.card.output">Output</span>
-        <span id="tfl-val-output" class="tfl-val">—</span>
-      </div>
-      <div class="tfl-sep"></div>
-      <div id="tfl-seg-wrap" class="tfl-seg-wrap">
-        <div class="tfl-row" style="font-size:10px">
-          <span id="tfl-seg-title" class="tfl-label" data-i18n="composer.card.ctxSegments">上下文分段</span>
-          <span id="tfl-seg-pct" class="tfl-val">--%</span>
-        </div>
-        <div id="tfl-seg-bar" class="tfl-seg-bar" data-threshold="normal">
-          <span id="tfl-seg-fresh" class="key-seg-part key-seg-fresh" style="width:0%"></span>
-          <span id="tfl-seg-write" class="key-seg-part key-seg-write" style="width:0%"></span>
-          <span id="tfl-seg-read" class="key-seg-part key-seg-read" style="width:0%"></span>
-        </div>
-        <div id="tfl-seg-legend" class="tfl-seg-legend"></div>
-      </div>
-      <div id="tfl-runtime-note" class="tfl-runtime-note" hidden></div>
-      <div class="tfl-hint" data-i18n="composer.card.clickHint"
-        style="font-size:9.5px;color:var(--muted-foreground,#94a3b8);text-align:right;margin-top:2px">点击查看实时请求</div>
-    </div>
-  </div>
-
-  <!-- 组 3: 上下文小圆环与百分比 (悬停显示已用/上限/剩余) -->
+  <!-- 组 3: 上下文小圆环与百分比 (悬停显示已用/上限/剩余；重复的额度与缓存项已在源码级删除) -->
   <button id="csb-group-context" class="csb-pill csb-context-pill" type="button" aria-label="Context details"
     data-i18n-aria="composer.contextAria" data-tooltip="上下文详情">
     <span class="csb-ring-morph-wrap">
@@ -4232,44 +3935,6 @@
       </svg>
     </span>
     <span id="csb-context-text" class="csb-text">—</span>
-  </button>
-
-  <!-- 组 4: 输入框下方模型额度与消耗节奏双显摘要 -->
-  <button id="csb-group-quota" class="csb-pill csb-quota-pill" type="button" aria-label="当前模型池额度与消耗节奏摘要"
-    data-i18n-aria="composer.quotaAria" hidden>
-    <span id="csb-quota-5h" class="csb-quota-win" hidden>
-      <svg id="csb-quota-svg-5h" class="csb-quota-svg" width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
-        <circle class="csb-quota-track" cx="8" cy="8" r="5.5" fill="none" stroke-width="2"></circle>
-        <circle id="csb-quota-ring-5h" class="csb-quota-ring" cx="8" cy="8" r="5.5" fill="none" stroke-width="2"
-          stroke-linecap="round" transform="rotate(-90 8 8)" stroke-dasharray="34.56 34.56" stroke-dashoffset="34.56">
-        </circle>
-        <circle id="csb-quota-dot-5h" class="csb-quota-dot" cx="8" cy="2.5" r="1.25" hidden></circle>
-      </svg>
-      <span id="csb-quota-text-5h" class="csb-text">5h —</span>
-    </span>
-    <span id="csb-quota-7d" class="csb-quota-win" hidden>
-      <svg id="csb-quota-svg-7d" class="csb-quota-svg" width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
-        <circle class="csb-quota-track" cx="8" cy="8" r="5.5" fill="none" stroke-width="2"></circle>
-        <circle id="csb-quota-ring-7d" class="csb-quota-ring" cx="8" cy="8" r="5.5" fill="none" stroke-width="2"
-          stroke-linecap="round" transform="rotate(-90 8 8)" stroke-dasharray="34.56 34.56" stroke-dashoffset="34.56">
-        </circle>
-        <circle id="csb-quota-dot-7d" class="csb-quota-dot" cx="8" cy="2.5" r="1.25" hidden></circle>
-      </svg>
-      <span id="csb-quota-text-7d" class="csb-text">7d —</span>
-    </span>
-    <span id="csb-quota-single" class="csb-quota-win" hidden>
-      <svg id="csb-quota-svg-single" class="csb-quota-svg" width="13" height="13" viewBox="0 0 16 16"
-        aria-hidden="true">
-        <circle class="csb-quota-track" cx="8" cy="8" r="5.5" fill="none" stroke-width="2"></circle>
-        <circle id="csb-quota-ring-single" class="csb-quota-ring" cx="8" cy="8" r="5.5" fill="none" stroke-width="2"
-          stroke-linecap="round" transform="rotate(-90 8 8)" stroke-dasharray="34.56 34.56" stroke-dashoffset="34.56">
-        </circle>
-        <circle id="csb-quota-dot-single" class="csb-quota-dot" cx="8" cy="2.5" r="1.25" hidden></circle>
-      </svg>
-      <span id="csb-quota-text-single" class="csb-text">—</span>
-    </span>
-    <span id="csb-quota-alt-warn" class="csb-quota-alt-warn" hidden></span>
-    <span id="csb-quota-more" class="csb-quota-more" hidden></span>
   </button>
 </div>
 
@@ -4315,7 +3980,7 @@
     <span class="csb-mini-card-label">剩余空间</span>
     <span id="csb-card-context-remain" class="csb-mini-card-val">—</span>
   </div>
-  <div class="csb-mini-card-hint" data-i18n="composer.card.contextHint">点击查看当前会话</div>
+  <div id="csb-card-context-hint" class="csb-mini-card-hint" data-i18n="composer.card.contextHint">点击查看当前会话</div>
 </div>
 
 <div id="csb-card-quota" class="ag-mini-float-card csb-mini-card" role="tooltip" aria-hidden="true" hidden>

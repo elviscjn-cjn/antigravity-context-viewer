@@ -250,6 +250,10 @@ function initDropdownController(cfg) {
 
         renderedItemMap.set(opt.value, { itemEl, extraEl });
 
+        itemEl.addEventListener('mousedown', (e) => {
+          e?.preventDefault?.();
+          e?.stopPropagation?.();
+        });
         itemEl.addEventListener('click', (e) => {
           e?.stopPropagation?.();
           selectOption(opt);
@@ -1442,9 +1446,15 @@ function initNativeSelectDropdown(selectId, opts = {}) {
       return items;
     },
     onSelect: (opt) => {
+      const legacyOpt = sel.querySelector?.('option[value=""][disabled]');
+      const hadVisibleLegacy = Boolean(legacyOpt && !legacyOpt.hidden);
+      if (legacyOpt && opt.value) legacyOpt.hidden = true;
+      const prevVal = sel.value;
       sel.value = opt.value;
-      if (typeof Event !== 'undefined') sel.dispatchEvent?.(new Event('change', { bubbles: true }));
-      else sel.dispatchEvent?.({ type: 'change', target: sel });
+      if (prevVal !== opt.value || hadVisibleLegacy) {
+        if (typeof Event !== 'undefined') sel.dispatchEvent?.(new Event('change', { bubbles: true }));
+        else sel.dispatchEvent?.({ type: 'change', target: sel });
+      }
     }
   });
 

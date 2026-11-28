@@ -14,10 +14,21 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const { isIsolatedTestPath } = require('./asar-engine');
 
 const LABEL = 'com.elviscjn.antigravity-context-meter';
 const WINDOWS_RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 const WINDOWS_VALUE_NAME = 'AntigravityContextMeter';
+
+function assertAutostartWriteIsolated(target, options = {}) {
+  if (process.env.AG_METER_TEST_MODE !== '1' || options.allowNonIsolatedInTest === true) return;
+  if (target.kind === 'run-key' && typeof options.exec !== 'function') {
+    throw new Error('测试模式操作 Windows 登录自启必须提供 exec 注册表 stub，禁止触碰真实 HKCU Run 键');
+  }
+  if (target.kind === 'launchagent' && target.file && !isIsolatedTestPath(target.file)) {
+    throw new Error(`测试模式禁止写入非隔离 LaunchAgent 路径: ${target.file}`);
+  }
+}
 
 function resolveAutostartTarget(options = {}) {
   const platform = options.platform || process.platform;
@@ -71,6 +82,12 @@ function resolveNodePath(nodePath) {
 function buildWatchArgs(options = {}) {
   const scriptPath = resolveScriptPath(options.scriptPath);
   const args = [scriptPath, 'watch'];
+  if (options.persistent) args.push('--persistent');
+  if (options.noLaunch) args.push('--no-launch');
+  if (options.silent) args.push('--silent');
+  if (options.liveOnly) args.push('--live-only');
+  if (options.customPath) args.push('--path', String(options.customPath));
+  if (options.stateDir) args.push('--state-dir', String(options.stateDir));
   if (options.port) args.push('--port', String(options.port));
   return args;
 }
@@ -82,6 +99,7 @@ function buildLaunchAgentPlist(options = {}) {
   const logPath = options.logPath || path.join(homeDir, 'Library', 'Logs', 'antigravity-context-meter.log');
   const label = options.label || LABEL;
   const envPath = options.envPath || '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
+  const keepAlive = options.persistent === true || options.keepAlive === true;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -103,9 +121,9 @@ ${args.map((a) => `    <string>${escapeXml(a)}</string>`).join('\n')}
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <false/>
+  <${keepAlive ? 'true' : 'false'}/>${keepAlive ? '\n  <key>ThrottleInterval</key>\n  <integer>10</integer>' : ''}
   <key>ProcessType</key>
-  <string>Interactive</string>
+  <string>${keepAlive ? 'Background' : 'Interactive'}</string>
   <key>StandardOutPath</key>
   <string>${escapeXml(logPath)}</string>
   <key>StandardErrorPath</key>
@@ -121,6 +139,9 @@ function quoteWindowsArg(value) {
 }
 
 function buildWindowsRunCommand(options = {}) {
+  if (options.windowsCommandOverride && typeof options.windowsCommandOverride === 'string') {
+    return options.windowsCommandOverride.trim();
+  }
   return [quoteWindowsArg(resolveNodePath(options.nodePath)), ...buildWatchArgs(options).map(quoteWindowsArg)].join(' ');
 }
 
@@ -180,6 +201,7 @@ function getAutostartStatus(options = {}) {
 
 async function enableAutostart(options = {}) {
   const target = resolveAutostartTarget(options);
+  assertAutostartWriteIsolated(target, options);
   const exec = options.exec || defaultExec;
   const status = getAutostartStatus(options);
   if (!status.supported) {
@@ -218,6 +240,7 @@ async function enableAutostart(options = {}) {
 
 async function disableAutostart(options = {}) {
   const target = resolveAutostartTarget(options);
+  assertAutostartWriteIsolated(target, options);
   const exec = options.exec || defaultExec;
   const status = getAutostartStatus(options);
   if (!status.supported) {

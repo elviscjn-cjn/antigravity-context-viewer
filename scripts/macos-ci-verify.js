@@ -310,7 +310,14 @@ async function main() {
     const asarFixtureDir = path.join(workDir, 'asar_src');
     fs.mkdirSync(path.join(asarFixtureDir, 'dist'), { recursive: true });
     fs.writeFileSync(path.join(asarFixtureDir, 'package.json'), JSON.stringify({ name: 'antigravity', version: '2.99.0' }));
-    fs.writeFileSync(path.join(asarFixtureDir, 'dist', 'utils.js'), '// dummy');
+    fs.writeFileSync(path.join(asarFixtureDir, 'dist', 'utils.js'), [
+      'function setupNodeWrapper(env) {}',
+      'function createWindow(url, storageManager, options) {',
+      '  void win.loadURL(url);',
+      '  return win;',
+      '}',
+      'module.exports = { setupNodeWrapper, createWindow };'
+    ].join('\n'));
     await asar.builtinAsar.createPackage(asarFixtureDir, dummyAsar);
 
     const checkRun = spawnSync(process.execPath, [cli, 'check', '--path', dummyAsar], {

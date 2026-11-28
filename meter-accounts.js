@@ -13,7 +13,7 @@ const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 const { URL } = require('url');
-const { execFileSync, spawnSync } = require('child_process');
+const { execFileSync, spawnSync, spawn } = require('child_process');
 
 const { getStateDir, getAppDataDir } = require('./asar-engine');
 const { buildModelQuotaSnapshot, selectPrimaryQuotaBucket, getModelPoolKey, getSharedQuotaGroupKey } = require('./meter-core');
@@ -193,6 +193,127 @@ const OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const OAUTH_USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo';
 const CLOUDCODE_PROD_URL = 'https://cloudcode-pa.googleapis.com';
 const CLOUDCODE_DAILY_URL = 'https://daily-cloudcode-pa.googleapis.com';
+const CLOUDCODE_SANDBOX_URL = 'https://daily-cloudcode-pa.sandbox.googleapis.com';
+const GOOGLE_ANTIGRAVITY_SUPPORT_URL = 'https://antigravity.google/support';
+
+/**
+ * 将上游订阅档位原文规范化为 ULTRA / PRO / FREE 及可读套餐名称，避免界面裸露 g1-pro-tier / free-tier 内部标识
+ * @param {string|null|undefined} rawTier
+ * @returns {{ tierCode: string|null, tierName: string|null, rawTier: string|null }}
+ */
+function normalizeSubscriptionTierInfo(rawTier) {
+  const raw = typeof rawTier === 'string' ? rawTier.trim() : '';
+  if (!raw || raw === '未知' || /^unknown$/i.test(raw)) {
+    return { tierCode: null, tierName: null, rawTier: raw || null };
+  }
+  const low = raw.toLowerCase();
+  if (low.includes('ultra')) {
+    return { tierCode: 'ULTRA', tierName: 'Google AI Ultra', rawTier: raw };
+  }
+  if (low.includes('pro')) {
+    return { tierCode: 'PRO', tierName: 'Google AI Pro', rawTier: raw };
+  }
+  if (low.includes('plus')) {
+    return { tierCode: 'PLUS', tierName: 'Google AI Plus', rawTier: raw };
+  }
+  if (low.includes('free') || low.includes('standard') || low.includes('免费') || low.includes('免費')) {
+    return { tierCode: 'FREE', tierName: 'Free', rawTier: raw };
+  }
+  return { tierCode: null, tierName: raw, rawTier: raw };
+}
+
+/**
+ * 从账号真实配额快照中派生精简可用模型能力标签（严禁编造或混入反代/优先级概念）
+ * @param {Object|null} quotaSnapshot
+ * @param {string|null} tierCode
+ * @returns {string[]}
+ */
+function deriveAccountCapabilities(quotaSnapshot, tierCode = null) {
+  const pools = Array.isArray(quotaSnapshot?.pools) ? quotaSnapshot.pools : [];
+  if (!pools.length) return [];
+  const tags = [];
+  const addTag = (label) => {
+    if (label && !tags.includes(label)) tags.push(label);
+  };
+  let hasArgon = false;
+  let claudeVer = '';
+  let hasGpt120b = false;
+
+  for (const pool of pools) {
+    if (!pool || pool.noPermission) continue;
+    const pk = String(pool.poolKey || '').toLowerCase();
+    const title = String(pool.title || pool.poolTitle || '').toLowerCase();
+    const desc = String(pool.description || '').toLowerCase();
+    const models = Array.isArray(pool.models) ? pool.models : [];
+
+    if (pk === 'shared_gemini_argon' || title.includes('argon')) {
+      hasArgon = true;
+    }
+    for (const m of models) {
+      if (!m || m.noPermission) continue;
+      const hay = [m.productLabel, m.productKey, ...(m.modelIds || []), ...(m.aliases || [])]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      if (hay.includes('argon')) hasArgon = true;
+      if (hay.includes('claude')) {
+        if (hay.includes('5.5') || hay.includes('5-5')) claudeVer = 'Claude 5.5';
+        else if (hay.includes('4.6') || hay.includes('4-6')) claudeVer = claudeVer || 'Claude 4.6';
+        else if (!claudeVer) claudeVer = 'Claude';
+      }
+      if (hay.includes('gpt-oss') || hay.includes('gpt-120b') || hay.includes('120b')) {
+        hasGpt120b = true;
+      }
+    }
+    if (!claudeVer && desc.includes('claude')) {
+      if (desc.includes('5.5')) claudeVer = 'Claude 5.5';
+      else if (desc.includes('4.6')) claudeVer = 'Claude 4.6';
+      else claudeVer = 'Claude';
+    }
+    if (!hasGpt120b && (desc.includes('gpt-oss') || desc.includes('120b'))) {
+      hasGpt120b = true;
+    }
+  }
+
+  if (hasArgon || tierCode === 'ULTRA') addTag('Argon');
+  if (claudeVer) addTag(claudeVer);
+  if (hasGpt120b) addTag('GPT-120B');
+  return tags;
+}
+
+/**
+ * 识别可信的账号停用（ToS）状态信号：仅依据明确的结构化状态码或清晰的官方停用文案判定，绝不靠普通网络/限流错误猜测。
+ */
+function detectAccountSuspendedSignal(input) {
+  if (!input) return null;
+  if (typeof input === 'string') {
+    const s = input.trim();
+    if (!s) return null;
+    if (/(?:account[_\s-]?suspended|tos[_\s-]?violation|account[_\s-]?disabled|terms\s+of\s+service\s+violation|your\s+account\s+(?:has\s+been\s+)?(?:suspended|disabled)|账号已被停用|帳號已被停用|违反服务条款|違反服務條款)/i.test(s)) {
+      return { suspended: true, reason: s.slice(0, 200) };
+    }
+    return null;
+  }
+  if (typeof input === 'object') {
+    const us = input.userStatus && typeof input.userStatus === 'object' ? input.userStatus : input;
+    if (us.suspended === true || us.isSuspended === true || us.accountSuspended === true || us.tosSuspended === true) {
+      return {
+        suspended: true,
+        reason: String(us.suspendedReason || us.disabledReason || us.suspensionMessage || 'ACCOUNT_SUSPENDED').slice(0, 200)
+      };
+    }
+    const statusStr = String(us.accountStatus || us.status || us.code || us.errorCode || '').trim().toUpperCase();
+    if (['ACCOUNT_SUSPENDED', 'TOS_VIOLATION', 'USER_DISABLED', 'ACCOUNT_DISABLED', 'SUSPENDED'].includes(statusStr)) {
+      return {
+        suspended: true,
+        reason: String(us.suspendedReason || us.error || statusStr).slice(0, 200)
+      };
+    }
+    const textHit = detectAccountSuspendedSignal(us.error || us.message || us.detail || '');
+    if (textHit) return textHit;
+  }
+  return null;
+}
 
 const CALLBACK_PORT_START = 11451;
 const CALLBACK_PORT_RANGE = 80;
@@ -344,7 +465,47 @@ function maskEmail(email) {
  * 且采样时间戳有效（非缺失、非未来时间、在新鲜窗口内）才允许自动切号采信并写入账号配额。
  */
 function deriveTrustedAutoSwitchQuotaContext({ res = null, raw = null, activeEmail = null, nowMs = Date.now(), maxAgeMs = 120000, maxFutureSkewMs = 5000 } = {}) {
-  if (!res || res.ok !== true || res.error || !res.snapshot) {
+  if (!res) {
+    return {
+      trusted: false,
+      syncState: 'error',
+      reason: 'quota_snapshot_unavailable'
+    };
+  }
+  if (res.staleDiscarded === true || res.dataFreshness === 'stale_discarded') {
+    return {
+      trusted: false,
+      syncState: 'stale_discarded',
+      reason: res.discardedReason || 'quota_snapshot_stale_discarded'
+    };
+  }
+  if (
+    res.forceRefreshFallback === true ||
+    res.dataFreshness === 'host_cache_fallback' ||
+    res.errorKind === 'force_refresh_unsupported' ||
+    (res.forceRefreshSent === true && res.forceRefreshApplied === false && !res.error)
+  ) {
+    return {
+      trusted: false,
+      syncState: 'host_cache_fallback',
+      reason: 'quota_host_cache_fallback'
+    };
+  }
+  if (res.accountIdentityMismatch === true || res.errorKind === 'account_mismatch') {
+    return {
+      trusted: false,
+      syncState: 'account_mismatch',
+      reason: 'quota_snapshot_account_mismatch'
+    };
+  }
+  if (res.identityVerified === false || res.errorKind === 'unverified_account') {
+    return {
+      trusted: false,
+      syncState: 'unverified_account',
+      reason: 'quota_snapshot_unverified_identity'
+    };
+  }
+  if (res.ok !== true || res.error || !res.snapshot) {
     const rawState = String(res?.snapshot?.syncState || res?.syncState || 'error');
     return {
       trusted: false,
@@ -1436,6 +1597,186 @@ async function refreshOAuthAccessToken(refreshToken, customFetch = null, oauthCo
   };
 }
 
+function isSafeDataImageUri(raw) {
+  if (typeof raw !== 'string') return false;
+  const s = raw.trim();
+  if (!s || s.length > 260000) return false;
+  return /^data:image\/(?:png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=\s]+$/i.test(s);
+}
+
+function normalizeGoogleAvatarUrl(rawUrl) {
+  if (typeof rawUrl !== 'string') return '';
+  const s = rawUrl.trim();
+  if (!/^https?:\/\//i.test(s)) return '';
+  if (/googleusercontent\.com/i.test(s)) {
+    if (/=s\d+(-c)?$/i.test(s)) return s.replace(/=s\d+(-c)?$/i, '=s96-c');
+    if (!/=s\d+/i.test(s) && !/\?/.test(s)) return `${s}=s96-c`;
+  }
+  return s;
+}
+
+function decodeJwtPicture(jwtStr) {
+  if (typeof jwtStr !== 'string') return '';
+  const parts = jwtStr.split('.');
+  if (parts.length < 2) return '';
+  try {
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const pad = b64.length % 4 ? '='.repeat(4 - (b64.length % 4)) : '';
+    const json = JSON.parse(Buffer.from(b64 + pad, 'base64').toString('utf8'));
+    const pic = json?.picture || json?.avatar_url || json?.photo_url || '';
+    return typeof pic === 'string' ? pic.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+function isAllowedAvatarFetchUrl(rawUrl) {
+  try {
+    const parsed = new URL(String(rawUrl || '').trim());
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false;
+    const host = String(parsed.hostname || '').toLowerCase();
+    if (host === '127.0.0.1' || host === 'localhost' || host === '::1') return true;
+    return parsed.protocol === 'https:' && (
+      /(^|\.)googleusercontent\.com$/i.test(host)
+      || /^lh\d+\.ggpht\.com$/i.test(host)
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function fetchAvatarDataUriViaNode(rawUrl, customFetch = null, proxyConfigOptions = {}) {
+  if (isSafeDataImageUri(rawUrl)) return String(rawUrl).trim();
+  const targetUrl = normalizeGoogleAvatarUrl(rawUrl);
+  if (!targetUrl || !isAllowedAvatarFetchUrl(targetUrl)) return null;
+  const MAX_BYTES = 180 * 1024;
+  const timeoutMs = 8000;
+
+  if (typeof customFetch === 'function') {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await customFetch(targetUrl, {
+        method: 'GET',
+        headers: { Accept: 'image/webp,image/png,image/jpeg,image/*;q=0.8' },
+        signal: controller.signal
+      });
+      if (!res || !res.ok) return null;
+      const ctype = String(res.headers?.get?.('content-type') || 'image/jpeg').split(';')[0].trim().toLowerCase();
+      if (!ctype.startsWith('image/')) return null;
+      const buf = typeof res.arrayBuffer === 'function'
+        ? Buffer.from(await res.arrayBuffer())
+        : (typeof res.buffer === 'function' ? await res.buffer() : null);
+      if (!buf || !buf.length || buf.length > MAX_BYTES) return null;
+      return `data:${ctype};base64,${buf.toString('base64')}`;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // 优先复用系统/插件代理设置，直连或经 HTTPS 隧道下载头像并转为 Data URI，绕过 Electron CSP
+  const proxyCfg = typeof detectProxyConfig === 'function' ? detectProxyConfig(proxyConfigOptions) : null;
+  const tryFetchDirectOrEnv = async (urlToFetch, redirectsLeft = 3) => {
+    if (redirectsLeft < 0) return null;
+    let parsed;
+    try { parsed = new URL(urlToFetch); } catch { return null; }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+    if (typeof fetch === 'function' && (!proxyCfg || !proxyCfg.enabled)) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const res = await fetch(urlToFetch, {
+          method: 'GET',
+          redirect: 'follow',
+          headers: { Accept: 'image/webp,image/png,image/jpeg,image/*;q=0.8' },
+          signal: controller.signal
+        });
+        if (!res.ok) return null;
+        const ctype = String(res.headers.get('content-type') || 'image/jpeg').split(';')[0].trim().toLowerCase();
+        if (!ctype.startsWith('image/')) return null;
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (!buf.length || buf.length > MAX_BYTES) return null;
+        return `data:${ctype};base64,${buf.toString('base64')}`;
+      } catch {
+        return null;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    return await new Promise((resolve) => {
+      try {
+        const mod = parsed.protocol === 'https:' ? https : http;
+        const req = mod.request(urlToFetch, {
+          method: 'GET',
+          headers: { Accept: 'image/webp,image/png,image/jpeg,image/*;q=0.8', 'User-Agent': 'AntigravityContextMeter/1.0' }
+        }, (res) => {
+          const code = Number(res.statusCode || 0);
+          if ([301, 302, 303, 307, 308].includes(code) && res.headers?.location) {
+            res.resume();
+            const nextUrl = new URL(res.headers.location, urlToFetch).toString();
+            void tryFetchDirectOrEnv(nextUrl, redirectsLeft - 1).then(resolve);
+            return;
+          }
+          if (code < 200 || code >= 300) {
+            res.resume();
+            resolve(null);
+            return;
+          }
+          const ctype = String(res.headers?.['content-type'] || 'image/jpeg').split(';')[0].trim().toLowerCase();
+          if (!ctype.startsWith('image/')) {
+            res.resume();
+            resolve(null);
+            return;
+          }
+          const chunks = [];
+          let total = 0;
+          res.on('data', (c) => {
+            total += c.length;
+            if (total > MAX_BYTES) {
+              req.destroy();
+              resolve(null);
+              return;
+            }
+            chunks.push(c);
+          });
+          res.on('end', () => {
+            if (total <= 0 || total > MAX_BYTES) return resolve(null);
+            resolve(`data:${ctype};base64,${Buffer.concat(chunks).toString('base64')}`);
+          });
+          res.on('error', () => resolve(null));
+        });
+        req.setTimeout(timeoutMs, () => { try { req.destroy(); } catch { } resolve(null); });
+        req.on('error', () => resolve(null));
+        req.end();
+      } catch {
+        resolve(null);
+      }
+    });
+  };
+
+  if (proxyCfg && proxyCfg.enabled && typeof requestWithProxyTunnel === 'function') {
+    try {
+      const tunRes = await requestWithProxyTunnel(targetUrl, {
+        method: 'GET',
+        headers: { Accept: 'image/webp,image/png,image/jpeg,image/*;q=0.8' },
+        timeoutMs,
+        stage: 'avatar_fetch',
+        binary: true,
+        proxyConfigOptions
+      });
+      if (tunRes?.ok && Buffer.isBuffer(tunRes.buffer) && tunRes.buffer.length > 0 && tunRes.buffer.length <= MAX_BYTES) {
+        const ctype = String(tunRes.headers?.['content-type'] || 'image/jpeg').split(';')[0].trim().toLowerCase();
+        if (ctype.startsWith('image/')) {
+          return `data:${ctype};base64,${tunRes.buffer.toString('base64')}`;
+        }
+      }
+    } catch { }
+  }
+  return await tryFetchDirectOrEnv(targetUrl, 3);
+}
+
 async function fetchGoogleUserInfo(accessToken, customFetch = null, proxyConfigOptions = {}) {
   let res;
   try {
@@ -1462,9 +1803,11 @@ async function fetchGoogleUserInfo(accessToken, customFetch = null, proxyConfigO
       res.diagnostics
     );
   }
+  const picRaw = res.json.picture || res.json.avatar_url || res.json.photo_url || null;
   return {
     email: normalizeEmail(res.json.email),
-    name: String(res.json.name || res.json.given_name || res.json.email.split('@')[0] || '')
+    name: String(res.json.name || res.json.given_name || res.json.email.split('@')[0] || ''),
+    picture: typeof picRaw === 'string' && picRaw.trim() ? picRaw.trim() : null
   };
 }
 
@@ -1473,21 +1816,31 @@ async function fetchAccountQuotaViaCloudCode(accessToken, options = {}) {
   const proxyConfigOptions = options.proxyConfigOptions || {};
   const quotaStage = options.stage || 'quota_fetch';
   const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now();
-  const ua = `antigravity/2.33.0 ${process.platform === 'win32' ? 'windows' : process.platform}/${process.arch === 'x64' ? 'amd64' : process.arch}`;
+  const ua = `antigravity/2.35.2 ${process.platform === 'win32' ? 'windows' : process.platform}/${process.arch === 'x64' ? 'amd64' : process.arch}`;
   const headers = {
     Authorization: `Bearer ${accessToken}`,
     'User-Agent': ua,
     'Content-Type': 'application/json'
   };
 
-  const initialBaseUrl = options.baseUrl || (options.useDaily === false ? CLOUDCODE_PROD_URL : CLOUDCODE_DAILY_URL);
-  const allowFallback = !options.baseUrl && options.useDaily !== false && initialBaseUrl !== CLOUDCODE_PROD_URL;
+  // 参考 Antigravity-Manager (quota.rs)：
+  // 1) loadCodeAssist 按 Daily -> Sandbox -> Prod 顺序提取项目 ID 与权威付费等级；
+  // 2) fetchAvailableModels 与 retrieveUserQuotaSummary 严格按 Daily -> Sandbox，严禁回退到 Prod 污染配额（Prod 对耗尽账号误报 100%）。
+  const explicitBaseUrl = options.baseUrl || (options.useDaily === false ? CLOUDCODE_PROD_URL : null);
+  const loadEndpoints = explicitBaseUrl
+    ? [explicitBaseUrl]
+    : [CLOUDCODE_DAILY_URL, CLOUDCODE_SANDBOX_URL, CLOUDCODE_PROD_URL];
+  const quotaEndpoints = explicitBaseUrl
+    ? [explicitBaseUrl]
+    : [CLOUDCODE_DAILY_URL, CLOUDCODE_SANDBOX_URL];
 
-  const tryRequest = async (baseUrl) => {
-    let targetHost = 'cloudcode-pa.googleapis.com';
+  let projectId = options.projectId || '';
+  let rawTierId = null;
+  let loadTargetHost = 'daily-cloudcode-pa.googleapis.com';
+
+  for (const baseUrl of loadEndpoints) {
+    let targetHost = 'daily-cloudcode-pa.googleapis.com';
     try { targetHost = new URL(baseUrl).hostname; } catch { }
-    let projectId = options.projectId || '';
-    let tierId = null;
     try {
       const loadRes = await fetchJsonWithProxy(`${baseUrl}/v1internal:loadCodeAssist`, {
         method: 'POST',
@@ -1504,29 +1857,54 @@ async function fetchAccountQuotaViaCloudCode(accessToken, options = {}) {
           ...(projectId ? { cloudaicompanionProject: projectId } : {})
         })
       }, customFetch, proxyConfigOptions);
+
       if (loadRes.ok && loadRes.json) {
+        loadTargetHost = targetHost;
         if (typeof loadRes.json.cloudaicompanionProject === 'string' && loadRes.json.cloudaicompanionProject) {
           projectId = loadRes.json.cloudaicompanionProject;
         } else if (loadRes.json.cloudaicompanionProject?.id) {
           projectId = loadRes.json.cloudaicompanionProject.id;
         }
-        tierId = loadRes.json.paidTier?.id || loadRes.json.currentTier?.id || null;
+        // 等级提取优先级对齐 Antigravity-Manager：paidTier -> currentTier -> allowedTiers(free-tier/isDefault) -> free-tier
+        const paidTier = loadRes.json.paidTier;
+        const currentTier = loadRes.json.currentTier;
+        const allowedTiers = Array.isArray(loadRes.json.allowedTiers) ? loadRes.json.allowedTiers : [];
+        const fallbackAllowed = allowedTiers.find(t => t && (t.id === 'free-tier' || t.isDefault === true));
+        rawTierId =
+          (paidTier && (paidTier.id || paidTier.name))
+          || (currentTier && (currentTier.id || currentTier.name))
+          || (fallbackAllowed && (fallbackAllowed.id || fallbackAllowed.name))
+          || 'free-tier';
+        break;
       } else if (loadRes.status === 401 || loadRes.status === 403) {
+        const bodyText = String(loadRes.text || '');
+        const susSig = detectAccountSuspendedSignal(bodyText);
         const err = attachStageErrorMeta(
-          new Error(`CloudCode 鉴权失效 (HTTP ${loadRes.status})`),
+          new Error(susSig ? `账号已被停用 (HTTP ${loadRes.status}): ${susSig.reason}` : `CloudCode 鉴权失效 (HTTP ${loadRes.status})`),
           quotaStage,
           targetHost,
           loadRes.status,
           loadRes.diagnostics
         );
-        err.isAuthInvalid = true;
+        err.isAuthInvalid = !susSig;
+        if (susSig) err.isSuspended = true;
         throw err;
       }
     } catch (e) {
-      if (e.isAuthInvalid) throw e;
+      if (e.isAuthInvalid || e.isSuspended) throw e;
     }
+  }
 
-    const payload = projectId ? { project: projectId } : {};
+  const tierInfo = normalizeSubscriptionTierInfo(rawTierId);
+  const payload = projectId ? { project: projectId } : {};
+
+  let reqRes = null;
+  let lastQuotaErr = null;
+  for (let i = 0; i < quotaEndpoints.length; i++) {
+    const baseUrl = quotaEndpoints[i];
+    let targetHost = 'daily-cloudcode-pa.googleapis.com';
+    try { targetHost = new URL(baseUrl).hostname; } catch { }
+
     let availRes;
     let summaryRes;
     try {
@@ -1536,56 +1914,110 @@ async function fetchAccountQuotaViaCloudCode(accessToken, options = {}) {
       ]);
     } catch (e) {
       const diag = e?.diagnostics || {};
-      throw attachStageErrorMeta(
+      lastQuotaErr = attachStageErrorMeta(
         new Error(`CloudCode 配额请求网络失败 (${diag.targetHost || targetHost}): ${sanitizeDiagnosticErrorText(e)}`),
         quotaStage,
         diag.targetHost || targetHost,
         null,
         diag
       );
+      continue;
+    }
+
+    // 403 / 401 鉴权或停用识别：直接返回不误尝试下一端点
+    const failed403 = [availRes, summaryRes].find(r => r && (r.status === 401 || r.status === 403));
+    if (failed403 && !availRes.ok && !summaryRes.ok) {
+      const bodyText = String(failed403.text || '');
+      const lowText = bodyText.toLowerCase();
+      const isValidation = lowText.includes('validation_required') || lowText.includes('verify your account') || lowText.includes('validation_url');
+      const susSig = isValidation ? null : detectAccountSuspendedSignal(bodyText);
+      const err = attachStageErrorMeta(
+        new Error(
+          susSig
+            ? `账号服务已被停用 (HTTP ${failed403.status}): ${susSig.reason}`
+            : (isValidation ? `账号需要验证身份 (HTTP ${failed403.status})` : `CloudCode 配额请求失败 (HTTP ${failed403.status})`)
+        ),
+        quotaStage,
+        targetHost,
+        failed403.status,
+        failed403.diagnostics
+      );
+      err.isAuthInvalid = failed403.status === 401 || (!susSig && !isValidation && failed403.status === 403);
+      if (susSig) err.isSuspended = true;
+      if (isValidation) err.isValidationRequired = true;
+      throw err;
     }
 
     if (!availRes.ok && !summaryRes.ok) {
       const st = availRes.status || summaryRes.status;
-      const err = attachStageErrorMeta(
+      lastQuotaErr = attachStageErrorMeta(
         new Error(`CloudCode 配额请求失败 (HTTP ${st})`),
         quotaStage,
         targetHost,
         st,
         availRes.diagnostics || summaryRes.diagnostics
       );
-      if (st === 401 || st === 403) err.isAuthInvalid = true;
-      throw err;
-    }
-
-    return { projectId, tierId, availRes, summaryRes, targetHost };
-  };
-
-  let reqRes;
-  try {
-    reqRes = await tryRequest(initialBaseUrl);
-  } catch (err) {
-    if (err.isAuthInvalid || !allowFallback) throw err;
-    reqRes = await tryRequest(CLOUDCODE_PROD_URL);
-  }
-
-  const { projectId, tierId, availRes, summaryRes } = reqRes;
-  const modelsObj = availRes.json?.models && typeof availRes.json.models === 'object' ? availRes.json.models : {};
-  const agentSorts = Array.isArray(availRes.json?.agentModelSorts) && availRes.json.agentModelSorts.length > 0
-    ? new Set(availRes.json.agentModelSorts.map(s => String(s).trim().toLowerCase()))
-    : null;
-  const CORE_POOLS = new Set(['shared_gemini_main', 'shared_3p_pool', 'shared_gemini_argon', 'shared_gemini_carbon']);
-
-  const clientModelConfigs = [];
-  for (const [k, v] of Object.entries(modelsObj)) {
-    if (!v || typeof v !== 'object') continue;
-    if (v.isInternal === true) continue;
-    const mKey = String(k || '').trim().toLowerCase();
-    const mModel = String(v.model || '').trim().toLowerCase();
-    if ((mKey.startsWith('chat_') && /^chat_\d+$/.test(mKey)) || (mModel.startsWith('chat_') && /^chat_\d+$/.test(mModel))) {
       continue;
     }
-    if (mKey.startsWith('tab_') || mModel.startsWith('tab_')) {
+
+    reqRes = { availRes, summaryRes, targetHost };
+    break;
+  }
+
+  if (!reqRes) {
+    throw lastQuotaErr || attachStageErrorMeta(new Error('CloudCode 配额请求全部端点失败'), quotaStage, loadTargetHost, null, null);
+  }
+
+  const { availRes, summaryRes, targetHost } = reqRes;
+  const modelsObj = availRes.ok && availRes.json?.models && typeof availRes.json.models === 'object' ? availRes.json.models : {};
+
+  // 解析官方支持集合：兼容 agentModelSorts 对象数组（groups[].modelIds）与字符串数组，合并 imageGenerationModelIds / tieredModelIds
+  const officialSupportedIds = new Set();
+  if (Array.isArray(availRes.json?.agentModelSorts)) {
+    for (const sortItem of availRes.json.agentModelSorts) {
+      if (typeof sortItem === 'string' && sortItem.trim()) {
+        officialSupportedIds.add(sortItem.trim().toLowerCase());
+      } else if (sortItem && typeof sortItem === 'object' && Array.isArray(sortItem.groups)) {
+        for (const grp of sortItem.groups) {
+          if (Array.isArray(grp?.modelIds)) {
+            for (const mid of grp.modelIds) {
+              if (typeof mid === 'string' && mid.trim()) officialSupportedIds.add(mid.trim().toLowerCase());
+            }
+          }
+        }
+      }
+    }
+  }
+  if (Array.isArray(availRes.json?.imageGenerationModelIds)) {
+    for (const mid of availRes.json.imageGenerationModelIds) {
+      if (typeof mid === 'string' && mid.trim()) officialSupportedIds.add(mid.trim().toLowerCase());
+    }
+  }
+  if (availRes.json?.tieredModelIds && typeof availRes.json.tieredModelIds === 'object') {
+    for (const ids of Object.values(availRes.json.tieredModelIds)) {
+      if (Array.isArray(ids)) {
+        for (const mid of ids) {
+          if (typeof mid === 'string' && mid.trim()) officialSupportedIds.add(mid.trim().toLowerCase());
+        }
+      }
+    }
+  }
+
+  const CORE_POOLS = new Set(['shared_gemini_main', 'shared_3p_pool', 'shared_gemini_argon', 'shared_gemini_carbon']);
+  const clientModelConfigs = [];
+  let hasAnyClaudeOrGptModel = false;
+  const rawModelEntries = Object.entries(modelsObj);
+
+  for (const [k, v] of rawModelEntries) {
+    if (!v || typeof v !== 'object') continue;
+    if (v.isInternal === true || v.disabled === true || v.isDisabled === true) continue;
+    const mKey = String(k || '').trim().toLowerCase();
+    const mModel = String(v.model || '').trim().toLowerCase();
+    if (!mKey) continue;
+    if (mKey.includes('-disabled') || mKey.endsWith('_disabled') || mKey === 'gemini-flash-worker-agy') continue;
+    if ((mKey.startsWith('chat_') && /^chat_\d+$/.test(mKey)) || (mModel.startsWith('chat_') && /^chat_\d+$/.test(mModel))) continue;
+    if (mKey.startsWith('tab_') || mModel.startsWith('tab_')) continue;
+    if (officialSupportedIds.size > 0 && !officialSupportedIds.has(mKey) && !officialSupportedIds.has(mModel)) {
       continue;
     }
 
@@ -1600,18 +2032,31 @@ async function fetchAccountQuotaViaCloudCode(accessToken, options = {}) {
     if (!CORE_POOLS.has(poolKey)) {
       continue;
     }
-    if (agentSorts && !agentSorts.has(mKey) && !agentSorts.has(mModel) && !agentSorts.has(poolKey)) {
-      // 若有显式 agentModelSorts 且不在核心列表内则过滤
+    if (mKey.startsWith('claude') || mKey.startsWith('gpt') || poolKey === 'shared_3p_pool') {
+      hasAnyClaudeOrGptModel = true;
     }
 
     clientModelConfigs.push(cfg);
   }
 
-  const quotaSummaryData = summaryRes.json?.response || summaryRes.json || null;
+  // 3P 隔离：若 fetchAvailableModels 已成功返回模型列表且完全无 Claude/GPT，剔除上游虚假 3P 分组
+  let quotaSummaryData = summaryRes.ok ? (summaryRes.json?.response || summaryRes.json || null) : null;
+  if (quotaSummaryData && Array.isArray(quotaSummaryData.groups) && rawModelEntries.length > 0 && !hasAnyClaudeOrGptModel) {
+    quotaSummaryData = {
+      ...quotaSummaryData,
+      groups: quotaSummaryData.groups.filter((g) => {
+        const gName = String(g?.displayName || g?.display_name || g?.name || '').toLowerCase();
+        return !gName.includes('claude') && !gName.includes('gpt') && !gName.includes('3p');
+      })
+    };
+  }
+
+  const resolvedTierName = tierInfo.tierName || rawTierId || null;
   const userStatusCompat = {
     userStatus: {
       email: options.email || '',
-      planStatus: tierId ? { planInfo: { planName: tierId } } : undefined,
+      planStatus: resolvedTierName ? { planInfo: { planName: resolvedTierName, teamsTier: rawTierId || resolvedTierName } } : undefined,
+      userTier: resolvedTierName ? { id: rawTierId || resolvedTierName, name: resolvedTierName } : undefined,
       cascadeModelConfigData: { clientModelConfigs }
     }
   };
@@ -1624,8 +2069,10 @@ async function fetchAccountQuotaViaCloudCode(accessToken, options = {}) {
 
   return {
     projectId: projectId || null,
-    tierId,
-    tierName: snapshot?.planStatus?.tierName || tierId || null,
+    tierId: rawTierId || null,
+    tierCode: tierInfo.tierCode || null,
+    tierName: resolvedTierName || snapshot?.planStatus?.tierName || null,
+    targetHost,
     snapshot,
     fetchedAtMs: nowMs
   };
@@ -1635,12 +2082,26 @@ async function fetchAccountQuotaViaCloudCode(accessToken, options = {}) {
 // 核心协调管理器（统一账号状态、自动切号、ELV-57 区间对账、ELV-52 保活保障）
 // =========================================================================
 
+function isTempIsolatedDir(dirPath) {
+  if (!dirPath || typeof dirPath !== 'string') return false;
+  try {
+    const tmpBase = path.resolve(os.tmpdir()).toLowerCase();
+    const resolved = path.resolve(dirPath).toLowerCase();
+    return resolved === tmpBase || resolved.startsWith(tmpBase + path.sep);
+  } catch {
+    return false;
+  }
+}
+
 function createAccountsManager(options = {}) {
-  const stateDir = options.stateDir || getStateDir();
-  const homeDir = options.homeDir || os.homedir();
+  const explicitStateDir = options.stateDir || options.storageDir || '';
+  const stateDir = explicitStateDir || getStateDir();
+  const autoIsolateHome = !options.homeDir && Boolean(explicitStateDir && isTempIsolatedDir(explicitStateDir));
+  const homeDir = options.homeDir || (autoIsolateHome ? path.join(stateDir, '_isolated_home') : os.homedir());
+  const resolvedAppDataDir = options.appDataDir || (autoIsolateHome ? path.join(stateDir, '_isolated_appdata') : undefined);
   const credStore = options.credentialStore || createDefaultSystemCredentialStore({
     homeDir,
-    appDataDir: options.appDataDir,
+    appDataDir: resolvedAppDataDir,
     desktopDbPath: options.desktopDbPath,
     ideDbPath: options.ideDbPath
   });
@@ -1656,12 +2117,126 @@ function createAccountsManager(options = {}) {
   };
 
   const storePath = path.join(stateDir, 'accounts_v1.json');
+  const avatarsDir = path.join(stateDir, 'avatars');
   const switchLockPath = path.join(stateDir, 'account_switch.lock');
   const keepaliveLockPath = path.join(stateDir, 'cache_keepalive.lock');
+  const avatarMemoryCache = new Map();
+  let avatarHydratePromise = null;
+  let lastAvatarHydrateAtMs = 0;
+
+  function getAvatarCacheFilePath(emailOrScope) {
+    const scopeKey = String(emailOrScope || '').startsWith('acct_')
+      ? String(emailOrScope)
+      : buildAccountScopeKey(emailOrScope);
+    return path.join(avatarsDir, `${scopeKey}.datauri`);
+  }
+
+  function readCachedAvatarDataUri(emailOrScope) {
+    const scopeKey = String(emailOrScope || '').startsWith('acct_')
+      ? String(emailOrScope)
+      : buildAccountScopeKey(emailOrScope);
+    if (avatarMemoryCache.has(scopeKey)) return avatarMemoryCache.get(scopeKey);
+    try {
+      const fp = getAvatarCacheFilePath(scopeKey);
+      if (fs.existsSync(fp)) {
+        const raw = fs.readFileSync(fp, 'utf8').trim();
+        if (isSafeDataImageUri(raw)) {
+          avatarMemoryCache.set(scopeKey, raw);
+          return raw;
+        }
+      }
+    } catch { }
+    return null;
+  }
+
+  function writeCachedAvatarDataUri(emailOrScope, dataUri) {
+    if (!isSafeDataImageUri(dataUri)) return null;
+    const scopeKey = String(emailOrScope || '').startsWith('acct_')
+      ? String(emailOrScope)
+      : buildAccountScopeKey(emailOrScope);
+    const clean = String(dataUri).trim();
+    avatarMemoryCache.set(scopeKey, clean);
+    try {
+      ensureDir(avatarsDir);
+      const fp = getAvatarCacheFilePath(scopeKey);
+      const tmp = `${fp}.${process.pid}.${Date.now()}.tmp`;
+      fs.writeFileSync(tmp, clean, 'utf8');
+      fs.renameSync(tmp, fp);
+    } catch { }
+    return clean;
+  }
+
+  async function resolveAndCacheAvatar(email, rawCandidate, opts = {}) {
+    const clean = normalizeEmail(email);
+    if (!clean) return null;
+    if (isSafeDataImageUri(rawCandidate)) {
+      return writeCachedAvatarDataUri(clean, rawCandidate);
+    }
+    const existingDisk = readCachedAvatarDataUri(clean);
+    if (existingDisk && !opts.force) return existingDisk;
+    if (typeof rawCandidate === 'string' && /^https?:\/\//i.test(rawCandidate.trim())) {
+      const fetched = await fetchAvatarDataUriViaNode(rawCandidate.trim(), customFetch);
+      if (fetched) return writeCachedAvatarDataUri(clean, fetched);
+    }
+    return existingDisk || null;
+  }
 
   const debounceState = new Map(); // accountKey -> { firstSeenMs }
   const autoSwitchDiagThrottle = new Map(); // diagKey -> lastLoggedAtMs
+  const inFlightAccountRefresh = new Map(); // normEmail -> Promise
+  const accountRefreshBackoff = new Map(); // normEmail -> { untilMs, attempts, message, httpStatus }
+  const accountRefreshStatus = new Map(); // accountScopeKey -> { state, updatedAtMs, lastSuccessAtMs, unchanged, retryAtMs, error, reason }
   let inFlightSwitch = null;
+
+  function computeQuotaSnapshotSignature(snap) {
+    if (!snap || !Array.isArray(snap.pools)) return '';
+    return snap.pools
+      .map(p => {
+        const bSig = (Array.isArray(p.buckets) ? p.buckets : [])
+          .map(b => `${b.windowKey || b.bucketId || ''}:${b.remainingFraction ?? 'n'}:${b.resetTimeIso || b.resetTime || ''}`)
+          .sort()
+          .join(',');
+        return `${p.poolKey || ''}:${p.noPermission ? 1 : 0}:${p.remainingFraction ?? 'n'}:[${bSig}]`;
+      })
+      .sort()
+      .join('|');
+  }
+
+  function setAccountRefreshStatus(emailOrScope, patch = {}) {
+    const cleanEmail = normalizeEmail(emailOrScope);
+    const scopeKey = cleanEmail ? buildAccountScopeKey(cleanEmail) : String(emailOrScope || '').trim();
+    if (!scopeKey) return null;
+    const prev = accountRefreshStatus.get(scopeKey) || {
+      accountScopeKey: scopeKey,
+      state: 'idle',
+      updatedAtMs: 0,
+      lastSuccessAtMs: null,
+      unchanged: false,
+      retryAtMs: null,
+      error: null,
+      reason: null
+    };
+    const next = { ...prev, ...patch, accountScopeKey: scopeKey };
+    accountRefreshStatus.set(scopeKey, next);
+    return next;
+  }
+
+  function getAccountRefreshStatus(emailOrScope) {
+    const cleanEmail = normalizeEmail(emailOrScope);
+    const scopeKey = cleanEmail ? buildAccountScopeKey(cleanEmail) : String(emailOrScope || '').trim();
+    if (!scopeKey) return null;
+    const cur = accountRefreshStatus.get(scopeKey);
+    return cur ? { ...cur } : {
+      accountScopeKey: scopeKey,
+      state: 'idle',
+      updatedAtMs: 0,
+      lastSuccessAtMs: null,
+      unchanged: false,
+      retryAtMs: null,
+      error: null,
+      reason: null
+    };
+  }
 
   function logAutoSwitchDiag(store, stage, details = {}, minIntervalMs = 60000) {
     const key = `${stage}|${details.reason || ''}`;
@@ -1735,6 +2310,7 @@ function createAccountsManager(options = {}) {
         version: 1,
         activeAccountEmail: null,
         accounts: {}, // email -> record
+        deletedAccounts: {}, // email -> { deletedAtMs, scopeKey }
         autoSwitch: { ...DEFAULT_AUTO_SWITCH_CONFIG },
         autoSwitchStatus: {
           state: 'disabled', // disabled | watching | pending_debounce | waiting_idle | cooldown | switching | all_candidates_exhausted | error
@@ -1761,10 +2337,45 @@ function createAccountsManager(options = {}) {
         lastDiagnostics: [] // 脱敏诊断记录
       };
     }
+    const deletedAccounts = {};
+    if (raw.deletedAccounts && typeof raw.deletedAccounts === 'object' && !Array.isArray(raw.deletedAccounts)) {
+      for (const [k, v] of Object.entries(raw.deletedAccounts)) {
+        const cleanK = normalizeEmail(k);
+        if (!cleanK) continue;
+        deletedAccounts[cleanK] = {
+          deletedAtMs: Number(v?.deletedAtMs || v || Date.now()),
+          scopeKey: v?.scopeKey || buildAccountScopeKey(cleanK)
+        };
+      }
+    }
+    let normalizedAccounts = {};
+    let inferredActiveEmail = raw.activeAccountEmail ? normalizeEmail(raw.activeAccountEmail) : null;
+    if (Array.isArray(raw.accounts)) {
+      for (const item of raw.accounts) {
+        const cleanItemEmail = normalizeEmail(item?.email || '');
+        if (!cleanItemEmail || deletedAccounts[cleanItemEmail]) continue;
+        normalizedAccounts[cleanItemEmail] = {
+          ...item,
+          email: cleanItemEmail,
+          accountScopeKey: item.accountScopeKey || buildAccountScopeKey(cleanItemEmail)
+        };
+        if (!inferredActiveEmail && item.isActive) inferredActiveEmail = cleanItemEmail;
+      }
+    } else if (raw.accounts && typeof raw.accounts === 'object') {
+      for (const [k, item] of Object.entries(raw.accounts)) {
+        const cleanItemEmail = normalizeEmail(item?.email || k);
+        if (!cleanItemEmail || deletedAccounts[cleanItemEmail]) continue;
+        normalizedAccounts[cleanItemEmail] = item;
+      }
+    }
+    if (inferredActiveEmail && deletedAccounts[inferredActiveEmail]) {
+      inferredActiveEmail = null;
+    }
     const loaded = {
       version: 1,
-      activeAccountEmail: raw.activeAccountEmail || null,
-      accounts: raw.accounts && typeof raw.accounts === 'object' ? raw.accounts : {},
+      activeAccountEmail: inferredActiveEmail || null,
+      accounts: normalizedAccounts,
+      deletedAccounts,
       autoSwitch: { ...DEFAULT_AUTO_SWITCH_CONFIG, ...(raw.autoSwitch || {}) },
       autoSwitchStatus: {
         state: raw.autoSwitch?.enabled ? 'watching' : 'disabled',
@@ -1859,13 +2470,54 @@ function createAccountsManager(options = {}) {
     }
   }
 
+  function normalizeSnapshotForView(rawSnap) {
+    if (!rawSnap || typeof rawSnap !== 'object') return null;
+    if (!Array.isArray(rawSnap.pools)) return rawSnap;
+    return {
+      ...rawSnap,
+      pools: rawSnap.pools.map((pl) => {
+        if (!pl || typeof pl !== 'object') return pl;
+        const resetIso = pl.resetTimeIso || pl.resetTime || null;
+        const buckets = Array.isArray(pl.buckets)
+          ? pl.buckets.map((b) => {
+            if (!b || typeof b !== 'object') return b;
+            const bReset = b.resetTimeIso || b.resetTime || null;
+            return {
+              ...b,
+              resetTime: bReset,
+              resetTimeIso: bReset
+            };
+          })
+          : [];
+        return {
+          ...pl,
+          resetTime: resetIso,
+          resetTimeIso: resetIso,
+          buckets
+        };
+      })
+    };
+  }
+
   function sanitizeAccountForView(rec, activeEmail) {
     if (!rec) return null;
+    const scopeKey = rec.accountScopeKey || buildAccountScopeKey(rec.email);
+    const rawTier = rec.tierName || rec.tierId || rec.quotaSnapshot?.planStatus?.tierName || null;
+    const tierInfo = normalizeSubscriptionTierInfo(rawTier);
+    const tierName = tierInfo.tierName || rawTier || null;
+    const normSnap = normalizeSnapshotForView(rec.quotaSnapshot || null);
+    const capabilities = deriveAccountCapabilities(normSnap, tierInfo.tierCode);
+    const cachedAvatar = readCachedAvatarDataUri(scopeKey);
+    const resolvedAvatar = cachedAvatar
+      || (isSafeDataImageUri(rec.profilePictureUrl) ? writeCachedAvatarDataUri(scopeKey, rec.profilePictureUrl) : null)
+      || (typeof rec.profilePictureUrl === 'string' && rec.profilePictureUrl.trim() ? rec.profilePictureUrl.trim() : null);
     return {
+      accountId: scopeKey,
       email: rec.email,
       maskedEmail: maskEmail(rec.email),
-      accountScopeKey: rec.accountScopeKey || buildAccountScopeKey(rec.email),
+      accountScopeKey: scopeKey,
       name: rec.name || rec.email.split('@')[0],
+      profilePictureUrl: resolvedAvatar,
       source: rec.source || 'manual',
       oauthClientKey: rec.oauthClientKey || null,
       isActive: Boolean(activeEmail && normalizeEmail(activeEmail) === normalizeEmail(rec.email)),
@@ -1873,10 +2525,19 @@ function createAccountsManager(options = {}) {
       expiresAt: rec.credential?.expiresAt || null,
       authInvalid: Boolean(rec.authInvalid),
       authError: rec.authError || null,
+      suspended: Boolean(rec.suspended),
+      suspendedReason: rec.suspendedReason || null,
+      suspendedAtMs: rec.suspendedAtMs || null,
+      supportUrl: GOOGLE_ANTIGRAVITY_SUPPORT_URL,
       tierId: rec.tierId || null,
-      tierName: rec.tierName || rec.quotaSnapshot?.planStatus?.tierName || null,
+      tierCode: tierInfo.tierCode || null,
+      tierName,
+      planLabel: tierName || null,
+      capabilities,
       projectId: rec.projectId || null,
-      quotaSnapshot: rec.quotaSnapshot || null,
+      quotaSnapshot: normSnap,
+      quotaSource: rec.quotaSource || null,
+      quotaTargetHost: rec.quotaTargetHost || null,
       lastQuotaUpdatedAtMs: rec.lastQuotaUpdatedAtMs || null,
       lastQuotaError: rec.lastQuotaError || null,
       lastQuotaErrorMeta: rec.lastQuotaErrorMeta || null,
@@ -1893,6 +2554,7 @@ function createAccountsManager(options = {}) {
       email,
       accountScopeKey: buildAccountScopeKey(email),
       name: data.name || prev.name || email.split('@')[0],
+      profilePictureUrl: data.profilePictureUrl !== undefined ? (data.profilePictureUrl || null) : (prev.profilePictureUrl || null),
       source: data.source || prev.source || 'manual',
       credential: {
         accessToken: data.credential?.accessToken || prev.credential?.accessToken || '',
@@ -1902,7 +2564,14 @@ function createAccountsManager(options = {}) {
       },
       projectId: data.projectId ?? prev.projectId ?? null,
       tierId: data.tierId ?? prev.tierId ?? null,
+      tierName: data.tierName !== undefined ? (data.tierName || null) : (prev.tierName || null),
+      suspended: data.suspended !== undefined ? Boolean(data.suspended) : Boolean(prev.suspended),
+      suspendedReason: data.suspendedReason !== undefined ? (data.suspendedReason || null) : (prev.suspendedReason || null),
+      suspendedAtMs: data.suspendedAtMs !== undefined ? data.suspendedAtMs : (prev.suspendedAtMs || null),
+      actionEpoch: Number.isFinite(Number(data.actionEpoch)) ? Number(data.actionEpoch) : Number(prev.actionEpoch || 0),
       quotaSnapshot: data.quotaSnapshot !== undefined ? data.quotaSnapshot : (prev.quotaSnapshot || null),
+      quotaSource: data.quotaSource !== undefined ? (data.quotaSource || null) : (prev.quotaSource || null),
+      quotaTargetHost: data.quotaTargetHost !== undefined ? (data.quotaTargetHost || null) : (prev.quotaTargetHost || null),
       lastQuotaUpdatedAtMs: data.lastQuotaUpdatedAtMs ?? prev.lastQuotaUpdatedAtMs ?? null,
       lastQuotaError: data.lastQuotaError !== undefined ? data.lastQuotaError : (prev.lastQuotaError || null),
       lastQuotaErrorMeta: data.lastQuotaErrorMeta !== undefined ? data.lastQuotaErrorMeta : (prev.lastQuotaErrorMeta || null),
@@ -1915,6 +2584,54 @@ function createAccountsManager(options = {}) {
     };
     store.accounts[email] = next;
     return next;
+  }
+
+  function isAccountDeleted(store, email) {
+    const clean = normalizeEmail(email);
+    return Boolean(clean && store?.deletedAccounts && store.deletedAccounts[clean]);
+  }
+
+  function clearAccountDeletionTombstone(store, email) {
+    const clean = normalizeEmail(email);
+    if (clean && store?.deletedAccounts && store.deletedAccounts[clean]) {
+      delete store.deletedAccounts[clean];
+    }
+  }
+
+  function markAccountSuspended(email, reason = 'ACCOUNT_SUSPENDED', opts = {}) {
+    const clean = normalizeEmail(email);
+    if (!clean) return { ok: false, error: '无效账号邮箱' };
+    const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
+    const store = loadStore();
+    if (!store.accounts[clean] && isAccountDeleted(store, clean)) {
+      return { ok: false, removed: true, error: '账号已被移除' };
+    }
+    const rec = store.accounts[clean] || upsertAccountRecord(store, { email: clean, source: 'host_detected', credential: {} });
+    rec.suspended = true;
+    rec.suspendedReason = String(reason || 'ACCOUNT_SUSPENDED').slice(0, 200);
+    rec.suspendedAtMs = rec.suspendedAtMs || nowMs;
+    rec.actionEpoch = Number(rec.actionEpoch || 0) + 1;
+    // 立即停用该账号的保活任务，避免继续外发请求
+    if (store.keepalive && normalizeEmail(store.keepalive.targetAccountEmail) === clean) {
+      store.keepalive.enabled = false;
+      store.keepaliveState = {
+        ...(store.keepaliveState || {}),
+        running: false,
+        stopReason: 'account_suspended',
+        blockedReason: 'account_suspended'
+      };
+      try { if (fs.existsSync(keepaliveLockPath)) fs.unlinkSync(keepaliveLockPath); } catch { }
+    }
+    for (const k of Array.from(debounceState.keys())) {
+      if (k === clean || k.startsWith(`${clean}|`) || k.startsWith(`${clean}:`)) debounceState.delete(k);
+    }
+    saveStore(store);
+    return {
+      ok: true,
+      suspended: true,
+      supportUrl: GOOGLE_ANTIGRAVITY_SUPPORT_URL,
+      account: sanitizeAccountForView(rec, store.activeAccountEmail)
+    };
   }
 
   /**
@@ -1933,11 +2650,21 @@ function createAccountsManager(options = {}) {
       };
     }
     let hostEmail = '';
+    let hostUserStatus = null;
     if (typeof getHostUserStatusFn === 'function') {
       try {
         const status = await getHostUserStatusFn();
+        hostUserStatus = status?.userStatus || status || null;
         hostEmail = normalizeEmail(status?.email || status?.userStatus?.email || '');
-      } catch { }
+      } catch (e) {
+        const sus = detectAccountSuspendedSignal(e?.message || String(e || ''));
+        if (sus) {
+          const curSt = loadStore();
+          if (curSt.activeAccountEmail) {
+            markAccountSuspended(curSt.activeAccountEmail, sus.reason);
+          }
+        }
+      }
     }
     const paths = credStore.getPaths();
     let dbEmail = '';
@@ -2062,6 +2789,53 @@ function createAccountsManager(options = {}) {
           store.activeAccountEmail = resolved;
           dirty = true;
         }
+        // 将宿主 GetUserStatus 的真实身份元数据（昵称、头像、Google 会员等级、停用信号）同步到当前账号记录
+        if (hostUserStatus && (!hostEmail || hostEmail === resolved)) {
+          const us = hostUserStatus;
+          const prevAcc = store.accounts[resolved];
+          const nextName = typeof us.name === 'string' && us.name.trim() ? us.name.trim() : null;
+          const rawHostAvatar = us.profilePictureUrl || us.avatarUrl || us.photoUrl || us.picture || null;
+          let nextAvatar = typeof rawHostAvatar === 'string' && rawHostAvatar.trim() ? rawHostAvatar.trim() : null;
+          if (nextAvatar) {
+            if (isSafeDataImageUri(nextAvatar)) {
+              writeCachedAvatarDataUri(resolved, nextAvatar);
+            } else if (/^https?:\/\//i.test(nextAvatar)) {
+              const cached = await resolveAndCacheAvatar(resolved, nextAvatar);
+              if (cached) nextAvatar = cached;
+            }
+          }
+          const nextTierId = us.userTier?.id || us.planStatus?.planInfo?.teamsTier || null;
+          const nextTierName = us.userTier?.name || us.planStatus?.planInfo?.planName || null;
+          const susSig = detectAccountSuspendedSignal(us);
+          if (prevAcc) {
+            if (nextName && prevAcc.name !== nextName) { prevAcc.name = nextName; dirty = true; }
+            if (nextAvatar && prevAcc.profilePictureUrl !== nextAvatar) { prevAcc.profilePictureUrl = nextAvatar; dirty = true; }
+            if (nextTierId && prevAcc.tierId !== nextTierId) { prevAcc.tierId = nextTierId; dirty = true; }
+            if (nextTierName && prevAcc.tierName !== nextTierName) { prevAcc.tierName = nextTierName; dirty = true; }
+            if (susSig && !prevAcc.suspended) {
+              prevAcc.suspended = true;
+              prevAcc.suspendedReason = susSig.reason;
+              prevAcc.suspendedAtMs = Date.now();
+              prevAcc.actionEpoch = Number(prevAcc.actionEpoch || 0) + 1;
+              dirty = true;
+            }
+          } else if (!isAccountDeleted(store, resolved)) {
+            upsertAccountRecord(store, {
+              email: resolved,
+              name: nextName || resolved.split('@')[0],
+              profilePictureUrl: nextAvatar,
+              tierId: nextTierId,
+              tierName: nextTierName,
+              suspended: Boolean(susSig),
+              suspendedReason: susSig ? susSig.reason : null,
+              suspendedAtMs: susSig ? Date.now() : null,
+              source: 'client_auto_detected',
+              credential: {},
+              lastUsedAtMs: Date.now()
+            });
+            dirty = true;
+          }
+        }
         if (hostEmail || dbEmail) {
           const nowMs = Date.now();
           const prevOpen = Array.isArray(store.accountSessions)
@@ -2116,28 +2890,39 @@ function createAccountsManager(options = {}) {
 
       let email = dbUser?.email || decodeJwtEmail(idToken) || normalizeEmail(ga?.active || '');
       let name = dbUser?.name || '';
-      if (!email && typeof getHostUserStatusFn === 'function') {
+      let rawAvatar = decodeJwtPicture(idToken) || '';
+      if (typeof getHostUserStatusFn === 'function') {
         try {
           const hs = await getHostUserStatusFn();
-          email = normalizeEmail(hs?.email || hs?.userStatus?.email || '');
+          const hsUs = hs?.userStatus || hs || {};
+          if (!email) email = normalizeEmail(hsUs?.email || '');
+          if (!name && typeof hsUs?.name === 'string') name = hsUs.name.trim();
+          const hsPic = hsUs?.profilePictureUrl || hsUs?.avatarUrl || hsUs?.photoUrl || hsUs?.picture || '';
+          if (typeof hsPic === 'string' && hsPic.trim()) rawAvatar = hsPic.trim();
         } catch { }
       }
       if (!email && accessToken) {
         try {
           const info = await fetchGoogleUserInfo(accessToken, customFetch);
-          email = info.email;
+          if (!email) email = info.email;
           name = name || info.name;
+          if (!rawAvatar && info.picture) rawAvatar = info.picture;
         } catch { }
       }
       if (!email) {
-        return { ok: false, error: '已找到本地 Token 但未能识别所属邮箱，请使用 Google OAuth 登录导入' };
+        return { ok: false, error: '已找到本地登录记录但未能识别所属邮箱，请在宿主原生入口重新登录后同步' };
       }
 
+      const cachedAvatar = isSafeDataImageUri(rawAvatar)
+        ? writeCachedAvatarDataUri(email, rawAvatar)
+        : readCachedAvatarDataUri(email);
       const nowMs = Date.now();
       const store = loadStore();
+      clearAccountDeletionTombstone(store, email);
       upsertAccountRecord(store, {
         email,
         name,
+        ...(cachedAvatar ? { profilePictureUrl: cachedAvatar } : {}),
         source: 'client_import',
         oauthClientKey: 'antigravity_default',
         credential: { accessToken, refreshToken, expiresAt, idToken },
@@ -2157,30 +2942,315 @@ function createAccountsManager(options = {}) {
     }
 
     /**
-     * 只读预览 ~/.antigravity_tools/accounts.json 中可用账号（绝不修改第三方文件）
+     * 探测本机只读外部工具数据目录（Antigravity Tools + Cockpit Tools v1.5.x 新旧目录与自定义根目录，软链接去重）
+     */
+    function discoverExternalToolsRoots() {
+      const candidates = [];
+      const pushCand = (dirPath, kind, label) => {
+        if (!dirPath || typeof dirPath !== 'string') return;
+        const trimmed = dirPath.trim();
+        if (!trimmed) return;
+        candidates.push({ dir: path.resolve(trimmed), kind, label });
+      };
+
+      pushCand(path.join(homeDir, '.antigravity_tools'), 'antigravity_tools', 'Antigravity Tools');
+
+      const envCockpitDir = process.env.COCKPIT_TOOLS_DATA_DIR;
+      if (envCockpitDir && !options.ignoreEnvToolsDir) {
+        pushCand(envCockpitDir, 'cockpit_tools', 'Cockpit Tools');
+      }
+      const customRootJson = readJsonSafe(path.join(homeDir, '.cockpit_tools-data-root.json'), null);
+      if (typeof customRootJson === 'string' && customRootJson.trim()) {
+        pushCand(customRootJson.trim(), 'cockpit_tools', 'Cockpit Tools');
+      } else if (customRootJson && typeof customRootJson === 'object') {
+        const customPath = customRootJson.data_root || customRootJson.dataRoot || customRootJson.path || customRootJson.dir || '';
+        if (typeof customPath === 'string' && customPath.trim()) {
+          pushCand(customPath.trim(), 'cockpit_tools', 'Cockpit Tools');
+        }
+      }
+      pushCand(path.join(homeDir, '.cockpit_tools'), 'cockpit_tools', 'Cockpit Tools');
+      pushCand(path.join(homeDir, '.antigravity_cockpit'), 'cockpit_tools', 'Cockpit Tools');
+
+      const seenReal = new Set();
+      const roots = [];
+      for (const c of candidates) {
+        try {
+          if (!fs.existsSync(c.dir) || !fs.statSync(c.dir).isDirectory()) continue;
+          let real = c.dir;
+          try { real = fs.realpathSync(c.dir); } catch { }
+          const key = process.platform === 'win32' ? real.toLowerCase() : real;
+          if (seenReal.has(key)) continue;
+          seenReal.add(key);
+          roots.push({ ...c, realDir: real });
+        } catch { }
+      }
+      return roots;
+    }
+
+    function loadAes256KeyFile(keyPath) {
+      try {
+        if (!fs.existsSync(keyPath)) return null;
+        const rawBuf = fs.readFileSync(keyPath);
+        if (rawBuf.length === 32) return rawBuf;
+        const text = rawBuf.toString('utf8').trim();
+        if (!text) return null;
+        const decoded = Buffer.from(text, 'base64');
+        if (decoded.length === 32) return decoded;
+        if (/^[0-9a-f]{64}$/i.test(text)) return Buffer.from(text, 'hex');
+        return null;
+      } catch {
+        return null;
+      }
+    }
+
+    function decryptAes256GcmPayload(keyBuf, nonceB64, ciphertextB64) {
+      if (!Buffer.isBuffer(keyBuf) || keyBuf.length !== 32) {
+        throw new Error('密钥长度无效（需 32 字节）');
+      }
+      const nonce = Buffer.from(String(nonceB64 || ''), 'base64');
+      const combined = Buffer.from(String(ciphertextB64 || ''), 'base64');
+      if (nonce.length !== 12) throw new Error('GCM nonce 长度无效');
+      if (combined.length < 16) throw new Error('密文长度不足');
+      const authTag = combined.subarray(combined.length - 16);
+      const ciphertext = combined.subarray(0, combined.length - 16);
+      const decipher = crypto.createDecipheriv('aes-256-gcm', keyBuf, nonce);
+      decipher.setAuthTag(authTag);
+      const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+      return plain.toString('utf8');
+    }
+
+    function readExternalAccountDetail(rootDir, accountId) {
+      const safeId = String(accountId || '').trim();
+      if (!safeId || /[/\\]|\.\./.test(safeId)) return { detail: null, decryptError: null };
+      const filePath = path.join(rootDir, 'accounts', `${safeId}.json`);
+      const raw = readJsonSafe(filePath, null);
+      if (!raw || typeof raw !== 'object') return { detail: null, decryptError: null };
+
+      // 格式 3：Cockpit Tools 新版整文件 AES-256-GCM 加密信封
+      if (raw.algorithm === 'AES-256-GCM' && raw.nonce && raw.ciphertext) {
+        if (Number(raw.version || 1) !== 1) {
+          return { detail: null, decryptError: `不支持的加密信封版本 v${raw.version}` };
+        }
+        const keyBuf = loadAes256KeyFile(path.join(rootDir, 'secure-account-storage.key'));
+        if (!keyBuf) {
+          return { detail: null, decryptError: '缺少或无法读取 secure-account-storage.key' };
+        }
+        try {
+          const plainStr = decryptAes256GcmPayload(keyBuf, raw.nonce, raw.ciphertext);
+          return { detail: JSON.parse(plainStr), decryptError: null, format: 'cockpit_envelope_v1' };
+        } catch (err) {
+          return { detail: null, decryptError: `整文件解密失败: ${err?.message || err}` };
+        }
+      }
+
+      // 格式 2：Cockpit Tools 历史字段级加密 token_encrypted
+      if (raw.token_encrypted && typeof raw.token_encrypted === 'object' && raw.token_encrypted.nonce && raw.token_encrypted.ciphertext) {
+        if (Number(raw.token_encrypted.version || 1) !== 1) {
+          return { detail: raw, decryptError: `不支持的 token_encrypted 版本 v${raw.token_encrypted.version}` };
+        }
+        const keyBuf = loadAes256KeyFile(path.join(rootDir, 'account-token.key'));
+        if (!keyBuf) {
+          return { detail: raw, decryptError: '缺少或无法读取 account-token.key' };
+        }
+        try {
+          const plainStr = decryptAes256GcmPayload(keyBuf, raw.token_encrypted.nonce, raw.token_encrypted.ciphertext);
+          const tokObj = JSON.parse(plainStr);
+          return { detail: { ...raw, token: tokObj }, decryptError: null, format: 'cockpit_token_encrypted_v1' };
+        } catch (err) {
+          return { detail: raw, decryptError: `token 字段解密失败: ${err?.message || err}` };
+        }
+      }
+
+      // 格式 1：明文 JSON
+      return { detail: raw, decryptError: null, format: 'plaintext_json' };
+    }
+
+    function readExternalToolsIndex(rootInfo, report = null) {
+      const byEmail = new Map();
+      const addEntry = (item) => {
+        const email = normalizeEmail(item?.email || '');
+        if (!email) {
+          if (report) {
+            report.invalidCount = (report.invalidCount || 0) + 1;
+            report.warnings.push(`${rootInfo.label}: 跳过缺少有效邮箱的损坏/无效记录`);
+          }
+          return;
+        }
+        const prev = byEmail.get(email);
+        if (!prev || (!prev.id && item.id)) {
+          byEmail.set(email, {
+            id: String(item.id || ''),
+            email,
+            name: String(item.name || ''),
+            disabled: Boolean(item.disabled),
+            createdAt: item.createdAt ?? null,
+            lastUsed: item.lastUsed ?? null,
+            planType: item.planType || null,
+            token: item.token || null,
+            sourceKind: rootInfo.kind,
+            sourceLabel: rootInfo.label,
+            rootDir: rootInfo.dir
+          });
+        }
+      };
+
+      // 优先读取新版 SQLite 主索引 antigravity_accounts.sqlite（Node 22.5+ 内置 node:sqlite 只读查询）
+      const sqlitePath = path.join(rootInfo.dir, 'antigravity_accounts.sqlite');
+      if (fs.existsSync(sqlitePath)) {
+        try {
+          const { DatabaseSync } = require('node:sqlite');
+          const db = new DatabaseSync(sqlitePath, { readOnly: true });
+          try {
+            const rows = db.prepare('SELECT account_id, email, name, created_at, last_used, plan_type FROM summaries').all();
+            for (const row of (rows || [])) {
+              addEntry({
+                id: row.account_id || row.id || '',
+                email: row.email || '',
+                name: row.name || '',
+                createdAt: row.created_at ?? null,
+                lastUsed: row.last_used ?? null,
+                planType: row.plan_type || null
+              });
+            }
+          } finally {
+            try { db.close(); } catch { }
+          }
+        } catch (err) {
+          if (report) report.errors.push(`${rootInfo.label} SQLite 索引损坏或无法读取: ${err?.message || err}`);
+        }
+      }
+
+      // 兼容旧版/标准 accounts.json 索引
+      const jsonPath = path.join(rootInfo.dir, 'accounts.json');
+      if (fs.existsSync(jsonPath)) {
+        let jsonIdx = null;
+        try {
+          jsonIdx = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+        } catch (err) {
+          if (report) report.errors.push(`${rootInfo.label} accounts.json 已损坏: ${err?.message || err}`);
+        }
+        if (jsonIdx !== null) {
+          if (Array.isArray(jsonIdx.accounts)) {
+            for (const a of jsonIdx.accounts) {
+              if (!a || typeof a !== 'object') {
+                if (report) {
+                  report.invalidCount = (report.invalidCount || 0) + 1;
+                  report.warnings.push(`${rootInfo.label}: 跳过非对象类型的无效记录`);
+                }
+                continue;
+              }
+              addEntry({
+                id: a.id || a.account_id || '',
+                email: a.email || '',
+                name: a.name || '',
+                disabled: Boolean(a.disabled),
+                createdAt: a.created_at ?? null,
+                lastUsed: a.last_used ?? null,
+                planType: a.plan_type || null,
+                token: a.token || null
+              });
+            }
+          } else if (report) {
+            report.errors.push(`${rootInfo.label} accounts.json 缺少有效的 accounts 数组`);
+          }
+        }
+      }
+
+      return Array.from(byEmail.values());
+    }
+
+    /**
+     * 只读预览本机 Antigravity Tools 与 Cockpit Tools 中可用账号（绝不修改第三方文件）
      */
     function listAntigravityToolsAccounts() {
-      const toolsIdxPath = path.join(homeDir, '.antigravity_tools', 'accounts.json');
-      const data = readJsonSafe(toolsIdxPath, null);
-      if (!data) return { ok: true, available: false, accounts: [] };
-      const rawList = Array.isArray(data.accounts) ? data.accounts : [];
-      const items = rawList
-        .map(a => ({
-          id: a.id || '',
-          email: normalizeEmail(a.email || ''),
-          name: a.name || '',
-          disabled: Boolean(a.disabled),
-          createdAt: a.created_at || null
+      const roots = discoverExternalToolsRoots();
+      if (!roots.length) return { ok: true, available: false, count: 0, accounts: [] };
+      const mergedByEmail = new Map();
+      for (const r of roots) {
+        const entries = readExternalToolsIndex(r);
+        for (const e of entries) {
+          if (!mergedByEmail.has(e.email)) mergedByEmail.set(e.email, e);
+        }
+      }
+      const items = Array.from(mergedByEmail.values());
+      return {
+        ok: true,
+        available: items.length > 0,
+        count: items.length,
+        roots: roots.map(r => ({ kind: r.kind, label: r.label })),
+        accounts: items.map(({ id, email, name, disabled, createdAt, sourceKind, sourceLabel }) => ({
+          id,
+          email,
+          name,
+          disabled,
+          createdAt,
+          sourceKind,
+          sourceLabel
         }))
-        .filter(a => a.email);
-      return { ok: true, available: true, count: items.length, accounts: items };
+      };
+    }
+
+    function convertToolsQuotaToSnapshot(detail, email) {
+      const q = detail?.quota;
+      if (!q || typeof q !== 'object') return null;
+      const rawGroups = Array.isArray(q.quota_groups) ? q.quota_groups : [];
+      const rawModels = Array.isArray(q.models) ? q.models : [];
+      if (!rawGroups.length && !rawModels.length) return null;
+
+      const summaryGroups = rawGroups.map((g, idx) => ({
+        groupId: g.group_id || g.display_name || `tools-group-${idx}`,
+        displayName: g.display_name || g.displayName || '',
+        description: g.description || '',
+        buckets: (Array.isArray(g.buckets) ? g.buckets : []).map((b, bIdx) => ({
+          bucketId: b.bucket_id || b.bucketId || `bucket-${bIdx}`,
+          window: b.window || '',
+          remainingFraction: typeof b.remaining_fraction === 'number'
+            ? b.remaining_fraction
+            : (typeof b.remainingFraction === 'number'
+              ? b.remainingFraction
+              : (typeof b.remaining_percentage === 'number' ? Math.max(0, Math.min(1, b.remaining_percentage / 100)) : undefined)),
+          windowDurationSeconds: b.window_duration_seconds || b.windowDurationSeconds || undefined,
+          resetTime: b.reset_time || b.resetTime || ''
+        }))
+      }));
+
+      const clientModelConfigs = rawModels
+        .filter(m => m && m.name)
+        .map(m => ({
+          modelId: m.name,
+          label: m.display_name || m.name,
+          modelOrAlias: { model: m.model || m.name },
+          quotaInfo: {
+            remainingFraction: typeof m.percentage === 'number' ? Math.max(0, Math.min(1, m.percentage / 100)) : undefined,
+            resetTime: m.reset_time || undefined
+          }
+        }));
+
+      const tierInfo = normalizeSubscriptionTierInfo(q.subscription_tier || q.raw_tier || '');
+      const updatedMs = Number.isFinite(Number(q.last_updated)) && Number(q.last_updated) > 0
+        ? (Number(q.last_updated) > 1e12 ? Number(q.last_updated) : Number(q.last_updated) * 1000)
+        : Date.now();
+
+      const snap = buildModelQuotaSnapshot({
+        userStatusRes: {
+          userStatus: {
+            email,
+            planStatus: tierInfo.tierName ? { planInfo: { planName: tierInfo.tierName } } : undefined,
+            cascadeModelConfigData: { clientModelConfigs }
+          }
+        },
+        quotaSummaryRes: summaryGroups.length ? { groups: summaryGroups } : null,
+        cascadeModelConfigs: clientModelConfigs,
+        nowMs: updatedMs
+      });
+
+      return { snapshot: snap, updatedAtMs: updatedMs, tierInfo };
     }
 
     function importFromAntigravityTools(selectedEmails = null) {
-      const toolsDir = path.join(homeDir, '.antigravity_tools');
-      const idx = readJsonSafe(path.join(toolsDir, 'accounts.json'), null);
-      if (!idx || !Array.isArray(idx.accounts)) {
-        return { ok: false, error: '未发现 ~/.antigravity_tools/accounts.json' };
+      const roots = discoverExternalToolsRoots();
+      if (!roots.length) {
+        return { ok: false, error: '未发现 ~/.antigravity_tools 或 Cockpit Tools 账号索引' };
       }
       const filterSet = Array.isArray(selectedEmails) && selectedEmails.length
         ? new Set(selectedEmails.map(normalizeEmail).filter(Boolean))
@@ -2188,24 +3258,154 @@ function createAccountsManager(options = {}) {
 
       const store = loadStore();
       const imported = [];
-      for (const meta of idx.accounts) {
-        const email = normalizeEmail(meta?.email || '');
-        if (!email) continue;
-        if (filterSet && !filterSet.has(email)) continue;
-        const detail = readJsonSafe(path.join(toolsDir, 'accounts', `${meta.id}.json`), null);
-        const tok = detail?.token || meta?.token || {};
-        const refreshToken = tok.refresh_token || detail?.refresh_token || '';
-        const accessToken = tok.access_token || detail?.access_token || '';
-        const idToken = detail?.id_token || '';
-        const expiresAt = tok.expiry || (tok.expiry_timestamp ? new Date(tok.expiry_timestamp * 1000).toISOString() : null);
-        if (!refreshToken) continue;
+      const warnings = [];
+      const indexReport = { errors: [], warnings: [], invalidCount: 0 };
+      let credentialsImportedCount = 0;
+      const seenEmails = new Set();
+
+      for (const r of roots) {
+        const entries = readExternalToolsIndex(r, indexReport);
+        for (const meta of entries) {
+          const email = normalizeEmail(meta?.email || '');
+          if (!email || seenEmails.has(email)) continue;
+          if (filterSet && !filterSet.has(email)) continue;
+          if (!filterSet && isAccountDeleted(store, email)) continue;
+          seenEmails.add(email);
+          if (filterSet) clearAccountDeletionTombstone(store, email);
+
+          const { detail, decryptError } = readExternalAccountDetail(r.dir, meta.id);
+          if (decryptError) {
+            warnings.push(`${maskEmail(email)}: ${decryptError}`);
+          } else if (!detail && meta.id) {
+            const detailPath = path.join(r.dir, 'accounts', `${meta.id}.json`);
+            if (fs.existsSync(detailPath)) {
+              warnings.push(`${maskEmail(email)}: 账号详情文件已损坏或无法解析`);
+            }
+          }
+
+          const tok = detail?.token || meta?.token || {};
+          const refreshToken = String(tok.refresh_token || detail?.refresh_token || '').trim();
+          const accessToken = String(tok.access_token || detail?.access_token || '').trim();
+          const idToken = String(tok.id_token || detail?.id_token || '').trim();
+          const rawExpTs = tok.expiry_timestamp ?? detail?.expiry_timestamp ?? null;
+          const expiresAt = tok.expiry
+            || (Number.isFinite(Number(rawExpTs)) && Number(rawExpTs) > 0
+              ? new Date(Number(rawExpTs) > 1e12 ? Number(rawExpTs) : Number(rawExpTs) * 1000).toISOString()
+              : null);
+          const hasCred = Boolean(refreshToken);
+          if (hasCred) credentialsImportedCount += 1;
+
+          const prev = store.accounts[email] || null;
+          const toolsQuota = convertToolsQuotaToSnapshot(detail, email);
+          const rawLastUsed = detail?.last_used ?? meta?.lastUsed ?? null;
+          const lastUsedMs = Number.isFinite(Number(rawLastUsed)) && Number(rawLastUsed) > 0
+            ? (Number(rawLastUsed) > 1e12 ? Number(rawLastUsed) : Number(rawLastUsed) * 1000)
+            : null;
+          const rawTier = detail?.quota?.subscription_tier || detail?.quota?.raw_tier || meta?.planType || null;
+          const tierInfo = normalizeSubscriptionTierInfo(rawTier);
+          const shouldAdoptToolsSnap = Boolean(
+            toolsQuota?.snapshot
+            && (!prev?.quotaSnapshot || !prev.lastQuotaUpdatedAtMs || toolsQuota.updatedAtMs > prev.lastQuotaUpdatedAtMs)
+          );
+          const susSig = detail?.quota?.is_forbidden ? detectAccountSuspendedSignal(detail?.quota?.forbidden_reason || '') : null;
+          const toolsRawAvatar = detail?.profilePictureUrl || detail?.avatarUrl || detail?.photoUrl || detail?.picture || null;
+          const safeLocalAvatar = isSafeDataImageUri(toolsRawAvatar) ? writeCachedAvatarDataUri(email, toolsRawAvatar) : null;
+
+          upsertAccountRecord(store, {
+            email,
+            name: detail?.name || meta.name || email.split('@')[0],
+            ...(safeLocalAvatar ? { profilePictureUrl: safeLocalAvatar } : {}),
+            source: r.kind === 'cockpit_tools' ? 'cockpit_tools_import' : 'antigravity_tools_import',
+            ...(hasCred ? {
+              oauthClientKey: tok.oauth_client_key || (r.kind === 'cockpit_tools' ? 'antigravity_default' : 'antigravity_enterprise'),
+              oauthClientId: tok.client_id || null,
+              credential: { accessToken, refreshToken, expiresAt, idToken }
+            } : {}),
+            tierId: rawTier || undefined,
+            tierName: tierInfo.tierName || undefined,
+            ...(shouldAdoptToolsSnap ? { quotaSnapshot: toolsQuota.snapshot, lastQuotaUpdatedAtMs: toolsQuota.updatedAtMs } : {}),
+            ...(lastUsedMs && (!prev?.lastUsedAtMs || lastUsedMs > prev.lastUsedAtMs) ? { lastUsedAtMs: lastUsedMs } : {}),
+            ...(susSig ? { suspended: true, suspendedReason: susSig.reason, suspendedAtMs: Date.now() } : {}),
+            authInvalid: false,
+            authError: null
+          });
+          imported.push(email);
+        }
+      }
+      const allWarnings = [...indexReport.errors, ...indexReport.warnings, ...warnings];
+      const invalidCount = Number(indexReport.invalidCount || 0);
+      if (imported.length === 0 && (indexReport.errors.length > 0 || invalidCount > 0 || warnings.length > 0)) {
+        const errDetail = allWarnings[0] || 'Tools 数据损坏或无可导入有效账号';
+        return {
+          ok: false,
+          credentialsImported: false,
+          credentialsImportedCount: 0,
+          importedCount: 0,
+          invalidCount,
+          warnings: allWarnings,
+          error: `导入失败：${errDetail}`,
+          message: `未导入有效账号：${errDetail}`,
+          accounts: []
+        };
+      }
+      if (imported.length > 0) saveStore(store);
+      const warnSuffix = allWarnings.length > 0
+        ? `；另有 ${allWarnings.length} 条异常/无效记录（${allWarnings[0]}）`
+        : '';
+      return {
+        ok: imported.length > 0 || allWarnings.length === 0,
+        partial: imported.length > 0 && allWarnings.length > 0,
+        credentialsImported: credentialsImportedCount > 0,
+        credentialsImportedCount,
+        importedCount: imported.length,
+        invalidCount,
+        warnings: allWarnings,
+        message: imported.length > 0
+          ? `已从 Tools 导入 ${imported.length} 个账号${credentialsImportedCount > 0 ? `（含 ${credentialsImportedCount} 份可刷新/可切换凭据）` : ''}${warnSuffix}`
+          : '未发现可导入的 Tools 账号记录',
+        accounts: imported.map(e => sanitizeAccountForView(store.accounts[e], store.activeAccountEmail))
+      };
+    }
+
+    /**
+     * 兼容导入 Cockpit Tools 导出/迁移 JSON（schema: "cockpit-tools.data-transfer", version: 1）
+     */
+    function importFromCockpitBackupJson(rawData) {
+      let data = rawData;
+      if (typeof rawData === 'string') {
+        try { data = JSON.parse(rawData); } catch (e) {
+          return { ok: false, error: `JSON 解析失败: ${e?.message || e}` };
+        }
+      }
+      if (!data || typeof data !== 'object') {
+        return { ok: false, error: '无效的 Cockpit Tools 导出数据' };
+      }
+      if (data.schema && data.schema !== 'cockpit-tools.data-transfer') {
+        return { ok: false, error: `不支持的导出格式 schema: ${data.schema}` };
+      }
+      const list = data?.accounts?.platforms?.antigravity?.exported_data;
+      if (!Array.isArray(list) || !list.length) {
+        return { ok: false, error: '导出文件中未找到 Antigravity 账号数据' };
+      }
+      const store = loadStore();
+      const imported = [];
+      for (const item of list) {
+        const email = normalizeEmail(item?.email || '');
+        const refreshToken = String(item?.refresh_token || item?.token?.refresh_token || '').trim();
+        if (!email || !refreshToken) continue;
+        clearAccountDeletionTombstone(store, email);
         upsertAccountRecord(store, {
           email,
-          name: meta.name || email.split('@')[0],
-          source: 'antigravity_tools_import',
-          oauthClientKey: tok.oauth_client_key || 'antigravity_enterprise',
-          oauthClientId: tok.client_id || null,
-          credential: { accessToken, refreshToken, expiresAt, idToken },
+          name: item?.name || email.split('@')[0],
+          source: 'cockpit_tools_backup',
+          oauthClientKey: item?.oauth_client_key || item?.token?.oauth_client_key || 'antigravity_default',
+          oauthClientId: item?.client_id || item?.token?.client_id || null,
+          credential: {
+            accessToken: String(item?.access_token || item?.token?.access_token || '').trim(),
+            refreshToken,
+            expiresAt: item?.expiry || null,
+            idToken: String(item?.id_token || item?.token?.id_token || '').trim()
+          },
           authInvalid: false,
           authError: null
         });
@@ -2213,16 +3413,58 @@ function createAccountsManager(options = {}) {
       }
       saveStore(store);
       return {
-        ok: true,
+        ok: imported.length > 0,
+        credentialsImported: imported.length > 0,
         importedCount: imported.length,
+        message: imported.length > 0 ? `已从 Cockpit Tools 备份导入 ${imported.length} 个账号` : '导出文件中无有效凭据账号',
         accounts: imported.map(e => sanitizeAccountForView(store.accounts[e], store.activeAccountEmail))
       };
     }
 
+    let activeOAuthCancelFn = null;
+
+    function cancelOAuthLogin() {
+      if (typeof activeOAuthCancelFn === 'function') {
+        const fn = activeOAuthCancelFn;
+        activeOAuthCancelFn = null;
+        try { fn(); } catch { }
+        return { ok: true, cancelled: true, message: '已取消 OAuth 登录授权' };
+      }
+      return { ok: true, cancelled: false, message: '当前无进行中的 OAuth 登录' };
+    }
+
+    function openExternalUrlWithOsFallback(targetUrl) {
+      if (!targetUrl || !/^https?:\/\//i.test(String(targetUrl))) return false;
+      try {
+        const electronMod = require('electron');
+        if (electronMod && electronMod.shell && typeof electronMod.shell.openExternal === 'function') {
+          Promise.resolve(electronMod.shell.openExternal(targetUrl)).catch(() => { });
+          return true;
+        }
+      } catch { }
+      try {
+        if (process.platform === 'win32') {
+          spawn('cmd', ['/c', 'start', '', targetUrl], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+          return true;
+        }
+        if (process.platform === 'darwin') {
+          spawn('open', [targetUrl], { detached: true, stdio: 'ignore' }).unref();
+          return true;
+        }
+        spawn('xdg-open', [targetUrl], { detached: true, stdio: 'ignore' }).unref();
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
     /**
-     * 启动 OAuth2 本地回环授权流程并添加账号（分阶段报错与脱敏记录；凭据持久化成功后不随初始配额失败回滚）
+     * 启动 OAuth2 本地回环授权流程并添加账号（ELV-102：跨进程可靠拉起浏览器、支持取消/超时/重试、凭据落盘后不随初始配额失败回滚）
      */
     async function startOAuthLogin({ openExternal = options.openExternal || null, timeoutMs = 120000 } = {}) {
+      if (typeof activeOAuthCancelFn === 'function') {
+        cancelOAuthLogin();
+      }
       const stateStr = crypto.randomBytes(16).toString('hex');
       let server = null;
       let boundPort = 0;
@@ -2264,18 +3506,33 @@ function createAccountsManager(options = {}) {
           let port = CALLBACK_PORT_START;
           let tries = 0;
           let settled = false;
+          const closeCallbackServer = () => {
+            try { server?.close(); } catch { }
+            try { server?.closeAllConnections?.(); } catch { }
+          };
           const timer = setTimeout(() => {
             if (settled) return;
             settled = true;
-            try { server?.close(); } catch { }
+            activeOAuthCancelFn = null;
+            closeCallbackServer();
             reject(attachStageErrorMeta(new Error('OAuth 授权超时（请重新点击登录添加后在浏览器完成授权）'), curStage, '127.0.0.1', null, null));
           }, timeoutMs);
+
+          activeOAuthCancelFn = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            closeCallbackServer();
+            const cancelErr = attachStageErrorMeta(new Error('已取消 OAuth 授权登录'), 'user_cancelled', '127.0.0.1', null, null);
+            cancelErr.cancelled = true;
+            reject(cancelErr);
+          };
 
           const handleReq = (req, res) => {
             try {
               const reqUrl = new URL(req.url || '/', `http://127.0.0.1:${boundPort}`);
               if (reqUrl.pathname === '/favicon.ico') {
-                res.writeHead(204);
+                res.writeHead(204, { Connection: 'close' });
                 res.end();
                 return;
               }
@@ -2283,28 +3540,28 @@ function createAccountsManager(options = {}) {
               const codeParam = reqUrl.searchParams.get('code');
               const stParam = reqUrl.searchParams.get('state');
               if (errParam) {
-                res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+                res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8', Connection: 'close' });
                 res.end('<html><body><h3>OAuth 授权失败</h3><p>您可以关闭此标签页。</p></body></html>');
                 if (!settled) {
                   settled = true;
                   clearTimeout(timer);
-                  try { server?.close(); } catch { }
+                  closeCallbackServer();
                   reject(attachStageErrorMeta(new Error(`OAuth 拒绝或失败: ${errParam}`), 'loopback_callback', '127.0.0.1', 400, null));
                 }
                 return;
               }
               if (codeParam && stParam === stateStr) {
-                res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+                res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', Connection: 'close' });
                 res.end('<html><body><h3>✅ 授权回调已接收，正在返回 Antigravity Context Meter…</h3><script>setTimeout(()=>window.close(),1500)</script></body></html>');
                 if (!settled) {
                   settled = true;
                   clearTimeout(timer);
-                  try { server?.close(); } catch { }
+                  closeCallbackServer();
                   resolve(codeParam);
                 }
                 return;
               }
-              res.writeHead(400);
+              res.writeHead(400, { Connection: 'close' });
               res.end('Invalid callback');
             } catch (e) {
               res.writeHead(500);
@@ -2368,18 +3625,20 @@ function createAccountsManager(options = {}) {
               if (typeof openExternal === 'function') {
                 Promise.resolve(openExternal(authUrl)).catch(() => { });
               } else {
-                try {
-                  const { shell } = require('electron');
-                  shell?.openExternal?.(authUrl);
-                } catch { }
+                openExternalUrlWithOsFallback(authUrl);
               }
             });
           };
           tryNextPort();
         });
       } catch (e) {
+        activeOAuthCancelFn = null;
+        if (e?.cancelled) {
+          return { ok: false, cancelled: true, stage: 'user_cancelled', message: '已取消 OAuth 授权登录' };
+        }
         return logFailAndReturn(e?.stage || curStage, e, { targetHost: '127.0.0.1', proxySource: 'loopback_direct' });
       }
+      activeOAuthCancelFn = null;
 
       const redirectUri = `http://127.0.0.1:${boundPort}`;
       const loginOAuthCfg = resolveAntigravityOAuthConfig(oauthResolveOpts);
@@ -2401,12 +3660,19 @@ function createAccountsManager(options = {}) {
 
       // 阶段 5：凭据已成功换取并验证身份，原子落盘（不更改当前活跃账号，不触发切号）
       let rec;
+      const normEmail = normalizeEmail(userInfo.email);
+      let existedBefore = false;
+      const oauthAvatarRaw = userInfo.picture || decodeJwtPicture(tokData.id_token || '') || null;
+      const cachedOauthAvatar = oauthAvatarRaw ? await resolveAndCacheAvatar(normEmail, oauthAvatarRaw) : null;
       try {
         curStage = 'credential_persist';
         const store = loadStore();
+        existedBefore = Boolean(store.accounts[normEmail]);
+        clearAccountDeletionTombstone(store, normEmail);
         rec = upsertAccountRecord(store, {
-          email: userInfo.email,
+          email: normEmail,
           name: userInfo.name,
+          profilePictureUrl: cachedOauthAvatar || oauthAvatarRaw || null,
           source: 'oauth_login',
           oauthClientKey: loginOAuthCfg?.key || 'antigravity_default',
           oauthClientId: loginOAuthCfg?.clientId || null,
@@ -2428,7 +3694,7 @@ function createAccountsManager(options = {}) {
           proxyEndpoint: tokData?._diagnostics?.proxyEndpoint || null,
           httpStatus: 200,
           ok: true,
-          message: `凭据已保存 (${maskEmail(userInfo.email)})`
+          message: `凭据已保存 (${maskEmail(normEmail)})`
         });
         saveStore(store);
       } catch (e) {
@@ -2436,13 +3702,14 @@ function createAccountsManager(options = {}) {
       }
 
       // 阶段 6：拉取新账号初始配额（即使额度查询失败也保留账号并返回部分成功与重试状态）
-      const quotaRes = await refreshAccountQuota(userInfo.email, { stage: 'initial_quota_fetch' });
+      const quotaRes = await refreshAccountQuota(normEmail, { stage: 'initial_quota_fetch' });
       const freshStore = loadStore();
-      const viewAccount = sanitizeAccountForView(freshStore.accounts[userInfo.email] || rec, freshStore.activeAccountEmail);
+      const viewAccount = sanitizeAccountForView(freshStore.accounts[normEmail] || rec, freshStore.activeAccountEmail);
       if (!quotaRes.ok) {
         return {
           ok: true,
           quotaOk: false,
+          updatedExisting: existedBefore,
           stage: quotaRes.stage || 'initial_quota_fetch',
           targetHost: quotaRes.targetHost || 'cloudcode-pa.googleapis.com',
           httpStatus: quotaRes.httpStatus ?? null,
@@ -2453,6 +3720,7 @@ function createAccountsManager(options = {}) {
       return {
         ok: true,
         quotaOk: true,
+        updatedExisting: existedBefore,
         stage: 'completed',
         account: viewAccount
       };
@@ -2465,6 +3733,7 @@ function createAccountsManager(options = {}) {
       const cleanEmail = normalizeEmail(email);
       if (!cleanEmail) return { ok: false, error: '邮箱格式无效' };
       const store = loadStore();
+      clearAccountDeletionTombstone(store, cleanEmail);
       const rec = upsertAccountRecord(store, {
         email: cleanEmail,
         name,
@@ -2487,7 +3756,24 @@ function createAccountsManager(options = {}) {
       const wasActive = store.activeAccountEmail === clean;
 
       delete store.accounts[clean];
+      if (!store.deletedAccounts || typeof store.deletedAccounts !== 'object') {
+        store.deletedAccounts = {};
+      }
+      store.deletedAccounts[clean] = {
+        deletedAtMs: Date.now(),
+        scopeKey: removedScopeKey
+      };
       store.autoSwitch.candidates = (store.autoSwitch.candidates || []).filter(e => normalizeEmail(e) !== clean);
+
+      // 清理该账号的在途刷新、退避、状态和头像缓存，防止异步回写复活
+      inFlightAccountRefresh.delete(clean);
+      accountRefreshBackoff.delete(clean);
+      accountRefreshStatus.delete(removedScopeKey);
+      avatarMemoryCache.delete(removedScopeKey);
+      try {
+        const avatarFile = getAvatarCacheFilePath(removedScopeKey);
+        if (fs.existsSync(avatarFile)) fs.unlinkSync(avatarFile);
+      } catch { }
 
       // 清理该账号相关的防抖计数；若移除了活跃账号则整组重置防抖，避免基于失效账号触发误切换
       for (const k of Array.from(debounceState.keys())) {
@@ -2774,11 +4060,150 @@ function createAccountsManager(options = {}) {
 
     async function refreshAccountQuota(email, opts = {}) {
       const clean = normalizeEmail(email);
+      const scopeKey = buildAccountScopeKey(clean);
       const store = loadStore();
       const rec = store.accounts[clean];
-      if (!rec) return { ok: false, error: '账号不存在' };
-
       const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
+      if (!rec || isAccountDeleted(store, clean)) return { ok: false, status: 'error', error: '账号不存在' };
+      if (rec.suspended && opts.explicitVerify !== true) {
+        setAccountRefreshStatus(scopeKey, {
+          state: 'suspended',
+          updatedAtMs: nowMs,
+          lastSuccessAtMs: rec.lastQuotaUpdatedAtMs || null,
+          unchanged: false,
+          retryAtMs: null,
+          error: '该账号当前处于停用状态，已停止后台刷新，请前往官方支持页确认状态或点击手动重新核验',
+          reason: 'account_suspended'
+        });
+        return {
+          ok: false,
+          status: 'suspended',
+          suspended: true,
+          skipped: true,
+          lastSuccessAtMs: rec.lastQuotaUpdatedAtMs || null,
+          supportUrl: GOOGLE_ANTIGRAVITY_SUPPORT_URL,
+          error: '该账号当前处于停用状态，已停止后台刷新，请前往官方支持页确认状态或点击手动重新核验'
+        };
+      }
+
+      // 01/02 退避检查：429 限流退避期间保留旧读数与原采样时间，不重复发远端请求
+      const activeBackoff = accountRefreshBackoff.get(clean);
+      if (activeBackoff && nowMs < activeBackoff.untilMs && opts.explicitVerify !== true && !opts.mockQuotaSnapshot) {
+        const retryAfterMs = Math.max(0, activeBackoff.untilMs - nowMs);
+        setAccountRefreshStatus(scopeKey, {
+          state: 'backoff',
+          updatedAtMs: nowMs,
+          lastSuccessAtMs: rec.lastQuotaUpdatedAtMs || null,
+          unchanged: false,
+          retryAtMs: activeBackoff.untilMs,
+          error: activeBackoff.message,
+          reason: 'rate_limited_429'
+        });
+        return {
+          ok: false,
+          status: 'backoff',
+          backoffActive: true,
+          retryAfterMs,
+          retryAtMs: activeBackoff.untilMs,
+          lastSuccessAtMs: rec.lastQuotaUpdatedAtMs || null,
+          account: sanitizeAccountForView(rec, store.activeAccountEmail),
+          error: activeBackoff.message
+        };
+      }
+      if (activeBackoff && nowMs >= activeBackoff.untilMs) {
+        accountRefreshBackoff.delete(clean);
+      }
+
+      // 01/02 同账号在途去重：并发点击合并同一在途刷新，避免并发扫号或堆叠请求
+      if (inFlightAccountRefresh.has(clean) && opts.explicitVerify !== true && !opts.mockQuotaSnapshot) {
+        return inFlightAccountRefresh.get(clean);
+      }
+
+      // 当前活跃账号优先复用宿主快照（若宿主不可用且本地有 refreshToken 则平滑回退 CloudCode）；
+      // 非活跃账号手动点击刷新直接走 CloudCode 拉取最新 Gemini/Claude/Argon 多池余量与倒计时
+      const isCurrentActive = Boolean(store.activeAccountEmail && normalizeEmail(store.activeAccountEmail) === clean);
+      const hostFetcher = typeof opts.fetchActiveHostSnapshot === 'function'
+        ? opts.fetchActiveHostSnapshot
+        : (typeof options.fetchActiveHostSnapshot === 'function' ? options.fetchActiveHostSnapshot : null);
+      if (isCurrentActive && hostFetcher && !opts.mockQuotaSnapshot && !opts.forceCloudCode) {
+        setAccountRefreshStatus(scopeKey, { state: 'refreshing', updatedAtMs: nowMs, error: null, reason: null });
+        const hostRun = (async () => {
+          try {
+            const prevSig = computeQuotaSnapshotSignature(rec.quotaSnapshot);
+            const hostRes = await hostFetcher({ email: clean, accountScopeKey: scopeKey, force: Boolean(opts.force), manual: opts.manual !== false, nowMs });
+            const postHostStore = loadStore();
+            if (!postHostStore.accounts[clean] || isAccountDeleted(postHostStore, clean)) {
+              return { ok: false, status: 'error', error: '账号已被移除' };
+            }
+            if (hostRes && hostRes.ok && hostRes.snapshot) {
+              const nextSig = computeQuotaSnapshotSignature(hostRes.snapshot);
+              const unchanged = Boolean(prevSig && nextSig && prevSig === nextSig);
+              const synced = syncActiveHostQuotaSnapshot(hostRes, clean, { nowMs });
+              const updatedAt = hostRes.fetchedAtMs || nowMs;
+              setAccountRefreshStatus(scopeKey, {
+                state: unchanged ? 'unchanged' : 'updated',
+                updatedAtMs: updatedAt,
+                lastSuccessAtMs: updatedAt,
+                unchanged,
+                retryAtMs: null,
+                error: null,
+                reason: unchanged ? 'snapshot_unchanged' : 'host_snapshot_updated'
+              });
+              return {
+                ok: true,
+                status: unchanged ? 'unchanged' : 'updated',
+                unchanged,
+                source: 'host_local_snapshot',
+                targetHost: null,
+                fetchedAtMs: updatedAt,
+                lastSuccessAtMs: updatedAt,
+                account: synced
+              };
+            }
+            if (!rec.credential?.refreshToken) {
+              const errMsg = hostRes?.error || '未能从宿主读取最新额度快照，已保留上次读数';
+              setAccountRefreshStatus(scopeKey, {
+                state: hostRes?.backoffActive ? 'backoff' : 'error',
+                updatedAtMs: nowMs,
+                lastSuccessAtMs: rec.lastQuotaUpdatedAtMs || null,
+                unchanged: false,
+                retryAtMs: hostRes?.retryAtMs || null,
+                error: errMsg,
+                reason: hostRes?.errorKind || 'host_snapshot_failed'
+              });
+              return {
+                ok: false,
+                status: hostRes?.backoffActive ? 'backoff' : 'error',
+                backoffActive: Boolean(hostRes?.backoffActive),
+                retryAfterMs: hostRes?.retryAfterMs ?? null,
+                retryAtMs: hostRes?.retryAtMs ?? null,
+                lastSuccessAtMs: rec.lastQuotaUpdatedAtMs || null,
+                account: sanitizeAccountForView(rec, store.activeAccountEmail),
+                error: errMsg
+              };
+            }
+            return null;
+          } finally {
+            inFlightAccountRefresh.delete(clean);
+          }
+        })();
+        inFlightAccountRefresh.set(clean, hostRun);
+        const hostOutcome = await hostRun;
+        if (hostOutcome) return hostOutcome;
+      }
+
+      const startEpoch = Number(rec.actionEpoch || 0);
+      setAccountRefreshStatus(scopeKey, {
+        state: 'refreshing',
+        updatedAtMs: nowMs,
+        lastSuccessAtMs: rec.lastQuotaUpdatedAtMs || null,
+        unchanged: false,
+        retryAtMs: null,
+        error: null,
+        reason: null
+      });
+
+      const execRefresh = async () => {
       try {
         let quotaData = null;
         if (opts.mockQuotaSnapshot) {
@@ -2800,10 +4225,24 @@ function createAccountsManager(options = {}) {
 
         const freshStore = loadStore();
         const targetRec = freshStore.accounts[clean];
-        if (!targetRec) return { ok: false, error: '账号已被移除' };
+        if (!targetRec || isAccountDeleted(freshStore, clean)) return { ok: false, status: 'error', error: '账号已被移除' };
+        // 若请求期间账号被标记停用或状态代次已推进且非显式核验，立即丢弃迟到响应，避免覆盖停用状态
+        if (opts.explicitVerify !== true && (targetRec.suspended || Number(targetRec.actionEpoch || 0) !== startEpoch)) {
+          return {
+            ok: false,
+            status: 'stale_discarded',
+            staleDiscarded: true,
+            suspended: Boolean(targetRec.suspended),
+            supportUrl: GOOGLE_ANTIGRAVITY_SUPPORT_URL,
+            error: '账号状态已变更，已忽略迟到响应'
+          };
+        }
 
         const prevSnap = targetRec.quotaSnapshot || null;
         const prevAtMs = targetRec.lastQuotaUpdatedAtMs || null;
+        const prevSig = computeQuotaSnapshotSignature(prevSnap);
+        const nextSig = computeQuotaSnapshotSignature(quotaData.snapshot);
+        const unchanged = Boolean(prevSig && nextSig && prevSig === nextSig);
 
         recordQuotaComparisonSample(
           freshStore,
@@ -2819,53 +4258,133 @@ function createAccountsManager(options = {}) {
           }
         );
 
+        const resolvedQuotaSource = opts.mockQuotaSnapshot ? 'mock_snapshot' : 'cloudcode_direct';
+        const resolvedTargetHost = quotaData.targetHost || null;
         targetRec.projectId = quotaData.projectId ?? targetRec.projectId;
         targetRec.tierId = quotaData.tierId ?? targetRec.tierId;
         targetRec.tierName = quotaData.tierName || quotaData.snapshot?.planStatus?.tierName || targetRec.tierName || null;
         targetRec.quotaSnapshot = quotaData.snapshot;
+        targetRec.quotaSource = resolvedQuotaSource;
+        targetRec.quotaTargetHost = resolvedTargetHost;
         targetRec.lastQuotaUpdatedAtMs = quotaData.fetchedAtMs || nowMs;
         targetRec.lastQuotaError = null;
         targetRec.lastQuotaErrorMeta = null;
         targetRec.authInvalid = false;
         targetRec.authError = null;
+        if (opts.explicitVerify === true && targetRec.suspended) {
+          targetRec.suspended = false;
+          targetRec.suspendedReason = null;
+          targetRec.suspendedAtMs = null;
+        }
+        accountRefreshBackoff.delete(clean);
         saveStore(freshStore);
-        return { ok: true, account: sanitizeAccountForView(targetRec, freshStore.activeAccountEmail) };
+        setAccountRefreshStatus(scopeKey, {
+          state: unchanged ? 'unchanged' : 'updated',
+          updatedAtMs: targetRec.lastQuotaUpdatedAtMs,
+          lastSuccessAtMs: targetRec.lastQuotaUpdatedAtMs,
+          unchanged,
+          retryAtMs: null,
+          error: null,
+          reason: unchanged ? 'snapshot_unchanged' : 'snapshot_updated'
+        });
+        return {
+          ok: true,
+          status: unchanged ? 'unchanged' : 'updated',
+          unchanged,
+          source: resolvedQuotaSource,
+          targetHost: resolvedTargetHost,
+          fetchedAtMs: targetRec.lastQuotaUpdatedAtMs,
+          lastSuccessAtMs: targetRec.lastQuotaUpdatedAtMs,
+          account: sanitizeAccountForView(targetRec, freshStore.activeAccountEmail)
+        };
       } catch (e) {
+        const susSig = detectAccountSuspendedSignal(e?.message || e);
+        if (susSig) {
+          markAccountSuspended(clean, susSig.reason, { nowMs });
+        }
+        const httpStatusNum = Number(e?.httpStatus ?? e?.status ?? NaN);
+        const is429 = httpStatusNum === 429 || /\b429\b|resource_exhausted|too many requests|rate[_\s-]?limit/i.test(String(e?.message || ''));
+        let backoffUntil = null;
+        if (is429) {
+          const prevB = accountRefreshBackoff.get(clean);
+          const attempts = prevB && nowMs < (prevB.untilMs + 120000) ? (prevB.attempts + 1) : 1;
+          const expMs = Math.min(300000, 30000 * Math.pow(2, Math.min(4, attempts - 1)));
+          const explicitMs = Number(e?.retryAfterMs ?? e?.retryAfterSec * 1000);
+          const waitMs = Number.isFinite(explicitMs) && explicitMs > 0 ? Math.max(expMs, Math.min(600000, explicitMs)) : expMs;
+          backoffUntil = nowMs + waitMs;
+          accountRefreshBackoff.set(clean, {
+            untilMs: backoffUntil,
+            attempts,
+            httpStatus: 429,
+            message: '请求频率受限，已保留上次读数并进入退避等待'
+          });
+        }
         const freshStore = loadStore();
         const diagEntry = recordDiag(freshStore, {
           at: new Date().toISOString(),
           flow: 'refresh_quota',
           stage: e.stage || 'quota_fetch',
           targetHost: e.targetHost || 'cloudcode-pa.googleapis.com',
-          httpStatus: Number.isFinite(Number(e.httpStatus)) ? Number(e.httpStatus) : null,
+          httpStatus: Number.isFinite(httpStatusNum) ? httpStatusNum : null,
           proxySource: e.proxySource || null,
           proxyEndpoint: e.proxyEndpoint || null,
           errorCode: e.errorCode || e.code || null,
           error: e.message || String(e),
           emailMasked: maskEmail(clean)
         });
-        if (freshStore.accounts[clean]) {
-          freshStore.accounts[clean].lastQuotaError = e.message;
-          freshStore.accounts[clean].lastQuotaErrorMeta = diagEntry;
+        const existingRec = freshStore.accounts[clean] || null;
+        if (existingRec) {
+          // 失败保留上次可信 quotaSnapshot 与 lastQuotaUpdatedAtMs
+          existingRec.lastQuotaError = e.message;
+          existingRec.lastQuotaErrorMeta = diagEntry;
           if (e.isAuthInvalid) {
-            freshStore.accounts[clean].authInvalid = true;
-            freshStore.accounts[clean].authError = e.message;
+            existingRec.authInvalid = true;
+            existingRec.authError = e.message;
           }
           saveStore(freshStore);
         } else {
           saveStore(freshStore);
         }
+        setAccountRefreshStatus(scopeKey, {
+          state: susSig ? 'suspended' : (is429 ? 'backoff' : 'error'),
+          updatedAtMs: nowMs,
+          lastSuccessAtMs: existingRec?.lastQuotaUpdatedAtMs || null,
+          unchanged: false,
+          retryAtMs: backoffUntil,
+          error: e.message,
+          reason: susSig ? 'account_suspended' : (is429 ? 'rate_limited_429' : (e.isAuthInvalid ? 'auth_invalid' : 'refresh_failed'))
+        });
         return {
           ok: false,
+          status: susSig ? 'suspended' : (is429 ? 'backoff' : 'error'),
+          backoffActive: Boolean(is429),
+          retryAfterMs: backoffUntil ? Math.max(0, backoffUntil - nowMs) : null,
+          retryAtMs: backoffUntil,
+          lastSuccessAtMs: existingRec?.lastQuotaUpdatedAtMs || null,
+          account: existingRec ? sanitizeAccountForView(existingRec, freshStore.activeAccountEmail) : null,
           error: e.message,
           stage: diagEntry.stage,
           targetHost: diagEntry.targetHost,
           httpStatus: diagEntry.httpStatus,
           diagnostics: diagEntry,
           authInvalid: Boolean(e.isAuthInvalid),
+          suspended: Boolean(susSig),
+          supportUrl: GOOGLE_ANTIGRAVITY_SUPPORT_URL,
           isClientMismatch: Boolean(e.isClientMismatch)
         };
       }
+      };
+
+      if (opts.mockQuotaSnapshot) {
+        return execRefresh();
+      }
+      const p = execRefresh().finally(() => {
+        if (inFlightAccountRefresh.get(clean) === p) {
+          inFlightAccountRefresh.delete(clean);
+        }
+      });
+      inFlightAccountRefresh.set(clean, p);
+      return p;
     }
 
     /**
@@ -2881,8 +4400,11 @@ function createAccountsManager(options = {}) {
       const accountSwitched = Boolean(prevActive && prevActive !== clean);
       let rec = store.accounts[clean];
       if (!rec) {
+        if (isAccountDeleted(store, clean)) return null;
         rec = upsertAccountRecord(store, {
           email: clean,
+          name: hostQuotaResult.name || undefined,
+          profilePictureUrl: hostQuotaResult.profilePictureUrl || null,
           source: 'client_auto_detected',
           credential: {}
         });
@@ -2895,10 +4417,26 @@ function createAccountsManager(options = {}) {
         queryLocalUsageInWindow: opts.queryLocalUsageInWindow
       });
       rec.quotaSnapshot = hostQuotaResult.snapshot;
+      rec.quotaSource = 'host_local_snapshot';
+      rec.quotaTargetHost = null;
       rec.lastQuotaUpdatedAtMs = nowMs;
       rec.lastQuotaError = hostQuotaResult.error || null;
       if (!hostQuotaResult.error) rec.lastQuotaErrorMeta = null;
-      if (hostQuotaResult.planStatus?.tierName) rec.tierId = hostQuotaResult.planStatus.tierName;
+      if (hostQuotaResult.name && typeof hostQuotaResult.name === 'string') rec.name = hostQuotaResult.name;
+      if (hostQuotaResult.profilePictureUrl && typeof hostQuotaResult.profilePictureUrl === 'string') {
+        rec.profilePictureUrl = hostQuotaResult.profilePictureUrl;
+      }
+      const resolvedTierId = hostQuotaResult.userTier?.id || hostQuotaResult.planTierSummary?.tierId || hostQuotaResult.planStatus?.tierId || null;
+      const resolvedTierName = hostQuotaResult.userTier?.name || hostQuotaResult.planTierSummary?.tierName || hostQuotaResult.planStatus?.tierName || hostQuotaResult.snapshot?.planStatus?.tierName || null;
+      if (resolvedTierId) rec.tierId = resolvedTierId;
+      if (resolvedTierName) rec.tierName = resolvedTierName;
+      const susSig = detectAccountSuspendedSignal(hostQuotaResult);
+      if (susSig) {
+        rec.suspended = true;
+        rec.suspendedReason = susSig.reason;
+        rec.suspendedAtMs = rec.suspendedAtMs || nowMs;
+        rec.actionEpoch = Number(rec.actionEpoch || 0) + 1;
+      }
       rec.lastUsedAtMs = nowMs;
       if (accountSwitched) {
         closeActiveAccountSessions(store, nowMs);
@@ -2963,6 +4501,16 @@ function createAccountsManager(options = {}) {
 
     if (!cfg.enabled) {
       return { ok: false, action: 'noop', reason: 'disabled' };
+    }
+    if (ctx.productionGuard === true) {
+      store.keepaliveState = { ...st, running: false, blockedReason: 'consumer_keepalive_disabled' };
+      saveStore(store);
+      return {
+        ok: false,
+        action: 'blocked',
+        reason: 'consumer_keepalive_disabled',
+        message: '消费版生产环境已停用缓存保活外发请求，仅保留历史状态展示与离线测试回归'
+      };
     }
     if (!cfg.experimentApproved) {
       store.keepaliveState = { ...st, running: false, blockedReason: 'pending_maintainer_experiment_approval' };
@@ -3075,12 +4623,24 @@ function createAccountsManager(options = {}) {
       const store = loadStore();
       const targetRec = store.accounts[cleanTarget];
       const pending = store.autoSwitchStatus.lastResult;
-      if (pending?.restartPending && callNowMs - pending.atMs < 120000) {
+      if (pending?.restartPending && !pending?.manualRestartRequired && callNowMs - pending.atMs < 120000) {
         return { ok: false, busy: true, error: '正在等待客户端重启后验证账号切换' };
       }
       if (!targetRec) return { ok: false, error: `未在多账号列表中找到 ${cleanTarget}` };
+      if (targetRec.suspended) {
+        return {
+          ok: false,
+          suspended: true,
+          supportUrl: GOOGLE_ANTIGRAVITY_SUPPORT_URL,
+          error: `${maskEmail(cleanTarget)} 已被标记停用，请先前往官方支持页核实账号状态`
+        };
+      }
       if (!targetRec.credential?.refreshToken) {
-        return { ok: false, error: `${cleanTarget} 缺少 refresh_token，无法切换客户端登录态` };
+        return {
+          ok: false,
+          needsNativeReauth: true,
+          error: `${maskEmail(cleanTarget)} 缺少可切换凭据，请先通过官方登录重新授权或在客户端退出后重新登录`
+        };
       }
       if (targetRec.authInvalid) {
         return { ok: false, error: `${cleanTarget} 授权已失效 (${targetRec.authError || 'invalid_grant'})，请重新授权后再切号`, authInvalid: true };
@@ -3302,13 +4862,15 @@ function createAccountsManager(options = {}) {
         }
         if (opts.requiresClientRestart) {
             if (opts.allowManualRestartPending && !String(opts.trigger || '').startsWith('auto')) {
+              const isDeferAutoRestart = Boolean(opts.deferRestart && opts.canAutoRestart);
               const pendingStore = loadStore();
               pendingStore.autoSwitchStatus.lastResult = {
                 ok: false,
                 restartPending: true,
-                manualRestartRequired: true,
+                manualRestartRequired: !isDeferAutoRestart,
                 fromEmail: preActiveEmail,
                 toEmail: cleanTarget,
+                targetEmailMasked: maskEmail(cleanTarget),
                 atMs: Date.now(),
                 pid: process.pid,
                 trigger: opts.trigger || 'manual'
@@ -3318,9 +4880,16 @@ function createAccountsManager(options = {}) {
               return {
                 ok: true,
                 restartPending: true,
-                manualRestartRequired: true,
+                pendingRestart: true,
+                deferRestart: isDeferAutoRestart,
+                canAutoRestart: Boolean(opts.canAutoRestart),
+                manualRestartRequired: !isDeferAutoRestart,
+                targetEmail: cleanTarget,
+                targetEmailMasked: maskEmail(cleanTarget),
                 verifiedEffective: false,
-                message: '已写入目标账号凭据，请手动完全退出并重启 Antigravity 客户端后生效'
+                message: isDeferAutoRestart
+                  ? '已写入目标账号凭据，即将重启客户端生效'
+                  : '已写入目标账号凭据，请手动完全退出并重启 Antigravity 客户端后生效'
               };
             }
             const rb = credStore.restoreSnapshot(preSnap);
@@ -3409,21 +4978,84 @@ function createAccountsManager(options = {}) {
             };
           }
 
-          // 若 LS 未在校验时间内确认切换为目标邮箱，默认自动回滚并保持原活跃账号，不虚报成功！
+          // 若 LS 未在校验时间内确认切换为目标邮箱（PR #96 / Issue #95）：
+          // Antigravity 2.34+ 的语言服务凭据由 Electron 主进程在启动时经 host bridge 下发，
+          // 仅重启语言服务不会加载新凭据 → 手动切号保留已写入凭据并进入待重启态，自动切号维持回滚行为。
+          const isAutoTrigger = String(opts.trigger || '').startsWith('auto');
+          const shouldPersist = isAutoTrigger
+            ? Boolean(opts.persistOnVerifyMismatch)
+            : Boolean(opts.persistOnVerifyMismatch || opts.allowManualRestartPending) && opts.rollbackOnVerifyMismatch !== true;
           let rolledBack = false;
-          if (opts.rollbackOnVerifyMismatch !== false && preSnap) {
+          if (!shouldPersist && preSnap) {
             try {
               const rb = credStore.restoreSnapshot(preSnap);
               rolledBack = Boolean(rb?.ok !== false);
             } catch { }
           }
-          const failErrMsg = `凭据验证未生效，宿主暂未切换至 ${cleanTarget}${verifiedEmail ? `（当前仍回报 ${verifiedEmail}）` : ''}${rolledBack ? '，已自动回滚原凭据' : ''}。请重载或重启 Antigravity 客户端后重试。`;
+          let clientRelaunchScheduled = false;
+          if (shouldPersist && opts.restartClientOnVerifyFail !== false) {
+            try {
+              const electronMod = (() => { try { return require('electron'); } catch { return null; } })();
+              const app = electronMod && typeof electronMod === 'object' && electronMod.app && typeof electronMod.app.quit === 'function'
+                ? electronMod.app
+                : null;
+              if (app) {
+                clientRelaunchScheduled = true;
+                const launcherCandidates = [
+                  path.join(os.homedir(), 'Documents', 'MyFiles', 'agy-tool', '启动Antigravity.command')
+                ];
+                const launcher = launcherCandidates.find(p => { try { return fs.existsSync(p); } catch { return false; } });
+                if (launcher) {
+                  try {
+                    spawn('/bin/bash', ['-c', `sleep 5; exec '${launcher.replace(/'/g, `'\\''`)}' >/dev/null 2>&1`], { detached: true, stdio: 'ignore' }).unref();
+                  } catch { clientRelaunchScheduled = false; }
+                }
+                if (!clientRelaunchScheduled) {
+                  setTimeout(() => {
+                    try { app.relaunch(); app.quit(); } catch { }
+                  }, 1500);
+                } else {
+                  setTimeout(() => {
+                    try { app.quit(); } catch { }
+                  }, 1500);
+                }
+              }
+            } catch { }
+          }
+          const failErrMsg = shouldPersist
+            ? `已写入 ${cleanTarget} 凭据。当前版本语言服务凭据由客户端启动时下发，仅重启语言服务不会生效${clientRelaunchScheduled ? '，客户端即将自动重启以完成切换' : '，请完全退出并重启 Antigravity 后自动生效（无需再次点击切换）'}。`
+            : `凭据验证未生效，宿主暂未切换至 ${cleanTarget}${verifiedEmail ? `（当前仍回报 ${verifiedEmail}）` : ''}${rolledBack ? '，已自动回滚原凭据' : ''}。请重载或重启 Antigravity 客户端后重试。`;
           const savedFailStore = finalizeFailureStore({ errMsg: failErrMsg, rolledBack, verifiedEmail, atMs: nowMs });
+          if (shouldPersist) {
+            savedFailStore.activeAccountEmail = cleanTarget;
+            savedFailStore.autoSwitchStatus = {
+              ...savedFailStore.autoSwitchStatus,
+              lastResult: {
+                ...(savedFailStore.autoSwitchStatus?.lastResult || {}),
+                ok: false,
+                pendingRestart: true,
+                restartPending: true,
+                manualRestartRequired: !clientRelaunchScheduled,
+                fromEmail: preActiveEmail,
+                toEmail: cleanTarget,
+                targetEmailMasked: maskEmail(cleanTarget),
+                atMs: nowMs,
+                pid: process.pid,
+                trigger: opts.trigger || 'manual',
+                rolledBack: false,
+                error: failErrMsg
+              }
+            };
+            saveStore(savedFailStore);
+          }
           return {
             ok: false,
             verifiedEffective: false,
             rolledBack,
             lsRestarted,
+            pendingRestart: shouldPersist,
+            restartPending: shouldPersist,
+            clientRelaunchScheduled,
             observedEmail: verifiedEmail || null,
             activeAccountEmail: savedFailStore.activeAccountEmail || null,
             error: failErrMsg
@@ -3724,10 +5356,44 @@ function createAccountsManager(options = {}) {
           return { ok: true, action: 'waiting_idle', state: 'waiting_idle', reason: 'unsaved_draft_present' };
         }
 
-        // 5. 筛选可用且充足的候选目标账号（区分未配置任何候选 vs 有候选但额度不足/过期）
+        // 5. 筛选可用且充足的候选目标账号（当前账号与已停用账号不作为当次切换目标）
         const candidateEmails = (cfg.candidates || [])
           .map(normalizeEmail)
-          .filter(e => e && e !== activeEmail && store.accounts[e] && !store.accounts[e].authInvalid && store.accounts[e].credential?.refreshToken);
+          .filter(e => e && e !== activeEmail && store.accounts[e] && !store.accounts[e].authInvalid && !store.accounts[e].suspended && store.accounts[e].credential?.refreshToken);
+
+        // 消费版生产环境边界：只保留本地阈值提醒与历史状态记录，绝不后台自动派发切号、刷新非活跃候选或自动重启
+        if (ctx.productionAlertOnly === true) {
+          st.state = 'alert_only';
+          st.blockedReason = 'consumer_auto_switch_disabled';
+          st.blockedMeta = {
+            poolKey: cfg.poolKey,
+            windowKey: cfg.windowKey,
+            remPct,
+            usedPct,
+            thresholdPct: cfg.thresholdPct,
+            candidateCount: candidateEmails.length
+          };
+          logAutoSwitchDiag(store, 'alert_only', {
+            poolKey: cfg.poolKey,
+            windowKey: cfg.windowKey,
+            remPct,
+            thresholdPct: cfg.thresholdPct,
+            candidateCount: candidateEmails.length,
+            reason: 'consumer_auto_switch_disabled',
+            ok: true,
+            nowMs
+          });
+          saveStore(store);
+          return {
+            ok: true,
+            action: 'alert_only',
+            state: 'alert_only',
+            reason: 'consumer_auto_switch_disabled',
+            remainingPct: remPct,
+            usedPct,
+            candidateCount: candidateEmails.length
+          };
+        }
 
         if (candidateEmails.length === 0) {
           st.state = 'no_candidates';
@@ -4017,21 +5683,72 @@ function createAccountsManager(options = {}) {
     };
   }
 
+  async function hydrateMissingAvatars(opts = {}) {
+    const nowMs = Date.now();
+    const allowRemoteFetch = opts.allowRemoteFetch === true;
+    if (!opts.force && avatarHydratePromise) return avatarHydratePromise;
+    if (!opts.force && lastAvatarHydrateAtMs && (nowMs - lastAvatarHydrateAtMs) < 5 * 60 * 1000) {
+      return { ok: true, skipped: true, updated: 0 };
+    }
+    const maxCount = Math.max(1, Math.min(12, Number(opts.limit) || 6));
+    const run = async () => {
+      lastAvatarHydrateAtMs = Date.now();
+      const store = loadStore();
+      const all = Object.values(store.accounts || {}).filter(Boolean);
+      let updated = 0;
+      let tried = 0;
+      for (const rec of all) {
+        if (tried >= maxCount) break;
+        const clean = normalizeEmail(rec.email);
+        if (!clean) continue;
+        if (readCachedAvatarDataUri(clean)) continue;
+        if (isSafeDataImageUri(rec.profilePictureUrl)) {
+          writeCachedAvatarDataUri(clean, rec.profilePictureUrl);
+          continue;
+        }
+        // 合规边界：默认仅复用本地安全 Data URI 缓存，严禁后台静默刷 OAuth Token 或调用 Google UserInfo 外发探测
+        if (!allowRemoteFetch) continue;
+        const picCandidate = (typeof rec.profilePictureUrl === 'string' && /^https?:\/\//i.test(rec.profilePictureUrl))
+          ? rec.profilePictureUrl.trim()
+          : '';
+        if (!picCandidate || !isAllowedAvatarFetchUrl(picCandidate)) continue;
+        tried += 1;
+        const cached = await resolveAndCacheAvatar(clean, picCandidate);
+        if (cached) {
+          const freshStore = loadStore();
+          if (freshStore.accounts[clean]) {
+            freshStore.accounts[clean].profilePictureUrl = cached;
+            saveStore(freshStore);
+          }
+          updated += 1;
+        }
+      }
+      return { ok: true, updated, tried, remoteFetchAllowed: allowRemoteFetch };
+    };
+    avatarHydratePromise = run().finally(() => { avatarHydratePromise = null; });
+    return avatarHydratePromise;
+  }
+
   return {
-    getPaths: () => ({ storePath, switchLockPath, keepaliveLockPath }),
+    getPaths: () => ({ storePath, switchLockPath, keepaliveLockPath, avatarsDir }),
     loadStore,
     saveStore,
     getOverviewState,
+    hydrateMissingAvatars,
     ackAutoSwitchNotice,
     detectCurrentActiveAccount,
     importFromCurrentClient,
     listAntigravityToolsAccounts,
     importFromAntigravityTools,
+    importFromCockpitBackupJson,
     startOAuthLogin,
+    cancelOAuthLogin,
     addAccountWithCredential,
     removeAccount,
     refreshAccountQuota,
+    getAccountRefreshStatus,
     syncActiveHostQuotaSnapshot,
+    markAccountSuspended,
     switchActiveAccount,
     inspectPoolMetric,
     updateAutoSwitchConfig,
@@ -4176,9 +5893,10 @@ function getSharedAccountsManager(opts = {}) {
     }
   };
 
-  const stateDirDiffers = Boolean(opts.stateDir && opts.stateDir !== sharedMgrStateDir);
+  const resolvedStateDir = opts.stateDir || opts.storageDir || getStateDir();
+  const stateDirDiffers = Boolean(resolvedStateDir && resolvedStateDir !== sharedMgrStateDir);
   if (!sharedAccountsMgr || opts.forceNew || stateDirDiffers) {
-    if (!opts.forceNew && opts.stateDir) sharedMgrStateDir = opts.stateDir;
+    if (!opts.forceNew && resolvedStateDir) sharedMgrStateDir = resolvedStateDir;
     const collector = opts.collector || require('./meter-collector');
     const localRuntime = opts.forceNew
       ? {
@@ -4282,17 +6000,33 @@ async function dispatchAccountsAction(mgr, payload = {}, options = {}) {
       return mgr.listAntigravityToolsAccounts();
     case 'import_tools':
       return { ...mgr.importFromAntigravityTools(payload.emails || null), overview: mgr.getOverviewState() };
+    case 'import_cockpit_backup':
+      return { ...mgr.importFromCockpitBackupJson(payload.data), overview: mgr.getOverviewState() };
     case 'oauth_login':
-      return { ...(await mgr.startOAuthLogin()), overview: mgr.getOverviewState() };
+      return {
+        ...(await mgr.startOAuthLogin({
+          ...(typeof options.openExternal === 'function' ? { openExternal: options.openExternal } : {}),
+          ...(Number.isFinite(Number(payload.timeoutMs)) ? { timeoutMs: Number(payload.timeoutMs) } : {})
+        })),
+        overview: mgr.getOverviewState()
+      };
+    case 'oauth_cancel':
+      return { ...mgr.cancelOAuthLogin(), overview: mgr.getOverviewState() };
     case 'remove':
       return { ...mgr.removeAccount(payload.email), overview: mgr.getOverviewState() };
     case 'refresh_quota': {
       const targetEmail = payload.email ? normalizeEmail(payload.email) : '';
+      const refreshExtraOpts = {
+        explicitVerify: Boolean(payload.explicitVerify),
+        force: Boolean(payload.force),
+        manual: payload.manual !== false,
+        ...(typeof options.fetchActiveHostSnapshot === 'function' ? { fetchActiveHostSnapshot: options.fetchActiveHostSnapshot } : {})
+      };
       if (targetEmail) {
-        const res = await mgr.refreshAccountQuota(targetEmail);
+        const res = await mgr.refreshAccountQuota(targetEmail, refreshExtraOpts);
         return {
           ...res,
-          ...(res.ok ? { message: `已刷新 ${targetEmail} 最新额度快照。` } : {}),
+          ...(res.ok ? { message: res.unchanged ? `已核对 ${maskEmail(targetEmail)} 最新额度快照，当前数值无变化` : `已刷新 ${maskEmail(targetEmail)} 最新额度快照` } : {}),
           overview: mgr.getOverviewState()
         };
       }
@@ -4300,10 +6034,13 @@ async function dispatchAccountsAction(mgr, payload = {}, options = {}) {
       const results = [];
       let successCount = 0;
       let failCount = 0;
+      let skippedSuspended = 0;
       let firstError = '';
       for (const acc of st.accounts) {
-        if (!acc.hasRefreshToken) continue;
-        const r = await mgr.refreshAccountQuota(acc.email);
+        if (acc.suspended) { skippedSuspended += 1; continue; }
+        if (!acc.isActive && !acc.hasRefreshToken) continue;
+        // 非当前账号仅在用户显式点击刷新时单次触发，绝不静默启动全扫
+        const r = await mgr.refreshAccountQuota(acc.email, refreshExtraOpts);
         results.push({ email: acc.email, ...r });
         if (r.ok) successCount += 1;
         else {
@@ -4317,7 +6054,8 @@ async function dispatchAccountsAction(mgr, payload = {}, options = {}) {
           partialOk: successCount > 0,
           successCount,
           failCount,
-          error: `额度刷新部分或全部失败（成功 ${successCount} / 失败 ${failCount}）：${firstError}`,
+          skippedSuspended,
+          error: `额度刷新部分或全部失败，成功 ${successCount} 失败 ${failCount}，${firstError}`,
           results,
           overview: mgr.getOverviewState()
         };
@@ -4326,30 +6064,59 @@ async function dispatchAccountsAction(mgr, payload = {}, options = {}) {
         ok: true,
         successCount,
         failCount: 0,
-        message: successCount > 0 ? `已刷新全部 ${successCount} 个账号最新额度快照。` : '当前无可刷新账号。',
+        skippedSuspended,
+        message: successCount > 0 ? `已刷新 ${successCount} 个账号最新额度快照` : '当前无可刷新账号',
         results,
         overview: mgr.getOverviewState()
       };
     }
-    case 'switch':
+    case 'verify_account': {
+      const targetEmail = payload.email ? normalizeEmail(payload.email) : '';
+      if (!targetEmail) return { ok: false, error: '请指定待核验账号', overview: mgr.getOverviewState() };
+      const verifyExtraOpts = {
+        explicitVerify: true,
+        ...(typeof options.fetchActiveHostSnapshot === 'function' ? { fetchActiveHostSnapshot: options.fetchActiveHostSnapshot } : {})
+      };
+      const res = await mgr.refreshAccountQuota(targetEmail, verifyExtraOpts);
+      return { ...res, overview: mgr.getOverviewState() };
+    }
+    case 'mark_suspended': {
+      const targetEmail = payload.email ? normalizeEmail(payload.email) : '';
+      const res = mgr.markAccountSuspended(targetEmail, payload.reason || 'ACCOUNT_SUSPENDED');
+      return { ...res, overview: mgr.getOverviewState() };
+    }
+    case 'switch': {
       return {
         ...(await mgr.switchActiveAccount(payload.email, {
           restartClient: options.restartClient,
           requiresClientRestart: Boolean(options.requiresClientRestart),
           allowManualRestartPending: Boolean(options.allowManualRestartPending),
+          persistOnVerifyMismatch: Boolean(options.persistOnVerifyMismatch),
+          deferRestart: Boolean(options.deferRestart),
+          canAutoRestart: Boolean(options.canAutoRestart),
           forceWhileBusy: Boolean(payload.forceWhileBusy),
           ...(payload.verifyTimeoutMs != null ? { verifyTimeoutMs: payload.verifyTimeoutMs } : {})
         })),
         overview: mgr.getOverviewState()
       };
+    }
     case 'update_auto_switch':
       return { ...mgr.updateAutoSwitchConfig(payload.config || {}), overview: mgr.getOverviewState() };
     case 'evaluate_auto_switch':
       return { ...(await mgr.evaluateAutoSwitch(payload.context || {})), overview: mgr.getOverviewState() };
     case 'ack_auto_switch_notice':
       return { ...mgr.ackAutoSwitchNotice(payload.noticeId || null), overview: mgr.getOverviewState() };
-    case 'update_keepalive':
+    case 'update_keepalive': {
+      if (payload?.config?.enabled === true && options.allowKeepaliveInTest !== true) {
+        return {
+          ok: false,
+          reason: 'consumer_keepalive_disabled',
+          error: '消费版生产环境已停用缓存保活外发请求，避免产生额外背景流量',
+          overview: mgr.getOverviewState()
+        };
+      }
       return { ...mgr.updateKeepaliveConfig(payload.config || {}), overview: mgr.getOverviewState() };
+    }
     case 'stop_keepalive':
       return { ...mgr.stopKeepalive(payload.reason || 'manual_stop'), overview: mgr.getOverviewState() };
     default:
@@ -4373,6 +6140,10 @@ module.exports = {
   normalizeEmail,
   buildAccountScopeKey,
   maskEmail,
+  isSafeDataImageUri,
+  normalizeGoogleAvatarUrl,
+  fetchAvatarDataUriViaNode,
+  decodeJwtPicture,
   deriveTrustedAutoSwitchQuotaContext,
   redactAccountDiagnosticEntry,
   appendAccountDiagnostic,
@@ -4391,6 +6162,11 @@ module.exports = {
   fetchAccountQuotaViaCloudCode,
   fetchJsonWithProxy,
   CLOUDCODE_DAILY_URL,
+  CLOUDCODE_SANDBOX_URL,
   CLOUDCODE_PROD_URL,
+  normalizeSubscriptionTierInfo,
+  deriveAccountCapabilities,
+  GOOGLE_ANTIGRAVITY_SUPPORT_URL,
+  detectAccountSuspendedSignal,
   ANTIGRAVITY_OAUTH_SCOPES
 };

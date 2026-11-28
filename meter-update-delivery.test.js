@@ -200,8 +200,9 @@ test('交付验证 2: 隔离环境模拟更新检查 (checkUpdateAsync)', async 
   assert.doesNotMatch(res.releaseNotes, /<\/?(?:details|summary)|English notes|简体中文/);
 });
 
-test('交付验证 3: 隔离环境更新下载、校验与解压安装完整演练', async () => {
+test('交付验证 3: 隔离环境更新下载、校验与解压安装完整演练', async (t) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'update-delivery-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
   // 1. 构建模拟新版本文件
   const mockPackageJson = JSON.stringify({ name: 'antigravity-context-viewer', version: '0.9.0' });
@@ -280,6 +281,8 @@ test('交付验证 3: 隔离环境更新下载、校验与解压安装完整演�
   const updateRes = await applyUpdateAsync({
     version: '0.9.0',
     currentVersion: '0.8.10',
+    allowBetaUpdates: false,
+    targetPath: path.join(tmpDir, 'app.asar'),
     _requestGithubUrl: mockFetcher,
     _spawn: mockSpawn
   });
@@ -294,8 +297,6 @@ test('交付验证 3: 隔离环境更新下载、校验与解压安装完整演�
 
   // 检查解压包中确实包含了 meter-context-unlock.js！
   assert.equal(inspectedExtractedFile, mockUnlock, '发布更新包解压后必须包含 meter-context-unlock.js');
-
-  fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
 test('交付验证 4: 版本升级识别矩阵（0.8.0 识别 0.8.1 为新版本，0.8.1 不误报更新）', async () => {
@@ -1033,4 +1034,154 @@ test('Phase 2B (Issue #104): applyUpdateAsync 非 liveOnly 改盘分支在 macOS
   } finally {
     fs.rmSync(stateDir, { recursive: true, force: true });
   }
+});
+
+test('PR #93: cli.js update 参数解析、--check 纯只读、已是最新时 --live 接续挂载与升级后 --watch 绑定新版 liveRuntimeDir', async (t) => {
+  const cli = require('./cli');
+  assert.equal(cli.parseCliArgs(['update']).cmd, 'update');
+  assert.equal(cli.parseCliArgs(['update', '--check', '--beta']).cmd, 'update');
+  assert.equal(cli.parseCliArgs(['update', '--live', '--relaunch']).cmd, 'update');
+  assert.equal(cli.parseCliArgs(['update', '--watch', '--no-launch']).cmd, 'update');
+
+  let applyCalled = 0;
+  const chkRes = await cli.cmdUpdate(null, {}, {
+    checkOnly: true,
+    silent: true,
+    _inspectDiskModules: () => ({ found: true, meter: false, chinese: false, proxy: false }),
+    _checkUpdate: async () => ({
+      ok: true,
+      hasUpdate: true,
+      currentVersion: '0.9.3',
+      latestVersion: '0.9.4',
+      releaseNotes: '- 新增 cli.js update'
+    }),
+    _applyUpdate: async () => { applyCalled++; return { ok: true }; }
+  });
+  assert.equal(chkRes.hasUpdate, true);
+  assert.equal(applyCalled, 0, '--check 模式必须严格只读，绝不执行下载安装');
+
+  let liveAttached = 0;
+  const upToDateLive = await cli.cmdUpdate(null, {}, {
+    wantLive: true,
+    silent: true,
+    _inspectDiskModules: () => ({ found: true, meter: false, chinese: false, proxy: false }),
+    _checkUpdate: async () => ({
+      ok: true,
+      hasUpdate: false,
+      currentVersion: '0.9.3',
+      installedVersion: '0.9.3',
+      latestVersion: '0.9.3'
+    }),
+    _applyUpdate: async () => { applyCalled++; return { ok: true }; },
+    _liveOpts: {
+      silent: true,
+      _queryLiveWindow: async () => ({ running: true, cdpEnabled: true, pageFound: true, cdpPort: 58321, origin: 'https://127.0.0.1:54186', origins: ['https://127.0.0.1:54186'] }),
+      _ensureBridge: async () => ({ ready: true, backendSource: 'live-host', backendVersion: '0.9.3', liveInfo: { port: 54000, token: 't', pid: process.pid } }),
+      _hotInject: async () => { liveAttached++; return { ok: true, injectedCount: 1, windowCount: 1, backendVersion: '0.9.3', backendSource: 'live-host' }; }
+    }
+  });
+  assert.equal(upToDateLive.ok, true);
+  assert.equal(upToDateLive.upToDate, true);
+  assert.equal(applyCalled, 0);
+  assert.equal(liveAttached, 1, '已是最新时加 --live 应直接平滑接续挂载');
+
+  const watchTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-update-watch-pr93-'));
+  t.after(() => fs.rmSync(watchTmp, { recursive: true, force: true }));
+  const rtDir = path.join(watchTmp, 'live-runtime');
+  fs.mkdirSync(rtDir, { recursive: true });
+  fs.writeFileSync(path.join(rtDir, 'package.json'), JSON.stringify({ version: '0.9.4' }), 'utf8');
+  fs.writeFileSync(path.join(rtDir, 'cli.js'), '// 0.9.4 cli\n', 'utf8');
+  fs.writeFileSync(path.join(rtDir, 'meter-renderer.js'), '// 0.9.4 renderer\n', 'utf8');
+
+  let watchInjectedOpts = null;
+  const updatedWatch = await cli.cmdUpdate(null, {}, {
+    wantWatch: true,
+    noLaunch: true,
+    silent: true,
+    stateDir: watchTmp,
+    _inspectDiskModules: () => ({ found: true, meter: false, chinese: false, proxy: false }),
+    _checkUpdate: async () => ({
+      ok: true,
+      hasUpdate: true,
+      currentVersion: '0.9.3',
+      latestVersion: '0.9.4',
+      prerelease: false
+    }),
+    _applyUpdate: async (opts) => {
+      assert.equal(opts.liveOnly, true);
+      return {
+        ok: true,
+        mode: 'live',
+        diskInstalled: false,
+        liveStaged: true,
+        bundleSynced: false,
+        bundleSkippedReason: 'git_worktree',
+        liveRuntimeDir: rtDir,
+        version: '0.9.4',
+        installedVersion: '0.9.4'
+      };
+    },
+    _watchOpts: {
+      maxCycles: 1,
+      pollIntervalMs: 5,
+      handleSignals: false,
+      selfReloadOnHostChange: false,
+      _discoverWindow: async () => ({
+        running: true,
+        cdpEnabled: true,
+        pageFound: true,
+        active: true,
+        version: '0.9.3',
+        origin: 'https://127.0.0.1:54186',
+        origins: ['https://127.0.0.1:54186']
+      }),
+      _ensureBridge: async () => ({
+        ready: true,
+        backendSource: 'live-host',
+        backendVersion: '0.9.4',
+        liveInfo: { port: 54001, token: 'tok', pid: process.pid }
+      }),
+      _hotInject: async (opts) => {
+        watchInjectedOpts = opts;
+        return { ok: true, injectedCount: 1, windowCount: 1, backendVersion: '0.9.4', backendSource: 'live-host' };
+      }
+    }
+  });
+  assert.equal(updatedWatch.ok, true);
+  assert.equal(updatedWatch.upToDate, false);
+  assert.equal(updatedWatch.watchResult?.injectedCount, 1, '旧窗口 0.9.3 必须因 expectedVersion=0.9.4 触发重注入');
+  assert.equal(watchInjectedOpts?.expectedVersion, '0.9.4');
+  assert.equal(watchInjectedOpts?.bundleDir, path.resolve(rtDir));
+
+  // 校验失败时（checksum 不匹配）保留既有 live-runtime 不损坏，绝不报错覆盖
+  const failStateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-update-rollback-pr93-'));
+  t.after(() => fs.rmSync(failStateDir, { recursive: true, force: true }));
+  const prevUpdatesDir = path.join(failStateDir, 'live-updates');
+  fs.mkdirSync(path.join(prevUpdatesDir, 'prev-bundle'), { recursive: true });
+  fs.writeFileSync(path.join(prevUpdatesDir, 'current.json'), JSON.stringify({ version: '0.9.3', bundle: 'prev-bundle' }), 'utf8');
+  const badRes = await applyUpdateAsync({
+    currentVersion: '0.9.3',
+    version: '0.9.4',
+    liveOnly: true,
+    stateDir: failStateDir,
+    _platform: 'win32',
+    _arch: 'x64',
+    _requestGithubUrl: async (url, opts) => {
+      if (opts?.streamTo) {
+        if (url.endsWith('checksums.txt')) return writeStreamAsync(opts.streamTo, `${'0'.repeat(64)}  antigravity-context-viewer_0.9.4_windows_amd64.zip\n`);
+        return writeStreamAsync(opts.streamTo, Buffer.from('corrupted-zip'));
+      }
+      return JSON.stringify([{
+        tag_name: 'v0.9.4',
+        published_at: new Date().toISOString(),
+        html_url: `${OFFICIAL_RELEASES_WEB_BASE}/tag/v0.9.4`,
+        assets: [
+          { name: 'antigravity-context-viewer_0.9.4_windows_amd64.zip', browser_download_url: `${OFFICIAL_RELEASES_WEB_BASE}/download/v0.9.4/antigravity-context-viewer_0.9.4_windows_amd64.zip` },
+          { name: 'checksums.txt', browser_download_url: `${OFFICIAL_RELEASES_WEB_BASE}/download/v0.9.4/checksums.txt` }
+        ]
+      }]);
+    }
+  });
+  assert.equal(badRes.ok, false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(prevUpdatesDir, 'current.json'), 'utf8')).version, '0.9.3', 'SHA-256 校验失败不得破坏既有 live-updates/current.json');
 });

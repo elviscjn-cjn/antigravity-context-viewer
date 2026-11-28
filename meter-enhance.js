@@ -322,9 +322,27 @@ function resolveTargetBinaries(options = {}) {
 
   const localAppData = options.localAppData || process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
 
-  const desktopPath = path.join(localAppData, 'Programs', 'antigravity', 'resources', 'bin', 'language_server.exe');
+  let customResDir = null;
+  if (!hasIsolationSignal || options.asarPath) {
+    try {
+      const { resolveAsarTarget, deriveHostResourcesDirFromAsar } = require('./asar-engine');
+      const resolvedAsar = resolveAsarTarget(options.asarPath || null, { stateDir: options.stateDir, disableSystemProbe: hasIsolationSignal });
+      if (resolvedAsar?.ok && resolvedAsar.asarPath) {
+        customResDir = deriveHostResourcesDirFromAsar(resolvedAsar.asarPath)?.resourcesDir || null;
+      }
+    } catch {}
+  }
+
+  const customDesktopPath = customResDir ? path.join(customResDir, 'bin', 'language_server.exe') : null;
+  const customIdeExtPath = customResDir ? path.join(customResDir, 'app', 'extensions', 'antigravity', 'bin', 'language_server_windows_x64.exe') : null;
+
+  const desktopPath = (customDesktopPath && fs.existsSync(customDesktopPath))
+    ? customDesktopPath
+    : path.join(localAppData, 'Programs', 'antigravity', 'resources', 'bin', 'language_server.exe');
   const standalonePath = resolveStandaloneAgyPath(localAppData, home, 'win32');
-  const ideExtPath = path.join(localAppData, 'Programs', 'antigravity', 'resources', 'app', 'extensions', 'antigravity', 'bin', 'language_server_windows_x64.exe');
+  const ideExtPath = (customIdeExtPath && fs.existsSync(customIdeExtPath))
+    ? customIdeExtPath
+    : path.join(localAppData, 'Programs', 'antigravity', 'resources', 'app', 'extensions', 'antigravity', 'bin', 'language_server_windows_x64.exe');
 
   const targets = [
     { id: 'desktop', label: 'Antigravity 桌面端内核 (language_server)', path: desktopPath },
@@ -1426,6 +1444,10 @@ function saveSavedEnhancePreference(pref, options = {}) {
   }
   try {
     const cfg = loadModulesConfig(options);
+    // Issue #141 防护：配置文件损坏/瞬时读失败时绝不以默认值覆盖写回，避免意外清空 proxy/chinese 启用状态与 proxyUrl
+    if (!cfg || cfg.__configCorrupted) {
+      return false;
+    }
     const prev = cfg.modules.enhance || {};
     const mergedBuilds = Object.assign({}, prev.targetBuilds || {}, pref.targetBuilds || {});
     cfg.modules.enhance = {

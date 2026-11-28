@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
-const { getStateDir, getAppDataDir, isIsolatedTestPath, builtinAsar, collectUnpackedPaths, loadAsarEngine } = require('./asar-engine');
+const { getStateDir, getAppDataDir, isIsolatedTestPath, builtinAsar, collectUnpackedPaths, loadAsarEngine, computeAsarTargetKey, normalizeTargetPathForCompare } = require('./asar-engine');
 const { discoverAntigravityCdp, createCdpClient } = require('./local-api');
 const { inspectMacAsarIntegrity } = require('./macos-binary-utils');
 const { acquireFileLock } = require('./modules-config');
@@ -80,7 +80,8 @@ async function restore(options = {}) {
   const force = process.argv.includes('--force') || Boolean(options.force);
   const inPlaceExplicit = process.argv.includes('--in-place') || Boolean(options.inPlace);
 
-  const stateManifest = path.join(getStateDir(), 'installation.json');
+  const effectiveStateDir = options.stateDir ? path.resolve(String(options.stateDir)) : getStateDir();
+  const stateManifest = path.join(effectiveStateDir, 'installation.json');
   const localManifest = path.join(__dirname, 'installation.json');
   const hasManifest = fs.existsSync(stateManifest) || fs.existsSync(localManifest);
   const manifestPath = fs.existsSync(stateManifest) ? stateManifest : localManifest;
@@ -96,11 +97,47 @@ async function restore(options = {}) {
     throw new Error(`Target file not found: ${targetFile || info.installed}`);
   }
 
-  // 1. 自定义 --path 严格检查目标归属，绝不使用一个目标的备份去恢复另一个目标
-  const isSameTarget = Boolean(info.installed && path.resolve(info.installed) === path.resolve(targetFile));
+  // 1. 自定义 --path 严格检查目标归属（兼容多目标 targets[targetKey]），绝不使用一个目标的备份去恢复另一个目标
+  const targetKey = computeAsarTargetKey(targetFile);
+  const targetCmp = normalizeTargetPathForCompare(targetFile);
+  const isTopTarget = Boolean(info.installed && normalizeTargetPathForCompare(info.installed) === targetCmp);
+  const scopedTarget = (
+    info.targets &&
+    typeof info.targets === 'object' &&
+    info.targets[targetKey] &&
+    typeof info.targets[targetKey] === 'object' &&
+    (!info.targets[targetKey].installed || normalizeTargetPathForCompare(info.targets[targetKey].installed) === targetCmp)
+  ) ? info.targets[targetKey] : null;
+  const isSameTarget = Boolean(isTopTarget || scopedTarget);
   if (hasManifest && customPath && !isSameTarget && !inPlaceExplicit) {
     throw new Error(`指定的卸载目标 (${targetFile}) 与安装记录中的目标 (${info.installed}) 不一致，拒绝跨目标还原。`);
   }
+  const targetMeta = scopedTarget
+    ? { ...info, ...scopedTarget, backupsByVersion: scopedTarget.backupsByVersion || info.backupsByVersion || {} }
+    : info;
+  const markManifestUninstalled = (extra = {}, { throwOnError = false } = {}) => {
+    if (!hasManifest) return;
+    try {
+      const nowIso = new Date().toISOString();
+      if (isTopTarget || !customPath) {
+        info.restoredAt = nowIso;
+        info.uninstalled = true;
+        Object.assign(info, extra);
+      }
+      if (info.targets && typeof info.targets === 'object' && info.targets[targetKey]) {
+        info.targets[targetKey] = {
+          ...info.targets[targetKey],
+          restoredAt: nowIso,
+          uninstalled: true,
+          updatedAt: nowIso,
+          ...extra
+        };
+      }
+      fs.writeFileSync(manifestPath, JSON.stringify(info, null, 2));
+    } catch (err) {
+      if (throwOnError) throw err;
+    }
+  };
 
   // 获取目标文件互斥锁，避免并发改写冲突
   const fileLock = acquireFileLock(targetFile);
@@ -141,17 +178,17 @@ async function restore(options = {}) {
     // 3. 检测并严格验证可用备份完整性：优先匹配与当前宿主目标版本一致的备份
     const backupCandidates = [];
     if (previous) {
-      backupCandidates.push({ path: info.previousInstalledBackup, expected: info.previousInstalledSha256 });
+      backupCandidates.push({ path: targetMeta.previousInstalledBackup, expected: targetMeta.previousInstalledSha256 });
     } else {
-      if (info.backupsByVersion && targetHostVer && info.backupsByVersion[targetHostVer]) {
-        const verBkp = info.backupsByVersion[targetHostVer];
+      if (targetMeta.backupsByVersion && targetHostVer && targetMeta.backupsByVersion[targetHostVer]) {
+        const verBkp = targetMeta.backupsByVersion[targetHostVer];
         backupCandidates.push({ path: verBkp.backup, expected: verBkp.sha256 || verBkp.originalSha256 });
       }
-      if (info.backup) {
-        backupCandidates.push({ path: info.backup, expected: info.originalSha256 });
+      if (targetMeta.backup) {
+        backupCandidates.push({ path: targetMeta.backup, expected: targetMeta.originalSha256 });
       }
-      if (info.previousInstalledBackup) {
-        backupCandidates.push({ path: info.previousInstalledBackup, expected: info.previousInstalledSha256 });
+      if (targetMeta.previousInstalledBackup) {
+        backupCandidates.push({ path: targetMeta.previousInstalledBackup, expected: targetMeta.previousInstalledSha256 });
       }
     }
 
@@ -218,11 +255,12 @@ async function restore(options = {}) {
         removeStaleResHelper();
       }
       await tryHotDispose();
+      markManifestUninstalled({ inPlaceCleaned: false });
       return { restored: targetFile, fromBackup: validBackup, alreadyRestored: true };
     }
 
     // 5. 若非强制原位模式，且存在匹配的完整备份及精确匹配的补丁哈希，走标准无损整包覆盖还原
-    if (!inPlaceExplicit && validBackup && versionMatches && currentInstalledSha === info.patchedSha256 && !force) {
+    if (!inPlaceExplicit && validBackup && versionMatches && currentInstalledSha === targetMeta.patchedSha256 && !force) {
       try {
         fs.copyFileSync(validBackup, targetFile);
         clearAsarCache(targetFile);
@@ -237,12 +275,7 @@ async function restore(options = {}) {
       }
       removeStaleResHelper();
       await tryHotDispose();
-      if (hasManifest) {
-        try {
-          info.restoredAt = new Date().toISOString();
-          fs.writeFileSync(manifestPath, JSON.stringify(info, null, 2));
-        } catch {}
-      }
+      markManifestUninstalled({ inPlaceCleaned: false });
       return { restored: targetFile, fromBackup: validBackup };
     }
 
@@ -255,7 +288,7 @@ async function restore(options = {}) {
     const canTryInPlace = Boolean(
       !previous &&
       !force &&
-      (inPlaceExplicit || !validBackup || !versionMatches || (validBackup && versionMatches && currentInstalledSha !== info.patchedSha256))
+      (inPlaceExplicit || !validBackup || !versionMatches || (validBackup && versionMatches && currentInstalledSha !== targetMeta.patchedSha256))
     );
 
     if (canTryInPlace) {
@@ -280,7 +313,7 @@ async function restore(options = {}) {
             `目标文件 (${targetFile}) 校验失败：备份宿主版本 (v${backupHostVer}) 与当前目标宿主版本 (v${targetHostVer}) 不匹配，文件内容已被宿主升级、第三方补丁或其他操作改变，拒绝覆盖还原以保护宿主文件。`
           );
         }
-        if (validBackup && currentInstalledSha !== info.patchedSha256 && info.originalSha256 && currentInstalledSha !== info.originalSha256) {
+        if (validBackup && currentInstalledSha !== targetMeta.patchedSha256 && targetMeta.originalSha256 && currentInstalledSha !== targetMeta.originalSha256) {
           throw new Error(
             `目标文件 (${targetFile}) 校验失败：文件内容已被宿主升级、第三方补丁或其他操作改变，拒绝覆盖还原以保护宿主文件。若需强制还原旧备份，请显式传入 --force 参数。`
           );
@@ -288,15 +321,9 @@ async function restore(options = {}) {
         if (!anyBackupFileExists && !validBackup) {
           throw new Error(`无法卸载目标文件 (${targetFile})：原版备份缺失且目标未检测到本插件挂载痕迹，无法安全还原，已保留原文件。`);
         }
-        if (currentInstalledSha === info.originalSha256) {
+        if (currentInstalledSha === targetMeta.originalSha256) {
           await tryHotDispose();
-          if (hasManifest) {
-            try {
-              info.restoredAt = new Date().toISOString();
-              info.uninstalled = true;
-              fs.writeFileSync(manifestPath, JSON.stringify(info, null, 2));
-            } catch {}
-          }
+          markManifestUninstalled({ inPlaceCleaned: false });
           return { restored: targetFile, fromBackup: null, alreadyClean: true };
         }
       } else {
@@ -328,6 +355,8 @@ async function restore(options = {}) {
             'modules-config.js',
             'modular-installer.js',
             'host-recovery.js',
+            'host-guard.js',
+            'autostart.js',
             'install.js',
             'restore.js',
             'meter-main.js',
@@ -359,7 +388,7 @@ async function restore(options = {}) {
           try { fs.rmSync(path.join(staging, 'dist', 'rehydrate'), { recursive: true, force: true }); } catch {}
           try { fs.rmSync(path.join(staging, 'dist', 'assets'), { recursive: true, force: true }); } catch {}
 
-          const snapshotDir = path.join(getStateDir(), 'backups', 'snapshots');
+          const snapshotDir = path.join(effectiveStateDir, 'backups', 'snapshots');
           fs.mkdirSync(snapshotDir, { recursive: true });
           const snapshotFile = path.join(snapshotDir, `app-${targetHostVer || 'unknown'}-prerestore-${stamp}-${currentInstalledSha.slice(0, 8)}.asar`);
           fs.copyFileSync(targetFile, snapshotFile);
@@ -396,11 +425,7 @@ async function restore(options = {}) {
             console.log('[Restore] 已通过原位解构精准移除插件挂载，并完整保留宿主现有修改与构建内容。');
             removeStaleResHelper();
             const hotDisposed = await tryHotDispose();
-            if (hasManifest) {
-              info.restoredAt = new Date().toISOString();
-              info.inPlaceCleaned = true;
-              fs.writeFileSync(manifestPath, JSON.stringify(info, null, 2));
-            }
+            markManifestUninstalled({ inPlaceCleaned: true }, { throwOnError: true });
             restoreCommitted = true;
             return { restored: targetFile, inPlaceCleaned: true, hotDisposed };
           } catch (err) {
@@ -432,7 +457,7 @@ async function restore(options = {}) {
     }
     if (!force && !hasMeterTraces) {
       throw new Error(
-        `目标文件 (${targetFile}) 校验失败：文件内容已被宿主升级、第三方补丁或其他操作改变（当前哈希: ${currentInstalledSha.slice(0, 12)}...，预期补丁哈希: ${info.patchedSha256 ? info.patchedSha256.slice(0, 12) : 'null'}...），且无法证明原位解构安全，拒绝覆盖还原以保护宿主文件。\n` +
+        `目标文件 (${targetFile}) 校验失败：文件内容已被宿主升级、第三方补丁或其他操作改变（当前哈希: ${currentInstalledSha.slice(0, 12)}...，预期补丁哈希: ${targetMeta.patchedSha256 ? targetMeta.patchedSha256.slice(0, 12) : 'null'}...），且无法证明原位解构安全，拒绝覆盖还原以保护宿主文件。\n` +
         `若确认需要强制以原版备份覆盖还原，请使用 --force 参数执行卸载。`
       );
     }
@@ -452,13 +477,7 @@ async function restore(options = {}) {
     }
 
     const hotDisposed = await tryHotDispose();
-    if (hasManifest) {
-      try {
-        info.restoredAt = new Date().toISOString();
-        info.inPlaceCleaned = false;
-        fs.writeFileSync(manifestPath, JSON.stringify(info, null, 2));
-      } catch {}
-    }
+    markManifestUninstalled({ inPlaceCleaned: false });
     return { restored: targetFile, fromBackup: validBackup, inPlaceCleaned: false, hotDisposed };
   } finally {
     fileLock.release();

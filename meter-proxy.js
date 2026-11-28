@@ -133,7 +133,7 @@ function getProxyCandidatePaths(customPath = null, options = {}) {
     ? path.join(home, 'AppData', 'Local')
     : platform === 'darwin'
       ? path.join(home, 'Library', 'Application Support')
-      : (env.XDG_CONFIG_HOME || path.join(home, '.config')));
+      : (env.XDG_STATE_HOME || path.join(home, '.local', 'state')));
 
   // 统一配置中心 modules.json 优先级高于历史遗留的 proxy.json，避免关闭免 TUN 后被旧文件重新激活
   candidates.push(
@@ -141,6 +141,16 @@ function getProxyCandidatePaths(customPath = null, options = {}) {
     path.join(localBase, 'AntigravityContextMeter', 'proxy.json'),
     path.join(localBase, 'AntigravityProxyNoTun', 'config.json')
   );
+  if (platform !== 'win32' && platform !== 'darwin') {
+    const xdgConfigBase = env.XDG_CONFIG_HOME || path.join(home, '.config');
+    if (xdgConfigBase !== localBase) {
+      candidates.push(
+        path.join(xdgConfigBase, 'AntigravityContextMeter', 'modules.json'),
+        path.join(xdgConfigBase, 'AntigravityContextMeter', 'proxy.json'),
+        path.join(xdgConfigBase, 'AntigravityProxyNoTun', 'config.json')
+      );
+    }
+  }
 
   return candidates;
 }

@@ -390,7 +390,7 @@ test('v0.9.0 模块一: 12 列驾驶舱 5 预设 / 顺序调整 / Span / Height 
       version: 1,
       presetId: 'debug',
       widgets: [
-        { id: 'execution-trace', span: 9, height: 'expanded', visible: true, customHeightPx: 999, customWidth: true },
+        { id: 'execution-trace', span: 9, height: 'expanded', visible: true, customHeightPx: 2400, customWidth: true },
         { id: 'invalid-widget', span: 99, height: 'bogus', visible: true }
       ]
     };
@@ -399,7 +399,7 @@ test('v0.9.0 模块一: 12 列驾驶舱 5 预设 / 顺序调整 / Span / Height 
     assert.equal(sanitized.widgets[0].id, 'execution-trace');
     assert.equal(sanitized.widgets[0].span, 9);
     assert.equal(sanitized.widgets[0].customWidth, true);
-    assert.equal(sanitized.widgets[0].customHeightPx, 680);
+    assert.equal(sanitized.widgets[0].customHeightPx, 1600);
     assert.ok(!sanitized.widgets.some(w => w.id === 'invalid-widget'));
     assert.equal(sanitized.widgets.length, 12, '自动补齐包括请求费用在内的全部模块');
     assert.equal(sanitized.widgets.find(w => w.id === 'request-cost').visible, false);
@@ -644,10 +644,10 @@ test('v0.9.0 模块三: 六大深度分析模块与热力图选日联动', async
 // ----------------------------------------------------------------------------
 // 4. 模块四：全局丁香紫复选框矢量 CSS 与候选芯片高亮门禁
 // ----------------------------------------------------------------------------
-test('v0.9.0 模块四: 全局丁香紫自定义矢量复选框 CSS 与候选项高亮契约', () => {
+test('v0.9.0 模块四: 全局强调色自定义矢量复选框 CSS 与候选项高亮契约', () => {
   assert.match(stylesSrc, /input\[type="checkbox"\][\s\S]*appearance:\s*none;/);
-  assert.match(stylesSrc, /input\[type="checkbox"\]:checked[\s\S]*#C084FC/);
-  assert.match(stylesSrc, /:host\(\[data-theme="light"\]\)[\s\S]*input\[type="checkbox"\]:checked[\s\S]*#A855F7/);
+  assert.match(stylesSrc, /input\[type="checkbox"\]:checked[\s\S]*--ag-host-accent/);
+  assert.match(stylesSrc, /:host\(\[data-theme="light"\]\)[\s\S]*input\[type="checkbox"\]:checked[\s\S]*--ag-host-accent/);
   assert.match(stylesSrc, /\.auto-switch-cand-chip\.is-checked/);
   assert.doesNotMatch(templateSrc, /<input[^>]*type="checkbox"[^>]*accent-color/);
 });
@@ -1036,8 +1036,8 @@ test('v0.9.0 阶段 3 / 补充任务 B: 12 列驾驶舱 Pointer Events 拖拽换
   grid.trigger('pointerdown', { target: fakeResizeHandle, clientX: 1100, clientY: 355, pointerId: 3 });
   h.sandbox.window.trigger('pointermove', { clientX: 1410, clientY: 0, pointerId: 3 });
   tickFrame();
-  // v0.9.1：最小高度下限收紧到 180px，宽度与高度全程逐像素跟手
-  assert.equal(card1.style.height, '180px');
+  // 回归 #6 超级自由化：最小高度下限放宽到 48px（允许极紧凑卡片向下缩矮），宽度与高度全程逐像素跟手
+  assert.equal(card1.style.height, '48px');
   const dragWidthPx = parseFloat(card1.style.width);
   // 自由缩放：宽度逐像素跟手并夹紧在容器宽内，且不得吸附到 6 列或 12 列的整列宽
   assert.ok(dragWidthPx > 600, `拖动期宽度必须跟手放大，实际 ${dragWidthPx}`);
@@ -1046,8 +1046,8 @@ test('v0.9.0 阶段 3 / 补充任务 B: 12 列驾驶舱 Pointer Events 拖拽换
   assert.ok(badge && parseFloat(badge.style.left) + 112 <= 1432);
   assert.match(String(badge.textContent || ''), /^\d+ × \d+px$/, '尺寸胶囊只显示简洁中性像素，严禁括号');
   h.sandbox.window.trigger('pointerup', { pointerId: 3 });
-  // v0.9.1：松手按 widthRatio 持久化并落地 2D 排版，宽度允许 1–8px 的容器换算误差，高度严格保留
-  assert.equal(card1.style.height, '180px');
+  // 回归 #6：松手按 widthRatio 持久化并落地 2D 排版，宽度允许 1–8px 的容器换算误差，高度严格保留
+  assert.equal(card1.style.height, '48px');
   const settledWidthPx = parseFloat(card1.style.width);
   // 松手后自由宽度保留：绝不被吸回 6 列或 12 列整列宽，允许行尾贴齐带来的小幅增宽
   assert.ok(settledWidthPx >= dragWidthPx - 8, `松手后宽度不得回缩，实际 ${settledWidthPx}`);
@@ -1197,9 +1197,10 @@ test('Phase 4B (图 4): 预设栏扁平混合轨迹、presetOrder 长按拖拽�
     const loaded = getPluginSettings({ agDir: tmpDir }).sessionCockpitLayout;
     assert.deepEqual(loaded.presetOrder, desiredOrder, '自定义与系统预设顺序必须完整保存与读取');
 
-    // 2. 前端验证扁平轨道 + 最右 Sort 按钮位置 + 按键排序 + 拖拽跨类重排 + 切换预设保持顺序
+    // 2. 前端验证扁平轨道 + 末尾锁定「新建分组」按钮（旧排序按钮已彻底删除） + 2D 点对点交换 + 切换预设保持顺序
     const tpl = fs.readFileSync(path.join(__dirname, 'src/renderer/template.html'), 'utf8');
-    assert.match(tpl, /id="ctx-cockpit-presets-track"[\s\S]*id="btn-ctx-preset-sort"/, 'Sort 按钮必须位于预设轨道最右侧');
+    assert.doesNotMatch(tpl, /id="btn-ctx-preset-sort"/, '旧「排序」按钮必须彻底移除');
+    assert.match(tpl, /id="ctx-cockpit-presets-track"[\s\S]*id="btn-ctx-preset-new-group"/, '新建分组按钮必须固定在预设轨道最末尾');
 
     const h = createDomHarness();
     await h.flush();
@@ -1213,12 +1214,19 @@ test('Phase 4B (图 4): 预设栏扁平混合轨迹、presetOrder 长按拖拽�
     let trackState = api.getPresetTrackStateForTest();
     assert.ok(trackState.presetOrder.indexOf(customId) < trackState.presetOrder.indexOf('debug'), '长按拖拽应能将个人预设移到系统预设之前');
 
-    // 切换 Sort 模式并用 offset 移动（降级按钮入口）
-    assert.equal(api.togglePresetSortModeForTest(true), true);
-    api.moveCockpitPresetForTest('minimal', -1);
+    // 验证 2D 点对点直接交换（仅交换起止两项，其余兄弟不顺移）
+    const beforeSwap = Array.from(trackState.presetOrder);
+    const firstId = beforeSwap[0];
+    const lastId = beforeSwap[beforeSwap.length - 1];
+    api.swapCockpitPresetsForTest(firstId, lastId);
     trackState = api.getPresetTrackStateForTest();
-    assert.equal(trackState.sortMode, true);
-    assert.equal(trackState.presetOrder[0], 'minimal');
+    assert.equal(trackState.presetOrder[0], lastId, '直接交换后目标项应落入首槽');
+    assert.equal(trackState.presetOrder[trackState.presetOrder.length - 1], firstId, '直接交换后来源项应落入末槽');
+    assert.deepEqual(
+      Array.from(trackState.presetOrder.slice(1, -1)),
+      Array.from(beforeSwap.slice(1, -1)),
+      '非相邻两项直接交换时中间兄弟必须保持原位不顺移'
+    );
 
     // 切换不同预设时不得冲掉用户刚调整好的 presetOrder
     const afterSwitch = api.applyCockpitPresetForTest('speed_cost', { persist: true });

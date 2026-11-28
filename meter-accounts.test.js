@@ -595,9 +595,9 @@ test('ELV-89 OAuth 代理隧道与本地直连隔离 + 身份入列/额度分离
   fs.mkdirSync(stateDir, { recursive: true });
 
   // 1. 掩码需区分同前缀不同末尾邮箱
-  assert.notEqual(accountsMod.maskEmail('elvisnanisbest@gmail.com'), accountsMod.maskEmail('elvisbeiyong123@gmail.com'));
-  assert.equal(accountsMod.maskEmail('elvisnanisbest@gmail.com'), 'el***st@gmail.com');
-  assert.equal(accountsMod.maskEmail('elvisbeiyong123@gmail.com'), 'el***23@gmail.com');
+  assert.notEqual(accountsMod.maskEmail('elfixturefirst@example.test'), accountsMod.maskEmail('elfixturesecond@example.test'));
+  assert.equal(accountsMod.maskEmail('elfixturefirst@example.test'), 'el***st@example.test');
+  assert.equal(accountsMod.maskEmail('elfixturesecond@example.test'), 'el***nd@example.test');
 
   // 2. 验证 requestWithProxyTunnel: 本机 127.0.0.1 强制直连，外部主机显式走 HTTP 代理 CONNECT（且绝不静默直连）
   const connectSeen = [];
@@ -683,10 +683,10 @@ test('ELV-89 OAuth 代理隧道与本地直连隔离 + 身份入列/额度分离
         return {
           ok: true,
           status: 200,
-          text: async () => JSON.stringify({ email: '1213811112222elvis@gmail.com', name: 'NewAcct' })
+          text: async () => JSON.stringify({ email: 'acfixturefourth@example.test', name: 'NewAcct' })
         };
       }
-      if (u.includes('cloudcode-pa.googleapis.com')) {
+      if (u.includes('cloudcode-pa.googleapis.com') || u.includes('cloudcode-pa.sandbox.googleapis.com')) {
         if (failQuota) {
           return {
             ok: false,
@@ -730,20 +730,20 @@ test('ELV-89 OAuth 代理隧道与本地直连隔离 + 身份入列/额度分离
     assert.equal(addRes.ok, true, '身份与凭据保存成功后不得误报整体添加失败');
     assert.equal(addRes.quotaOk, false);
     assert.equal(addRes.stage, 'quota_fetch');
-    assert.equal(addRes.targetHost, 'cloudcode-pa.googleapis.com');
+    assert.equal(addRes.targetHost, 'daily-cloudcode-pa.sandbox.googleapis.com');
     assert.equal(addRes.httpStatus, 503);
-    assert.equal(addRes.account.email, '1213811112222elvis@gmail.com');
+    assert.equal(addRes.account.email, 'acfixturefourth@example.test');
     assert.ok(addRes.account.lastQuotaError);
 
     // 重新实例检查持久化与列表可见性
     const mgrReload = accountsMod.createAccountsManager({ stateDir, credentialStore: makeMockCredStore(), fetch: customFetch });
-    const persistedAcct = mgrReload.getOverviewState().accounts.find(a => a.email === '1213811112222elvis@gmail.com');
+    const persistedAcct = mgrReload.getOverviewState().accounts.find(a => a.email === 'acfixturefourth@example.test');
     assert.ok(persistedAcct, '重启后新添加账号必须持久化在列表中');
     assert.equal(persistedAcct.hasRefreshToken, true);
 
     // 恢复额度接口，执行单账号重试
     failQuota = false;
-    const retryRes = await mgr.refreshAccountQuota('1213811112222elvis@gmail.com');
+    const retryRes = await mgr.refreshAccountQuota('acfixturefourth@example.test');
     assert.equal(retryRes.ok, true);
     assert.equal(retryRes.account.lastQuotaError, null);
 
@@ -752,7 +752,7 @@ test('ELV-89 OAuth 代理隧道与本地直连隔离 + 身份入列/额度分离
     assert.equal(fs.existsSync(diagFile), true);
     const diagContent = fs.readFileSync(diagFile, 'utf8');
     assert.doesNotMatch(diagContent, /mock_auth_code_777|secret_access_tok_xyz|secret_refresh_tok_xyz|mock-super-client-secret-999/);
-    assert.match(diagContent, /cloudcode-pa\.googleapis\.com/);
+    assert.match(diagContent, /daily-cloudcode-pa\.sandbox\.googleapis\.com/);
     assert.ok(launchedAuthUrl.includes('accounts.google.com/o/oauth2/auth'));
   } finally {
     proxySrv.closeAllConnections?.();
@@ -1082,22 +1082,20 @@ test('UI 深度回归: 8 处统一下拉规范、零用量账号归零、NoPerm 
     assert.doesNotMatch(elements.get('t-total-cost').textContent, /\$0\.00/);
     assert.match(elements.get('t-total-cost').textContent, /暂无此账号记录/);
 
-    // 3. 验证三语下无 NoPerm、英文模式下界面账号/保活/费用等动态文案无中文泄漏
+    // 3. 验证三语下无 NoPerm、英文模式下界面账号/费用等动态文案无中文泄漏，且已删除的保活诊断节点不再出现在额度看板 DOM
     await api.setPanelLanguage('en', { persist: false });
     assert.match(elements.get('t-total-cost').textContent, /No records for account/);
     const acctListJsonEn = JSON.stringify(elements.get('quota-accounts-list').children);
     assert.doesNotMatch(acctListJsonEn, /NoPerm/, '界面绝不能出现原始 NoPerm');
     assert.match(acctListJsonEn, /No model access/);
     assert.match(acctListJsonEn, /Quota fetch failed/);
-    assert.doesNotMatch(elements.get('keepalive-protocol-summary').textContent, /[\u4e00-\u9fa5]/);
-    assert.doesNotMatch(elements.get('keepalive-experiment-summary').textContent, /[\u4e00-\u9fa5]/);
-    assert.doesNotMatch(elements.get('keepalive-runtime-note').textContent, /[\u4e00-\u9fa5]/);
+    assert.equal(elements.get('keepalive-protocol-summary'), undefined, '额度看板不得再渲染已删除的保活协议诊断节点');
+    assert.equal(elements.get('quota-keepalive-section'), undefined, '额度看板不得再包含保活卡片');
     assert.doesNotMatch(elements.get('token-account-scope-note').textContent, /[\u4e00-\u9fa5]/);
 
     await api.setPanelLanguage('zh-TW', { persist: false });
     const acctListJsonTw = JSON.stringify(elements.get('quota-accounts-list').children);
     assert.match(acctListJsonTw, /無模型權限/);
-    assert.doesNotMatch(elements.get('keepalive-protocol-summary').textContent, /协议核查|默认关闭/);
 
     // 4. 模型括号档位去重验证（确认 splitModelDisplayAndEffort 集成效果）
     const dedup = core.splitModelDisplayAndEffort('Gemini 4 Hydrogen (High) (High)', 'High');
@@ -2243,4 +2241,962 @@ test('v0.9.2 自动切号四项额度全矩阵、精确浮点阈值与旧规则�
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('Accounts & Quota 底层抓数重构: Daily->Sandbox 严禁回退 Prod、Argon 独立池、3P 隔离、套餐规范化、Tools 本地配额导入与三语零括号', async () => {
+  const {
+    fetchAccountQuotaViaCloudCode,
+    normalizeSubscriptionTierInfo,
+    createAccountsManager
+  } = require('./meter-accounts');
+
+  // 1. 套餐层级规范化（消除 g1-pro-tier / free-tier 裸露）
+  assert.deepEqual(normalizeSubscriptionTierInfo('g1-ultra-tier'), { tierCode: 'ULTRA', tierName: 'Google AI Ultra', rawTier: 'g1-ultra-tier' });
+  assert.deepEqual(normalizeSubscriptionTierInfo('g1-pro-tier'), { tierCode: 'PRO', tierName: 'Google AI Pro', rawTier: 'g1-pro-tier' });
+  assert.deepEqual(normalizeSubscriptionTierInfo('free-tier'), { tierCode: 'FREE', tierName: 'Free', rawTier: 'free-tier' });
+
+  const makeResp = (status, bodyObj) => ({
+    status,
+    ok: status >= 200 && status < 300,
+    text: async () => JSON.stringify(bodyObj),
+    json: async () => bodyObj
+  });
+
+  // 2. Daily 失败 -> 回退 Sandbox（严禁触碰 Prod）+ agentModelSorts 对象数组解析 + Argon 独立池 + resetTime 同步输出
+  const requestedUrls = [];
+  const res = await fetchAccountQuotaViaCloudCode('test-access-token', {
+    fetch: async (url) => {
+      requestedUrls.push(String(url));
+      if (String(url).includes('loadCodeAssist')) {
+        return makeResp(200, {
+          cloudaicompanionProject: 'proj-test-1',
+          paidTier: { id: 'g1-pro-tier' }
+        });
+      }
+      if (String(url).includes('daily-cloudcode-pa.googleapis.com')) {
+        return makeResp(503, { error: { message: 'daily unavailable' } });
+      }
+      if (String(url).includes('daily-cloudcode-pa.sandbox.googleapis.com') && String(url).includes('fetchAvailableModels')) {
+        return makeResp(200, {
+          agentModelSorts: [
+            { groups: [{ modelIds: ['MODEL_PLACEHOLDER_M37', 'MODEL_CLAUDE_5_5_SONNET', 'MODEL_GEMINI_4_ARGON'] }] }
+          ],
+          models: {
+            MODEL_PLACEHOLDER_M37: {
+              displayName: 'Gemini 4 Pro',
+              model: 'MODEL_PLACEHOLDER_M37',
+              quotaInfo: { remainingFraction: 0.78, resetTime: '2026-11-28T06:00:00Z' }
+            },
+            MODEL_CLAUDE_5_5_SONNET: {
+              displayName: 'Claude 5.5 Sonnet',
+              model: 'MODEL_CLAUDE_5_5_SONNET',
+              quotaInfo: { remainingFraction: 0.55, resetTime: '2026-11-28T07:30:00Z' }
+            },
+            MODEL_GEMINI_4_ARGON: {
+              displayName: 'Gemini 4 Argon',
+              model: 'MODEL_GEMINI_4_ARGON',
+              quotaInfo: { remainingFraction: 0.90, resetTime: '2026-12-03T00:00:00Z' }
+            }
+          }
+        });
+      }
+      if (String(url).includes('daily-cloudcode-pa.sandbox.googleapis.com') && String(url).includes('retrieveUserQuotaSummary')) {
+        return makeResp(200, {
+          groups: [
+            {
+              displayName: 'Gemini',
+              buckets: [
+                { bucketId: 'gemini_5h', remainingFraction: 0.78, resetTime: '2026-11-28T06:00:00Z', windowDurationSeconds: 18000 },
+                { bucketId: 'gemini_7d', remainingFraction: 0.66, resetTime: '2026-12-02T00:00:00Z', windowDurationSeconds: 604800 }
+              ]
+            },
+            {
+              displayName: 'Claude / GPT',
+              buckets: [
+                { bucketId: 'claude_5h', remainingFraction: 0.55, resetTime: '2026-11-28T07:30:00Z', windowDurationSeconds: 18000 },
+                { bucketId: 'claude_7d', remainingFraction: 0.42, resetTime: '2026-12-01T00:00:00Z', windowDurationSeconds: 604800 }
+              ]
+            },
+            {
+              displayName: 'Gemini 4 Argon',
+              buckets: [
+                { bucketId: 'gemini_argon_7d', remainingFraction: 0.90, resetTime: '2026-12-03T00:00:00Z', windowDurationSeconds: 604800 }
+              ]
+            }
+          ]
+        });
+      }
+      return makeResp(404, {});
+    }
+  });
+
+  assert.ok(res && res.snapshot, '必须返回有效 snapshot');
+  assert.equal(res.tierCode, 'PRO');
+  assert.equal(res.tierName, 'Google AI Pro');
+  assert.equal(requestedUrls.some((u) => /^https:\/\/cloudcode-pa\.googleapis\.com\//.test(u) && (u.includes('fetchAvailableModels') || u.includes('retrieveUserQuotaSummary'))), false, '严禁将配额拉取回退至 Prod 端点');
+  const poolKeys = (res.snapshot?.pools || []).map((p) => p.poolKey);
+  assert.ok(poolKeys.includes('shared_gemini_main'), '必须解析出 Gemini 主池');
+  assert.ok(poolKeys.includes('shared_3p_pool'), '必须解析出 Claude / GPT 池');
+  assert.ok(poolKeys.includes('shared_gemini_argon'), '必须保留 Gemini 4 Argon 独立高阶池');
+  const gPool = res.snapshot.pools.find((p) => p.poolKey === 'shared_gemini_main');
+  assert.equal(gPool.buckets[0].resetTime, '2026-11-28T06:00:00Z', 'bucket 必须同时输出 resetTime 与 resetTimeIso');
+  assert.equal(gPool.buckets[0].resetTimeIso, '2026-11-28T06:00:00Z');
+
+  // 3. 3P 隔离：当模型池不含 Claude/GPT 时，不得保留虚假 3P 组
+  const resNo3p = await fetchAccountQuotaViaCloudCode('test-no-3p', {
+    fetch: async (url) => {
+      if (String(url).includes('loadCodeAssist')) {
+        return makeResp(200, { cloudaicompanionProject: 'proj-free', currentTier: { id: 'free-tier' } });
+      }
+      if (String(url).includes('fetchAvailableModels')) {
+        return makeResp(200, {
+          models: {
+            MODEL_PLACEHOLDER_M37: { displayName: 'Gemini 4 Pro', quotaInfo: { remainingFraction: 0.4, resetTime: '2026-11-28T05:00:00Z' } }
+          }
+        });
+      }
+      if (String(url).includes('retrieveUserQuotaSummary')) {
+        return makeResp(200, {
+          groups: [
+            { displayName: 'Gemini', buckets: [{ bucketId: 'gemini_5h', remainingFraction: 0.4, resetTime: '2026-11-28T05:00:00Z', windowDurationSeconds: 18000 }] },
+            { displayName: 'Claude / GPT', buckets: [{ bucketId: 'claude_5h', remainingFraction: 1.0, windowDurationSeconds: 18000 }] }
+          ]
+        });
+      }
+      return makeResp(404, {});
+    }
+  });
+  assert.ok(resNo3p && resNo3p.snapshot);
+  assert.equal(resNo3p.tierCode, 'FREE');
+  assert.equal((resNo3p.snapshot?.pools || []).some((p) => p.poolKey === 'shared_3p_pool'), false, '无 3P 模型权限时必须隔离虚假 3P 组');
+
+  // 4. importFromAntigravityTools 完整导入 Tools 本地 quota_groups、subscription_tier 与 last_used
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-tools-import-'));
+  const toolsDir = path.join(tmpDir, '.antigravity_tools');
+  const toolsAccountsDir = path.join(toolsDir, 'accounts');
+  fs.mkdirSync(toolsAccountsDir, { recursive: true });
+  fs.writeFileSync(path.join(toolsDir, 'accounts.json'), JSON.stringify({
+    accounts: [{ id: 't1', email: 'tools.user@gmail.com', name: 'Tools User', last_used: 1764200000 }]
+  }));
+  fs.writeFileSync(path.join(toolsAccountsDir, 't1.json'), JSON.stringify({
+    id: 't1',
+    email: 'tools.user@gmail.com',
+    name: 'Tools User',
+    last_used: 1764200000,
+    token: { refresh_token: '1//tools-refresh-token', access_token: 'ya29.tools' },
+    quota: {
+      subscription_tier: 'g1-ultra-tier',
+      last_updated: 1764200500,
+      quota_groups: [
+        {
+          display_name: 'Gemini',
+          buckets: [
+            { bucket_id: 'g5h', window: '5h', remaining_fraction: 0.82, reset_time: '2026-11-28T09:00:00Z' },
+            { bucket_id: 'g7d', window: 'weekly', remaining_fraction: 0.74, reset_time: '2026-12-03T09:00:00Z' }
+          ]
+        },
+        {
+          display_name: 'Claude / GPT',
+          buckets: [
+            { bucket_id: 'c5h', window: '5h', remaining_fraction: 0.61, reset_time: '2026-11-28T10:00:00Z' },
+            { bucket_id: 'c7d', window: 'weekly', remaining_fraction: 0.50, reset_time: '2026-12-02T10:00:00Z' }
+          ]
+        },
+        {
+          display_name: 'Gemini 4 Argon',
+          buckets: [
+            { bucket_id: 'a7d', window: 'weekly', remaining_fraction: 0.95, reset_time: '2026-12-04T00:00:00Z' }
+          ]
+        }
+      ]
+    }
+  }));
+
+  try {
+    const mgr = createAccountsManager({
+      stateDir: path.join(tmpDir, 'store'),
+      homeDir: tmpDir
+    });
+    const imp = mgr.importFromAntigravityTools();
+    assert.equal(imp.ok, true);
+    assert.equal(imp.credentialsImported, true, 'Tools 导入必须恢复真实 OAuth 凭据导入');
+    assert.equal(imp.importedCount, 1);
+    const ov = mgr.getOverviewState();
+    const acc = ov.accounts.find((a) => a.email === 'tools.user@gmail.com');
+    assert.ok(acc);
+    assert.equal(acc.hasRefreshToken, true, 'Tools 导入账号必须保留可刷新/可切换的 refreshToken 凭据');
+    assert.equal(acc.tierCode, 'ULTRA');
+    assert.equal(acc.tierName, 'Google AI Ultra');
+    assert.equal(acc.lastUsedAtMs, 1764200000 * 1000);
+    assert.ok(acc.quotaSnapshot && acc.quotaSnapshot.pools.length === 3, '导入 Tools 账号必须同步保留 3 个本地配额池');
+    assert.equal(acc.quotaSnapshot.pools[0].buckets[0].remainingFraction, 0.82);
+    assert.equal(acc.quotaSnapshot.pools[0].buckets[1].remainingFraction, 0.74);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+
+  // 5. 新增 21 条三语文案严格零中英文括号
+  const i18nSrc = fs.readFileSync(path.join(__dirname, 'src/renderer/i18n.js'), 'utf8');
+  const i18nVm = require('node:vm');
+  const i18nCtx = {};
+  i18nVm.runInNewContext(i18nSrc + '\n;this.__dict = typeof PANEL_I18N !== "undefined" ? PANEL_I18N : null;', i18nCtx);
+  const i18nDict = i18nCtx.__dict;
+  assert.ok(i18nDict && typeof i18nDict === 'object', '必须加载完整三语词典');
+  const newKeys = [
+    'accountsPage.btnImportTools',
+    'accountsPage.poolGemini5h',
+    'accountsPage.poolGeminiWeekly',
+    'accountsPage.poolClaude5h',
+    'accountsPage.poolClaudeWeekly',
+    'accountsPage.poolArgonWeekly',
+    'accountsPage.poolCarbonWeekly',
+    'accountsPage.weeklyShort',
+    'accountsPage.refreshing',
+    'accountsPage.refreshDone',
+    'accountsPage.confirmSwitchBody',
+    'accountsPage.confirmRemoveBody',
+    'accountsPage.confirmRemoveActiveBody',
+    'accountsPage.confirmRemoveBtn',
+    'accountsPage.confirmSwitchBtn',
+    'accountsPage.cancelBtn',
+    'accountsPage.revealEmailHint',
+    'accountsPage.noRefreshCredHint',
+    'sidebarAccount.refreshActive',
+    'sidebarAccount.refreshing',
+    'sidebarAccount.refreshDone'
+  ];
+  for (const k of newKeys) {
+    const entry = i18nDict[k];
+    assert.ok(entry && typeof entry === 'object', `新增词条 ${k} 必须存在于 PANEL_I18N`);
+    for (const lang of ['zh-CN', 'zh-TW', 'en']) {
+      const val = entry[lang];
+      assert.equal(typeof val, 'string', `新增词条 ${k} 在 ${lang} 中必须存在`);
+      assert.ok(val.length > 0, `新增词条 ${k} 在 ${lang} 中不得为空`);
+      assert.doesNotMatch(val, /[（）()]/, `新增词条 ${k} (${lang}) 不得包含任何中英文括号: ${val}`);
+    }
+  }
+});
+
+test('回归 #1 + PR #96 + Issue #128 + ELV-102: 真实切号/OAuth取消/Cockpit Tools全格式导入/非活跃账号CloudCode刷新与IPC去拦截', async (t) => {
+  const crypto = require('crypto');
+  const tmpDir = makeTempDir();
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  // 1. 验证 meter-main.js 与 live-host.js 彻底移除崩溃与合规阉割拦截
+  const mainSrc = fs.readFileSync(path.join(__dirname, 'meter-main.js'), 'utf8');
+  const liveHostSrc = fs.readFileSync(path.join(__dirname, 'live-host.js'), 'utf8');
+  assert.match(mainSrc, /collector\.fetchQuotaSnapshotFromHost\(/, 'meter-main.js 必须通过 collector.fetchQuotaSnapshotFromHost 调用，消除 ReferenceError');
+  assert.doesNotMatch(mainSrc, /fetchActiveHostSnapshot:\s*async\s*\([^)]*\)\s*=>\s*fetchQuotaSnapshotFromHost\(/, 'meter-main.js 不得裸调用未导入的 fetchQuotaSnapshotFromHost');
+  for (const forbidden of ['productionOfficialHostOnly: true', 'allowCredentialWrite: false', 'allowPluginOAuth: false', 'allowCrossToolImport: false', 'hostOnlyBoundary: true']) {
+    assert.equal(mainSrc.includes(forbidden), false, `meter-main.js 不得残留拦截项: ${forbidden}`);
+    assert.equal(liveHostSrc.includes(forbidden), false, `live-host.js 不得残留拦截项: ${forbidden}`);
+  }
+  assert.equal(mainSrc.includes('const productionAlertOnly = options?.allowDispatchForOfflineTest !== true'), false, 'meter-main.js 不得残留 productionAlertOnly 拦截');
+  assert.equal(liveHostSrc.includes('productionAlertOnly: request?.allowDispatchForOfflineTest !== true'), false, 'live-host.js 不得残留 productionAlertOnly 拦截');
+
+  // 2. PR #96: 手动切号在 LS 验证超时后保留凭据并返回 pendingRestart: true（不回滚）
+  const credStore = makeMockCredStore();
+  const futureExp = new Date(Date.now() + 3600000).toISOString();
+  const mgr = accountsMod.createAccountsManager({
+    stateDir: path.join(tmpDir, 'state-pr96'),
+    homeDir: tmpDir,
+    ignoreEnvToolsDir: true,
+    credentialStore: credStore,
+    getHostUserStatus: async () => ({ email: 'alpha@example.com' }),
+    restartLanguageServers: async () => ({ ok: true })
+  });
+  mgr.addAccountWithCredential({ email: 'alpha@example.com', accessToken: 'tA', refreshToken: 'rA', expiresAt: futureExp });
+  mgr.addAccountWithCredential({ email: 'beta@example.com', accessToken: 'tB', refreshToken: 'rB', expiresAt: futureExp });
+  const swRes = await accountsMod.dispatchAccountsAction(mgr, {
+    action: 'switch',
+    email: 'beta@example.com',
+    verifyTimeoutMs: 40
+  }, { allowManualRestartPending: true });
+  assert.equal(swRes.officialManualSwitchRequired, undefined, 'dispatchAccountsAction switch 不得再被 official_host_switch_required 拦截');
+  assert.equal(swRes.verifiedEffective, false);
+  assert.equal(swRes.rolledBack, false, 'PR #96 手动切号验证超时应保留已写入凭据不回滚');
+  assert.equal(swRes.pendingRestart, true, 'PR #96 必须返回 pendingRestart: true');
+  assert.equal(credStore.getApplied()?.email, 'beta@example.com', '系统凭据应保持为目标账号 beta@example.com');
+
+  // 3. 非活跃账号手动刷新：彻底撤销 cloudcode_direct_disabled，真实拉取 Gemini/Claude/Argon 多池余量
+  const mockCloudFetch = async (url) => {
+    const u = String(url || '');
+    const makeResp = (status, body) => ({
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+      text: async () => JSON.stringify(body)
+    });
+    if (u.includes('loadCodeAssist')) {
+      return makeResp(200, { cloudaicompanionProject: 'proj-beta', currentTier: { id: 'g1-ultra-tier', name: 'Google AI Ultra' } });
+    }
+    if (u.includes('fetchAvailableModels')) {
+      return makeResp(200, {
+        models: {
+          'gemini-3-pro-high': {
+            displayName: 'Gemini 3 Pro (High)',
+            quotaInfo: { remainingFraction: 0.84, resetTime: '2026-11-28T05:00:00Z' }
+          },
+          'claude-sonnet-4-5': {
+            displayName: 'Claude Sonnet 4.5',
+            quotaInfo: { remainingFraction: 0.62, resetTime: '2026-11-28T06:00:00Z' }
+          },
+          'gemini-4-argon': {
+            displayName: 'Gemini 4 Argon',
+            quotaInfo: { remainingFraction: 0.91, resetTime: '2026-12-03T00:00:00Z' }
+          }
+        }
+      });
+    }
+    return makeResp(404, {});
+  };
+  const mgrRefresh = accountsMod.createAccountsManager({
+    stateDir: path.join(tmpDir, 'state-refresh'),
+    homeDir: tmpDir,
+    ignoreEnvToolsDir: true,
+    fetch: mockCloudFetch
+  });
+  mgrRefresh.addAccountWithCredential({ email: 'active@example.com', accessToken: 't1', refreshToken: 'r1', expiresAt: futureExp });
+  mgrRefresh.addAccountWithCredential({ email: 'inactive@example.com', accessToken: 't2', refreshToken: 'r2', expiresAt: futureExp });
+  const stRef = mgrRefresh.loadStore();
+  stRef.activeAccountEmail = 'active@example.com';
+  mgrRefresh.saveStore(stRef);
+
+  const inactiveRef = await accountsMod.dispatchAccountsAction(mgrRefresh, {
+    action: 'refresh_quota',
+    email: 'inactive@example.com'
+  });
+  assert.equal(inactiveRef.ok, true, '非活跃账号手动刷新必须成功，不得再返回 cloudcode_direct_disabled');
+  assert.notEqual(inactiveRef.reason, 'cloudcode_direct_disabled');
+  const poolKeys = (inactiveRef.account?.quotaSnapshot?.pools || []).map((p) => p.poolKey);
+  assert.ok(poolKeys.includes('shared_gemini_main'), '非活跃账号刷新必须返回 Gemini 池');
+  assert.ok(poolKeys.includes('shared_3p_pool'), '非活跃账号刷新必须返回 Claude/GPT 池');
+  assert.ok(poolKeys.includes('shared_gemini_argon'), '非活跃账号刷新必须返回 Argon 高阶池');
+
+  // 4. Issue #128: Cockpit Tools 全格式兼容（SQLite + JSON 索引、明文 / token_encrypted / 整文件 AES-256-GCM 信封 + 导出备份 JSON + 缺密钥优雅降级）
+  const cockpitHome = path.join(tmpDir, 'cockpit-home');
+  const cockpitRoot = path.join(cockpitHome, '.cockpit_tools');
+  const cockpitAcctsDir = path.join(cockpitRoot, 'accounts');
+  fs.mkdirSync(cockpitAcctsDir, { recursive: true });
+
+  const encGcm = (keyBuf, obj) => {
+    const nonce = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', keyBuf, nonce);
+    const enc = Buffer.concat([cipher.update(JSON.stringify(obj), 'utf8'), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return { nonce: nonce.toString('base64'), ciphertext: Buffer.concat([enc, tag]).toString('base64') };
+  };
+
+  const storageKey = crypto.randomBytes(32);
+  const tokenKey = crypto.randomBytes(32);
+  fs.writeFileSync(path.join(cockpitRoot, 'secure-account-storage.key'), storageKey.toString('base64'), 'utf8');
+  fs.writeFileSync(path.join(cockpitRoot, 'account-token.key'), tokenKey.toString('base64'), 'utf8');
+
+  // 格式 1: 明文 JSON
+  fs.writeFileSync(path.join(cockpitAcctsDir, 'antigravity_0001.json'), JSON.stringify({
+    id: 'antigravity_0001',
+    email: 'plain@cockpit.test',
+    name: 'Plain User',
+    token: { refresh_token: '1//rt-plain', access_token: 'ya29.plain', expiry_timestamp: 1790000000 }
+  }));
+  // 格式 2: 字段级 token_encrypted
+  const tokEnc = encGcm(tokenKey, { refresh_token: '1//rt-field', access_token: 'ya29.field', oauth_client_key: 'antigravity_default' });
+  fs.writeFileSync(path.join(cockpitAcctsDir, 'antigravity_0002.json'), JSON.stringify({
+    id: 'antigravity_0002',
+    email: 'field@cockpit.test',
+    name: 'Field Enc User',
+    token_encrypted: { version: 1, nonce: tokEnc.nonce, ciphertext: tokEnc.ciphertext }
+  }));
+  // 格式 3: 整文件加密信封
+  const envEnc = encGcm(storageKey, {
+    id: 'antigravity_0003',
+    email: 'env@cockpit.test',
+    name: 'Envelope User',
+    token: { refresh_token: '1//rt-env', access_token: 'ya29.env', expiry_timestamp: 1790000500 }
+  });
+  fs.writeFileSync(path.join(cockpitAcctsDir, 'antigravity_0003.json'), JSON.stringify({
+    version: 1,
+    kind: 'antigravity',
+    algorithm: 'AES-256-GCM',
+    key_id: 'local-secure-account-storage-v1',
+    nonce: envEnc.nonce,
+    ciphertext: envEnc.ciphertext,
+    encrypted_at: 1764200000
+  }));
+  // 格式 4: 未知版本加密信封（必须优雅降级不影响其余账号导入）
+  fs.writeFileSync(path.join(cockpitAcctsDir, 'antigravity_badv.json'), JSON.stringify({
+    version: 99,
+    kind: 'antigravity',
+    algorithm: 'AES-256-GCM',
+    nonce: envEnc.nonce,
+    ciphertext: envEnc.ciphertext
+  }));
+
+  fs.writeFileSync(path.join(cockpitRoot, 'accounts.json'), JSON.stringify({
+    version: 1,
+    accounts: [
+      { id: 'antigravity_0001', email: 'plain@cockpit.test', name: 'Plain User' },
+      { id: 'antigravity_0002', email: 'field@cockpit.test', name: 'Field Enc User' },
+      { id: 'antigravity_0003', email: 'env@cockpit.test', name: 'Envelope User' },
+      { id: 'antigravity_badv', email: 'badv@cockpit.test', name: 'Bad Version User' }
+    ]
+  }));
+
+  const mgrCockpit = accountsMod.createAccountsManager({
+    stateDir: path.join(tmpDir, 'state-cockpit'),
+    homeDir: cockpitHome,
+    ignoreEnvToolsDir: true
+  });
+  const preview = await accountsMod.dispatchAccountsAction(mgrCockpit, { action: 'preview_tools' });
+  assert.equal(preview.ok, true);
+  assert.equal(preview.available, true);
+  assert.equal(preview.count, 4, '应预览到 Cockpit Tools 全部 4 条账号索引');
+
+  const impCockpit = await accountsMod.dispatchAccountsAction(mgrCockpit, { action: 'import_tools' });
+  assert.equal(impCockpit.ok, true);
+  assert.equal(impCockpit.credentialsImported, true);
+  assert.equal(impCockpit.credentialsImportedCount, 3, '明文、字段加密与整文件信封 3 个账号应全部解出真实凭据');
+  assert.ok(Array.isArray(impCockpit.warnings) && impCockpit.warnings.length >= 1, '未知加密版本应产出可读降级告警');
+  const ovCockpit = mgrCockpit.getOverviewState();
+  for (const em of ['plain@cockpit.test', 'field@cockpit.test', 'env@cockpit.test']) {
+    const rec = ovCockpit.accounts.find((a) => a.email === em);
+    assert.ok(rec && rec.hasRefreshToken === true, `Cockpit Tools 账号 ${em} 必须具备真实 refreshToken`);
+  }
+
+  // Cockpit Tools 备份导出 JSON (schema: cockpit-tools.data-transfer)
+  const backupRes = await accountsMod.dispatchAccountsAction(mgrCockpit, {
+    action: 'import_cockpit_backup',
+    data: {
+      schema: 'cockpit-tools.data-transfer',
+      version: 1,
+      accounts: {
+        platforms: {
+          antigravity: {
+            exported_data: [{ email: 'backup@cockpit.test', refresh_token: '1//rt-backup' }]
+          }
+        }
+      }
+    }
+  });
+  assert.equal(backupRes.ok, true);
+  assert.equal(backupRes.importedCount, 1);
+  assert.equal(mgrCockpit.getOverviewState().accounts.find((a) => a.email === 'backup@cockpit.test')?.hasRefreshToken, true);
+
+  // 5. ELV-102: OAuth 登录启动与取消闭环（无 plugin_oauth_disabled 拦截）
+  let openedAuthUrl = '';
+  let resolveOpened = null;
+  const openedPromise = new Promise((resolve) => { resolveOpened = resolve; });
+  const oauthMgr = accountsMod.createAccountsManager({
+    stateDir: path.join(tmpDir, 'state-oauth'),
+    homeDir: tmpDir,
+    ignoreEnvToolsDir: true,
+    oauthClientId: 'test-client-123.apps.googleusercontent.com',
+    oauthClientSecret: 'GOCSPX-test-secret-123',
+    openExternal: (u) => { openedAuthUrl = u; resolveOpened?.(u); }
+  });
+  const loginPromise = accountsMod.dispatchAccountsAction(oauthMgr, { action: 'oauth_login', timeoutMs: 5000 });
+  await Promise.race([openedPromise, new Promise((r) => setTimeout(r, 2000))]);
+  assert.ok(openedAuthUrl.startsWith('https://accounts.google.com/o/oauth2/auth?'), 'OAuth 登录必须生成并拉起授权 URL');
+  const cancelRes = await accountsMod.dispatchAccountsAction(oauthMgr, { action: 'oauth_cancel' });
+  assert.equal(cancelRes.ok, true);
+  assert.equal(cancelRes.cancelled, true);
+  const loginRes = await loginPromise;
+  assert.equal(loginRes.cancelled, true, '取消 OAuth 后必须返回 cancelled: true 而非挂死超时');
+
+  // 6. 校验 meter-main.js accounts-action IPC 已显式引入 collector 且无退化拦截项
+  const mainIpcSrc = fs.readFileSync(path.join(__dirname, 'meter-main.js'), 'utf8');
+  const actStart = mainIpcSrc.indexOf("ipcMain.handle('context-meter:accounts-action'");
+  const actEnd = mainIpcSrc.indexOf("ipcMain.handle('context-meter:sync-pricing'", actStart);
+  assert.ok(actStart > 0 && actEnd > actStart, '必须定位到 context-meter:accounts-action IPC 处理段');
+  const actBlock = mainIpcSrc.slice(actStart, actEnd);
+  assert.match(actBlock, /const\s+collector\s*=\s*require\('\.\/meter-collector'\)/, 'accounts-action 必须引入 collector，防止 collector/fetchQuotaSnapshotFromHost is not defined 崩溃');
+  assert.match(actBlock, /collector\.fetchQuotaSnapshotFromHost\(/, 'accounts-action 必须通过 collector.fetchQuotaSnapshotFromHost 拉取宿主快照');
+  assert.doesNotMatch(actBlock, /productionOfficialHostOnly|allowCredentialWrite:\s*false|allowPluginOAuth:\s*false|allowCrossToolImport:\s*false|hostOnlyBoundary:\s*true/, 'accounts-action 不得残留退化拦截标记');
+  assert.doesNotMatch(actBlock, /showMessageBox/, '切号 IPC 不得弹原生白框 dialog.showMessageBox');
+});
+
+test('非活跃账号行内刷新闭环: 精准定向更新、明确数据来源与采集时间、失败保留旧快照并呈现真实原因与更新时间', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-inactive-inline-refresh-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const fetchedTokens = [];
+  let failNext = false;
+  const mockFetch = async (url, init = {}) => {
+    const u = String(url);
+    const authHeader = String(init?.headers?.Authorization || init?.headers?.authorization || '');
+    fetchedTokens.push({ url: u, authHeader });
+    if (failNext) {
+      return {
+        ok: false,
+        status: 503,
+        text: async () => 'service unavailable',
+        json: async () => ({ error: { message: 'service unavailable' } })
+      };
+    }
+    if (u.includes('loadCodeAssist')) {
+      const body = {
+        cloudaicompanionProject: 'proj-b-123',
+        paidTier: { id: 'g1-pro-tier', name: 'Pro' }
+      };
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(body),
+        json: async () => body
+      };
+    }
+    if (u.includes('fetchAvailableModels')) {
+      const body = {
+        agentModelSorts: [{ groups: [{ modelIds: ['gemini-3.1-pro', 'claude-sonnet-4-5'] }] }],
+        models: {
+          'gemini-3.1-pro': {
+            displayName: 'Gemini 3.1 Pro',
+            quotaInfo: { remainingFraction: 0.84, resetTime: '2026-11-28T05:00:00Z' }
+          },
+          'claude-sonnet-4-5': {
+            displayName: 'Claude Sonnet 4.5',
+            quotaInfo: { remainingFraction: 0.62, resetTime: '2026-11-28T06:00:00Z' }
+          }
+        }
+      };
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(body),
+        json: async () => body
+      };
+    }
+    return { ok: false, status: 404, text: async () => 'not found', json: async () => ({}) };
+  };
+
+  const nowFutureIso = new Date(Date.now() + 3600 * 1000).toISOString();
+  const seedStore = {
+    version: 1,
+    activeAccountEmail: 'active@example.com',
+    accounts: {
+      'active@example.com': {
+        email: 'active@example.com',
+        name: 'Active',
+        source: 'oauth',
+        credential: { accessToken: 'tok-active', refreshToken: 'rt-active', expiresAt: nowFutureIso },
+        quotaSnapshot: { pools: [{ poolKey: 'gemini', remainingFraction: 0.91 }] },
+        quotaSource: 'host_local_snapshot',
+        lastQuotaUpdatedAtMs: 1700000001000
+      },
+      'b@example.com': {
+        email: 'b@example.com',
+        name: 'InactiveB',
+        source: 'oauth',
+        credential: { accessToken: 'tok-b', refreshToken: 'rt-b', expiresAt: nowFutureIso },
+        quotaSnapshot: { pools: [{ poolKey: 'gemini', remainingFraction: 0.50 }] },
+        lastQuotaUpdatedAtMs: 1700000002000
+      },
+      'c@example.com': {
+        email: 'c@example.com',
+        name: 'InactiveC',
+        source: 'oauth',
+        credential: { accessToken: 'tok-c', refreshToken: 'rt-c', expiresAt: nowFutureIso },
+        quotaSnapshot: { pools: [{ poolKey: 'gemini', remainingFraction: 0.30 }] },
+        lastQuotaUpdatedAtMs: 1700000003000
+      }
+    }
+  };
+  fs.writeFileSync(path.join(tmpDir, 'accounts_v1.json'), JSON.stringify(seedStore, null, 2), 'utf8');
+
+  let hostFetchCalls = 0;
+  const mgr = accountsMod.createAccountsManager({
+    stateDir: tmpDir,
+    fetch: mockFetch,
+    fetchActiveHostSnapshot: async () => {
+      hostFetchCalls += 1;
+      return { ok: true, snapshot: { pools: [] } };
+    }
+  });
+
+  // 1. 点非活跃账号 b@example.com 行内刷新：仅查 b，不查 active/c，不走宿主快照，返回明确来源和采集时间
+  const okRes = await accountsMod.dispatchAccountsAction(
+    mgr,
+    { action: 'refresh_quota', email: 'b@example.com', force: true },
+    {}
+  );
+  assert.equal(okRes.ok, true, `非活跃账号行内刷新应成功: ${okRes.error || ''}`);
+  assert.equal(hostFetchCalls, 0, '非活跃账号行内刷新不得误调活跃宿主快照');
+  assert.equal(fetchedTokens.length > 0, true);
+  assert.equal(fetchedTokens.every((item) => item.authHeader === 'Bearer tok-b'), true, '仅应使用目标非活跃账号 b 的凭据发起查询');
+  assert.equal(okRes.source, 'cloudcode_direct', '应返回明确数据来源 cloudcode_direct');
+  assert.equal(okRes.targetHost, 'daily-cloudcode-pa.googleapis.com', '应返回实际命中的 CloudCode 主机来源');
+  assert.equal(typeof okRes.fetchedAtMs, 'number', '应返回数值型采集时间 fetchedAtMs');
+  assert.equal(okRes.fetchedAtMs, okRes.lastSuccessAtMs);
+  assert.equal(okRes.account.quotaSource, 'cloudcode_direct');
+  assert.equal(okRes.account.quotaTargetHost, 'daily-cloudcode-pa.googleapis.com');
+  assert.equal(okRes.account.lastQuotaUpdatedAtMs, okRes.fetchedAtMs);
+
+  const ovAfterOk = okRes.overview;
+  const accA = ovAfterOk.accounts.find((a) => a.email === 'active@example.com');
+  const accB = ovAfterOk.accounts.find((a) => a.email === 'b@example.com');
+  const accC = ovAfterOk.accounts.find((a) => a.email === 'c@example.com');
+  assert.equal(accA.lastQuotaUpdatedAtMs, 1700000001000, '活跃账号快照时间不应被误改');
+  assert.equal(accC.lastQuotaUpdatedAtMs, 1700000003000, '另一非活跃账号 c 不应被误刷');
+  assert.ok(Array.isArray(accB.quotaSnapshot?.pools) && accB.quotaSnapshot.pools.length >= 2, '目标账号 b 应更新多池配额');
+  const savedSnapBeforeFail = JSON.stringify(accB.quotaSnapshot);
+  const savedAtBeforeFail = accB.lastQuotaUpdatedAtMs;
+
+  // 2. 再次点 b@example.com 行内刷新，模拟 HTTP 503 失败：返回真实原因、保留已有快照与原更新时间
+  failNext = true;
+  const failRes = await accountsMod.dispatchAccountsAction(
+    mgr,
+    { action: 'refresh_quota', email: 'b@example.com', force: true },
+    {}
+  );
+  assert.equal(failRes.ok, false);
+  assert.match(String(failRes.error || ''), /503/, '失败应暴露真实 HTTP 503 原因');
+  assert.equal(failRes.lastSuccessAtMs, savedAtBeforeFail, '失败时 lastSuccessAtMs 必须保持原成功时间');
+  assert.equal(failRes.account.lastQuotaUpdatedAtMs, savedAtBeforeFail, '失败时账号更新时间必须保持原成功时间');
+  assert.equal(JSON.stringify(failRes.account.quotaSnapshot), savedSnapBeforeFail, '失败时必须完整保留已有快照');
+  assert.match(String(failRes.account.lastQuotaError || ''), /503/, '账号记录必须持久化真实失败原因');
+
+  // 3. 核对前端账号页在已有旧快照 + 刷新失败时仍保留配额条并显示真实原因与原更新时间
+  const settingsUiSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'context-settings-ui.js'), 'utf8');
+  assert.match(settingsUiSrc, /data-ac-stale-error/, '已有旧快照且刷新失败时必须渲染行内失败原因与更新时间提示条');
+});
+
+test('双入口单击真实切号闭环: 零二次确认、deferRestart 自动单次接续 restartHost、失败回滚保留当前账号并显示真实原因', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-direct-switch-chain-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const credStore = makeMockCredStore();
+  const nowFutureIso = new Date(Date.now() + 3600 * 1000).toISOString();
+  const seedStore = {
+    version: 1,
+    activeAccountEmail: 'a@example.com',
+    accounts: {
+      'a@example.com': {
+        email: 'a@example.com',
+        name: 'AcctA',
+        source: 'oauth',
+        credential: { accessToken: 'tok-a', refreshToken: 'rt-a', expiresAt: nowFutureIso }
+      },
+      'b@example.com': {
+        email: 'b@example.com',
+        name: 'AcctB',
+        source: 'oauth',
+        credential: { accessToken: 'tok-b', refreshToken: 'rt-b', expiresAt: nowFutureIso }
+      }
+    }
+  };
+  fs.writeFileSync(path.join(tmpDir, 'accounts_v1.json'), JSON.stringify(seedStore, null, 2), 'utf8');
+
+  const mgr = accountsMod.createAccountsManager({ stateDir: tmpDir, credentialStore: credStore });
+
+  // 1. 失败场景：写入凭据报错 -> 回滚保留当前账号 a@example.com，暴露真实错误，不返回 restartPending
+  credStore.setFailWrite(true);
+  const failRes = await accountsMod.dispatchAccountsAction(
+    mgr,
+    { action: 'switch', email: 'b@example.com', deferRestart: true },
+    {
+      restartClient: undefined,
+      requiresClientRestart: true,
+      canAutoRestart: true,
+      deferRestart: true,
+      allowManualRestartPending: true
+    }
+  );
+  assert.equal(failRes.ok, false);
+  assert.equal(failRes.rolledBack, true, '写凭据失败必须自动回滚');
+  assert.match(String(failRes.error || ''), /写入受阻/, '失败必须返回真实原因');
+  assert.equal(credStore.getApplied().email, 'a@example.com', '失败时系统凭据必须保持原当前账号');
+  assert.equal(failRes.overview.activeAccountEmail, 'a@example.com', '失败时活跃账号必须保持不变');
+  assert.notEqual(failRes.restartPending, true, '失败不得进入待重启态');
+
+  // 2. 成功场景（deferRestart: true）：写入 b@example.com 凭据并返回 restartPending + canAutoRestart，交由前端自动单次接续 restartHost
+  credStore.setFailWrite(false);
+  const okRes = await accountsMod.dispatchAccountsAction(
+    mgr,
+    { action: 'switch', email: 'b@example.com', deferRestart: true },
+    {
+      restartClient: undefined,
+      requiresClientRestart: true,
+      canAutoRestart: true,
+      deferRestart: true,
+      allowManualRestartPending: true
+    }
+  );
+  assert.equal(okRes.ok, true, `deferRestart 真实切号应成功: ${okRes.error || ''}`);
+  assert.equal(okRes.restartPending, true);
+  assert.equal(okRes.pendingRestart, true);
+  assert.equal(okRes.canAutoRestart, true);
+  assert.equal(okRes.manualRestartRequired, false);
+  assert.equal(credStore.getApplied().email, 'b@example.com', '目标账号凭据必须已写入');
+
+  // 3. 核对双入口（左下角菜单 & 设置账号页）零二次确认、前端自动接续单次 restartHost 与主进程防重入锁
+  const sidebarSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'sidebar-account.js'), 'utf8');
+  const settingsUiSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'context-settings-ui.js'), 'utf8');
+  const rendererMainSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'main.js'), 'utf8');
+  const hostMainSrc = fs.readFileSync(path.join(__dirname, 'meter-main.js'), 'utf8');
+
+  assert.match(sidebarSrc, /void executeDirectSwitch\(acc\)/, '左下角账号菜单单击必须直接调用 executeDirectSwitch');
+  assert.match(settingsUiSrc, /if \(op === 'switch'\)[\s\S]{0,600}cbs\.onAction\('switchAccount'/, '设置账号页单击切换必须直接触发 switchAccount 且无二次确认');
+  const switchFnStart = rendererMainSrc.indexOf('async function triggerSmoothAccountSwitch(');
+  const switchFnEnd = rendererMainSrc.indexOf('async function triggerNativeHostAddAccount(', switchFnStart);
+  assert.ok(switchFnStart > 0 && switchFnEnd > switchFnStart);
+  const switchFnBlock = rendererMainSrc.slice(switchFnStart, switchFnEnd);
+  assert.match(switchFnBlock, /accountSwitchRestartTriggered\s*=\s*true/, '前端接续重启必须具备单次防重入标记');
+  assert.match(switchFnBlock, /phase:\s*'restarting'/, '自动接续重启必须展示插件主题 restarting 进度浮层');
+  assert.match(switchFnBlock, /await window\.contextMeterAPI\.restartHost\(\)/, 'deferRestart 后必须由前端自动接续调用 restartHost 而非要求用户二次点击');
+  assert.match(hostMainSrc, /let hostRestartInFlight = false;[\s\S]{0,480}if \(useGlobalGuard && hostRestartInFlight\)/, '主进程 handleRestartHost 必须具备防重入单次保护');
+});
+
+test('添加账号 OAuth 登录闭环: 真实授权入列保当前活跃号、取消/失败零半成品、重复添加合并更新且前端取消绕过 busy 锁', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-oauth-add-chain-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const nowFutureIso = new Date(Date.now() + 3600 * 1000).toISOString();
+  const seedStore = {
+    version: 1,
+    activeAccountEmail: 'active@example.com',
+    accounts: {
+      'active@example.com': {
+        email: 'active@example.com',
+        name: 'CurrentActive',
+        source: 'oauth_login',
+        credential: { accessToken: 'tok-active', refreshToken: 'rt-active', expiresAt: nowFutureIso }
+      }
+    }
+  };
+  fs.writeFileSync(path.join(tmpDir, 'accounts_v1.json'), JSON.stringify(seedStore, null, 2), 'utf8');
+
+  let oauthMockMode = 'success';
+  let userEmailToReturn = 'NewUser@Example.com';
+  let userNameToReturn = 'New User V1';
+  const mockFetch = async (url) => {
+    const u = String(url);
+    if (u.includes('oauth2.googleapis.com/token')) {
+      if (oauthMockMode === 'token_fail') {
+        return {
+          ok: false,
+          status: 400,
+          text: async () => JSON.stringify({ error: 'invalid_grant', error_description: 'Bad Verification Code' }),
+          json: async () => ({ error: 'invalid_grant', error_description: 'Bad Verification Code' })
+        };
+      }
+      const body = { access_token: 'tok-new-oauth', refresh_token: 'rt-new-oauth', expires_in: 3600 };
+      return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+    }
+    if (u.includes('userinfo')) {
+      const body = { email: userEmailToReturn, name: userNameToReturn };
+      return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+    }
+    if (u.includes('loadCodeAssist')) {
+      const body = { cloudaicompanionProject: 'proj-new-1', paidTier: { id: 'g1-pro-tier', name: 'Pro' } };
+      return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+    }
+    if (u.includes('fetchAvailableModels')) {
+      const body = {
+        agentModelSorts: [{ groups: [{ modelIds: ['gemini-3.1-pro'] }] }],
+        models: {
+          'gemini-3.1-pro': {
+            displayName: 'Gemini 3.1 Pro',
+            quotaInfo: { remainingFraction: 0.77, resetTime: '2026-11-28T05:00:00Z' }
+          }
+        }
+      };
+      return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+    }
+    return { ok: false, status: 404, text: async () => 'not found', json: async () => ({}) };
+  };
+
+  const mgr = accountsMod.createAccountsManager({
+    stateDir: tmpDir,
+    fetch: mockFetch,
+    oauthClientId: 'test-client-id',
+    oauthClientSecret: 'test-client-secret'
+  });
+
+  // 1. 取消授权：立即释放监听且零半成品记录，活跃账号不变
+  let cancelAuthUrl = '';
+  const cancelPromise = accountsMod.dispatchAccountsAction(
+    mgr,
+    { action: 'oauth_login', timeoutMs: 8000 },
+    {
+      openExternal: (authUrl) => {
+        cancelAuthUrl = authUrl;
+        setTimeout(() => { void accountsMod.dispatchAccountsAction(mgr, { action: 'oauth_cancel' }, {}); }, 30);
+      }
+    }
+  );
+  const cancelRes = await cancelPromise;
+  assert.ok(cancelAuthUrl.startsWith('https://accounts.google.com/'), '必须拉起真实 Google OAuth 授权地址');
+  assert.equal(cancelRes.ok, false);
+  assert.equal(cancelRes.cancelled, true);
+  assert.equal(cancelRes.overview.accounts.length, 1, '取消授权绝不能留下半成品账号记录');
+  assert.equal(cancelRes.overview.activeAccountEmail, 'active@example.com');
+
+  // 2. 授权失败（回调返回 access_denied）：返回真实原因且零半成品记录
+  const denyRes = await accountsMod.dispatchAccountsAction(
+    mgr,
+    { action: 'oauth_login', timeoutMs: 8000 },
+    {
+      openExternal: (authUrl) => {
+        const parsed = new URL(authUrl);
+        const redirectUri = parsed.searchParams.get('redirect_uri');
+        const st = parsed.searchParams.get('state');
+        http.get(`${redirectUri}?error=access_denied&state=${st}`, { agent: false }, (res) => res.resume()).on('error', () => { });
+      }
+    }
+  );
+  assert.equal(denyRes.ok, false);
+  assert.match(String(denyRes.error || ''), /access_denied/);
+  assert.equal(denyRes.overview.accounts.length, 1, '授权拒绝绝不能留下半成品记录');
+  assert.equal(denyRes.overview.activeAccountEmail, 'active@example.com');
+
+  // 3. 授权失败（换取 token 失败）：返回真实错误且零半成品记录
+  oauthMockMode = 'token_fail';
+  const tokFailRes = await accountsMod.dispatchAccountsAction(
+    mgr,
+    { action: 'oauth_login', timeoutMs: 8000 },
+    {
+      openExternal: (authUrl) => {
+        const parsed = new URL(authUrl);
+        const redirectUri = parsed.searchParams.get('redirect_uri');
+        const st = parsed.searchParams.get('state');
+        http.get(`${redirectUri}?code=bad-code&state=${st}`, { agent: false }, (res) => res.resume()).on('error', () => { });
+      }
+    }
+  );
+  assert.equal(tokFailRes.ok, false);
+  assert.equal(tokFailRes.stage, 'token_exchange');
+  assert.equal(tokFailRes.overview.accounts.length, 1, 'token 换取失败绝不能留下半成品记录');
+  assert.equal(tokFailRes.overview.activeAccountEmail, 'active@example.com');
+
+  // 4. 首次授权成功（含混合大小写邮箱）：保存归一化身份、列表立即出现新增项、当前活跃账号保持原样
+  oauthMockMode = 'success';
+  userEmailToReturn = 'NewUser@Example.com';
+  userNameToReturn = 'New User V1';
+  const addRes = await accountsMod.dispatchAccountsAction(
+    mgr,
+    { action: 'oauth_login', timeoutMs: 8000 },
+    {
+      openExternal: (authUrl) => {
+        const parsed = new URL(authUrl);
+        const redirectUri = parsed.searchParams.get('redirect_uri');
+        const st = parsed.searchParams.get('state');
+        http.get(`${redirectUri}?code=ok-code-1&state=${st}`, { agent: false }, (res) => res.resume()).on('error', () => { });
+      }
+    }
+  );
+  assert.equal(addRes.ok, true, `OAuth 添加账号应成功: ${addRes.error || ''}`);
+  assert.equal(addRes.updatedExisting, false);
+  assert.equal(addRes.account.email, 'newuser@example.com');
+  assert.equal(addRes.account.isActive, false, '新增账号不应篡改当前活跃态');
+  assert.ok(Array.isArray(addRes.account.quotaSnapshot?.pools) && addRes.account.quotaSnapshot.pools.length >= 1, '大小写邮箱归一化后应携带初始配额快照');
+  assert.equal(addRes.overview.accounts.length, 2, '账号列表必须立即包含新增账号');
+  assert.equal(addRes.overview.activeAccountEmail, 'active@example.com', '当前活跃账号必须保持原样');
+
+  // 5. 重复添加同一账号：合并更新、不产生重复条目、不篡改当前活跃账号
+  userNameToReturn = 'New User V2';
+  const dupRes = await accountsMod.dispatchAccountsAction(
+    mgr,
+    { action: 'oauth_login', timeoutMs: 8000 },
+    {
+      openExternal: (authUrl) => {
+        const parsed = new URL(authUrl);
+        const redirectUri = parsed.searchParams.get('redirect_uri');
+        const st = parsed.searchParams.get('state');
+        http.get(`${redirectUri}?code=ok-code-2&state=${st}`, { agent: false }, (res) => res.resume()).on('error', () => { });
+      }
+    }
+  );
+  assert.equal(dupRes.ok, true);
+  assert.equal(dupRes.updatedExisting, true, '重复添加应标记为更新已有记录');
+  assert.equal(dupRes.account.name, 'New User V2');
+  assert.equal(dupRes.overview.accounts.length, 2, '重复添加不得产生重复条目');
+  assert.equal(dupRes.overview.activeAccountEmail, 'active@example.com', '重复添加不得篡改当前活跃账号');
+
+  // 6. 前端调用链核验：双入口均走 triggerOAuthAddAccount，且 performAccountAction 对 oauth_cancel 绕过 busy 锁
+  const rendererMainSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'main.js'), 'utf8');
+  assert.match(rendererMainSrc, /onAddAccount:\s*\(\)\s*=>\s*triggerOAuthAddAccount\(\{\s*source:\s*'sidebar'\s*\}\)/);
+  assert.match(rendererMainSrc, /actionName === 'addAccount'[\s\S]{0,120}triggerOAuthAddAccount\(\{\s*source:\s*'accountsPage'\s*\}\)/);
+  assert.match(rendererMainSrc, /async function performAccountAction\(action, extraPayload = \{\}\) \{\s*if \(action === 'oauth_cancel'\)/, 'oauth_cancel 必须绕过 accountsUiState.busy 门禁以立即取消挂起授权');
+});
+
+test('导入 Tools 全链路闭环: 有效导入即刻入列、重复去重、保原活跃号及缺失/损坏/部分无效明确反馈并保留已有账号', async (t) => {
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-tools-import-home-'));
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-tools-import-state-'));
+  t.after(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    fs.rmSync(tmpState, { recursive: true, force: true });
+  });
+
+  const nowFutureIso = new Date(Date.now() + 3600 * 1000).toISOString();
+  fs.writeFileSync(path.join(tmpState, 'accounts_v1.json'), JSON.stringify({
+    version: 1,
+    activeAccountEmail: 'active@example.com',
+    accounts: {
+      'active@example.com': {
+        email: 'active@example.com',
+        name: 'KeepActive',
+        source: 'oauth_login',
+        credential: { accessToken: 'tok-active', refreshToken: 'rt-active', expiresAt: nowFutureIso }
+      }
+    }
+  }, null, 2), 'utf8');
+
+  const mgr = accountsMod.createAccountsManager({ stateDir: tmpState, homeDir: tmpHome });
+
+  // 1. 来源缺失：明确失败并保留已有账号与活跃态
+  const missingRes = await accountsMod.dispatchAccountsAction(mgr, { action: 'import_tools' }, {});
+  assert.equal(missingRes.ok, false);
+  assert.match(String(missingRes.error || ''), /未发现/);
+  assert.equal(missingRes.overview.accounts.length, 1);
+  assert.equal(missingRes.overview.activeAccountEmail, 'active@example.com');
+
+  // 2. 数据损坏（accounts.json 非法 JSON）：返回 ok: false + 具体损坏原因，已有账号毫发无损
+  const toolsDir = path.join(tmpHome, '.antigravity_tools');
+  fs.mkdirSync(path.join(toolsDir, 'accounts'), { recursive: true });
+  fs.writeFileSync(path.join(toolsDir, 'accounts.json'), '{broken json', 'utf8');
+  const corruptRes = await accountsMod.dispatchAccountsAction(mgr, { action: 'import_tools' }, {});
+  assert.equal(corruptRes.ok, false);
+  assert.match(String(corruptRes.error || ''), /accounts\.json 已损坏/);
+  assert.equal(corruptRes.overview.accounts.length, 1);
+  assert.equal(corruptRes.overview.activeAccountEmail, 'active@example.com');
+
+  // 3. 混合有效账号 + 重复邮箱 + 无效记录（缺邮箱）+ 单条损坏详情文件：有效入列、去重、暴露具体异常、保当前活跃号
+  fs.writeFileSync(path.join(toolsDir, 'accounts.json'), JSON.stringify({
+    accounts: [
+      { id: 't-valid-1', email: 'ToolsUser@Example.com', name: 'Tools Valid' },
+      { id: 't-valid-dup', email: 'toolsuser@example.com', name: 'Tools Dup' },
+      { id: 't-bad-no-email', email: '', name: 'NoEmail' },
+      { id: 't-bad-detail', email: 'broken-detail@example.com', name: 'Broken Detail' }
+    ]
+  }, null, 2), 'utf8');
+  fs.writeFileSync(path.join(toolsDir, 'accounts', 't-valid-1.json'), JSON.stringify({
+    email: 'ToolsUser@Example.com',
+    name: 'Tools Valid Detail',
+    token: { refresh_token: 'rt-tools-1', access_token: 'at-tools-1', expiry: nowFutureIso }
+  }, null, 2), 'utf8');
+  fs.writeFileSync(path.join(toolsDir, 'accounts', 't-bad-detail.json'), '{corrupt-detail', 'utf8');
+
+  const partialRes = await accountsMod.dispatchAccountsAction(mgr, { action: 'import_tools' }, {});
+  assert.equal(partialRes.ok, true);
+  assert.equal(partialRes.partial, true);
+  assert.equal(partialRes.importedCount, 2, '有效账号与有邮箱记录应导入且重复邮箱自动去重');
+  assert.equal(partialRes.credentialsImportedCount, 1);
+  assert.equal(partialRes.invalidCount, 1, '缺少有效邮箱的记录必须计入 invalidCount');
+  assert.ok(partialRes.warnings.length >= 2, '应收集无邮箱与损坏详情文件两条具体告警');
+  assert.match(String(partialRes.message || ''), /另有 \d+ 条异常\/无效记录/, '返回文案必须向用户明示异常/无效记录');
+  assert.equal(partialRes.overview.accounts.length, 3, '列表应立即包含原活跃号 + 2 个去重后的新增号');
+  assert.equal(partialRes.overview.activeAccountEmail, 'active@example.com', '导入 Tools 绝不得改变当前活跃账号');
+
+  // 4. 重复点击导入 Tools：同一邮箱仍只保留一条记录、当前活跃账号保持原样
+  const repeatRes = await accountsMod.dispatchAccountsAction(mgr, { action: 'import_tools' }, {});
+  assert.equal(repeatRes.ok, true);
+  assert.equal(repeatRes.overview.accounts.length, 3, '重复导入同一邮箱绝不得产生重复条目');
+  assert.equal(repeatRes.overview.activeAccountEmail, 'active@example.com');
+
+  // 5. 前端按钮与动作接线校验
+  const settingsUiSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'context-settings-ui.js'), 'utf8');
+  const rendererMainSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'main.js'), 'utf8');
+  assert.match(settingsUiSrc, /id="ag-ac-btn-import-tools"[\s\S]{0,120}data-ag-ac-action="importTools"/);
+  assert.match(settingsUiSrc, /btnTools\.hidden\s*=\s*!data\.toolsAvailable;/, '导入 Tools 按钮必须随 toolsAvailable 真实显示而非硬编码隐藏');
+  assert.match(rendererMainSrc, /actionName === 'importTools'[\s\S]{0,160}performAccountAction\('import_tools'\)/);
 });

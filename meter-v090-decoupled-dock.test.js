@@ -469,3 +469,55 @@ test('界面可见文案零括号红线检测', async () => {
     assert.doesNotMatch(m, bracketRegex, `i18n 词条严禁含有中英文括号: ${m}`);
   }
 });
+
+test('Issue #107: 顶栏额度圆环左键切换 5H/7D、右键与 Alt+左键打开大面板并抑制复制菜单、其他图标右键不误切主题', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    h.finishScan();
+    await h.flush();
+
+    const badgeQuota = h.elements.get('badge-quota');
+    const panelQuota = h.elements.get('panel-quota');
+    const badgeCtx = h.elements.get('badge');
+    const badgeTokens = h.elements.get('badge-tokens');
+    assert.ok(badgeQuota && panelQuota);
+
+    // 1. 左键点击切换 5H/7D 周期模式，不误开额度大面板
+    const mode0 = api.getQuotaBadgeWindowMode();
+    badgeQuota.trigger('click', { altKey: false, detail: 1, preventDefault() {}, stopPropagation() {} });
+    const mode1 = api.getQuotaBadgeWindowMode();
+    assert.notEqual(mode1, mode0, '左键点击额度圆环应轮切 5H/7D 显示模式');
+    assert.equal(panelQuota.hidden, true, '普通左键切换模式不应打开额度大面板');
+
+    // 2. Alt+左键打开额度大面板
+    badgeQuota.trigger('click', { altKey: true, detail: 1, preventDefault() {}, stopPropagation() {} });
+    assert.equal(panelQuota.hidden, false, 'Alt+左键应打开额度大面板');
+
+    // 3. 右键关闭/打开额度大面板，并完整拦截默认右键菜单（抑制宿主 Copy 菜单）
+    let prevented = false;
+    let stopped = false;
+    let immediateStopped = false;
+    badgeQuota.trigger('contextmenu', {
+      target: badgeQuota,
+      preventDefault() { prevented = true; },
+      stopPropagation() { stopped = true; },
+      stopImmediatePropagation() { immediateStopped = true; }
+    });
+    assert.equal(prevented, true, '额度圆环右键必须 preventDefault 抑制宿主复制菜单');
+    assert.equal(stopped, true);
+    assert.equal(immediateStopped, true);
+    assert.equal(panelQuota.hidden, true, '右键应切换额度大面板开关态');
+
+    // 4. 其他顶栏图标右键不误切主题也不误开额度面板
+    const themeBefore = h.host.getAttribute('data-theme');
+    let otherPrevented = false;
+    badgeCtx?.trigger('contextmenu', { target: badgeCtx, preventDefault() { otherPrevented = true; } });
+    badgeTokens?.trigger('contextmenu', { target: badgeTokens, preventDefault() { otherPrevented = true; } });
+    assert.equal(otherPrevented, false, '其他顶栏图标右键不应被劫持');
+    assert.equal(h.host.getAttribute('data-theme'), themeBefore, '其他图标右键严禁误切主题');
+    assert.equal(panelQuota.hidden, true);
+  } finally {
+    api.dispose();
+  }
+});

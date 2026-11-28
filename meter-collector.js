@@ -83,6 +83,7 @@ const {
   buildModelQuotaSnapshot,
   sanitizeClientModelSorts,
   isDecorativeBadgeTagTitle,
+  normalizeDecorativeBadgeTagTitle,
   getModelPoolKey,
   getSharedQuotaGroupKey,
   extractCallId,
@@ -113,8 +114,19 @@ const {
   mergePricingCatalogs,
   filterReleases,
   findReleaseAsset,
-  compareVersions
+  compareVersions,
+  reconcileCompactionTerminalState,
+  summarizeSessionCompactions,
+  resolveTurnFooterModelAttribution,
+  buildUsageOverviewReconciliation,
+  extractOrchestratorTelemetry
 } = require('./meter-core');
+const {
+  normalizeHostQuotaSnapshot,
+  createTaskQuotaTracker,
+  attachTaskQuotaToReplies
+} = require('./meter-task-quota');
+const sharedTaskQuotaTracker = createTaskQuotaTracker();
 const { PROJECT_VERSION } = require('./modules-config');
 
 const PRICING_FEED_MODELS_DEV = 'https://models.dev/api.json';
@@ -673,7 +685,8 @@ function sanitizeCascadeModelConfig(c) {
     allowedTiers: Array.isArray(c.allowedTiers) ? c.allowedTiers.slice() : undefined,
     unavailable: isUnavail,
     unavailabilityReason: safeReason || fallbackTagReason || null,
-    notice: c.notice || c.clientNotice || c.warning || (!isUnavail && tagTitle && (!isDecoTag || tagDesc) ? `${tagTitle}${tagDesc ? `：${tagDesc}` : ''}` : null),
+    notice: c.notice || c.clientNotice || c.warning || (!isUnavail && !isDecoTag && (tagTitle || tagDesc) ? `${tagTitle}${tagDesc ? `${tagTitle ? ' · ' : ''}${tagDesc}` : ''}` : null),
+    decorativeBadgeTag: isDecoTag ? normalizeDecorativeBadgeTagTitle(tagTitle) : null,
     isHistorical: isHist,
     releaseDate: c.releaseDate || null,
     family: c.family || null,
@@ -1004,6 +1017,7 @@ async function resolveCollectCsrfToken(origin, signal, options = {}, isSupersede
   }
 
   const canFallback = !htmlFetchErr || /HTTP 40[13]\b/.test(String(htmlFetchErr.message || ''));
+  const canUseExplicitOriginAuth = canFallback || /HTTP 404\b/.test(String(htmlFetchErr?.message || ''));
   if (!token && canFallback) {
     try {
       const { resolveOriginCsrfToken } = require('./local-api');
@@ -1013,6 +1027,21 @@ async function resolveCollectCsrfToken(origin, signal, options = {}, isSupersede
         hasConfig = true;
       }
     } catch { }
+  }
+  if (!token && canUseExplicitOriginAuth && typeof options?.resolveCsrfToken === 'function') {
+    try {
+      const resolved = await options.resolveCsrfToken(origin);
+      if (typeof isSuperseded === 'function' && isSuperseded()) return '';
+      const cleanResolved = typeof resolved === 'string' ? resolved.trim() : '';
+      if (cleanResolved) {
+        token = cleanResolved;
+        hasConfig = true;
+      }
+    } catch { }
+  }
+  if (!token && canUseExplicitOriginAuth && typeof options?.csrfToken === 'string' && options.csrfToken.trim()) {
+    token = options.csrfToken.trim();
+    hasConfig = true;
   }
 
   if (!token && htmlFetchErr) throw htmlFetchErr;
@@ -1096,15 +1125,31 @@ async function collect(origin, id, options = {}) {
       const firstUserTitleRaw = firstUserStep?.userInput
         ? (firstUserStep.userInput.userResponse || (firstUserStep.userInput.items || []).map(it => it?.text || '').join(' '))
         : '';
-      const rawSessionTitle = String(
+      const firstUserClean = sanitizeTurnPreviewText(firstUserTitleRaw, 120);
+      let summaryDbTitle = '';
+      try {
+        const idxMap = loadConversationSummariesIndex([path.join(os.homedir(), '.gemini', 'antigravity')]);
+        const sumRow = idxMap.get(String(id || '').toLowerCase());
+        if (sumRow?.title) summaryDbTitle = sumRow.title;
+      } catch { }
+      const explicitHostTitle = String(
         full.title
         || trajectory.title
+        || full.sidebarTitle
+        || trajectory.sidebarTitle
+        || full.displayTitle
+        || trajectory.displayTitle
         || full.metadata?.title
         || trajectory.metadata?.title
-        || sanitizeTurnPreviewText(firstUserTitleRaw, 56)
+        || full.metadata?.summary
+        || trajectory.metadata?.summary
+        || trajectory.summary
+        || summaryDbTitle
         || ''
       ).trim();
-      session.title = rawSessionTitle ? sanitizeTurnPreviewText(rawSessionTitle, 56) : '';
+      const rawSessionTitle = explicitHostTitle || sanitizeTurnPreviewText(firstUserTitleRaw, 56) || '';
+      session.title = rawSessionTitle ? sanitizeTurnPreviewText(rawSessionTitle, 80) : '';
+      session.firstUserMessage = firstUserClean || '';
       const stepCapabilities = extractObservedModelInfoFromSteps(steps);
       const attachments = await scanFiles(session.media, { signal, isRemote: session.isRemote === true });
       if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
@@ -1130,7 +1175,18 @@ async function collect(origin, id, options = {}) {
       const hasAnyCap = knownCascadeConfigs.some(c => Number.isFinite(c?.maxTokens) && c.maxTokens > 0);
       if (!knownCascadeConfigs.length || !hasAnyCap) {
         try {
-          const freshStatus = await fetchUserStatusFromHost({ origin });
+          const freshStatus = await fetchUserStatusFromHost({
+            origin,
+            ...(options.csrfToken ? { csrfToken: options.csrfToken } : {}),
+            ...(typeof options.resolveCsrfToken === 'function' ? { resolveCsrfToken: options.resolveCsrfToken } : {}),
+            ...(options.authBootstrap !== undefined ? { authBootstrap: options.authBootstrap } : {}),
+            ...(options.daemonDir ? { daemonDir: options.daemonDir } : {}),
+            ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+            ...(typeof options.isPidAlive === 'function' ? { isPidAlive: options.isPidAlive } : {}),
+            ...(options.allowDaemonFallback !== undefined ? { allowDaemonFallback: options.allowDaemonFallback } : {}),
+            ...(options.allowHostOriginFallback !== undefined ? { allowHostOriginFallback: options.allowHostOriginFallback } : {}),
+            ...(Array.isArray(options.fallbackOrigins) ? { fallbackOrigins: options.fallbackOrigins } : {})
+          });
           if (freshStatus) cachedHostUserStatus = freshStatus;
           if (Array.isArray(freshStatus?.cascadeModelConfigs) && freshStatus.cascadeModelConfigs.length) {
             knownCascadeConfigs = freshStatus.cascadeModelConfigs;
@@ -1264,6 +1320,53 @@ async function collect(origin, id, options = {}) {
         cascadeStatus: full.status || null,
         nowMs: scannedAt
       });
+      const compactionSummary = typeof summarizeSessionCompactions === 'function'
+        ? summarizeSessionCompactions({
+          checkpoints: Array.isArray(session?.checkpoints) ? session.checkpoints : [],
+          hasFullHistory: true
+        })
+        : null;
+      const latestTurnModelAttribution = typeof resolveTurnFooterModelAttribution === 'function'
+        ? resolveTurnFooterModelAttribution(
+          Array.isArray(recentGeneratorCalls) && recentGeneratorCalls.length ? recentGeneratorCalls : (latestCallRecord ? [latestCallRecord] : []),
+          { cascadeModelConfigs: mergedCascadeConfigs, availableModels: modelCapabilitiesById, isTurnAggregate: true }
+        )
+        : null;
+      const orchestratorTelemetry = typeof extractOrchestratorTelemetry === 'function'
+        ? extractOrchestratorTelemetry({
+          cascadeModelConfigs: mergedCascadeConfigs,
+          sessionCalls: Array.isArray(recentGeneratorCalls) ? recentGeneratorCalls : [],
+          trajectoryEvents: Array.isArray(steps) ? steps.slice(-40) : []
+        })
+        : null;
+      const activeQuotaScopeKey = cachedHostUserStatus?.email ? buildAccountScopeKey(cachedHostUserStatus.email) : null;
+      const activeTaskQuotaId = latestCallId ? `${id}::${latestCallId}` : `${id}::session`;
+      let taskQuotaObservation = null;
+      if (sharedTaskQuotaTracker && typeof sharedTaskQuotaTracker.getTaskObservation === 'function') {
+        try {
+          const isRunningNow = String(full.status || '').toUpperCase().includes('RUNNING');
+          if (isRunningNow && typeof sharedTaskQuotaTracker.beginTask === 'function') {
+            taskQuotaObservation = sharedTaskQuotaTracker.beginTask({
+              taskId: activeTaskQuotaId,
+              sessionId: id,
+              accountScopeKey: activeQuotaScopeKey,
+              modelId: latest?.model || latestCallRecord?.model || null,
+              nowMs: scannedAt
+            });
+          } else {
+            const existingObs = sharedTaskQuotaTracker.getTaskObservation(activeTaskQuotaId, scannedAt);
+            if (existingObs && existingObs.taskStatus === 'running' && typeof sharedTaskQuotaTracker.finishTask === 'function') {
+              taskQuotaObservation = sharedTaskQuotaTracker.finishTask(activeTaskQuotaId, {
+                taskStatus: 'completed',
+                nowMs: scannedAt
+              });
+            } else {
+              taskQuotaObservation = existingObs;
+            }
+          }
+        } catch { }
+      }
+      const taskQuotaSnapshots = taskQuotaObservation ? [taskQuotaObservation] : [];
       const attachmentsDetail = (attachments || []).map((a, idx) => ({
         id: `att-${idx}`,
         name: a?.name || 'attachment',
@@ -1279,7 +1382,7 @@ async function collect(origin, id, options = {}) {
         source: a?.source || 'user',
         status: a?.status || 'unknown'
       }));
-      const result = { version: PROJECT_VERSION, conversation: id, cascadeStatus: full.status || null, turnTiming, workspacePath: wsPath || null, latest, preCompactLatest: referenceLatest || null, latestCallId, latestCallRecord, recentGeneratorCalls, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, postCheckpointAttachmentTotal, postCompactActiveTotal, total, attachments, attachmentsDetail, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt, errors: [] };
+      const result = { version: PROJECT_VERSION, conversation: id, cascadeStatus: full.status || null, turnTiming, workspacePath: wsPath || null, latest, preCompactLatest: referenceLatest || null, latestCallId, latestCallRecord, recentGeneratorCalls, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, compactionSummary, latestTurnModelAttribution, orchestratorTelemetry, taskQuotaSnapshots, session: { ...session, media: undefined, attachmentTotal, postCheckpointAttachmentTotal, postCompactActiveTotal, total, attachments, attachmentsDetail, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt, errors: [] };
       if (isSuperseded()) {
         const curSup = conversations.get(key);
         if (!curSup || !curSup.taskSeq || curSup.taskSeq <= taskSeq) {
@@ -4195,7 +4298,7 @@ const VALID_COCKPIT_WIDGET_IDS = [
   'tech-drawer'
 ];
 const VALID_COCKPIT_WIDGET_SET = new Set(VALID_COCKPIT_WIDGET_IDS);
-const VALID_COCKPIT_SPANS = new Set([4, 6, 8, 12]);
+const VALID_COCKPIT_SPANS = new Set([3, 4, 6, 8, 12]);
 const VALID_COCKPIT_HEIGHTS = new Set(['compact', 'standard', 'expanded']);
 
 function sanitizeSessionCockpitLayout(raw, includePresets = true) {
@@ -4215,6 +4318,36 @@ function sanitizeSessionCockpitLayout(raw, includePresets = true) {
     'agent-collab': 12,
     'tech-drawer': 12
   };
+  const hasExplicitModules = Array.isArray(raw.modules);
+  const explicitModulesSet = hasExplicitModules
+    ? new Set(raw.modules.map(m => String(m || '').trim()).filter(id => VALID_COCKPIT_WIDGET_SET.has(id)))
+    : null;
+  const isExplicitEmptyGroup = Boolean(
+    raw.emptyGroup === true
+    || raw.userClearedAll === true
+    || raw.emptyPresetCatalog === true
+  );
+  const sanitizeFreeRect = (fr) => {
+    if (!fr || typeof fr !== 'object' || Array.isArray(fr)) return null;
+    const x = Number(fr.x);
+    const y = Number(fr.y);
+    const w = Number(fr.w);
+    const h = Number(fr.h);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w < 48 || h < 48) return null;
+    const out = {
+      x: Number.isFinite(x) ? Math.max(0, Math.round(x)) : 0,
+      y: Number.isFinite(y) ? Math.max(0, Math.round(y)) : 0,
+      w: Math.max(48, Math.min(3200, Math.round(w))),
+      h: Math.max(48, Math.min(1600, Math.round(h)))
+    };
+    const xr = Number(fr.xRatio);
+    const wr = Number(fr.wRatio);
+    const bw = Number(fr.baseW);
+    if (Number.isFinite(xr) && xr >= 0 && xr <= 1) out.xRatio = Number(xr.toFixed(6));
+    if (Number.isFinite(wr) && wr > 0 && wr <= 1) out.wRatio = Number(wr.toFixed(6));
+    if (Number.isFinite(bw) && bw >= 120 && bw <= 4000) out.baseW = Math.round(bw);
+    return out;
+  };
   const seen = new Set();
   const widgets = [];
 
@@ -4228,15 +4361,27 @@ function sanitizeSessionCockpitLayout(raw, includePresets = true) {
       const customWidth = item.customWidth === true && Number.isInteger(spanNum) && spanNum >= 1 && spanNum <= 12;
       const span = customWidth || VALID_COCKPIT_SPANS.has(spanNum) ? spanNum : (defaultSpanById[id] || 12);
       const height = VALID_COCKPIT_HEIGHTS.has(item.height) ? item.height : (id === 'tech-drawer' ? 'compact' : 'standard');
-      const visible = typeof item.visible === 'boolean' ? item.visible : true;
+      const visible = typeof item.visible === 'boolean'
+        ? item.visible
+        : (hasExplicitModules && explicitModulesSet.size > 0 ? explicitModulesSet.has(id) : !isExplicitEmptyGroup);
       const rawPx = Number(item.customHeightPx ?? item.heightPx);
-      const customHeightPx = Number.isFinite(rawPx) && rawPx >= 100
-        ? Math.max(180, Math.min(680, Math.round(rawPx)))
+      const customHeightPx = Number.isFinite(rawPx) && rawPx >= 48
+        ? Math.max(48, Math.min(1600, Math.round(rawPx)))
         : null;
-      // P1-1：宿主侧同样透传自由缩放宽度，避免回灌时丢失
+      // P1-1 / 回归 #6：宿主侧同样透传自由缩放宽度与 freeRect，避免回灌时丢失
       const rawRatio = Number(item.widthRatio);
       const widthRatio = Number.isFinite(rawRatio) && rawRatio > 0 && rawRatio <= 1 ? rawRatio : null;
-      widgets.push({ id, span, height, visible, customHeightPx, ...(customWidth ? { customWidth } : {}), ...(widthRatio != null ? { widthRatio } : {}) });
+      const freeRect = sanitizeFreeRect(item.freeRect);
+      widgets.push({
+        id,
+        span,
+        height,
+        visible,
+        customHeightPx,
+        ...(customWidth ? { customWidth } : {}),
+        ...(widthRatio != null ? { widthRatio } : {}),
+        ...(freeRect ? { freeRect } : {})
+      });
     }
   } else {
     const hiddenSet = new Set(Array.isArray(raw.hiddenIds) ? raw.hiddenIds : []);
@@ -4249,20 +4394,26 @@ function sanitizeSessionCockpitLayout(raw, includePresets = true) {
       const hRaw = raw.heights?.[id];
       const height = VALID_COCKPIT_HEIGHTS.has(hRaw) ? hRaw : (id === 'tech-drawer' ? 'compact' : 'standard');
       const rawPx = Number(raw.heightPx?.[id]);
-      const customHeightPx = Number.isFinite(rawPx) && rawPx >= 100
-        ? Math.max(180, Math.min(680, Math.round(rawPx)))
+      const customHeightPx = Number.isFinite(rawPx) && rawPx >= 48
+        ? Math.max(48, Math.min(1600, Math.round(rawPx)))
         : null;
-      widgets.push({ id, span, height, visible: !hiddenSet.has(id), customHeightPx });
+      const vis = hasExplicitModules && explicitModulesSet.size > 0
+        ? explicitModulesSet.has(id)
+        : (isExplicitEmptyGroup ? false : !hiddenSet.has(id));
+      widgets.push({ id, span, height, visible: vis, customHeightPx });
     }
   }
 
   for (const id of VALID_COCKPIT_WIDGET_IDS) {
     if (!seen.has(id)) {
+      const defaultVis = hasExplicitModules && explicitModulesSet.size > 0
+        ? explicitModulesSet.has(id)
+        : (isExplicitEmptyGroup ? false : (id !== 'request-cost' || presetId === 'speed_cost'));
       const widget = {
         id,
         span: defaultSpanById[id] || 12,
         height: id === 'tech-drawer' ? 'compact' : 'standard',
-        visible: id !== 'request-cost' || presetId === 'speed_cost',
+        visible: defaultVis,
         customHeightPx: null
       };
       const after = id === 'request-cost' && presetId === 'speed_cost' ? widgets.findIndex(w => w.id === 'token-breakdown') : -1;
@@ -4276,17 +4427,26 @@ function sanitizeSessionCockpitLayout(raw, includePresets = true) {
   const heights = {};
   const heightPx = {};
   const hiddenIds = [];
+  const visibleModules = [];
   for (const w of widgets) {
     spans[w.id] = w.span;
     heights[w.id] = w.height;
     if (w.customHeightPx != null) heightPx[w.id] = w.customHeightPx;
     if (!w.visible) hiddenIds.push(w.id);
+    else visibleModules.push(w.id);
   }
+  const allHidden = visibleModules.length === 0;
+  const layoutMode = raw.layoutMode === 'freestyle' || raw.layoutMode === 'grid' ? raw.layoutMode : undefined;
 
   const result = {
     version: 1,
     presetId,
     widgets,
+    modules: visibleModules,
+    ...(allHidden ? { emptyGroup: true } : {}),
+    ...(raw.userClearedAll === true ? { userClearedAll: true } : {}),
+    ...(raw.emptyPresetCatalog === true ? { emptyPresetCatalog: true } : {}),
+    ...(layoutMode ? { layoutMode } : {}),
     order,
     spans,
     heights,
@@ -4306,13 +4466,27 @@ function sanitizeSessionCockpitLayout(raw, includePresets = true) {
       if (!/^custom-[\w-]{1,72}$/.test(id) || !name || seenPresets.has(id)) continue;
       const normalized = sanitizeSessionCockpitLayout(item, false);
       seenPresets.add(id);
-      customPresets.push({ id, name, presetId: normalized.presetId, widgets: normalized.widgets });
+      customPresets.push({
+        id,
+        name,
+        presetId: normalized.presetId,
+        widgets: normalized.widgets,
+        modules: normalized.modules,
+        ...(normalized.emptyGroup ? { emptyGroup: true } : {})
+      });
     }
     if (customPresets.length) result.customPresets = customPresets;
     if (seenPresets.has(raw.activeCustomId)) result.activeCustomId = raw.activeCustomId;
   }
   if (includePresets) {
-    const validPresetIds = new Set([...builtinPresetIds, ...customPresets.map(p => p.id)]);
+    const deletedSet = new Set(
+      (Array.isArray(raw.deletedPresetIds) ? raw.deletedPresetIds : [])
+        .map(id => (typeof id === 'string' ? id.trim() : ''))
+        .filter(Boolean)
+    );
+    if (deletedSet.size) result.deletedPresetIds = Array.from(deletedSet);
+    const activeBuiltins = builtinPresetIds.filter(bId => !deletedSet.has(bId));
+    const validPresetIds = new Set([...activeBuiltins, ...customPresets.map(p => p.id)]);
     const seenOrder = new Set();
     const presetOrder = [];
     for (const pid of (Array.isArray(raw.presetOrder) ? raw.presetOrder : [])) {
@@ -4321,7 +4495,7 @@ function sanitizeSessionCockpitLayout(raw, includePresets = true) {
       seenOrder.add(s);
       presetOrder.push(s);
     }
-    for (const bId of builtinPresetIds) {
+    for (const bId of activeBuiltins) {
       if (!seenOrder.has(bId)) { seenOrder.add(bId); presetOrder.push(bId); }
     }
     for (const cp of customPresets) {
@@ -4385,6 +4559,22 @@ function getPluginSettings(options = {}) {
     if (typeof uiPrefs.floatingOrbHidden === 'boolean') return !uiPrefs.floatingOrbHidden;
     return legacyQuickMenuStyle === 'floating';
   })();
+  const validBarFontScales = new Set(['compact', 'standard', 'large']);
+  const validFooterContrasts = new Set(['standard', 'high']);
+  const resolveBarFontScale = (rawVal, legacySize) => {
+    if (typeof rawVal === 'string' && validBarFontScales.has(rawVal)) return rawVal;
+    const ls = String(legacySize || '').trim().toLowerCase();
+    if (ls === 'small' || ls === 'sm' || ls === 'compact') return 'compact';
+    if (ls === 'large' || ls === 'lg' || ls === 'big') return 'large';
+    return 'standard';
+  };
+  const resolveFooterContrast = (rawVal, legacyHigh) => {
+    if (typeof rawVal === 'string' && validFooterContrasts.has(rawVal)) return rawVal;
+    if (legacyHigh === true || String(legacyHigh || '').trim().toLowerCase() === 'high') return 'high';
+    return 'standard';
+  };
+  const resolvedBarFontScale = resolveBarFontScale(uiPrefs.barFontScale, uiPrefs.composerStatusFontSize);
+  const resolvedFooterContrast = resolveFooterContrast(uiPrefs.footerContrast, uiPrefs.turnFooterHighContrast);
   return {
     ok: true,
     customPlan,
@@ -4402,11 +4592,31 @@ function getPluginSettings(options = {}) {
     topbarMode: resolvedTopbarMode,
     panelDockMode: resolvedPanelDockMode,
     autoHideTopbarOnDockedPanel,
-    auxViewTab: uiPrefs.auxViewTab === 'browser' ? 'browser' : 'plugin',
+    auxViewTab: uiPrefs.auxViewTab === 'browser' ? 'browser' : (uiPrefs.auxViewTab === 'both' ? 'both' : 'plugin'),
+    auxOrder: uiPrefs.auxOrder === 'browser-first' ? 'browser-first' : 'plugin-first',
+    auxLayoutMode: uiPrefs.auxLayoutMode === 'center' ? 'center' : 'full',
     auxCollapsed: uiPrefs.auxCollapsed === true,
-    auxWidthPx: (Number.isFinite(Number(uiPrefs.auxWidthPx)) && Number(uiPrefs.auxWidthPx) >= 260 && Number(uiPrefs.auxWidthPx) <= 1200)
+    auxWidthPx: (Number.isFinite(Number(uiPrefs.auxWidthPx)) && Number(uiPrefs.auxWidthPx) >= 260 && Number(uiPrefs.auxWidthPx) <= 3200)
       ? Math.round(Number(uiPrefs.auxWidthPx))
       : null,
+    auxSingleWidthPx: (Number.isFinite(Number(uiPrefs.auxSingleWidthPx)) && Number(uiPrefs.auxSingleWidthPx) >= 260 && Number(uiPrefs.auxSingleWidthPx) <= 3200)
+      ? Math.round(Number(uiPrefs.auxSingleWidthPx))
+      : null,
+    auxTriWidthPx: (Number.isFinite(Number(uiPrefs.auxTriWidthPx)) && Number(uiPrefs.auxTriWidthPx) >= 600 && Number(uiPrefs.auxTriWidthPx) <= 3200)
+      ? Math.round(Number(uiPrefs.auxTriWidthPx))
+      : null,
+    auxPluginSharePx: (Number.isFinite(Number(uiPrefs.auxPluginSharePx)) && Number(uiPrefs.auxPluginSharePx) >= 240 && Number(uiPrefs.auxPluginSharePx) <= 2400)
+      ? Math.round(Number(uiPrefs.auxPluginSharePx))
+      : null,
+    auxRatios: (uiPrefs.auxRatios && typeof uiPrefs.auxRatios === 'object' && !Array.isArray(uiPrefs.auxRatios))
+      ? uiPrefs.auxRatios
+      : null,
+    auxSessionWeights: (uiPrefs.auxSessionWeights && typeof uiPrefs.auxSessionWeights === 'object' && !Array.isArray(uiPrefs.auxSessionWeights))
+      ? uiPrefs.auxSessionWeights
+      : null,
+    auxAutoCollapseSessions: uiPrefs.auxAutoCollapseSessions !== false,
+    // 兼容历史旧配置：忽略残留手动折叠列表，始终以空数组返回防止旧折叠锁死窗格
+    auxManualCollapsedPanes: [],
     quickMenuStyle: legacyQuickMenuStyle,
     radialOrbEnabled: resolvedRadialOrbEnabled,
     radialTopbarEnabled: resolvedRadialTopbarEnabled,
@@ -4414,6 +4624,9 @@ function getPluginSettings(options = {}) {
     floatingOrbHidden: !resolvedRadialOrbEnabled,
     radialOrbPos: savedOrbPos,
     quotaBadgeWindowMode: validQuotaWindowModes.has(uiPrefs.quotaBadgeWindowMode) ? uiPrefs.quotaBadgeWindowMode : 'auto',
+    speedDisplayMode: uiPrefs.speedDisplayMode === 'e2e' ? 'e2e' : (uiPrefs.speedDisplayMode === 'stream' ? 'stream' : (uiPrefs.speedDisplayMode === 'streaming' ? 'streaming' : 'streaming')),
+    barFontScale: resolvedBarFontScale,
+    footerContrast: resolvedFooterContrast,
     panelLanguage: hasExplicitPanelLanguage ? uiPrefs.panelLanguage : 'zh-CN',
     panelLanguageExplicit: hasExplicitPanelLanguage,
     showTurnFooterStats: uiPrefs.showTurnFooterStats !== false,
@@ -4520,6 +4733,7 @@ function savePluginSettings(payload = {}, options = {}) {
   const validPanelLanguages = new Set(['zh-CN', 'zh-TW', 'en']);
   const validDockPositions = new Set(['flow', 'compact', 'fixed', 'aux', 'page', 'hide']);
   const validQuotaWindowModes = new Set(['auto', '5h', 'weekly', 'both']);
+  const validSpeedDisplayModes = new Set(['stream', 'streaming', 'e2e']);
   const validQuickMenuStyles = new Set(['floating', 'topbar', 'bottombar', 'classic']);
   if (typeof payload.autoCheckUpdate === 'boolean') {
     topLevelUiPrefs.autoCheckUpdate = payload.autoCheckUpdate;
@@ -4605,6 +4819,24 @@ function savePluginSettings(payload = {}, options = {}) {
   if (typeof payload.quotaBadgeWindowMode === 'string' && validQuotaWindowModes.has(payload.quotaBadgeWindowMode)) {
     topLevelUiPrefs.quotaBadgeWindowMode = payload.quotaBadgeWindowMode;
   }
+  if (typeof payload.speedDisplayMode === 'string' && validSpeedDisplayModes.has(payload.speedDisplayMode)) {
+    topLevelUiPrefs.speedDisplayMode = payload.speedDisplayMode;
+  }
+  const validBarFontScales = new Set(['compact', 'standard', 'large']);
+  const validFooterContrasts = new Set(['standard', 'high']);
+  if (typeof payload.barFontScale === 'string' && validBarFontScales.has(payload.barFontScale)) {
+    topLevelUiPrefs.barFontScale = payload.barFontScale;
+  } else if (typeof payload.composerStatusFontSize === 'string') {
+    const ls = payload.composerStatusFontSize.trim().toLowerCase();
+    if (ls === 'small' || ls === 'sm' || ls === 'compact') topLevelUiPrefs.barFontScale = 'compact';
+    else if (ls === 'large' || ls === 'lg' || ls === 'big') topLevelUiPrefs.barFontScale = 'large';
+    else if (ls === 'standard' || ls === 'normal' || ls === 'medium') topLevelUiPrefs.barFontScale = 'standard';
+  }
+  if (typeof payload.footerContrast === 'string' && validFooterContrasts.has(payload.footerContrast)) {
+    topLevelUiPrefs.footerContrast = payload.footerContrast;
+  } else if (typeof payload.turnFooterHighContrast === 'boolean') {
+    topLevelUiPrefs.footerContrast = payload.turnFooterHighContrast ? 'high' : 'standard';
+  }
   if (typeof payload.panelLanguage === 'string' && validPanelLanguages.has(payload.panelLanguage)) {
     topLevelUiPrefs.panelLanguage = payload.panelLanguage;
   }
@@ -4625,8 +4857,14 @@ function savePluginSettings(payload = {}, options = {}) {
   } else if (payload.cliAccountEmail === null) {
     topLevelUiPrefs.cliAccountEmail = null;
   }
-  if (payload.auxViewTab === 'plugin' || payload.auxViewTab === 'browser') {
+  if (payload.auxViewTab === 'plugin' || payload.auxViewTab === 'browser' || payload.auxViewTab === 'both') {
     topLevelUiPrefs.auxViewTab = payload.auxViewTab;
+  }
+  if (payload.auxOrder === 'plugin-first' || payload.auxOrder === 'browser-first') {
+    topLevelUiPrefs.auxOrder = payload.auxOrder;
+  }
+  if (payload.auxLayoutMode === 'center' || payload.auxLayoutMode === 'full') {
+    topLevelUiPrefs.auxLayoutMode = payload.auxLayoutMode;
   }
   if (typeof payload.auxCollapsed === 'boolean') {
     topLevelUiPrefs.auxCollapsed = payload.auxCollapsed;
@@ -4635,9 +4873,76 @@ function savePluginSettings(payload = {}, options = {}) {
     const aw = Number(payload.auxWidthPx);
     if (payload.auxWidthPx === null) {
       topLevelUiPrefs.auxWidthPx = null;
-    } else if (Number.isFinite(aw) && aw >= 260 && aw <= 1200) {
+    } else if (Number.isFinite(aw) && aw >= 260 && aw <= 3200) {
       topLevelUiPrefs.auxWidthPx = Math.round(aw);
     }
+  }
+  if (payload.auxSingleWidthPx !== undefined) {
+    const sw = Number(payload.auxSingleWidthPx);
+    if (payload.auxSingleWidthPx === null) {
+      topLevelUiPrefs.auxSingleWidthPx = null;
+    } else if (Number.isFinite(sw) && sw >= 260 && sw <= 3200) {
+      topLevelUiPrefs.auxSingleWidthPx = Math.round(sw);
+    }
+  }
+  if (payload.auxTriWidthPx !== undefined) {
+    const tw = Number(payload.auxTriWidthPx);
+    if (payload.auxTriWidthPx === null) {
+      topLevelUiPrefs.auxTriWidthPx = null;
+    } else if (Number.isFinite(tw) && tw >= 600 && tw <= 3200) {
+      topLevelUiPrefs.auxTriWidthPx = Math.round(tw);
+    }
+  }
+  if (payload.auxPluginSharePx !== undefined) {
+    const sp = Number(payload.auxPluginSharePx);
+    if (payload.auxPluginSharePx === null) {
+      topLevelUiPrefs.auxPluginSharePx = null;
+    } else if (Number.isFinite(sp) && sp >= 240 && sp <= 2400) {
+      topLevelUiPrefs.auxPluginSharePx = Math.round(sp);
+    }
+  }
+  if (payload.auxRatios && typeof payload.auxRatios === 'object' && !Array.isArray(payload.auxRatios)) {
+    const cleanRatios = {};
+    const clampR = (v) => (Number.isFinite(Number(v)) && Number(v) > 0.05 && Number(v) < 0.95 ? Number(Number(v).toFixed(4)) : null);
+    if (payload.auxRatios.tripane && typeof payload.auxRatios.tripane === 'object') {
+      const s = clampR(payload.auxRatios.tripane.sessions ?? payload.auxRatios.tripane.session);
+      const p = clampR(payload.auxRatios.tripane.plugin);
+      const b = clampR(payload.auxRatios.tripane.browser);
+      if (s && p && b) cleanRatios.tripane = { sessions: s, plugin: p, browser: b };
+    }
+    if (payload.auxRatios.pluginOnly && typeof payload.auxRatios.pluginOnly === 'object') {
+      const p = clampR(payload.auxRatios.pluginOnly.plugin);
+      const s = clampR(payload.auxRatios.pluginOnly.sessions ?? payload.auxRatios.pluginOnly.session ?? (p ? 1 - p : null));
+      if (s && p) cleanRatios.pluginOnly = { sessions: s, plugin: p };
+    }
+    if (payload.auxRatios.browserOnly && typeof payload.auxRatios.browserOnly === 'object') {
+      const b = clampR(payload.auxRatios.browserOnly.browser);
+      const s = clampR(payload.auxRatios.browserOnly.sessions ?? payload.auxRatios.browserOnly.session ?? (b ? 1 - b : null));
+      if (s && b) cleanRatios.browserOnly = { sessions: s, browser: b };
+    }
+    if (Object.keys(cleanRatios).length > 0) {
+      topLevelUiPrefs.auxRatios = {
+        ...(settings.uiPreferences?.auxRatios && typeof settings.uiPreferences.auxRatios === 'object' ? settings.uiPreferences.auxRatios : {}),
+        ...cleanRatios
+      };
+    }
+  }
+  if (payload.auxSessionWeights && typeof payload.auxSessionWeights === 'object' && !Array.isArray(payload.auxSessionWeights)) {
+    const cleanWeights = {};
+    for (const [k, v] of Object.entries(payload.auxSessionWeights).slice(0, 16)) {
+      const n = Number(v);
+      if (k && Number.isFinite(n) && n >= 0.05 && n <= 10) {
+        cleanWeights[String(k).slice(0, 96)] = Number(n.toFixed(4));
+      }
+    }
+    topLevelUiPrefs.auxSessionWeights = cleanWeights;
+  }
+  if (typeof payload.auxAutoCollapseSessions === 'boolean') {
+    topLevelUiPrefs.auxAutoCollapseSessions = payload.auxAutoCollapseSessions;
+  }
+  // 兼容旧客户端写盘请求：不再持久化手动会话折叠列表
+  if (Array.isArray(payload.auxManualCollapsedPanes)) {
+    topLevelUiPrefs.auxManualCollapsedPanes = [];
   }
   const rawViewPrefs = (payload.defaultViewPrefs && typeof payload.defaultViewPrefs === 'object' && !Array.isArray(payload.defaultViewPrefs))
     ? payload.defaultViewPrefs
@@ -4678,6 +4983,15 @@ function savePluginSettings(payload = {}, options = {}) {
     }
     if (incomingUiPrefs.panelLanguage !== undefined && !validPanelLanguages.has(incomingUiPrefs.panelLanguage)) {
       delete incomingUiPrefs.panelLanguage;
+    }
+    if (incomingUiPrefs.speedDisplayMode !== undefined && !validSpeedDisplayModes.has(incomingUiPrefs.speedDisplayMode)) {
+      delete incomingUiPrefs.speedDisplayMode;
+    }
+    if (incomingUiPrefs.barFontScale !== undefined && !validBarFontScales.has(incomingUiPrefs.barFontScale)) {
+      delete incomingUiPrefs.barFontScale;
+    }
+    if (incomingUiPrefs.footerContrast !== undefined && !validFooterContrasts.has(incomingUiPrefs.footerContrast)) {
+      delete incomingUiPrefs.footerContrast;
     }
     if (incomingUiPrefs.defaultViewPrefs && !topLevelUiPrefs.defaultViewPrefs) {
       incomingUiPrefs.defaultViewPrefs = sanitizeDefaultViewPrefs(incomingUiPrefs.defaultViewPrefs, incomingUiPrefs.savedHeatView || settings.uiPreferences?.savedHeatView);
@@ -4848,7 +5162,27 @@ function savePluginSettings(payload = {}, options = {}) {
 
 const cachedUserStatusByOrigin = new Map();
 const cachedQuotaStateByOrigin = new Map();
+const cachedQuotaByAccount = new Map();
 const activeQuotaFetchByOrigin = new Map();
+const quotaFetchSeqByOrigin = new Map();
+const quotaCommittedSeqByOrigin = new Map();
+const quotaExpectedAccountByOrigin = new Map();
+const quotaBackoffByScope = new Map();
+
+// 01/02 服务边界：后台/切页/聚焦/回合结束/菜单打开/定时重置等自动来源严禁触发远端 forceRefresh，一律降级读宿主本地快照
+const BLOCKED_REMOTE_FORCE_SOURCES = new Set([
+  'auto_poll',
+  'bg_poll',
+  'window_focus',
+  'visibility_resume',
+  'turn_end',
+  'tab_switch',
+  'startup_scan',
+  'menu_open',
+  'autoswitch_debounce',
+  'reset_timer',
+  'topbar_badge_cycle'
+]);
 
 function normalizeQuotaOriginScope(options = {}) {
   const raw = typeof options.origin === 'string' ? options.origin.trim() : '';
@@ -4861,15 +5195,92 @@ function buildAccountScopeKey(emailOrId) {
   return 'acct_' + crypto.createHash('sha256').update(raw).digest('hex').slice(0, 16);
 }
 
+function buildOriginAccountCacheKey(originScope, accountScopeKey) {
+  return `${originScope || '__default__'}::${accountScopeKey || 'anonymous'}`;
+}
+
+function isForceRefreshUnsupportedError(err) {
+  const msg = String(err?.message || err || '').toLowerCase();
+  if (/timeout|timed out|etimedout|deadline|econnrefused|econnreset|enotfound|not running|unreachable|network|socket|http\s*5\d\d|\b50[234]\b/.test(msg)) {
+    return false;
+  }
+  return /unknown\s+field|unrecognized\s+field|invalid_argument|cannot\s+decode|http\s*400|unexpected\s+field/.test(msg);
+}
+
 function resetQuotaHostCacheForTest() {
   cachedUserStatusByOrigin.clear();
   cachedQuotaStateByOrigin.clear();
+  cachedQuotaByAccount.clear();
   activeQuotaFetchByOrigin.clear();
+  quotaFetchSeqByOrigin.clear();
+  quotaCommittedSeqByOrigin.clear();
+  quotaExpectedAccountByOrigin.clear();
+  quotaBackoffByScope.clear();
+}
+
+function getQuotaBackoffState(originScope = '__default__', accountScopeKey = null, nowMs = Date.now()) {
+  const keys = [];
+  if (accountScopeKey && accountScopeKey !== 'anonymous') {
+    keys.push(buildOriginAccountCacheKey(originScope, accountScopeKey));
+  }
+  keys.push(buildOriginAccountCacheKey(originScope, '__origin__'));
+  for (const k of keys) {
+    const entry = quotaBackoffByScope.get(k);
+    if (!entry) continue;
+    if (nowMs < entry.untilMs) {
+      return {
+        active: true,
+        scopeKey: k,
+        kind: entry.kind,
+        attempts: entry.attempts,
+        untilMs: entry.untilMs,
+        retryAfterMs: Math.max(0, entry.untilMs - nowMs),
+        message: entry.message
+      };
+    }
+    quotaBackoffByScope.delete(k);
+  }
+  return null;
+}
+
+function recordQuotaBackoff(originScope, accountScopeKey, classified, nowMs = Date.now()) {
+  if (!classified || classified.kind !== 'rate_limit') return null;
+  const scopeKey = buildOriginAccountCacheKey(originScope, (accountScopeKey && accountScopeKey !== 'anonymous') ? accountScopeKey : '__origin__');
+  const prev = quotaBackoffByScope.get(scopeKey);
+  const attempts = prev && nowMs < (prev.untilMs + 120000) ? (prev.attempts + 1) : 1;
+  const expMs = Math.min(300000, 30000 * Math.pow(2, Math.min(4, attempts - 1)));
+  const retryMs = Number.isFinite(Number(classified.retryAfterMs)) && Number(classified.retryAfterMs) > 0
+    ? Math.max(expMs, Math.min(600000, Number(classified.retryAfterMs)))
+    : expMs;
+  const entry = {
+    kind: classified.kind,
+    attempts,
+    untilMs: nowMs + retryMs,
+    message: classified.message || '请求触发限流，已进入退避等待'
+  };
+  quotaBackoffByScope.set(scopeKey, entry);
+  return entry;
+}
+
+function clearQuotaBackoff(originScope, accountScopeKey) {
+  if (accountScopeKey && accountScopeKey !== 'anonymous') {
+    quotaBackoffByScope.delete(buildOriginAccountCacheKey(originScope, accountScopeKey));
+  }
+  quotaBackoffByScope.delete(buildOriginAccountCacheKey(originScope, '__origin__'));
 }
 
 function classifyQuotaFetchError(err) {
   const msg = String(err?.message || err || '未知错误').trim();
   const lower = msg.toLowerCase();
+  const httpStatus = Number(err?.httpStatus ?? err?.status ?? NaN);
+  const retryAfterRaw = Number(err?.retryAfterMs ?? err?.retryAfterSec * 1000);
+  const retryAfterMs = Number.isFinite(retryAfterRaw) && retryAfterRaw > 0 ? retryAfterRaw : null;
+  if (httpStatus === 429 || /\b429\b|resource_exhausted|too many requests|rate[_\s-]?limit|限流/i.test(lower)) {
+    return { kind: 'rate_limit', retryAfterMs, message: '请求频率受限，已保留旧读数并等待退避恢复' };
+  }
+  if (/terms of service|tos|suspended|account.*disabled|service.*disabled|停用/i.test(lower)) {
+    return { kind: 'suspended', message: '账号服务状态受限，请前往官方支持页核实' };
+  }
   if (/enoent|devtoolsactiveport/i.test(lower)) {
     return { kind: 'network', message: '本地额度服务尚未就绪，请稍后重试' };
   }
@@ -4885,38 +5296,189 @@ function classifyQuotaFetchError(err) {
   return { kind: 'network', message: msg || '额度数据获取失败' };
 }
 
+function hasUsableQuotaData(userStatusRes, quotaSummaryRes) {
+  const configs = userStatusRes?.userStatus?.cascadeModelConfigData?.clientModelConfigs
+    || userStatusRes?.cascadeModelConfigData?.clientModelConfigs
+    || [];
+  const groups = quotaSummaryRes?.response?.groups
+    || quotaSummaryRes?.groups
+    || [];
+  return (Array.isArray(configs) && configs.length > 0) || (Array.isArray(groups) && groups.length > 0);
+}
+
+function collectHostFallbackOrigins(primaryOrigin, options = {}) {
+  const localApi = require('./local-api');
+  const normPrimary = normalizeLoopbackOrigin(primaryOrigin);
+  const out = [];
+  const pushOrigin = (cand) => {
+    const norm = normalizeLoopbackOrigin(cand);
+    if (!norm) return;
+    if (normPrimary && localApi.isSameLoopbackEndpoint?.(norm, normPrimary)) return;
+    if (out.some(existing => localApi.isSameLoopbackEndpoint?.(existing, norm) || existing === norm)) return;
+    out.push(norm);
+  };
+  if (Array.isArray(options.fallbackOrigins)) {
+    for (const o of options.fallbackOrigins) pushOrigin(o);
+  }
+  try {
+    const hubs = typeof localApi.discoverLiveDaemonHubs === 'function'
+      ? localApi.discoverLiveDaemonHubs(options)
+      : [];
+    for (const hub of hubs) {
+      if (hub?.httpsOrigin) pushOrigin(hub.httpsOrigin);
+      if (hub?.httpOrigin) pushOrigin(hub.httpOrigin);
+      if (hub?.origin) pushOrigin(hub.origin);
+    }
+  } catch { }
+  return out;
+}
+
 /**
- * 并发拉取宿主模型额度池与可用模型详情，带多窗口 origin 隔离、并发去重、短缓存、失败分级及账号切换检测
- * @param {Object} options - 支持 force / origin / backendSource / userStatus / quotaSummary / connect 等参数
+ * 并发拉取宿主模型额度池与可用模型详情，带多窗口 origin 隔离、同源在途强刷去重、强刷穿透 forceRefresh、服务边界自动降级、429 退避、单 RPC 失败保护、旧后台防倒灌与账号级可信快照回退
+ * @param {Object} options - 支持 force / manual / origin / source / generation / expectedAccountScopeKey / backendSource / userStatus / quotaSummary / connect 等参数
  */
 async function fetchQuotaSnapshotFromHost(options = {}) {
   const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now();
-  const force = options.force === true;
+  const requestSource = typeof options.source === 'string' && options.source.trim() ? options.source.trim() : 'default';
+  const rawForce = options.force === true;
+  const remoteForceDowngraded = Boolean(rawForce && options.manual !== true && BLOCKED_REMOTE_FORCE_SOURCES.has(requestSource));
+  const force = rawForce && !remoteForceDowngraded;
   const hasStaticFixture = options.userStatus !== undefined || options.quotaSummary !== undefined || options.error !== undefined;
   const originScope = normalizeQuotaOriginScope(options);
+  const rawExpectedScope = typeof options.expectedAccountScopeKey === 'string' && options.expectedAccountScopeKey.trim()
+    ? options.expectedAccountScopeKey.trim()
+    : null;
+  const expectedAccountScopeKey = (rawExpectedScope && rawExpectedScope !== 'anonymous') ? rawExpectedScope : null;
   const backendSource = typeof options.backendSource === 'string' && options.backendSource.trim()
     ? options.backendSource.trim()
     : 'host';
 
-  // 短缓存防刷（仅在非强制刷新且无静态测试桩时生效，15s 内复用同 origin 结果）
+  // 短缓存防刷（仅在非强制刷新、无静态测试桩、上次为可信非回退成功、且账号严格匹配时生效，15s 内复用同 origin 结果）
   const prevCachedQuota = cachedQuotaStateByOrigin.get(originScope) || null;
-  if (!force && !hasStaticFixture && !options.agDir && prevCachedQuota && (nowMs - prevCachedQuota.fetchedAtMs < 15000)) {
+  const prevExpectedScope = quotaExpectedAccountByOrigin.get(originScope) || null;
+  const requiredTtlScope = expectedAccountScopeKey || prevExpectedScope || null;
+  const prevCachedScope = (prevCachedQuota?.accountScopeKey && prevCachedQuota.accountScopeKey !== 'anonymous')
+    ? prevCachedQuota.accountScopeKey
+    : null;
+  const ttlAccountMatched = requiredTtlScope
+    ? (prevCachedScope === requiredTtlScope)
+    : Boolean(prevCachedScope);
+  // 429 退避保护：在退避窗口内直接复用同账号已有快照，不向外发任何刷新请求，保留原始采样时间
+  const activeBackoff = (!hasStaticFixture && !options.agDir)
+    ? getQuotaBackoffState(originScope, requiredTtlScope || prevCachedScope || null, nowMs)
+    : null;
+  if (activeBackoff && activeBackoff.active) {
+    const backoffScopeKey = requiredTtlScope || prevCachedScope || null;
+    const backoffAcctCached = backoffScopeKey
+      ? (cachedQuotaByAccount.get(buildOriginAccountCacheKey(originScope, backoffScopeKey)) || null)
+      : null;
+    const baseCached = (backoffAcctCached && backoffAcctCached.accountScopeKey === backoffScopeKey)
+      ? backoffAcctCached
+      : (prevCachedQuota && (!backoffScopeKey || prevCachedQuota.accountScopeKey === backoffScopeKey) ? prevCachedQuota : null);
+    const prevRaw = baseCached?._raw || null;
+    const backoffSnap = buildModelQuotaSnapshot({
+      cascadeModelConfigs: prevRaw?.cascadeModelConfigs || [],
+      clientModelSorts: prevRaw?.clientModelSorts || [],
+      defaultOverrideModelConfig: prevRaw?.defaultOverrideModelConfig || null,
+      quotaSummaryRes: prevRaw?.quotaSummaryRes || null,
+      planStatus: prevRaw?.planStatus || null,
+      currentModel: options.currentModel || null,
+      browsePoolKey: options.browsePoolKey || null,
+      fetchMeta: {
+        fetchedAtMs: prevRaw?.fetchedAtMs || baseCached?.lastSuccessAtMs || null,
+        error: activeBackoff.message,
+        errorKind: activeBackoff.kind
+      },
+      nowMs
+    });
+    return {
+      ok: false,
+      backoffActive: true,
+      retryAfterMs: activeBackoff.retryAfterMs,
+      retryAtMs: activeBackoff.untilMs,
+      remoteForceDowngraded,
+      collectorVersion: PROJECT_VERSION,
+      backendVersion: PROJECT_VERSION,
+      backendSource,
+      originScope,
+      requestSource,
+      fetchSeq: quotaFetchSeqByOrigin.get(originScope) || 0,
+      forceRefreshSent: false,
+      forceRefreshApplied: false,
+      forceRefreshFallback: false,
+      cacheHit: Boolean(baseCached),
+      dataFreshness: 'backoff_cached',
+      rpcTimings: { getUserStatusMs: null, retrieveQuotaSummaryMs: null },
+      email: baseCached?.email || prevRaw?.email || null,
+      accountScopeKey: baseCached?.accountScopeKey || backoffScopeKey || 'anonymous',
+      identityVerified: Boolean(baseCached?.identityVerified),
+      accountSwitched: false,
+      accountIdentityMismatch: false,
+      fetchedAtMs: nowMs,
+      lastSuccessAtMs: baseCached?.lastSuccessAtMs || prevRaw?.fetchedAtMs || null,
+      error: activeBackoff.message,
+      errorKind: activeBackoff.kind,
+      planTierSummary: baseCached?.planTierSummary || null,
+      snapshot: backoffSnap,
+      groupedModels: backoffSnap?.groupedModels || null,
+      clientModelSorts: prevRaw?.clientModelSorts || [],
+      _raw: prevRaw
+    };
+  }
+
+  if (
+    !force &&
+    !hasStaticFixture &&
+    !options.agDir &&
+    prevCachedQuota &&
+    prevCachedQuota.ok === true &&
+    !prevCachedQuota.staleDiscarded &&
+    !prevCachedQuota.forceRefreshFallback &&
+    prevCachedQuota.dataFreshness !== 'host_cache_fallback' &&
+    ttlAccountMatched &&
+    (nowMs - prevCachedQuota.fetchedAtMs < 15000)
+  ) {
     if (prevCachedQuota.backendSource === backendSource && prevCachedQuota.collectorVersion === PROJECT_VERSION) {
-      return prevCachedQuota;
+      return { ...prevCachedQuota, cacheHit: true, remoteForceDowngraded, dataFreshness: 'collector_ttl_cache' };
     }
     return {
       ...prevCachedQuota,
       collectorVersion: PROJECT_VERSION,
       backendVersion: PROJECT_VERSION,
-      backendSource
+      backendSource,
+      cacheHit: true,
+      remoteForceDowngraded,
+      dataFreshness: 'collector_ttl_cache'
     };
   }
 
-  // 如果已有相同 origin 请求进行中，直接合并等待，避免重复请求
-  const activePromise = activeQuotaFetchByOrigin.get(originScope) || null;
-  if (!hasStaticFixture && activePromise) {
-    if (!force) return activePromise;
-    try { await activePromise; } catch { }
+  // 在途去重：
+  // 1) 仅与当前最新有效在途请求合并，绝不复用已被新请求超越的旧在途请求；
+  // 2) 非强刷与强刷均必须核对账号作用域：显式指定预期账号时，在途请求账号未知或不匹配一律不得共享；
+  // 3) 强刷仅与同 origin、同账号作用域的在途强刷合并，绝不复用旧的非强刷后台请求。
+  const latestIssuedBefore = quotaFetchSeqByOrigin.get(originScope) || 0;
+  const activeEntry = activeQuotaFetchByOrigin.get(originScope) || null;
+  if (!hasStaticFixture && activeEntry && activeEntry.promise && activeEntry.fetchSeq === latestIssuedBefore) {
+    const activeScope = (activeEntry.accountScopeKey && activeEntry.accountScopeKey !== 'anonymous')
+      ? activeEntry.accountScopeKey
+      : null;
+    const sameAccountScope = expectedAccountScopeKey
+      ? (activeScope === expectedAccountScopeKey)
+      : (!prevExpectedScope || !activeScope || activeScope === prevExpectedScope);
+    if (sameAccountScope) {
+      if (!force) {
+        return activeEntry.promise;
+      }
+      if (activeEntry.force === true) {
+        return activeEntry.promise;
+      }
+    }
+  }
+
+  const fetchSeq = latestIssuedBefore + 1;
+  quotaFetchSeqByOrigin.set(originScope, fetchSeq);
+  if (!hasStaticFixture && !options.agDir && expectedAccountScopeKey) {
+    quotaExpectedAccountByOrigin.set(originScope, expectedAccountScopeKey);
   }
 
   const runFetch = async () => {
@@ -4924,45 +5486,143 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
     let quotaSummaryRes = null;
     let fetchError = null;
     let errorKind = null;
+    let errorRetryAfterMs = null;
+    let forceRefreshSent = false;
+    let forceRefreshApplied = false;
+    let forceRefreshFallback = false;
+    let getUserStatusMs = null;
+    let retrieveQuotaSummaryMs = null;
 
     if (options.error) {
       const classified = classifyQuotaFetchError(options.error);
       fetchError = classified.message;
       errorKind = classified.kind;
+      errorRetryAfterMs = classified.retryAfterMs || null;
     } else if (options.userStatus !== undefined || options.quotaSummary !== undefined) {
       userStatusRes = options.userStatus || null;
       quotaSummaryRes = options.quotaSummary || null;
     } else {
       try {
         const connector = typeof options.connect === 'function' ? options.connect : require('./local-api').connect;
-        const connectOpts = {};
+        const buildBaseConnectOpts = () => {
+          const base = {};
+          if (options.authBootstrap !== undefined) base.authBootstrap = options.authBootstrap;
+          if (options.daemonDir) base.daemonDir = options.daemonDir;
+          if (options.homeDir) base.homeDir = options.homeDir;
+          if (typeof options.isPidAlive === 'function') base.isPidAlive = options.isPidAlive;
+          if (options.allowDaemonFallback !== undefined) base.allowDaemonFallback = options.allowDaemonFallback;
+          return base;
+        };
+        const connectOpts = buildBaseConnectOpts();
         if (options.origin) connectOpts.origin = options.origin;
-        if (options.authBootstrap !== undefined) connectOpts.authBootstrap = options.authBootstrap;
-        if (options.daemonDir) connectOpts.daemonDir = options.daemonDir;
-        if (options.homeDir) connectOpts.homeDir = options.homeDir;
-        if (typeof options.isPidAlive === 'function') connectOpts.isPidAlive = options.isPidAlive;
-        if (options.allowDaemonFallback !== undefined) connectOpts.allowDaemonFallback = options.allowDaemonFallback;
-        const api = await connector(Object.keys(connectOpts).length ? connectOpts : undefined);
-        const [uRes, qRes] = await Promise.allSettled([
-          api.call('GetUserStatus', {}),
-          api.call('RetrieveUserQuotaSummary', {})
-        ]);
-        if (uRes.status === 'fulfilled' && uRes.value) {
-          userStatusRes = uRes.value;
+        if (typeof options.csrfToken === 'string' && options.csrfToken.trim()) {
+          connectOpts.csrfToken = options.csrfToken.trim();
         }
-        if (qRes.status === 'fulfilled' && qRes.value) {
-          quotaSummaryRes = qRes.value;
+        if (typeof options.resolveCsrfToken === 'function') {
+          connectOpts.resolveCsrfToken = options.resolveCsrfToken;
         }
-        if (!userStatusRes && !quotaSummaryRes) {
-          const firstErr = uRes.status === 'rejected' ? uRes.reason : (qRes.status === 'rejected' ? qRes.reason : new Error('宿主未返回额度数据'));
-          const classified = classifyQuotaFetchError(firstErr);
+        const runPairWithConnectOpts = async (cOpts) => {
+          const api = await connector(Object.keys(cOpts).length ? cOpts : undefined);
+          const callUserStatus = async () => {
+            const t0 = Date.now();
+            try {
+              return await api.call('GetUserStatus', {});
+            } finally {
+              getUserStatusMs = Date.now() - t0;
+            }
+          };
+          const callQuotaSummary = async () => {
+            const t0 = Date.now();
+            try {
+              if (force) {
+                forceRefreshSent = true;
+                try {
+                  const res = await api.call('RetrieveUserQuotaSummary', { forceRefresh: true });
+                  forceRefreshApplied = true;
+                  return res;
+                } catch (err) {
+                  if (isForceRefreshUnsupportedError(err)) {
+                    forceRefreshFallback = true;
+                    forceRefreshApplied = false;
+                    return await api.call('RetrieveUserQuotaSummary', {});
+                  }
+                  throw err;
+                }
+              }
+              return await api.call('RetrieveUserQuotaSummary', {});
+            } finally {
+              retrieveQuotaSummaryMs = Date.now() - t0;
+            }
+          };
+          return await Promise.allSettled([callUserStatus(), callQuotaSummary()]);
+        };
+
+        let primaryPairErr = null;
+        let uRes = { status: 'rejected', reason: null };
+        let qRes = { status: 'rejected', reason: null };
+        try {
+          [uRes, qRes] = await runPairWithConnectOpts(connectOpts);
+          if (uRes.status === 'fulfilled' && uRes.value) userStatusRes = uRes.value;
+          if (qRes.status === 'fulfilled' && qRes.value) quotaSummaryRes = qRes.value;
+        } catch (err) {
+          primaryPairErr = err;
+        }
+
+        // PR #134 Tier 2: 若主连接失败或未返回额度池，尝试通过同源渲染进程 fetch（自动携带远程会话 Cookie 与浏览器网络栈）
+        if ((!userStatusRes || !quotaSummaryRes || !hasUsableQuotaData(userStatusRes, quotaSummaryRes)) && typeof options.rendererRpcFetcher === 'function') {
+          try {
+            const rendererPair = await options.rendererRpcFetcher(options.origin);
+            const rU = rendererPair?.userStatusRes || null;
+            const rQ = rendererPair?.quotaSummaryRes || null;
+            if (hasUsableQuotaData(rU, rQ)) {
+              userStatusRes = rU || userStatusRes;
+              quotaSummaryRes = rQ || quotaSummaryRes;
+              if (rU) uRes = { status: 'fulfilled', value: rU };
+              if (rQ) qRes = { status: 'fulfilled', value: rQ };
+              primaryPairErr = null;
+            }
+          } catch (err) {
+            if (!primaryPairErr) primaryPairErr = err;
+          }
+        }
+
+        // PR #134 Tier 3: 远程 SSH 窗口无法返回额度时，安全回退至本机宿主 LS（绝不跨端口透传 Token）
+        if ((!userStatusRes || !quotaSummaryRes || !hasUsableQuotaData(userStatusRes, quotaSummaryRes)) && options.allowHostOriginFallback === true) {
+          for (const fbOrigin of collectHostFallbackOrigins(options.origin, options)) {
+            try {
+              const [fbU, fbQ] = await runPairWithConnectOpts({ ...buildBaseConnectOpts(), origin: fbOrigin });
+              const uVal = fbU.status === 'fulfilled' && fbU.value ? fbU.value : null;
+              const qVal = fbQ.status === 'fulfilled' && fbQ.value ? fbQ.value : null;
+              if (uVal && qVal && hasUsableQuotaData(uVal, qVal)) {
+                uRes = fbU;
+                qRes = fbQ;
+                userStatusRes = uVal;
+                quotaSummaryRes = qVal;
+                primaryPairErr = null;
+                break;
+              }
+            } catch { }
+          }
+        }
+
+        // 单 RPC 失败即拒绝进入成功状态，避免部分模型池旧值或缺失套餐污染前端状态
+        if (primaryPairErr || uRes.status === 'rejected' || qRes.status === 'rejected' || !userStatusRes || !quotaSummaryRes) {
+          const failedReasons = [];
+          if (primaryPairErr) failedReasons.push(primaryPairErr);
+          if (uRes.status === 'rejected' && uRes.reason) failedReasons.push(uRes.reason);
+          if (qRes.status === 'rejected' && qRes.reason) failedReasons.push(qRes.reason);
+          const primaryErr = failedReasons[0]
+            || (!userStatusRes ? new Error('GetUserStatus 未返回有效用户与套餐状态') : new Error('RetrieveUserQuotaSummary 未返回有效额度数据'));
+          const classified = classifyQuotaFetchError(primaryErr);
           fetchError = classified.message;
           errorKind = classified.kind;
+          errorRetryAfterMs = classified.retryAfterMs || null;
         }
       } catch (e) {
         const classified = classifyQuotaFetchError(e);
         fetchError = classified.message;
         errorKind = classified.kind;
+        errorRetryAfterMs = classified.retryAfterMs || null;
       }
     }
 
@@ -4981,78 +5641,412 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
       : [];
     const sanitizedSorts = sanitizeClientModelSorts(rawSorts);
     const parsedPlan = userStatusRes ? parseUserPlanStatus(userStatusRes) : null;
-    const rawEmail = parsedPlan?.email || userStatusRes?.userStatus?.email || '';
+    const rawEmail = String(parsedPlan?.email || userStatusRes?.userStatus?.email || '').trim();
+    const rawName = String(userStatusRes?.userStatus?.name || '').trim() || null;
+    const rawProfilePictureUrl = typeof userStatusRes?.userStatus?.profilePictureUrl === 'string' && userStatusRes.userStatus.profilePictureUrl.trim()
+      ? userStatusRes.userStatus.profilePictureUrl.trim()
+      : null;
+    const rawUserTier = userStatusRes?.userStatus?.userTier && typeof userStatusRes.userStatus.userTier === 'object'
+      ? {
+        id: userStatusRes.userStatus.userTier.id || null,
+        name: userStatusRes.userStatus.userTier.name || null,
+        description: userStatusRes.userStatus.userTier.description || null
+      }
+      : null;
+    const hasVerifiedIdentity = Boolean(rawEmail);
+    const verifiedScopeKey = hasVerifiedIdentity ? buildAccountScopeKey(rawEmail) : null;
+
+    // 只读快照当前 origin 状态：所有过期序号、错账号与身份未验证判定必须发生在任何缓存删写与提交序号推进之前
+    const latestIssuedSeq = quotaFetchSeqByOrigin.get(originScope) || 0;
+    const latestCommittedSeq = quotaCommittedSeqByOrigin.get(originScope) || 0;
+    const currentOriginExpected = quotaExpectedAccountByOrigin.get(originScope) || null;
     const scopeQuotaState = cachedQuotaStateByOrigin.get(originScope) || null;
     const scopeUserEntry = cachedUserStatusByOrigin.get(originScope) || null;
     const prevAccountScopeKey = scopeUserEntry?.accountScopeKey || scopeQuotaState?.accountScopeKey || null;
-    const nextScopeKey = rawEmail ? buildAccountScopeKey(rawEmail) : (prevAccountScopeKey || 'anonymous');
 
-    // 账号切换检测：一旦发现同 origin 作用域下账号变化，立即清掉旧账号缓存，绝不跨账号残留旧额度
-    const accountSwitched = Boolean(
-      rawEmail &&
-      prevAccountScopeKey &&
-      nextScopeKey !== prevAccountScopeKey
+    // 1. 竞态防倒灌：一旦已有更新序号的提交或更新的有效请求发出，迟到响应一律立即丢弃，绝不删改任何缓存或回写序号
+    const isStaleSeq = Boolean(
+      !hasStaticFixture &&
+      !options.agDir &&
+      (fetchSeq < latestCommittedSeq || fetchSeq < latestIssuedSeq)
     );
-    if (accountSwitched) {
-      cachedQuotaStateByOrigin.delete(originScope);
-      cachedUserStatusByOrigin.delete(originScope);
+    if (isStaleSeq) {
+      const latestMatchesExpected = Boolean(
+        scopeQuotaState &&
+        (!currentOriginExpected || scopeQuotaState.accountScopeKey === currentOriginExpected)
+      );
+      if (latestMatchesExpected) {
+        return {
+          ...scopeQuotaState,
+          ok: false,
+          staleDiscarded: true,
+          discardedReason: 'stale_fetch_seq',
+          dataFreshness: 'stale_discarded',
+          fetchSeq
+        };
+      }
+      return {
+        ok: false,
+        staleDiscarded: true,
+        discardedReason: 'stale_fetch_seq',
+        collectorVersion: PROJECT_VERSION,
+        backendVersion: PROJECT_VERSION,
+        backendSource,
+        originScope,
+        requestSource,
+        fetchSeq,
+        forceRefreshSent,
+        forceRefreshApplied,
+        forceRefreshFallback,
+        cacheHit: false,
+        dataFreshness: 'stale_discarded',
+        rpcTimings: { getUserStatusMs, retrieveQuotaSummaryMs },
+        email: null,
+        accountScopeKey: currentOriginExpected || null,
+        identityVerified: false,
+        accountSwitched: false,
+        accountIdentityMismatch: Boolean(verifiedScopeKey && currentOriginExpected && verifiedScopeKey !== currentOriginExpected),
+        fetchedAtMs: doneAtMs,
+        lastSuccessAtMs: null,
+        error: null,
+        errorKind: null,
+        planTierSummary: null,
+        snapshot: null,
+        groupedModels: null,
+        clientModelSorts: [],
+        _raw: null
+      };
     }
-    if (rawEmail) {
-      const existingEntry = cachedUserStatusByOrigin.get(originScope) || {};
-      cachedUserStatusByOrigin.set(originScope, {
-        ...existingEntry,
-        accountScopeKey: nextScopeKey
-      });
-    }
+
+    // 区分合法切号（沿用旧已知账号或未指定，最新请求带回可信新身份）与明确错账号（显式指定新目标账号但返回了其他账号）
+    const isExplicitTargetMismatch = Boolean(
+      !hasStaticFixture &&
+      !options.agDir &&
+      hasVerifiedIdentity &&
+      expectedAccountScopeKey &&
+      verifiedScopeKey !== expectedAccountScopeKey &&
+      expectedAccountScopeKey !== prevAccountScopeKey
+    );
+    const accountSwitched = Boolean(
+      hasVerifiedIdentity &&
+      !isExplicitTargetMismatch &&
+      prevAccountScopeKey &&
+      verifiedScopeKey !== prevAccountScopeKey
+    );
+    const accountIdentityMismatch = Boolean(isExplicitTargetMismatch);
+
+    const resolveSameAccountFallbackRecord = (targetScopeKey) => {
+      if (!targetScopeKey || targetScopeKey === 'anonymous') return null;
+      const acctCached = cachedQuotaByAccount.get(buildOriginAccountCacheKey(originScope, targetScopeKey)) || null;
+      if (acctCached?._raw && acctCached.accountScopeKey === targetScopeKey) {
+        return acctCached._raw;
+      }
+      if (scopeQuotaState?._raw && scopeQuotaState.accountScopeKey === targetScopeKey) {
+        return scopeQuotaState._raw;
+      }
+      return null;
+    };
 
     if (fetchError) {
-      // 保留同 origin 同账号最后一次有效原始响应以产出 stale 状态；无旧数据时产出 error 状态
-      const curScoped = cachedQuotaStateByOrigin.get(originScope) || null;
-      const prevRaw = (!accountSwitched && curScoped?._raw) ? curScoped._raw : null;
+      // 保留同 origin 同账号最后一次可信原始响应以产出 stale 回退；切号无新账号缓存或账号不匹配时绝不拿旧账号数据顶替
+      const fallbackScopeKey = isExplicitTargetMismatch
+        ? expectedAccountScopeKey
+        : (verifiedScopeKey || expectedAccountScopeKey || currentOriginExpected || prevAccountScopeKey || null);
+      let recordedBackoff = null;
+      if (!hasStaticFixture && !options.agDir && errorKind === 'rate_limit') {
+        recordedBackoff = recordQuotaBackoff(
+          originScope,
+          fallbackScopeKey,
+          { kind: errorKind, retryAfterMs: errorRetryAfterMs, message: fetchError },
+          doneAtMs
+        );
+      }
+      const fallbackRecord = (!accountSwitched && fallbackScopeKey)
+        ? resolveSameAccountFallbackRecord(fallbackScopeKey)
+        : null;
       const snapshot = buildModelQuotaSnapshot({
-        cascadeModelConfigs: prevRaw?.cascadeModelConfigs || [],
-        clientModelSorts: prevRaw?.clientModelSorts || [],
-        defaultOverrideModelConfig: prevRaw?.defaultOverrideModelConfig || null,
-        quotaSummaryRes: prevRaw?.quotaSummaryRes || null,
-        planStatus: prevRaw?.planStatus || null,
+        cascadeModelConfigs: fallbackRecord?.cascadeModelConfigs || [],
+        clientModelSorts: fallbackRecord?.clientModelSorts || [],
+        defaultOverrideModelConfig: fallbackRecord?.defaultOverrideModelConfig || null,
+        quotaSummaryRes: fallbackRecord?.quotaSummaryRes || null,
+        planStatus: fallbackRecord?.planStatus || null,
         currentModel: options.currentModel || null,
         browsePoolKey: options.browsePoolKey || null,
         fetchMeta: {
-          fetchedAtMs: prevRaw?.fetchedAtMs || null,
+          fetchedAtMs: fallbackRecord?.fetchedAtMs || null,
           error: fetchError,
           errorKind
         },
         nowMs: doneAtMs
       });
-      const out = {
+      return {
+        ok: false,
+        backoffActive: Boolean(recordedBackoff),
+        retryAfterMs: recordedBackoff ? Math.max(0, recordedBackoff.untilMs - doneAtMs) : null,
+        retryAtMs: recordedBackoff ? recordedBackoff.untilMs : null,
+        remoteForceDowngraded,
+        collectorVersion: PROJECT_VERSION,
+        backendVersion: PROJECT_VERSION,
+        backendSource,
+        originScope,
+        requestSource,
+        fetchSeq,
+        forceRefreshSent,
+        forceRefreshApplied,
+        forceRefreshFallback,
+        cacheHit: false,
+        dataFreshness: 'error_fallback',
+        rpcTimings: { getUserStatusMs, retrieveQuotaSummaryMs },
+        email: fallbackRecord?.email || (hasVerifiedIdentity && !isExplicitTargetMismatch ? rawEmail : null),
+        accountScopeKey: fallbackRecord?.accountScopeKey || fallbackScopeKey || 'anonymous',
+        identityVerified: hasVerifiedIdentity && !isExplicitTargetMismatch,
+        accountSwitched,
+        accountIdentityMismatch,
+        fetchedAtMs: doneAtMs,
+        lastSuccessAtMs: fallbackRecord?.fetchedAtMs || null,
+        error: fetchError,
+        errorKind,
+        planTierSummary: fallbackRecord?.planStatus ? {
+          status: fallbackRecord.planStatus.status,
+          tierKey: fallbackRecord.planStatus.tierKey,
+          tierId: fallbackRecord.planStatus.tierId || null,
+          teamsTier: fallbackRecord.planStatus.teamsTier || null,
+          tierName: fallbackRecord.planStatus.tierName || null,
+          planName: fallbackRecord.planStatus.planName || null
+        } : null,
+        snapshot,
+        groupedModels: snapshot?.groupedModels || null,
+        clientModelSorts: fallbackRecord?.clientModelSorts || [],
+        _raw: fallbackRecord
+      };
+    }
+
+    // 2. 真实宿主响应缺失可验证账号身份：不得伪装为预期/旧账号，不得清删或覆盖已有可信缓存，也不推进提交序号
+    if (!hasStaticFixture && !options.agDir && !hasVerifiedIdentity) {
+      const targetScope = expectedAccountScopeKey || currentOriginExpected || null;
+      const fallbackRecord = targetScope ? resolveSameAccountFallbackRecord(targetScope) : null;
+      const unverifiedErr = '未识别到当前账号身份';
+      const snapshot = buildModelQuotaSnapshot({
+        cascadeModelConfigs: fallbackRecord?.cascadeModelConfigs || [],
+        clientModelSorts: fallbackRecord?.clientModelSorts || [],
+        defaultOverrideModelConfig: fallbackRecord?.defaultOverrideModelConfig || null,
+        quotaSummaryRes: fallbackRecord?.quotaSummaryRes || null,
+        planStatus: fallbackRecord?.planStatus || null,
+        currentModel: options.currentModel || null,
+        browsePoolKey: options.browsePoolKey || null,
+        fetchMeta: {
+          fetchedAtMs: fallbackRecord?.fetchedAtMs || null,
+          error: unverifiedErr,
+          errorKind: 'unverified_account'
+        },
+        nowMs: doneAtMs
+      });
+      return {
         ok: false,
         collectorVersion: PROJECT_VERSION,
         backendVersion: PROJECT_VERSION,
         backendSource,
         originScope,
-        accountScopeKey: prevRaw?.accountScopeKey || nextScopeKey,
-        accountSwitched,
+        requestSource,
+        fetchSeq,
+        forceRefreshSent,
+        forceRefreshApplied,
+        forceRefreshFallback,
+        cacheHit: false,
+        dataFreshness: 'unverified_identity',
+        rpcTimings: { getUserStatusMs, retrieveQuotaSummaryMs },
+        email: null,
+        accountScopeKey: 'anonymous',
+        identityVerified: false,
+        accountSwitched: false,
+        accountIdentityMismatch: Boolean(targetScope),
         fetchedAtMs: doneAtMs,
-        lastSuccessAtMs: prevRaw?.fetchedAtMs || null,
-        error: fetchError,
-        errorKind,
-        planTierSummary: prevRaw?.planStatus ? {
-          status: prevRaw.planStatus.status,
-          tierKey: prevRaw.planStatus.tierKey,
-          tierId: prevRaw.planStatus.tierId || null,
-          teamsTier: prevRaw.planStatus.teamsTier || null,
-          tierName: prevRaw.planStatus.tierName || null,
-          planName: prevRaw.planStatus.planName || null
-        } : null,
+        lastSuccessAtMs: fallbackRecord?.fetchedAtMs || null,
+        error: unverifiedErr,
+        errorKind: 'unverified_account',
+        planTierSummary: null,
         snapshot,
         groupedModels: snapshot?.groupedModels || null,
-        clientModelSorts: prevRaw?.clientModelSorts || [],
-        _raw: prevRaw
+        clientModelSorts: fallbackRecord?.clientModelSorts || [],
+        _raw: fallbackRecord
       };
-      if (!hasStaticFixture && !options.agDir && curScoped) {
-        cachedQuotaStateByOrigin.set(originScope, { ...curScoped, error: fetchError, errorKind, snapshot });
+    }
+
+    // 3. 显式目标账号不匹配：不得清删任何缓存、不得入缓存、不得推进提交序号，也不透出错账号额度
+    if (isExplicitTargetMismatch) {
+      const fallbackRecord = resolveSameAccountFallbackRecord(expectedAccountScopeKey);
+      const mismatchErr = '返回账号与当前预期账号不一致';
+      const snapshot = buildModelQuotaSnapshot({
+        cascadeModelConfigs: fallbackRecord?.cascadeModelConfigs || [],
+        clientModelSorts: fallbackRecord?.clientModelSorts || [],
+        defaultOverrideModelConfig: fallbackRecord?.defaultOverrideModelConfig || null,
+        quotaSummaryRes: fallbackRecord?.quotaSummaryRes || null,
+        planStatus: fallbackRecord?.planStatus || null,
+        currentModel: options.currentModel || null,
+        browsePoolKey: options.browsePoolKey || null,
+        fetchMeta: {
+          fetchedAtMs: fallbackRecord?.fetchedAtMs || null,
+          error: mismatchErr,
+          errorKind: 'account_mismatch'
+        },
+        nowMs: doneAtMs
+      });
+      return {
+        ok: false,
+        collectorVersion: PROJECT_VERSION,
+        backendVersion: PROJECT_VERSION,
+        backendSource,
+        originScope,
+        requestSource,
+        fetchSeq,
+        forceRefreshSent,
+        forceRefreshApplied,
+        forceRefreshFallback,
+        cacheHit: false,
+        dataFreshness: 'account_mismatch',
+        rpcTimings: { getUserStatusMs, retrieveQuotaSummaryMs },
+        email: rawEmail || null,
+        accountScopeKey: verifiedScopeKey,
+        expectedAccountScopeKey,
+        identityVerified: true,
+        accountSwitched: false,
+        accountIdentityMismatch: true,
+        fetchedAtMs: doneAtMs,
+        lastSuccessAtMs: fallbackRecord?.fetchedAtMs || null,
+        error: mismatchErr,
+        errorKind: 'account_mismatch',
+        planTierSummary: null,
+        snapshot,
+        groupedModels: snapshot?.groupedModels || null,
+        clientModelSorts: fallbackRecord?.clientModelSorts || [],
+        _raw: fallbackRecord
+      };
+    }
+
+    const nextScopeKey = verifiedScopeKey || (hasStaticFixture ? (expectedAccountScopeKey || prevAccountScopeKey || 'anonymous') : 'anonymous');
+
+    // 4. 合法账号切换：仅在通过序号与身份核对后，再清除旧账号同源活跃缓存并更新预期账号
+    if (accountSwitched && !hasStaticFixture && !options.agDir) {
+      cachedQuotaStateByOrigin.delete(originScope);
+      cachedUserStatusByOrigin.delete(originScope);
+    }
+    if (!hasStaticFixture && !options.agDir && verifiedScopeKey) {
+      quotaExpectedAccountByOrigin.set(originScope, verifiedScopeKey);
+    }
+
+    // 5. 旧宿主协议不支持 forceRefresh 时的 {} 缓存回退：
+    // 保留同账号有用缓存，但不得当作新采样成功、不得刷新 lastSuccessAtMs、不得写入新鲜 TTL 缓存或供自动切号采信
+    if (force && forceRefreshFallback) {
+      const sameAcctPrev = (!accountSwitched && nextScopeKey !== 'anonymous')
+        ? resolveSameAccountFallbackRecord(nextScopeKey)
+        : null;
+      const prevSuccessAtMs = sameAcctPrev?.fetchedAtMs || null;
+      const probeSnap = buildModelQuotaSnapshot({
+        cascadeModelConfigs: sanitizedConfigs,
+        clientModelSorts: sanitizedSorts,
+        defaultOverrideModelConfig,
+        quotaSummaryRes,
+        planStatus: parsedPlan,
+        currentModel: options.currentModel || null,
+        browsePoolKey: options.browsePoolKey || null,
+        fetchMeta: {
+          fetchedAtMs: prevSuccessAtMs,
+          error: null,
+          errorKind: null
+        },
+        nowMs: doneAtMs
+      });
+      const fallbackHasValidPools = Boolean(probeSnap && Array.isArray(probeSnap.pools) && probeSnap.pools.length > 0);
+      const effectiveRecord = fallbackHasValidPools
+        ? {
+          cascadeModelConfigs: sanitizedConfigs,
+          clientModelSorts: sanitizedSorts,
+          defaultOverrideModelConfig,
+          quotaSummaryRes,
+          planStatus: parsedPlan,
+          email: rawEmail || null,
+          fetchedAtMs: prevSuccessAtMs,
+          accountScopeKey: nextScopeKey
+        }
+        : sameAcctPrev;
+      const hasUsableData = Boolean(fallbackHasValidPools || sameAcctPrev);
+      const fallbackErrMsg = hasUsableData
+        ? '当前宿主不支持实时强制刷新，已保留同账号缓存数据.'
+        : '当前宿主不支持实时强制刷新，且暂无可用缓存数据.';
+      const fallbackSnapshot = buildModelQuotaSnapshot({
+        cascadeModelConfigs: effectiveRecord?.cascadeModelConfigs || [],
+        clientModelSorts: effectiveRecord?.clientModelSorts || [],
+        defaultOverrideModelConfig: effectiveRecord?.defaultOverrideModelConfig || null,
+        quotaSummaryRes: effectiveRecord?.quotaSummaryRes || null,
+        planStatus: effectiveRecord?.planStatus || parsedPlan || null,
+        currentModel: options.currentModel || null,
+        browsePoolKey: options.browsePoolKey || null,
+        fetchMeta: {
+          fetchedAtMs: prevSuccessAtMs,
+          error: fallbackErrMsg,
+          errorKind: 'force_refresh_unsupported'
+        },
+        nowMs: doneAtMs
+      });
+      if (rawEmail && !hasStaticFixture && !options.agDir) {
+        const existingEntry = cachedUserStatusByOrigin.get(originScope) || {};
+        cachedUserStatusByOrigin.set(originScope, {
+          ...existingEntry,
+          status: parsedPlan || existingEntry.status || null,
+          fetchedAt: doneAtMs,
+          accountScopeKey: nextScopeKey
+        });
       }
-      return out;
+      return {
+        ok: false,
+        collectorVersion: PROJECT_VERSION,
+        backendVersion: PROJECT_VERSION,
+        backendSource,
+        originScope,
+        requestSource,
+        fetchSeq,
+        forceRefreshSent,
+        forceRefreshApplied: false,
+        forceRefreshFallback: true,
+        cacheHit: false,
+        dataFreshness: 'host_cache_fallback',
+        rpcTimings: { getUserStatusMs, retrieveQuotaSummaryMs },
+        email: rawEmail || null,
+        accountScopeKey: nextScopeKey,
+        identityVerified: hasVerifiedIdentity,
+        accountSwitched,
+        accountIdentityMismatch: false,
+        fetchedAtMs: doneAtMs,
+        lastSuccessAtMs: prevSuccessAtMs,
+        error: fallbackErrMsg,
+        errorKind: 'force_refresh_unsupported',
+        planTierSummary: (effectiveRecord?.planStatus || parsedPlan) ? {
+          status: (effectiveRecord?.planStatus || parsedPlan).status,
+          tierKey: (effectiveRecord?.planStatus || parsedPlan).tierKey,
+          tierId: (effectiveRecord?.planStatus || parsedPlan).tierId || null,
+          teamsTier: (effectiveRecord?.planStatus || parsedPlan).teamsTier || null,
+          tierName: (effectiveRecord?.planStatus || parsedPlan).tierName || null,
+          planName: (effectiveRecord?.planStatus || parsedPlan).planName || null,
+          email: (effectiveRecord?.planStatus || parsedPlan).email || rawEmail || null,
+          multiplier: (effectiveRecord?.planStatus || parsedPlan).multiplier ?? null,
+          officialPriceMonthly: (effectiveRecord?.planStatus || parsedPlan).officialPriceMonthly ?? null
+        } : null,
+        snapshot: fallbackSnapshot,
+        groupedModels: fallbackSnapshot?.groupedModels || null,
+        clientModelSorts: effectiveRecord?.clientModelSorts || [],
+        cascadeModelConfigs: effectiveRecord?.cascadeModelConfigs || [],
+        _raw: effectiveRecord || null
+      };
+    }
+
+    if (rawEmail && !hasStaticFixture && !options.agDir) {
+      const existingEntry = cachedUserStatusByOrigin.get(originScope) || {};
+      cachedUserStatusByOrigin.set(originScope, {
+        ...existingEntry,
+        status: parsedPlan || existingEntry.status || null,
+        fetchedAt: doneAtMs,
+        accountScopeKey: nextScopeKey
+      });
     }
 
     const rawRecord = {
@@ -5062,6 +6056,9 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
       quotaSummaryRes,
       planStatus: parsedPlan,
       email: rawEmail || null,
+      name: rawName || null,
+      profilePictureUrl: rawProfilePictureUrl || null,
+      userTier: rawUserTier || null,
       fetchedAtMs: doneAtMs,
       accountScopeKey: nextScopeKey
     };
@@ -5082,15 +6079,34 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
       nowMs: doneAtMs
     });
 
+    const dataFreshness = force
+      ? (hasStaticFixture ? 'fixture' : 'live_force_refresh')
+      : (hasStaticFixture ? 'fixture' : 'host_default');
+
     const out = {
       ok: true,
+      backoffActive: false,
+      remoteForceDowngraded,
       collectorVersion: PROJECT_VERSION,
       backendVersion: PROJECT_VERSION,
       backendSource,
       originScope,
+      requestSource,
+      fetchSeq,
+      forceRefreshSent,
+      forceRefreshApplied,
+      forceRefreshFallback,
+      cacheHit: false,
+      dataFreshness,
+      rpcTimings: { getUserStatusMs, retrieveQuotaSummaryMs },
       email: rawEmail || null,
+      name: rawName || null,
+      profilePictureUrl: rawProfilePictureUrl || null,
+      userTier: rawUserTier || null,
       accountScopeKey: nextScopeKey,
+      identityVerified: hasVerifiedIdentity,
       accountSwitched,
+      accountIdentityMismatch: false,
       fetchedAtMs: doneAtMs,
       lastSuccessAtMs: doneAtMs,
       error: null,
@@ -5101,7 +6117,10 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
         tierId: parsedPlan.tierId || null,
         teamsTier: parsedPlan.teamsTier || null,
         tierName: parsedPlan.tierName || null,
-        planName: parsedPlan.planName || null
+        planName: parsedPlan.planName || null,
+        email: parsedPlan.email || rawEmail || null,
+        multiplier: parsedPlan.multiplier ?? null,
+        officialPriceMonthly: parsedPlan.officialPriceMonthly ?? null
       } : null,
       snapshot,
       groupedModels: snapshot?.groupedModels || null,
@@ -5110,17 +6129,36 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
       _raw: rawRecord
     };
 
-    if (!hasStaticFixture && !options.agDir) {
+    if (!hasStaticFixture && !options.agDir && hasVerifiedIdentity) {
+      clearQuotaBackoff(originScope, nextScopeKey);
+      quotaCommittedSeqByOrigin.set(originScope, fetchSeq);
       cachedQuotaStateByOrigin.set(originScope, out);
+      cachedQuotaByAccount.set(buildOriginAccountCacheKey(originScope, nextScopeKey), out);
+    }
+    if (sharedTaskQuotaTracker && typeof sharedTaskQuotaTracker.recordSnapshot === 'function') {
+      try {
+        sharedTaskQuotaTracker.recordSnapshot(out, { nowMs: doneAtMs });
+      } catch { }
     }
     return out;
   };
 
   if (!hasStaticFixture) {
+    const entry = {
+      promise: null,
+      force,
+      source: requestSource,
+      fetchSeq,
+      accountScopeKey: expectedAccountScopeKey || prevExpectedScope || prevCachedScope || null,
+      startedAtMs: nowMs
+    };
     const p = runFetch().finally(() => {
-      if (activeQuotaFetchByOrigin.get(originScope) === p) activeQuotaFetchByOrigin.delete(originScope);
+      if (activeQuotaFetchByOrigin.get(originScope) === entry) {
+        activeQuotaFetchByOrigin.delete(originScope);
+      }
     });
-    activeQuotaFetchByOrigin.set(originScope, p);
+    entry.promise = p;
+    activeQuotaFetchByOrigin.set(originScope, entry);
     return p;
   }
   return runFetch();
@@ -5148,18 +6186,42 @@ async function fetchUserStatusFromHost(options = {}) {
   }
   try {
     const { connect } = require('./local-api');
-    const connectOpts = {};
-    if (options.origin) connectOpts.origin = options.origin;
-    if (options.authBootstrap !== undefined) connectOpts.authBootstrap = options.authBootstrap;
-    if (options.daemonDir) connectOpts.daemonDir = options.daemonDir;
-    if (options.homeDir) connectOpts.homeDir = options.homeDir;
-    if (typeof options.isPidAlive === 'function') connectOpts.isPidAlive = options.isPidAlive;
-    if (options.allowDaemonFallback !== undefined) connectOpts.allowDaemonFallback = options.allowDaemonFallback;
-    const api = await connect(Object.keys(connectOpts).length ? connectOpts : undefined);
-    const [res, availRes] = await Promise.all([
-      api.call('GetUserStatus', {}),
-      api.call('GetAvailableModels', { forceRefresh: false }).catch(() => null)
-    ]);
+    const buildBaseConnectOpts = () => {
+      const base = {};
+      if (options.authBootstrap !== undefined) base.authBootstrap = options.authBootstrap;
+      if (options.daemonDir) base.daemonDir = options.daemonDir;
+      if (options.homeDir) base.homeDir = options.homeDir;
+      if (typeof options.isPidAlive === 'function') base.isPidAlive = options.isPidAlive;
+      if (options.allowDaemonFallback !== undefined) base.allowDaemonFallback = options.allowDaemonFallback;
+      return base;
+    };
+    const fetchStatusWithConnectOpts = async (cOpts) => {
+      const api = await connect(Object.keys(cOpts).length ? cOpts : undefined);
+      const [res, availRes] = await Promise.all([
+        api.call('GetUserStatus', {}),
+        api.call('GetAvailableModels', { forceRefresh: false }).catch(() => null)
+      ]);
+      return { res, availRes };
+    };
+    let fetched = null;
+    try {
+      const connectOpts = buildBaseConnectOpts();
+      if (options.origin) connectOpts.origin = options.origin;
+      if (typeof options.csrfToken === 'string' && options.csrfToken.trim()) connectOpts.csrfToken = options.csrfToken.trim();
+      if (typeof options.resolveCsrfToken === 'function') connectOpts.resolveCsrfToken = options.resolveCsrfToken;
+      fetched = await fetchStatusWithConnectOpts(connectOpts);
+    } catch {
+      if (options.allowHostOriginFallback === true) {
+        for (const fbOrigin of collectHostFallbackOrigins(options.origin, options)) {
+          try {
+            fetched = await fetchStatusWithConnectOpts({ ...buildBaseConnectOpts(), origin: fbOrigin });
+            if (fetched?.res) break;
+          } catch { }
+        }
+      }
+    }
+    if (!fetched?.res) return cachedEntry?.status || null;
+    const { res, availRes } = fetched;
     const parsed = parseUserPlanStatus(res);
     const configs = res?.userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
     const sorts = res?.userStatus?.cascadeModelConfigData?.clientModelSorts || [];
@@ -5172,14 +6234,26 @@ async function fetchUserStatusFromHost(options = {}) {
     if (parsed && !options.agDir) {
       const nextScope = parsed.email ? buildAccountScopeKey(parsed.email) : null;
       const prevScope = cachedEntry?.accountScopeKey || null;
-      if (nextScope && prevScope && nextScope !== prevScope) {
-        cachedQuotaStateByOrigin.delete(originScope);
+      const expectedScope = quotaExpectedAccountByOrigin.get(originScope) || null;
+      const conflictsActiveQuota = Boolean(
+        nextScope &&
+        expectedScope &&
+        nextScope !== expectedScope &&
+        activeQuotaFetchByOrigin.has(originScope)
+      );
+      if (!conflictsActiveQuota) {
+        if (nextScope && prevScope && nextScope !== prevScope) {
+          cachedQuotaStateByOrigin.delete(originScope);
+        }
+        if (nextScope) {
+          quotaExpectedAccountByOrigin.set(originScope, nextScope);
+        }
+        cachedUserStatusByOrigin.set(originScope, {
+          status: parsed,
+          fetchedAt: Date.now(),
+          accountScopeKey: nextScope || prevScope || null
+        });
       }
-      cachedUserStatusByOrigin.set(originScope, {
-        status: parsed,
-        fetchedAt: Date.now(),
-        accountScopeKey: nextScope || prevScope || null
-      });
     }
     return parsed;
   } catch {
@@ -5270,13 +6344,49 @@ function parseTranscriptLineRecord(line, fallbackLineIdx, jobPath, brainMatch) {
   let commandPrograms = null;
   let skillNames = null;
   let titleHint = null;
+  let explicitTitle = null;
+  let firstUserMessage = null;
+  let messagePreview = null;
+  let workspaceHint = null;
+
+  const rawExplicitTitle = String(
+    event.sidebarTitle
+    || event.displayTitle
+    || event.sessionTitle
+    || event.metadata?.sidebarTitle
+    || event.metadata?.displayTitle
+    || event.metadata?.title
+    || ((event.type !== 'USER_INPUT' && event.type !== 'user' && event.role !== 'user') ? (event.title || event.summary || '') : '')
+    || ''
+  ).trim();
+  if (rawExplicitTitle) {
+    explicitTitle = sanitizeTurnPreviewText(rawExplicitTitle, 80);
+  }
+
+  const rawWsField = event.workspacePath
+    || event.workspace
+    || event.workspaceUri
+    || event.cwd
+    || event.metadata?.workspacePath
+    || event.metadata?.workspaceUri
+    || event.metadata?.workspaceUris
+    || event.metadata?.cwd
+    || '';
+  if (rawWsField) {
+    workspaceHint = extractWorkspaceTagFromRaw(rawWsField);
+  }
+
   if (event.type === 'USER_INPUT' || event.type === 'user' || event.role === 'user') {
     const rawUserTxt = typeof event.content === 'string'
       ? event.content
       : (typeof event.text === 'string' ? event.text : '');
     if (rawUserTxt && event.source !== 'SYSTEM_SDK') {
       const cleaned = sanitizeTurnPreviewText(rawUserTxt, 56);
-      if (cleaned) titleHint = cleaned;
+      if (cleaned) {
+        titleHint = cleaned;
+        firstUserMessage = sanitizeTurnPreviewText(rawUserTxt, 120);
+        messagePreview = sanitizeTurnPreviewText(rawUserTxt, 120);
+      }
     }
     if (rawUserTxt && /SKILL\.md/i.test(rawUserTxt)) {
       const skMatches = rawUserTxt.match(/([A-Za-z0-9_.-]+)[\\/]SKILL\.md/gi) || [];
@@ -5284,6 +6394,12 @@ function parseTranscriptLineRecord(line, fallbackLineIdx, jobPath, brainMatch) {
         skillNames = skMatches.map(m => m.replace(/[\\/]SKILL\.md/i, '')).slice(0, 6);
       }
     }
+  } else if (typeof event.content === 'string' || typeof event.response === 'string' || typeof event.text === 'string') {
+    const rawMsg = typeof event.response === 'string'
+      ? event.response
+      : (typeof event.content === 'string' ? event.content : event.text);
+    const cleanedMsg = sanitizeTurnPreviewText(rawMsg, 120);
+    if (cleanedMsg) messagePreview = cleanedMsg;
   }
   if (Array.isArray(event.tool_calls) && event.tool_calls.length) {
     toolNames = [];
@@ -5298,7 +6414,14 @@ function parseTranscriptLineRecord(line, fallbackLineIdx, jobPath, brainMatch) {
           commandPrograms.push(extractCommandProgram(rawCmd));
         }
       }
+      const cwdArg = String(unwrapToolArg(tc.args?.Cwd ?? tc.args?.WorkingDirectory ?? tc.args?.cwd ?? '') || '').trim();
+      if (!workspaceHint && cwdArg) {
+        workspaceHint = extractWorkspaceTagFromRaw(cwdArg);
+      }
       const pArg = String(unwrapToolArg(tc.args?.Path ?? tc.args?.AbsolutePath ?? tc.args?.file_path ?? '') || '');
+      if (!workspaceHint && pArg) {
+        workspaceHint = inferWorkspaceTagFromFilePath(pArg);
+      }
       if (/skill\.md$/i.test(pArg)) {
         const skFolder = pArg.split(/[\\/]/).slice(-2, -1)[0] || path.basename(pArg);
         if (skFolder) {
@@ -5341,6 +6464,9 @@ function parseTranscriptLineRecord(line, fallbackLineIdx, jobPath, brainMatch) {
       ...(toolNames?.length ? { toolNames } : {}),
       ...(commandPrograms?.length ? { commandPrograms } : {}),
       ...(skillNames?.length ? { skillNames } : {}),
+      ...(explicitTitle ? { explicitTitle } : {}),
+      ...(messagePreview ? { messagePreview } : {}),
+      ...(workspaceHint ? { workspaceHint } : {}),
       _hasExplicitId: !isStepFallbackCallId(eventId, cascadeId)
     };
   }
@@ -5352,6 +6478,10 @@ function parseTranscriptLineRecord(line, fallbackLineIdx, jobPath, brainMatch) {
     ...(toolNames?.length ? { toolNames } : {}),
     ...(commandPrograms?.length ? { commandPrograms } : {}),
     ...(skillNames?.length ? { skillNames } : {}),
+    ...(explicitTitle ? { explicitTitle } : {}),
+    ...(firstUserMessage ? { firstUserMessage } : {}),
+    ...(messagePreview ? { messagePreview } : {}),
+    ...(workspaceHint ? { workspaceHint } : {}),
     ...(titleHint ? { titleHint } : {}),
     ...(event.type === 'USER_INPUT' || event.type === 'user' || event.role === 'user' ? { isUserTurn: event.source !== 'SYSTEM_SDK' } : {})
   };
@@ -6277,6 +7407,169 @@ function buildSqliteModeRoUri(dbPath) {
   return buildSqliteUriWithQuery(dbPath, 'mode=ro');
 }
 
+const WORKSPACE_SKIP_SEGMENTS = new Set([
+  '', '.', '..', 'users', 'home', 'windows', 'program files', 'program files (x86)',
+  'appdata', 'local', 'roaming', 'temp', 'tmp', '.gemini', 'antigravity', 'brain',
+  'conversations', 'scratch', 'system_generated', '.system_generated', 'logs', 'steps',
+  'messages', 'subagents', 'tasks', 'skills', 'config', 'builtin', 'cache', 'downloads',
+  'documents', 'desktop', 'c:', 'd:', 'e:', 'f:', 'g:'
+]);
+
+const WORKSPACE_CODE_SUBDIRS = new Set([
+  'src', 'renderer', 'lib', 'app', 'packages', 'test', 'tests', '__tests__', 'spec',
+  'scripts', 'docs', 'dist', 'build', 'out', 'public', 'assets', 'components', 'pages',
+  'utils', 'helpers', 'modules', 'i18n', 'styles', 'server', 'client', 'api', 'bin', 'config'
+]);
+
+/**
+ * 从 URI 数组、单条 file:/// URI 或本地路径中提取真实项目名称（workspaceTag）。
+ */
+function extractWorkspaceTagFromRaw(rawVal) {
+  if (!rawVal) return '';
+  let candidates = [];
+  if (Array.isArray(rawVal)) {
+    candidates = rawVal;
+  } else if (typeof rawVal === 'string') {
+    const trimmed = rawVal.trim();
+    if (!trimmed) return '';
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) candidates = parsed;
+      } catch {
+        candidates = [trimmed];
+      }
+    } else {
+      candidates = [trimmed];
+    }
+  } else if (typeof rawVal === 'object') {
+    const u = rawVal.workspaceFolderAbsoluteUri || rawVal.gitRootAbsoluteUri || rawVal.path || rawVal.uri || '';
+    if (u) candidates = [u];
+  }
+
+  for (const item of candidates) {
+    if (typeof item !== 'string' || !item.trim()) continue;
+    let s = item.trim().replace(/[?#].*$/, '');
+    if (/^(?:file|vscode-remote):\/\//i.test(s)) {
+      s = s.replace(/^file:\/\/\//i, '').replace(/^vscode-remote:\/\/[^/]+\//i, '');
+      try { s = decodeURIComponent(s); } catch { }
+    }
+    s = s.replace(/\\/g, '/').replace(/\/+$/, '');
+    const parts = s.split('/').filter(Boolean);
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const seg = parts[i].trim();
+      const low = seg.toLowerCase();
+      if (!seg || /^[a-z]:$/i.test(seg) || WORKSPACE_SKIP_SEGMENTS.has(low)) continue;
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(seg)) continue;
+      return seg;
+    }
+  }
+  return '';
+}
+
+/**
+ * 从工具调用文件路径回推项目根目录名称（避开 src/scripts 等内部子目录与系统临时目录）。
+ */
+function inferWorkspaceTagFromFilePath(filePath) {
+  if (typeof filePath !== 'string' || !filePath.trim()) return '';
+  let s = filePath.trim().replace(/[?#].*$/, '');
+  if (/^file:\/\//i.test(s)) {
+    s = s.replace(/^file:\/\/\//i, '');
+    try { s = decodeURIComponent(s); } catch { }
+  }
+  s = s.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (/\/(?:\.gemini|appdata|windows|temp|tmp)\//i.test(`/${s}/`)) return '';
+  const parts = s.split('/').filter(Boolean);
+  if (parts.length < 2) return '';
+  // 去掉文件名
+  const dirs = /\.[a-z0-9]{1,8}$/i.test(parts[parts.length - 1]) ? parts.slice(0, -1) : parts.slice();
+  while (dirs.length > 1 && WORKSPACE_CODE_SUBDIRS.has(dirs[dirs.length - 1].toLowerCase())) {
+    dirs.pop();
+  }
+  for (let i = dirs.length - 1; i >= 0; i--) {
+    const seg = dirs[i].trim();
+    const low = seg.toLowerCase();
+    if (!seg || /^[a-z]:$/i.test(seg) || WORKSPACE_SKIP_SEGMENTS.has(low)) continue;
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(seg)) continue;
+    return seg;
+  }
+  return '';
+}
+
+const conversationSummariesDbCache = new Map();
+
+/**
+ * 只读加载宿主 conversation_summaries.db，返回按 conversation_id(lowercase) 索引的真实标题与项目工作区映射。
+ */
+function loadConversationSummariesIndex(candidateDirs = [], options = {}) {
+  const result = new Map();
+  if (options.fs || isFsMonkeyPatched()) return result;
+  const DatabaseSync = getNodeDatabaseSync();
+  if (!DatabaseSync) return result;
+
+  const dbPaths = [];
+  const seenPaths = new Set();
+  const addDb = (p) => {
+    if (!p || typeof p !== 'string') return;
+    const resolved = path.resolve(p);
+    const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    if (seenPaths.has(key)) return;
+    seenPaths.add(key);
+    dbPaths.push(resolved);
+  };
+  if (options.summariesDbPath) addDb(options.summariesDbPath);
+  for (const dir of Array.isArray(candidateDirs) ? candidateDirs : []) {
+    if (!dir) continue;
+    addDb(path.join(dir, 'conversation_summaries.db'));
+  }
+
+  for (const dbPath of dbPaths) {
+    try {
+      if (!fs.existsSync(dbPath)) continue;
+      const st = fs.statSync(dbPath);
+      const sig = `${st.size}:${st.mtimeMs}`;
+      const cached = conversationSummariesDbCache.get(dbPath);
+      let rowsMap = null;
+      if (cached && cached.sig === sig && cached.map instanceof Map) {
+        rowsMap = cached.map;
+      } else {
+        rowsMap = new Map();
+        let db = null;
+        try {
+          db = new DatabaseSync(dbPath, { readOnly: true });
+          const rows = db.prepare(
+            'SELECT conversation_id, title, preview, workspace_uris, project_id, step_count, status, killed FROM conversation_summaries'
+          ).all();
+          for (const r of rows) {
+            const cidLower = String(r?.conversation_id || '').trim().toLowerCase();
+            if (!cidLower) continue;
+            const wsTag = extractWorkspaceTagFromRaw(r?.workspace_uris || '');
+            const cleanTitle = typeof r?.title === 'string' ? sanitizeTurnPreviewText(r.title, 80) : '';
+            const cleanPreview = typeof r?.preview === 'string' ? sanitizeTurnPreviewText(r.preview, 120) : '';
+            rowsMap.set(cidLower, {
+              title: cleanTitle,
+              preview: cleanPreview,
+              workspaceTag: wsTag,
+              workspaceUris: String(r?.workspace_uris || ''),
+              projectId: String(r?.project_id || ''),
+              stepCount: Number(r?.step_count || 0),
+              status: String(r?.status || ''),
+              archived: Boolean(r?.killed)
+            });
+          }
+          conversationSummariesDbCache.set(dbPath, { sig, map: rowsMap });
+        } finally {
+          try { db?.close?.(); } catch { }
+        }
+      }
+      for (const [k, v] of rowsMap.entries()) {
+        if (!result.has(k)) result.set(k, v);
+      }
+    } catch { }
+  }
+  return result;
+}
+
 function readPbVarint(buf, offset, end = buf.length) {
   let value = 0;
   let multiplier = 1;
@@ -7177,7 +8470,15 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       const jobCidMatch = String(job.path || '').match(/[\\/]brain[\\/]([^\\/]+)[\\/]/i);
       const jobCidLower = String(jobCidMatch ? jobCidMatch[1] : path.basename(String(job.path || ''), '.jsonl')).toLowerCase();
       if (jobCidLower && !sessionMetaHints.has(jobCidLower)) {
-        sessionMetaHints.set(jobCidLower, { title: '', turnCount: 0, workspaceTag: '', source: job.source });
+        sessionMetaHints.set(jobCidLower, {
+          title: '',
+          explicitTitle: '',
+          firstUserMessage: '',
+          lastMessagePreview: '',
+          turnCount: 0,
+          workspaceTag: '',
+          source: job.source
+        });
       }
       const metaHint = jobCidLower ? sessionMetaHints.get(jobCidLower) : null;
       const seenSessionTools = new Set();
@@ -7189,7 +8490,19 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
         const dateKey = formatLocalDateKey(parsedDate);
         registerDate(dateKey);
         if (metaHint) {
-          if (!metaHint.title && rec.titleHint) metaHint.title = rec.titleHint;
+          if (!metaHint.explicitTitle && rec.explicitTitle) metaHint.explicitTitle = rec.explicitTitle;
+          if (!metaHint.firstUserMessage && (rec.firstUserMessage || rec.titleHint)) {
+            metaHint.firstUserMessage = rec.firstUserMessage || rec.titleHint;
+          }
+          if (rec.messagePreview || rec.titleHint) {
+            metaHint.lastMessagePreview = rec.messagePreview || rec.titleHint;
+          }
+          if (!metaHint.title && (rec.explicitTitle || rec.titleHint)) {
+            metaHint.title = rec.explicitTitle || rec.titleHint;
+          } else if (rec.explicitTitle && metaHint.title === metaHint.firstUserMessage) {
+            metaHint.title = rec.explicitTitle;
+          }
+          if (!metaHint.workspaceTag && rec.workspaceHint) metaHint.workspaceTag = rec.workspaceHint;
           if (rec.isUserTurn) metaHint.turnCount++;
         }
         if (Array.isArray(rec.toolNames)) {
@@ -8511,8 +9824,16 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     },
     now
   });
+  const summaryCandidateDirs = [agDir];
+  for (const job of transcriptJobs) {
+    if (job?.convDir) summaryCandidateDirs.push(path.resolve(job.convDir, '..'));
+  }
+  const conversationSummariesIndex = loadConversationSummariesIndex(summaryCandidateDirs, options);
+
   const archiveMap = new Map();
   const dailyInsightExtras = new Map();
+  const dailyInsightExtrasDesktop = new Map();
+  const dailyInsightExtrasCli = new Map();
   for (const [ledgerKey, c] of finalCallsEntries) {
     if (!c) continue;
     const cid = c.cascadeId ? String(c.cascadeId) : '';
@@ -8521,24 +9842,48 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     const uC = getCallTokenBreakdown(c);
     if (uC.tot <= 0) continue;
     const costV = (c.isPriced && Number.isFinite(Number(c.costUSD))) ? Number(c.costUSD) : 0;
-    let de = dailyInsightExtras.get(dKey);
-    if (!de) { de = { costUSD: 0, calls: 0, sessions: new Set() }; dailyInsightExtras.set(dKey, de); }
-    de.costUSD += costV;
-    de.calls++;
-    if (cid) de.sessions.add(cid.toLowerCase());
+    const isCliCall = c.source === 'cli';
+    const pushDayExtra = (targetMap) => {
+      let de = targetMap.get(dKey);
+      if (!de) { de = { costUSD: 0, calls: 0, sessions: new Set() }; targetMap.set(dKey, de); }
+      de.costUSD += costV;
+      de.calls++;
+      if (cid) de.sessions.add(cid.toLowerCase());
+    };
+    pushDayExtra(dailyInsightExtras);
+    pushDayExtra(isCliCall ? dailyInsightExtrasCli : dailyInsightExtrasDesktop);
     if (!cid) continue;
     const cidLower = cid.toLowerCase();
     let sa = archiveMap.get(cidLower);
+    const hint = sessionMetaHints.get(cidLower);
+    const summaryRow = conversationSummariesIndex.get(cidLower) || null;
+    const liveWsRaw = conversationWorkspaces?.get?.(cidLower) || '';
+    const callWsRaw = c.workspaceTag || c.workspacePath || c.workspace || '';
+    const resolvedWsTag = extractWorkspaceTagFromRaw(liveWsRaw)
+      || summaryRow?.workspaceTag
+      || hint?.workspaceTag
+      || extractWorkspaceTagFromRaw(callWsRaw)
+      || '';
+    const resolvedTitle = String(
+      summaryRow?.title
+      || hint?.explicitTitle
+      || c.sessionTitle
+      || c.title
+      || summaryRow?.preview
+      || hint?.firstUserMessage
+      || hint?.title
+      || ''
+    ).trim();
     if (!sa) {
-      const hint = sessionMetaHints.get(cidLower);
-      const wsRaw = conversationWorkspaces?.get?.(cidLower) || '';
-      const wsTag = wsRaw ? path.basename(wsRaw) : '';
       sa = {
         cascadeId: cid,
-        title: hint?.title || '',
+        title: resolvedTitle,
+        firstUserMessage: hint?.firstUserMessage || '',
+        lastMessagePreview: hint?.lastMessagePreview || summaryRow?.preview || hint?.firstUserMessage || '',
         date: dKey,
         updatedAt: getCallSortTimestamp(c) || 0,
-        workspaceTag: wsTag,
+        workspaceTag: resolvedWsTag,
+        project: resolvedWsTag,
         modelLabel: c.modelLabel || c.model || '',
         totalTokens: 0,
         inputTokens: 0,
@@ -8547,9 +9892,21 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
         costUSD: 0,
         callCount: 0,
         turnCount: hint?.turnCount || 0,
-        source: c.source === 'cli' ? 'cli' : 'desktop'
+        stepCount: Number(summaryRow?.stepCount || 0),
+        archived: Boolean(summaryRow?.archived),
+        source: isCliCall ? 'cli' : 'desktop'
       };
       archiveMap.set(cidLower, sa);
+    } else {
+      if (!sa.workspaceTag && resolvedWsTag) {
+        sa.workspaceTag = resolvedWsTag;
+        sa.project = resolvedWsTag;
+      }
+      if (summaryRow?.title && sa.title !== summaryRow.title) {
+        sa.title = summaryRow.title;
+      } else if (!sa.title && resolvedTitle) {
+        sa.title = resolvedTitle;
+      }
     }
     sa.totalTokens += uC.tot;
     sa.inputTokens += uC.inp;
@@ -8557,6 +9914,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     sa.outputTokens += uC.out;
     sa.costUSD += costV;
     sa.callCount++;
+    if (sa.callCount > sa.stepCount) sa.stepCount = sa.callCount;
     const tsC = getCallSortTimestamp(c) || 0;
     if (tsC >= sa.updatedAt) {
       sa.updatedAt = tsC;
@@ -8564,21 +9922,48 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
       if (c.modelLabel || c.model) sa.modelLabel = c.modelLabel || c.model;
     }
   }
-  const dailyInsights = {};
-  for (const [dk, dRec] of Object.entries(dailyMapAll)) {
-    const ext = dailyInsightExtras.get(dk);
-    const inPlusCache = (Number(dRec.input) || 0) + (Number(dRec.cache) || 0);
-    dailyInsights[dk] = {
-      tokens: Number(dRec.total) || 0,
-      input: Number(dRec.input) || 0,
-      cache: Number(dRec.cache) || 0,
-      output: Number(dRec.output) || 0,
-      costUSD: ext ? Number(ext.costUSD.toFixed(4)) : 0,
-      calls: ext ? ext.calls : (Number(dRec.steps) || 0),
-      sessions: ext ? ext.sessions.size : 0,
-      cacheReadPct: inPlusCache > 0 ? Number((((Number(dRec.cache) || 0) / inPlusCache) * 100).toFixed(1)) : 0
-    };
+  const buildDailyInsightsMap = (sourceDailyMap, extrasMap, attachToDailyMap = false) => {
+    const res = {};
+    for (const [dk, dRec] of Object.entries(sourceDailyMap || {})) {
+      const ext = extrasMap.get(dk);
+      const exactCost = ext ? Number(ext.costUSD.toFixed(4)) : 0;
+      const inPlusCache = (Number(dRec.input) || 0) + (Number(dRec.cache) || 0);
+      if (attachToDailyMap && exactCost > 0 && dRec && typeof dRec === 'object') {
+        dRec.costUSD = exactCost;
+      }
+      res[dk] = {
+        tokens: Number(dRec.total) || 0,
+        input: Number(dRec.input) || 0,
+        cache: Number(dRec.cache) || 0,
+        output: Number(dRec.output) || 0,
+        costUSD: exactCost,
+        calls: ext ? ext.calls : (Number(dRec.steps) || 0),
+        sessions: ext ? ext.sessions.size : 0,
+        cacheReadPct: inPlusCache > 0 ? Number((((Number(dRec.cache) || 0) / inPlusCache) * 100).toFixed(1)) : 0
+      };
+    }
+    return res;
+  };
+  const dailyInsights = buildDailyInsightsMap(dailyMapAll, dailyInsightExtras, true);
+  const dailyInsightsDesktop = buildDailyInsightsMap(mergedDesktop, dailyInsightExtrasDesktop, true);
+  const dailyInsightsCli = buildDailyInsightsMap(mergedCli, dailyInsightExtrasCli, true);
+  const projectAggMap = new Map();
+  for (const s of archiveMap.values()) {
+    const pName = String(s.workspaceTag || s.project || '').trim();
+    if (!pName) continue;
+    let pRec = projectAggMap.get(pName);
+    if (!pRec) {
+      pRec = { name: pName, count: 0, tokens: 0, costUSD: 0 };
+      projectAggMap.set(pName, pRec);
+    }
+    pRec.count += 1;
+    pRec.tokens += Number(s.totalTokens || 0);
+    pRec.costUSD += Number(s.costUSD || 0);
   }
+  const topProjects = Array.from(projectAggMap.values())
+    .map(p => ({ ...p, costUSD: Number(p.costUSD.toFixed(4)) }))
+    .sort((a, b) => (b.tokens - a.tokens) || (b.count - a.count))
+    .slice(0, 20);
   const totalToolUses = Array.from(crossToolAgg.values()).reduce((s, x) => s + x.count, 0);
   const topTools = Array.from(crossToolAgg.values())
     .map(x => ({
@@ -8621,11 +10006,24 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     });
   const crossSessionInsights = {
     dailyInsights,
+    dailyInsightsBySource: {
+      all: dailyInsights,
+      desktop: dailyInsightsDesktop,
+      cli: dailyInsightsCli
+    },
+    topProjects,
     topTools,
     topCommands,
     topSkills,
     sessionArchives
   };
+
+  const usageOverviewReconciliation = typeof buildUsageOverviewReconciliation === 'function'
+    ? buildUsageOverviewReconciliation(
+      Array.isArray(finalCallsEntries) ? finalCallsEntries.map(e => (Array.isArray(e) ? e[1] : e)).filter(Boolean) : [],
+      { accountScopeKey: 'all', source: 'all' }
+    )
+    : null;
 
   const out = {
     schemaVersion: PROJECT_VERSION,
@@ -8634,6 +10032,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     currentAccountEmail: currentAccountKey || null,
     usageByAccount: accountUsageBreakdown.byAccount,
     unattributedUsage: accountUsageBreakdown.unattributed,
+    usageOverviewReconciliation,
     attributionPolicy: {
       historicalFilesAttributed: false,
       description: '仅带有可靠账号归属证据的请求计入对应账号；未携带账号依据的历史会话及离线日志统一保留在未归属账本，绝不默认算给当前登录账号。'
@@ -9414,8 +10813,10 @@ function parseTranscriptForSessionTimeline(transcriptPath, cascadeId, convDir, s
           ...(event.modelChange ? { modelChange: event.modelChange } : {})
         });
       }
-    } else if (event.type === 'PLANNER_RESPONSE' || event.plannerResponse || typeof event.thinking === 'string') {
-      const respTxt = typeof event.content === 'string' ? event.content : (event.plannerResponse?.response || '');
+    } else if (event.type === 'PLANNER_RESPONSE' || event.type === 'ASSISTANT' || event.role === 'assistant' || event.plannerResponse || typeof event.thinking === 'string') {
+      const respTxt = typeof event.content === 'string'
+        ? event.content
+        : (event.plannerResponse?.modifiedResponse || event.plannerResponse?.response || (typeof event.response === 'string' ? event.response : ''));
       const thinkTxt = typeof event.thinking === 'string' ? event.thinking : (event.plannerResponse?.thinking || '');
       if (rawSteps.length < 1500) {
         rawSteps.push({
@@ -9902,6 +11303,7 @@ async function collectSessionTimelineCoreAsync(cascadeId, options = {}) {
 
   const grouped = groupSessionCallsByTurns(allTurns, allCalls, {
     cascadeId: cid,
+    sessionSource: mainFile?.source || ledgerCalls.find(call => call?.cascadeId === cid && call.source)?.source,
     cascadeModelConfigs: cascadeConfigs,
     userStatus: options.userStatus || null,
     budgetTokens: options.budgetTokens || null,
@@ -9942,9 +11344,25 @@ async function collectSessionTimelineCoreAsync(cascadeId, options = {}) {
     };
   });
   const firstTurnTitle = grouped.turns?.[0]?.preview || mainTurnsFallbackTitle(combinedEventSteps) || '';
+  const recentConversationTurns = (() => {
+    try {
+      const { extractTurnsFromRawSteps } = require('./meter-next-prompt');
+      const srcSteps = combinedEventSteps.length ? combinedEventSteps : mainRawSteps;
+      return extractTurnsFromRawSteps(srcSteps, 10).map(tr => ({
+        role: tr.role,
+        sourceType: tr.sourceType,
+        text: typeof tr.text === 'string' ? tr.text.slice(-1600) : '',
+        status: tr.status || 'completed',
+        ...(tr.toolSummary ? { toolSummary: String(tr.toolSummary).slice(0, 360) } : {})
+      }));
+    } catch {
+      return [];
+    }
+  })();
   return {
     ...grouped,
     sessionTitle: String(options.sessionTitle || firstTurnTitle || '').trim(),
+    recentConversationTurns,
     compositionFromSteps: analyzedStepsSummary
       ? {
         groups: analyzedStepsSummary.groups,
@@ -10992,6 +12410,7 @@ const LIVE_RUNTIME_FILES = [
   'restore.js',
   'live-host.js',
   'host-recovery.js',
+  'host-guard.js',
   'local-api.js',
   'meter-main.js',
   'meter-core.js',
@@ -11008,6 +12427,7 @@ const LIVE_RUNTIME_FILES = [
   'meter-context-unlock.js',
   'meter-enhance.js',
   'meter-accounts.js',
+  'meter-task-quota.js',
   'meter-next-prompt.js',
   'macos-binary-utils.js',
   'attachment_scan.py',
@@ -11740,6 +13160,9 @@ module.exports = {
   fetchQuotaSnapshotFromHost,
   buildAccountScopeKey,
   resetQuotaHostCacheForTest,
+  getQuotaBackoffState,
+  BLOCKED_REMOTE_FORCE_SOURCES,
+  getTaskQuotaTracker: () => sharedTaskQuotaTracker,
   collect,
   collectTurnState,
   collectTokenHistory,

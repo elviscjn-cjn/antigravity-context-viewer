@@ -758,16 +758,9 @@ test('PR #66 加固：额度 IPC 拒绝渲染进程伪造 origin/userStatus 且 
 
 test('顶栏入口顺序、独立弹窗锚点、防底裁切 maxHeight 与 Notice: New 过滤', () => {
   const tpl = fs.readFileSync(path.join(__dirname, 'src/renderer/template.html'), 'utf8');
-  const idxQuota = tpl.indexOf('id="badge-quota"');
-  const idxBadge = tpl.indexOf('id="badge"');
-  const idxSpeed = tpl.indexOf('id="badge-speed"');
-  const idxTokens = tpl.indexOf('id="badge-tokens"');
-  const idxCli = tpl.indexOf('id="badge-cli"');
-  const idxOverflow = tpl.indexOf('id="badge-overflow"');
-  assert.ok(idxQuota > 0 && idxQuota < idxBadge, '额度入口必须位于工具组最左侧');
-  assert.ok(idxBadge < idxSpeed && idxSpeed < idxTokens && idxTokens < idxCli && idxCli < idxOverflow);
-  const betweenBadgeAndSpeed = tpl.slice(idxBadge, idxSpeed);
-  assert.equal(betweenBadgeAndSpeed.includes('badge-quota'), false, '上下文与速度必须紧邻，不能被额度入口隔开');
+  const mtbSrc = fs.readFileSync(path.join(__dirname, 'src/renderer/morph-indicator-toolbar.js'), 'utf8');
+  // v3 任务书 4.1：五槽位胶囊迁至主窗会话头 morph-indicator-toolbar.js，额度入口位于最左侧，上下文与速度紧邻
+  assert.match(mtbSrc, /quota[\s\S]{0,200}context[\s\S]{0,200}speed|SLOT_ORDER/, 'v3 五槽位胶囊中额度入口必须位于工具组最左侧且上下文紧邻速度');
   assert.equal(tpl.includes('id="quota-usage-tip"'), false, 'v0.8.9 精简应移除冗余 quota-usage-tip 占位');
   assert.equal(tpl.includes('id="quota-basis-note"'), false, 'v0.8.9 精简应移除大段 quota-basis-note');
   assert.ok(tpl.includes('id="quota-basis-help"'), '应保留 (?) 悬浮提示按钮替代静态大段说明');
@@ -849,24 +842,35 @@ test('刷新交互：原地 DOM 节点复用、不清空归零、220ms 平滑数
     await h.flush();
   }
 
-  const listEl = h.elements.get('quota-pools-list');
-  assert.ok(listEl.children.length >= 3);
-  const firstPoolCardBefore = listEl.children[0];
-  const curBucketsBefore = h.elements.get('quota-cur-buckets');
-  const firstRowBefore = curBucketsBefore.children[0];
-  const fillBefore = firstRowBefore.children[1].children[0];
-  assert.equal(fillBefore.style.transform, 'scaleX(0.4506)');
+  const mainBoard = h.elements.get('quota-main-board');
+  const getBoardRows = () => mainBoard.children.filter(ch => String(ch.className || '').includes('quota-row'));
+  const rowsBefore = getBoardRows();
+  assert.ok(rowsBefore.length >= 4, '10.html 主看板应渲染至少两池四行');
+  const gem5hRowBefore = rowsBefore.find(r => r.getAttribute('data-row-id') === 'gemini-5h');
+  assert.ok(gem5hRowBefore);
   assert.equal(h.elements.get('quota-badge-val').textContent, '45%');
 
-  // 1. 连点两次手动刷新 -> 严格合并只发 1 次 RPC，且请求中不归零/不删节点
+  const drainBoardTimersAndRafs = async () => {
+    for (let step = 0; step < 30; step++) {
+      h.stepRaf(120);
+      await h.flush();
+      for (const t of h.scheduledTimeouts.filter(t => !t.cleared && t.ms > 0 && t.ms < 900)) {
+        t.cleared = true;
+        t.fn();
+      }
+      await h.flush();
+    }
+  };
+
+  // 1. 连点两次手动刷新 -> 严格合并只发 1 次 RPC，且请求中复用 DOM 行且顶栏不归零
   const reqBefore = h.quotaRequests.length;
   const rp1 = api.refreshQuotaForTest(true, { manual: true });
   const rp2 = api.refreshQuotaForTest(true, { manual: true });
   assert.equal(h.quotaRequests.length, reqBefore + 1);
   assert.equal(h.elements.get('quota-badge-val').textContent, '45%');
-  assert.equal(h.elements.get('quota-pools-list').children[0], firstPoolCardBefore);
+  assert.equal(getBoardRows().find(r => r.getAttribute('data-row-id') === 'gemini-5h'), gem5hRowBefore);
 
-  // 返回新值 85% (从 45% 变 85%) -> 触发 220ms rAF 平滑数字过渡与 DOM 节点 100% 复用
+  // 返回新值 85% (从 45% 变 85%) -> DOM 行 100% 复用，且顶栏 rAF 220ms 平滑数字过渡
   const nextSummary = JSON.parse(JSON.stringify(quotaSummaryRes));
   nextSummary.response.groups[0].buckets[0].remainingFraction = 0.85;
   h.quotaRequests[reqBefore].resolve({
@@ -886,20 +890,17 @@ test('刷新交互：原地 DOM 节点复用、不清空归零、220ms 平滑数
     }
   });
   await Promise.all([rp1, rp2]);
+  assert.equal(getBoardRows().find(r => r.getAttribute('data-row-id') === 'gemini-5h'), gem5hRowBefore, '刷新后必须复用同一个主看板行 DOM 节点');
 
-  assert.equal(listEl.children[0], firstPoolCardBefore, '刷新后必须复用同一个池卡片 DOM 节点，不得 rebuild');
-  assert.equal(curBucketsBefore.children[0], firstRowBefore, '刷新后必须复用同一个窗口行 DOM 节点');
-  assert.equal(fillBefore.style.transform, 'scaleX(0.8500)');
-
-  // rAF 中途 (110ms) 处于 45% 和 85% 之间的中间数值，绝不从 0 重播
+  // 顶栏 rAF 中途 (110ms) 处于 45% 和 85% 之间的中间数值，绝不从 0 重播
   h.stepRaf(110);
   const midPct = parseInt(h.elements.get('quota-badge-val').textContent, 10);
   assert.ok(midPct > 45 && midPct < 85, `平滑动画中点应落在 (45, 85)，实际为 ${midPct}%`);
 
-  // 连续触发第二次手动刷新并回落到 60% -> 从当前 midPct 无缝过渡到 60%
+  // 连续触发第二次手动刷新并回落到 60% -> 安全打断旧动画并落到 60%
   const nextSummary2 = JSON.parse(JSON.stringify(quotaSummaryRes));
   nextSummary2.response.groups[0].buckets[0].remainingFraction = 0.6;
-  const rp3 = api.refreshQuotaForTest(true, { manual: true });
+  const rp3 = api.refreshQuotaForTest(true, { manual: true, skipScanFloor: true });
   h.quotaRequests[h.quotaRequests.length - 1].resolve({
     ok: true,
     data: {
@@ -917,12 +918,15 @@ test('刷新交互：原地 DOM 节点复用、不清空归零、220ms 平滑数
     }
   });
   await rp3;
-  // 跑完 220ms 收官精准落到 60%
-  h.stepRaf(230);
+  await drainBoardTimersAndRafs();
   assert.equal(h.elements.get('quota-badge-val').textContent, '60%');
 
-  // 2. 手动刷新返回完全一致的数据 -> 不触发数字动画，展示轻量 "已更新" 提示
-  const rp4 = api.refreshQuotaForTest(true, { manual: true });
+  // 2. 手动刷新返回完全一致的数据 -> 落稳后展示轻量 "已更新" 提示与 "✓ 已刷新"
+  for (const t of h.scheduledTimeouts.filter(t => !t.cleared && t.ms === 900)) {
+    t.cleared = true;
+    t.fn();
+  }
+  const rp4 = api.refreshQuotaForTest(true, { manual: true, skipScanFloor: true });
   h.quotaRequests[h.quotaRequests.length - 1].resolve({
     ok: true,
     data: {
@@ -940,18 +944,19 @@ test('刷新交互：原地 DOM 节点复用、不清空归零、220ms 平滑数
     }
   });
   await rp4;
-  assert.equal(h.getActiveRafCount(), 0, '数据无变更不应重播 rAF 动画');
+  await drainBoardTimersAndRafs();
   assert.equal(h.elements.get('quota-refresh-feedback').hidden, false);
   assert.equal(h.elements.get('quota-refresh-feedback').textContent, '已更新');
 
   // 3. 刷新失败保留已有数据与进度条，不归零
-  const rpErr = api.refreshQuotaForTest(true, { manual: true });
+  const rpErr = api.refreshQuotaForTest(true, { manual: true, skipScanFloor: true });
   h.quotaRequests[h.quotaRequests.length - 1].resolve({
     ok: true,
     data: { ok: false, error: 'timeout', errorKind: 'network' }
   });
   await rpErr;
-  assert.equal(fillBefore.style.transform, 'scaleX(0.6000)');
+  await drainBoardTimersAndRafs();
+  assert.equal(api.getQuotaBoardStateForTest().rows.find(r => r.id === 'gemini-5h').visualLitCount, 12, '失败回滚后必须恢复原 60% 对应 12 格');
   assert.equal(h.elements.get('quota-banner').hidden, false);
 
   api.dispose();
@@ -1264,8 +1269,11 @@ test('实机回归保护：暗黑宿主切浅色不继承黑背景且过滤纯�
     userStatusRes,
     quotaSummaryRes
   }, nowMs);
-  assert.match(h.elements.get('quota-cur-est').textContent, /检测到未采集消耗或采样失真/);
-  assert.doesNotMatch(h.elements.get('quota-cur-est').textContent, /实耗差值校准/);
+  const gem5hGuardRow = h.elements.get('quota-main-board').children.find(c => c.getAttribute('data-row-id') === 'gemini-5h');
+  const gem5hGuardCaption = gem5hGuardRow.children[0].children[4];
+  assert.match(gem5hGuardCaption.textContent, /检测到未采集消耗或采样失真/);
+  assert.doesNotMatch(gem5hGuardCaption.textContent, /实耗差值校准/);
+  assert.equal(/[()（）]/.test(gem5hGuardCaption.textContent), false, '估算提示应零中英文括号');
 
   // 场景 B: 预置先验有效 delta 校准，此时同周期大幅扣减 -> 渲染 stale_with_divergence 警告文案，绝不展示“实耗差值校准”
   h.sandbox.localStorage.setItem('ag_quota_token_cal_v2_acct_ui_guard2', JSON.stringify({
@@ -1289,8 +1297,11 @@ test('实机回归保护：暗黑宿主切浅色不继承黑背景且过滤纯�
     userStatusRes,
     quotaSummaryRes
   }, nowMs);
-  assert.match(h.elements.get('quota-cur-est').textContent, /历史校准不可靠（检测到未采集消耗）/);
-  assert.doesNotMatch(h.elements.get('quota-cur-est').textContent, /实耗差值校准/);
+  const gem5hGuardRow2 = h.elements.get('quota-main-board').children.find(c => c.getAttribute('data-row-id') === 'gemini-5h');
+  const gem5hGuardCaption2 = gem5hGuardRow2.children[0].children[4];
+  assert.match(gem5hGuardCaption2.textContent, /历史校准不可靠.*检测到未采集消耗/);
+  assert.doesNotMatch(gem5hGuardCaption2.textContent, /实耗差值校准/);
+  assert.equal(/[()（）]/.test(gem5hGuardCaption2.textContent), false, '异常告警估算提示应零中英文括号');
 
   api.dispose();
 });
@@ -1424,7 +1435,8 @@ test('手动刷新动效与防闪烁回归：按钮/时间文字不抽动、无�
   const tNext = h.elements.get('quota-time-next');
   assert.equal(btnRefreshText.textContent, '刷新');
   const initialNextText = tNext.textContent;
-  assert.match(initialNextText, /\(3分\)/);
+  assert.match(initialNextText, /· 3分/);
+  assert.equal(/[()（）]/.test(initialNextText), false, '下次自动刷新文案必须零括号');
 
   // 2. 连续快速点击（调用 refreshQuotaForTest 两次），期间校验不叠加请求、不闪烁按钮文字/下次刷新时间、不清空卡片
   const p1 = api.refreshQuotaForTest(true, { manual: true });
@@ -1436,10 +1448,11 @@ test('手动刷新动效与防闪烁回归：按钮/时间文字不抽动、无�
   assert.equal(tNext.textContent, initialNextText);
   assert.notEqual(h.elements.get('quota-cur-model').textContent, '暂未识别当前模型');
 
-  // 3. 首次手动刷新返回“数据未变化”同内容新快照 -> 触发已更新反馈、进度条不重建
+  // 3. 首次手动刷新返回“数据未变化”同内容新快照 -> 触发已更新反馈、进度条行 DOM 原地复用不重建
   const sameViewSnap = api.getModelQuotaStateForTest(nowMs).view;
-  const listEl = h.elements.get('quota-pools-list');
-  const firstCardRef = listEl.children[0];
+  const mainBoard = h.elements.get('quota-main-board');
+  const firstRowRef = mainBoard.children.find(c => String(c.className || '').includes('quota-row'));
+  assert.ok(firstRowRef, '主看板必须渲染 10.html 配额行');
   const unchangedBuiltSnap = core.buildModelQuotaSnapshot({
     userStatusRes,
     quotaSummaryRes,
@@ -1463,7 +1476,7 @@ test('手动刷新动效与防闪烁回归：按钮/时间文字不抽动、无�
   assert.equal(btnRefresh.getAttribute('data-busy'), 'false');
   assert.equal(fbEl.hidden, false);
   assert.equal(fbEl.textContent, '已更新');
-  assert.equal(listEl.children[0], firstCardRef);
+  assert.equal(mainBoard.children.find(c => String(c.className || '').includes('quota-row')), firstRowRef);
   assert.equal(sameViewSnap.pools.length, api.getModelQuotaStateForTest(nowMs + 1000).view.pools.length);
 
   // 3b. 验证静态节点无变化不触发重复 DOM 写入，且滚动位置保持不变
@@ -1478,22 +1491,22 @@ test('手动刷新动效与防闪烁回归：按钮/时间文字不抽动、无�
     get: () => curModelRawText,
     set: v => { curModelTextWrites += 1; curModelRawText = String(v); }
   });
-  let firstCardAttrWrites = 0;
-  const origSetAttr = firstCardRef.setAttribute.bind(firstCardRef);
-  firstCardRef.setAttribute = (k, v) => { firstCardAttrWrites += 1; return origSetAttr(k, v); };
 
   // 4. 模拟刷新失败：保留现有旧值，横幅显示错误，不归零，且先前“已更新”反馈应自动收起
   const beforeErrBadge = h.elements.get('quota-badge-val').textContent;
-  const pErr = api.refreshQuotaForTest(true, { manual: true });
+  const pErr = api.refreshQuotaForTest(true, { manual: true, skipScanFloor: true });
   resolveNextRpc({ ok: false, error: '模拟超时' });
   await pErr;
+  for (let i = 0; i < 30; i++) {
+    h.stepRaf(120);
+    await h.flush();
+  }
   assert.equal(h.elements.get('quota-badge-val').textContent, beforeErrBadge);
   assert.equal(h.elements.get('quota-banner').hidden, false);
   assert.match(h.elements.get('quota-banner-text').textContent, /模拟超时/);
   assert.equal(fbEl.hidden, true);
   assert.equal(viewQuotaEl.scrollTop, 148);
   assert.equal(curModelTextWrites, 0, '模型名称未变时不应触发多余 DOM textContent 写入');
-  assert.equal(firstCardAttrWrites, 0, '卡片状态未变时不应触发多余 DOM 属性写入');
 
   // 5. 隔离场景验证：setQuotaSnapshotForTest 触发数值变化时，调用 rAF 渐进插值数字而非直接跳终值
   const changedSummary = JSON.parse(JSON.stringify(quotaSummaryRes));
@@ -1583,113 +1596,114 @@ test('额度进度条充能动画：仅手动刷新成功后按真实比例与�
     await h.flush();
   }
 
-  const curBuckets = h.elements.get('quota-cur-buckets');
-  const curRow = curBuckets.children[0];
-  const curTrack = curRow.children[1];
-  const curFill = curTrack.children[0];
-  const curStage = curTrack.children[1];
+  const mainBoard = h.elements.get('quota-main-board');
+  const getRow = (rowId) => mainBoard.children.find(c => c.getAttribute('data-row-id') === rowId);
+  const getCells = (row) => row.children[0].children[1].children[0].children;
+  const getRail = (row) => row.children[0].children[2];
+  const getDial = (row) => row.children[1].children[0];
 
-  const listEl = h.elements.get('quota-pools-list');
-  const pool3pCard = listEl.children.find(c => c.getAttribute('data-pool-key') === 'shared_3p_pool');
-  const pool3pBuckets = pool3pCard.children[2];
-  const zeroTrack = pool3pBuckets.children[0].children[1];
-  const zeroStage = zeroTrack.children[1];
-  const lowTrack = pool3pBuckets.children[1].children[1];
-  const lowStage = lowTrack.children[1];
+  const gem5hRow = getRow('gemini-5h');
+  const p3p7dRow = getRow('shared-7d');
+  const p3p5hRow = getRow('shared-5h');
+  const argonRow = mainBoard.children.find(c => String(c.getAttribute('data-row-id') || '').includes('argon'));
+  assert.ok(gem5hRow && p3p7dRow && p3p5hRow && argonRow, '主看板应包含双池四行及额外独立池行');
+  assert.equal(getCells(p3p7dRow).filter(c => c.children[0].getAttribute('data-cell-active') === 'true').length, 0, '0% 耗尽行 20 格全空');
+  assert.equal(p3p7dRow.getAttribute('data-red-alert'), 'true', '0% 耗尽保持红警');
+  assert.equal(argonRow.getAttribute('data-quota-state'), 'unknown', '未知池保持独立未知状态');
+  assert.equal(argonRow.getAttribute('data-red-alert'), 'false', '未知池绝不得误标为红警');
 
-  const poolArgonCard = listEl.children.find(c => c.getAttribute('data-pool-key') === 'shared_gemini_argon');
-  const unknownTrack = poolArgonCard.children[2].children[0].children[1];
-  const unknownStage = unknownTrack.children[1];
-
-  // 1. 请求等待期间保持底层状态，不提前启动充能动画
+  // 1. 阶段一退潮归零 + 慢回包进入纯中性灰扫描（真实回包未到绝不报成功，且真实快照未清空）
+  const btnRefresh = h.elements.get('btn-quota-refresh');
+  const txtRefresh = h.elements.get('quota-refresh-text');
   const pManual1 = api.refreshQuotaForTest(true, { manual: true });
-  assert.equal(curTrack.getAttribute('data-charging'), null);
-  assert.equal(curStage.hidden, true);
+  assert.equal(btnRefresh.getAttribute('data-refresh-state'), 'loading');
+  assert.equal(txtRefresh.textContent, '刷新');
+  assert.equal(api.getQuotaBoardStateForTest().phase, 'drain', '手动刷新启动应立即进入 Stage 1 退潮');
 
-  // 2. 手动刷新成功（数值未变）-> 可见有效条按自身真实比例与状态色播放，零余额/未知保持静态
+  // 推进 Stage 1 退潮到完全归零 (0.3x 节奏下约 500-700ms) -> 检查全空零残留并自动进入中性灰扫描
+  for (let i = 0; i < 10; i++) {
+    h.stepRaf(100);
+    await h.flush();
+  }
+  assert.equal(api.getQuotaBoardStateForTest().phase, 'scan', 'RPC 尚未返回时退潮完成后必须自动进入中性灰单格扫描');
+  assert.equal(getCells(gem5hRow).filter(c => c.children[0].style.opacity === '1').length, 0, '全空扫描帧 20 格绝无彩色残留');
+  assert.equal(getRail(gem5hRow).children[0].children[0].style.width, '0%', '全空扫描帧 4px 基准轨 base 必须 0% 清空');
+  assert.equal(getRail(gem5hRow).children[0].children[1].style.width, '0%', '全空扫描帧 4px 基准轨 delta 必须 0% 清空');
+  assert.equal(getRail(gem5hRow).children[1].style.opacity, '0', '全空扫描帧白色游标必须隐去');
+  const gem5hSummaryNodes = gem5hRow.children[0].children[0].children[1].children;
+  const gem5hPctNode = gem5hSummaryNodes.find(n => String(n.className || '').includes('row-pct'));
+  assert.equal(gem5hPctNode?.textContent, '--%', '扫描等待期间百分比应显示 --%');
+  assert.equal(getDial(gem5hRow).classList.contains('is-fetching'), true, '扫描等待期间 70px 圆盘应进入 is-fetching 轨道旋转');
+  assert.equal(h.elements.get('quota-badge-val').textContent, '45%', '展示层退潮扫描绝不能清空顶栏或真实可信快照');
+  // 再步进一帧验证中性灰 scan-peak / scan-mid 扫描生效
+  h.stepRaf(180);
+  await h.flush();
+  const scanHighlightCount = getCells(gem5hRow).filter(c => c.classList.contains('scan-peak') || c.classList.contains('scan-mid')).length;
+  assert.ok(scanHighlightCount >= 1, '慢回包扫描阶段必须存在纯中性灰 scan-peak / scan-mid 单元格');
+
+  // 2. 真实回包到达 -> 先走 200ms 全空换气停顿 -> Stage 2 逐格机械上电 -> 落稳前按钮绝不报成功
   const sameSnap = core.buildModelQuotaSnapshot({
     userStatusRes,
     quotaSummaryRes,
     currentModel: { modelId: 'MODEL_PLACEHOLDER_M28', label: 'Gemini 4 Hydrogen (High)' },
-    fetchMeta: { fetchedAtMs: nowMs + 500 },
-    nowMs: nowMs + 500
+    fetchMeta: { fetchedAtMs: nowMs + 1500 },
+    nowMs: nowMs + 1500
   });
-  const qFill = h.elements.get('quota-ring-fill');
-  let ringFillAttrWrites = 0;
-  const origRingSetAttr = qFill.setAttribute.bind(qFill);
-  qFill.setAttribute = (k, v) => { ringFillAttrWrites += 1; return origRingSetAttr(k, v); };
-
   resolveNextRpc({
     ok: true,
-    data: { ok: true, accountScopeKey: 'acct_charge_test', fetchedAtMs: nowMs + 500, lastSuccessAtMs: nowMs + 500, snapshot: sameSnap }
+    data: { ok: true, accountScopeKey: 'acct_charge_test', fetchedAtMs: nowMs + 1500, lastSuccessAtMs: nowMs + 1500, snapshot: sameSnap }
   });
   await pManual1;
+  await h.flush();
 
-  assert.equal(curTrack.getAttribute('data-charging'), 'true');
-  assert.equal(curStage.hidden, false);
-  assert.equal(curStage.getAttribute('data-status'), 'available');
-  assert.equal(curStage.style.width, '45.06%');
-  assert.equal(curFill.style.transform, 'scaleX(0.4506)');
-  const curSegFills = curTrack.children[2].children.map(s => s.children[0]);
-  const curPulsedCount = curSegFills.filter(sf => sf.getAttribute('data-cell-pulse') === 'true').length;
-  assert.equal(curPulsedCount, 10, '45.06% 共 9 满格+1 部分格，应仅点亮前 10 格');
-  assert.equal(curSegFills[0].style.getPropertyValue('--quota-cell-delay'), '0ms');
-  assert.equal(curSegFills[9].style.getPropertyValue('--quota-cell-delay'), '378ms', '10 格步进 clamp(round(420/10),22,48)=42ms');
-  assert.equal(curSegFills[10].getAttribute('data-cell-pulse'), null, '空槽必须保持静止不加脉冲标记');
-  assert.equal(lowTrack.getAttribute('data-charging'), 'true');
-  assert.equal(lowStage.hidden, false);
-  assert.equal(lowStage.getAttribute('data-status'), 'low');
-  assert.equal(lowStage.style.width, '12.00%');
-  const lowSegFills = lowTrack.children[2].children.map(s => s.children[0]);
-  assert.equal(lowSegFills.filter(sf => sf.getAttribute('data-cell-pulse') === 'true').length, 3, '12% 共 3 格点亮，步进 48ms');
-  assert.equal(lowSegFills[2].style.getPropertyValue('--quota-cell-delay'), '96ms');
-  assert.equal(lowSegFills[3].getAttribute('data-cell-pulse'), null);
-  const chargeDetail = api.getQuotaChargeDetailForTest();
-  assert.equal(chargeDetail.playing, true);
-  assert.ok(chargeDetail.detail.bars.some(b => b.activeCells === 10 && b.stepMs === 42 && b.staticEmptyCount === 10));
-  assert.equal(zeroTrack.getAttribute('data-charge-eligible'), 'false');
-  assert.equal(zeroTrack.getAttribute('data-charging'), null);
-  assert.equal(zeroStage.hidden, true);
-  assert.equal(unknownTrack.getAttribute('data-charge-eligible'), 'false');
-  assert.equal(unknownTrack.getAttribute('data-charging'), null);
-  assert.equal(unknownStage.hidden, true);
-  assert.equal(ringFillAttrWrites, 0, '顶部圆环不应在条形充能反馈时重复重绘');
+  assert.equal(api.getQuotaBoardStateForTest().phase, 'pause', '真实回包到达后先走全空换气停顿');
+  assert.equal(btnRefresh.getAttribute('data-refresh-state'), 'loading', '停顿与回充未落稳前绝不报成功');
+  const pauseTimers = h.scheduledTimeouts.filter(t => !t.cleared && t.ms === 200);
+  assert.ok(pauseTimers.length >= 1, '0.3x 节奏全空换气停顿应为 200ms');
+  for (const t of pauseTimers) { t.cleared = true; t.fn(); }
+  await h.flush();
 
-  // 3. 动画进行中再次触发手动刷新成功 -> 不堆积多轮播放、不新建第二个收尾定时器
-  const activeChargeTimers1 = h.scheduledTimeouts.filter(t => t.ms === 750 && !t.cleared);
-  assert.equal(activeChargeTimers1.length, 1);
-  const pManualOverlap = api.refreshQuotaForTest(true, { manual: true });
-  resolveNextRpc({
-    ok: true,
-    data: { ok: true, accountScopeKey: 'acct_charge_test', fetchedAtMs: nowMs + 700, lastSuccessAtMs: nowMs + 700, snapshot: sameSnap }
-  });
-  await pManualOverlap;
-  const activeChargeTimers2 = h.scheduledTimeouts.filter(t => t.ms === 750 && !t.cleared);
-  assert.equal(activeChargeTimers2.length, 1);
-  assert.equal(activeChargeTimers2[0].id, activeChargeTimers1[0].id);
+  assert.equal(api.getQuotaBoardStateForTest().phase, 'refill', '停顿结束后进入 Stage 2 逐格上电');
+  h.stepRaf(200);
+  await h.flush();
+  assert.equal(btnRefresh.getAttribute('data-refresh-state'), 'loading', '回充中途按钮仍为 loading 不提前报成功');
 
-  // 4. 定时器到期后无缝收尾，回到纯粹底层显示
-  activeChargeTimers2[0].fn();
-  assert.equal(curTrack.getAttribute('data-charging'), null);
-  assert.equal(curStage.hidden, true);
-  assert.equal(curSegFills.filter(sf => sf.getAttribute('data-cell-pulse') === 'true').length, 0, '收尾后必须清除逐格脉冲属性');
-  assert.equal(curFill.style.transform, 'scaleX(0.4506)');
+  // 推进完成全部回充与圆盘落稳
+  for (let i = 0; i < 20; i++) {
+    h.stepRaf(120);
+    await h.flush();
+  }
+  assert.equal(api.getQuotaBoardStateForTest().phase, 'idle');
+  assert.equal(btnRefresh.getAttribute('data-refresh-state'), 'done', '仅在逐格上电与圆盘落稳后按钮才切为 done');
+  assert.equal(txtRefresh.textContent, '✓ 已刷新');
+  assert.equal(getCells(gem5hRow).filter(c => c.children[0].getAttribute('data-cell-active') === 'true').length, 10, '45.06% 落稳后点亮 10 格');
+  assert.equal(getDial(gem5hRow).classList.contains('dial-settle-pulse'), true, '70px 圆盘落稳应触发 dial-settle-pulse');
+  const doneHoldTimers = h.scheduledTimeouts.filter(t => t.ms === 900 && !t.cleared);
+  assert.equal(doneHoldTimers.length, 1, '薄荷绿完成态应保持 900ms 后回 idle');
+  doneHoldTimers[0].cleared = true;
+  doneHoldTimers[0].fn();
+  assert.equal(btnRefresh.getAttribute('data-refresh-state'), 'idle');
+  assert.equal(txtRefresh.textContent, '刷新');
 
-  // 5. 自动静默刷新 & 失败响应均不触发充能动画
+  // 3. 自动静默轮询绝不触发退潮归零
   const pAuto = api.refreshQuotaForTest(false, { silent: true });
   resolveNextRpc({
     ok: true,
-    data: { ok: true, accountScopeKey: 'acct_charge_test', fetchedAtMs: nowMs + 2000, lastSuccessAtMs: nowMs + 2000, snapshot: sameSnap }
+    data: { ok: true, accountScopeKey: 'acct_charge_test', fetchedAtMs: nowMs + 3000, lastSuccessAtMs: nowMs + 3000, snapshot: sameSnap }
   });
   await pAuto;
-  assert.equal(curTrack.getAttribute('data-charging'), null);
-  assert.equal(curStage.hidden, true);
+  assert.equal(api.getQuotaBoardStateForTest().phase, 'idle');
 
-  const pFail = api.refreshQuotaForTest(true, { manual: true });
+  // 4. 失败响应优雅回充恢复旧数据，不报成功，不卡死在 0%
+  const pFail = api.refreshQuotaForTest(true, { manual: true, skipScanFloor: true });
   resolveNextRpc({ ok: false, error: '请求失败' });
   await pFail;
-  assert.equal(curTrack.getAttribute('data-charging'), null);
-  assert.equal(curStage.hidden, true);
+  for (let i = 0; i < 25; i++) {
+    h.stepRaf(120);
+    await h.flush();
+  }
+  assert.equal(btnRefresh.getAttribute('data-refresh-state'), 'error');
+  assert.equal(getCells(gem5hRow).filter(c => c.children[0].getAttribute('data-cell-active') === 'true').length, 10, '失败回滚后必须恢复原 10 格，绝不留在 0%');
 
   api.dispose();
 });
@@ -1745,9 +1759,6 @@ test('额度进度条充能动画：prefers-reduced-motion 降级为静态成功
     await h.flush();
   }
 
-  const curTrack = h.elements.get('quota-cur-buckets').children[0].children[1];
-  const curStage = curTrack.children[1];
-
   const changedSummary = JSON.parse(JSON.stringify(quotaSummaryRes));
   changedSummary.response.groups[0].buckets[0].remainingFraction = 0.77;
   const nextSnap = core.buildModelQuotaSnapshot({
@@ -1764,11 +1775,14 @@ test('额度进度条充能动画：prefers-reduced-motion 降级为静态成功
     data: { ok: true, accountScopeKey: 'acct_reduced_charge', fetchedAtMs: nowMs + 1000, lastSuccessAtMs: nowMs + 1000, snapshot: nextSnap }
   });
   await pManual;
+  await h.flush();
 
-  assert.equal(curTrack.getAttribute('data-charging'), null);
-  assert.equal(curStage.hidden, true);
-  assert.equal(h.elements.get('quota-refresh-feedback').hidden, false);
-  assert.equal(h.elements.get('quota-refresh-feedback').textContent, '已更新');
+  const bState = api.getQuotaBoardStateForTest();
+  assert.equal(bState.phase, 'idle', '减弱动效模式下不进入退潮/扫描/逐格动画，直接静态落稳');
+  assert.equal(bState.activeRafCount, 0);
+  const gem5h = bState.rows.find(r => r.id === 'gemini-5h');
+  assert.equal(Math.round(gem5h.pct), 77);
+  assert.equal(h.elements.get('btn-quota-refresh').getAttribute('data-refresh-state'), 'done');
 
   api.dispose();
 });
@@ -2871,24 +2885,44 @@ test('共享额度池随 5h/weekly 窗口切换同步更新状态与手动刷新
     }
     await h.flush();
 
-    // 验证静默刷新进行中时，手动刷新会排队并在静默结束后自动发起一次 force: true 请求
+    // 验证静默后台刷新进行中时，手动强刷绝不复用旧静默请求而是立即发起独立 force: true 强刷，
+    // 且旧静默回包晚于强刷到达时不得倒灌覆盖新状态
     const req0Count = h.quotaRequests.length;
-    const silentPromise = api.refreshQuotaForTest(false, { manual: false });
-    const manualPromise = api.refreshQuotaForTest(true, { manual: true });
-    assert.equal(h.quotaRequests.length, req0Count + 1, '静默进行中时暂不并发第二次请求');
-    h.quotaRequests[req0Count].resolve({
-      ok: true,
-      data: { ok: true, accountScopeKey: 'acct_alice', fetchedAtMs: nowMs, lastSuccessAtMs: nowMs, snapshot: snap }
-    });
-    await h.flush();
-    assert.ok(h.quotaRequests.length >= req0Count + 2, '静默完成后应自动补发一次手动强制刷新');
+    const silentPromise = api.refreshQuotaForTest(false, { manual: false, silent: true });
+    const manualPromise = api.refreshQuotaForTest(true, { manual: true, skipScanFloor: true });
+    assert.equal(h.quotaRequests.length, req0Count + 2, '强刷必须跳过旧静默请求复用并立即发起独立请求');
     const queuedManualReq = h.quotaRequests[req0Count + 1];
     assert.equal(Boolean(queuedManualReq.opts?.force), true);
+    const freshManualSummary = JSON.parse(JSON.stringify(quotaSummaryRes));
+    freshManualSummary.response.groups[0].buckets[0].remainingFraction = 0.05;
+    freshManualSummary.response.groups[0].buckets[1].remainingFraction = 0.80;
+    const freshSnap = core.buildModelQuotaSnapshot({
+      userStatusRes,
+      quotaSummaryRes: freshManualSummary,
+      currentModel: 'MODEL_PLACEHOLDER_M38',
+      fetchMeta: { fetchedAtMs: nowMs + 500 },
+      nowMs: nowMs + 500
+    });
+    // 强刷先返回并提交，随后旧静默带着过时 99% 晚到，不得倒灌覆盖
     queuedManualReq.resolve({
       ok: true,
-      data: { ok: true, accountScopeKey: 'acct_alice', fetchedAtMs: nowMs + 500, lastSuccessAtMs: nowMs + 500, snapshot: snap }
+      data: { ok: true, accountScopeKey: 'acct_alice', fetchedAtMs: nowMs + 500, lastSuccessAtMs: nowMs + 500, snapshot: freshSnap }
     });
-    await Promise.all([silentPromise, manualPromise]);
+    await manualPromise;
+    const staleSummary = JSON.parse(JSON.stringify(quotaSummaryRes));
+    staleSummary.response.groups[0].buckets[0].remainingFraction = 0.99;
+    const staleSnap = core.buildModelQuotaSnapshot({
+      userStatusRes,
+      quotaSummaryRes: staleSummary,
+      currentModel: 'MODEL_PLACEHOLDER_M38',
+      fetchMeta: { fetchedAtMs: nowMs - 5000 },
+      nowMs
+    });
+    h.quotaRequests[req0Count].resolve({
+      ok: true,
+      data: { ok: true, accountScopeKey: 'acct_alice', fetchedAtMs: nowMs - 5000, lastSuccessAtMs: nowMs - 5000, snapshot: staleSnap }
+    });
+    await silentPromise;
 
     // 验证 5h -> weekly 切换时 shared_gemini_main 的 pool.status 跟随 pb 更新（low -> available）
     api.setQuotaBadgeWindowMode('5h', { persist: false });
@@ -3349,57 +3383,31 @@ test('额度消耗节奏 UI：双轨20格渲染、分层紧凑与展开、顶栏
     nowMs
   }, nowMs);
 
-  // 1. 校验 65%/75% 5h(偏快 -10%) 与 59%/96% Weekly(透支 -37%) 双轨 20 格、小数格、下轨游标与差值带
-  const curBuckets = h.elements.get('quota-cur-buckets');
-  assert.equal(curBuckets.children.length, 2);
+  // 1. 校验 10.html 主看板双池四行 20 格、精确左对齐小数格、4px 双色基准轨与白标游标
+  const mainBoard = h.elements.get('quota-main-board');
+  const getBoardRow = (id) => mainBoard.children.find(c => c.getAttribute('data-row-id') === id);
+  const getRowCells = (row) => row.children[0].children[1].children[0].children;
+  const getRowRail = (row) => row.children[0].children[2];
+  const getRowPacePill = (row) => row.children[0].children[3].children[1];
 
-  const row5h = curBuckets.children[0];
-  assert.equal(row5h.getAttribute('data-pace-tier'), '3');
-  const segs5h = row5h.children[1].children[2];
-  assert.equal(segs5h.children.length, 20);
-  assert.equal(segs5h.children[12].children[0].style.width, '100%');
-  assert.equal(segs5h.children[13].children[0].style.width, '0%');
-  const paceWrap5h = row5h.children[2];
-  assert.equal(paceWrap5h.hidden, false);
-  assert.equal(paceWrap5h.getAttribute('data-pace-tier'), '3');
-  assert.equal(paceWrap5h.children[0].children[1].hidden, false, '5h 偏快应展示差值高亮区段');
-  assert.match(paceWrap5h.children[1].children[1].textContent, /偏快\s*-10%/);
+  const row7d = getBoardRow('gemini-7d');
+  const row5h = getBoardRow('gemini-5h');
+  assert.ok(row7d && row5h, '主看板必须渲染 Gemini 7d 与 5h 两行');
+  const segs5h = getRowCells(row5h);
+  assert.equal(segs5h.length, 20);
+  assert.equal(segs5h[12].children[0].style.width, '100.00%');
+  assert.equal(segs5h[13].children[0].style.width, '0%');
+  assert.match(getRowPacePill(row5h).textContent, /偏快\s*-10%/);
 
-  const row7d = curBuckets.children[1];
-  assert.equal(row7d.getAttribute('data-pace-tier'), '3', '59%/96% (-37pp) 在新阈值下为 3 档橙色偏快');
-  const segs7d = row7d.children[1].children[2];
-  assert.equal(segs7d.children[10].children[0].style.width, '100%');
-  assert.equal(segs7d.children[11].children[0].style.width, '80.0%', '59% 第 12 格应按 80% 实际比例填充');
-  assert.equal(segs7d.children[12].children[0].style.width, '0%');
-  const paceWrap7d = row7d.children[2];
-  assert.equal(paceWrap7d.hidden, false);
-  assert.equal(paceWrap7d.getAttribute('data-pace-tier'), '3');
-  assert.equal(paceWrap7d.children[0].children[1].hidden, false, '偏快应展示差值高亮区段');
-  assert.match(paceWrap7d.children[1].children[0].textContent, /96%/, '剩余时间文案应统一整数百分比');
-  assert.equal(paceWrap7d.children[0].children[2].style.left, '96.00%', '时间刻线游标仍按真实精度定位');
-  assert.match(paceWrap7d.children[1].children[1].textContent, /偏快\s*-37%/);
+  const segs7d = getRowCells(row7d);
+  assert.equal(segs7d[10].children[0].style.width, '100.00%');
+  assert.equal(segs7d[11].children[0].style.width, '80.00%', '59% 第 12 格应按 80.00% 左对齐宽度填充');
+  assert.equal(segs7d[11].children[0].style.opacity, '1', '小数尾格不靠透明度染整格');
+  assert.equal(segs7d[12].children[0].style.width, '0%');
+  assert.equal(getRowRail(row7d).children[1].style.left, '96.00%', '白色基准游标应按真实剩余时间精度定位');
+  assert.match(getRowPacePill(row7d).textContent, /透支\s*-37%/);
 
-  // 1b. 验证 2 档轻微落后 (58% 额度 / 60% 余时 -> delta = -2%) 也显示差值高亮区段
-  const tier2Summary = JSON.parse(JSON.stringify(quotaSummaryRes));
-  tier2Summary.response.groups[0].buckets[0] = {
-    bucketId: 'gem-5h',
-    window: '5h',
-    remainingFraction: 0.58,
-    resetTime: new Date(nowMs + Math.round(0.60 * 5 * 3600000)).toISOString()
-  };
-  api.setQuotaSnapshotForTest({
-    accountScopeKey: 'acct_pace_ui',
-    userStatusRes,
-    quotaSummaryRes: tier2Summary,
-    fetchedAtMs: nowMs + 100,
-    nowMs
-  }, nowMs);
-  const tier2Row = h.elements.get('quota-cur-buckets').children[0];
-  assert.equal(tier2Row.getAttribute('data-pace-tier'), '2');
-  assert.equal(tier2Row.children[2].children[0].children[1].hidden, false, '2 档轻微落后时也应标出差值高亮区段');
-  assert.equal(tier2Row.children[2].children[0].children[1].getAttribute('data-pace-tier'), '2');
-
-  // 还原主验证快照 (65%/75% 偏快 与 59%/96% 偏快) 并加测 Claude 池 0% 空条与单份主池双轨
+  // 2. 校验 3P 池 0% 耗尽行 20 格全空并保留红警与真实时间基准轨
   const zeroCompactSummary = JSON.parse(JSON.stringify(quotaSummaryRes));
   zeroCompactSummary.response.groups[1].buckets[0] = {
     bucketId: '3p-5h',
@@ -3414,35 +3422,11 @@ test('额度消耗节奏 UI：双轨20格渲染、分层紧凑与展开、顶栏
     fetchedAtMs: nowMs + 200,
     nowMs
   }, nowMs);
-
-  // 2. 分层展示做减法：当前池仅在 #quota-current-card 唯一呈现并自带节奏标签与模型芯片，#quota-pools-list 仅列其余池
-  const curPacePill = h.elements.get('quota-cur-pace-pill');
-  const curChips = h.elements.get('quota-cur-models-chips');
-  assert.equal(curPacePill.hidden, false);
-  assert.match(curPacePill.textContent, /节奏.*偏快/);
-  assert.equal(curChips.hidden, false);
-  assert.ok(curChips.children.some(ch => String(ch.textContent || '').includes('Gemini 4 Hydrogen') || (ch.children || []).some(sub => String(sub.textContent || '').includes('Gemini 4 Hydrogen'))));
-
-  const listEl = h.elements.get('quota-pools-list');
-  const duplicateMainCard = listEl.children.find(c => c.getAttribute('data-pool-key') === 'shared_gemini_main');
-  assert.equal(duplicateMainCard, undefined, '下方共享池列表不应重复渲染主池双轨卡片');
-  const otherPoolCard = listEl.children.find(c => c.getAttribute('data-pool-key') === 'shared_3p_pool');
-  assert.equal(otherPoolCard.getAttribute('data-compact'), 'true');
-  const compactBox = otherPoolCard.children[4];
-  assert.equal(compactBox.hidden, false, '其他池默认显示紧凑行条');
-  // 验证 0% 紧凑条真实亮色填充 width:0% + data-empty=true，保留低透明差值底带与重置刻线
-  const compactZeroRow = compactBox.children[0];
-  const zeroFill = compactZeroRow.children[1].children[0];
-  const zeroGap = compactZeroRow.children[1].children[1];
-  const zeroTick = compactZeroRow.children[1].children[2];
-  assert.equal(zeroFill.getAttribute('data-empty'), 'true');
-  assert.equal(zeroFill.style.width, '0%');
-  assert.equal(zeroGap.hidden, false);
-  assert.equal(zeroTick.hidden, false);
-  otherPoolCard.click();
-  assert.equal(otherPoolCard.getAttribute('data-compact'), 'false', '点击其他池应展开完整双轨');
-  otherPoolCard.click();
-  assert.equal(otherPoolCard.getAttribute('data-compact'), 'true', '再次点击应可收起回紧凑展示');
+  const shared5hZero = getBoardRow('shared-5h');
+  assert.equal(shared5hZero.getAttribute('data-red-alert'), 'true', '0% 耗尽保留红警');
+  assert.equal(getRowCells(shared5hZero).filter(c => c.children[0].style.opacity === '1').length, 0, '0% 耗尽 20 格全空');
+  assert.notEqual(getRowRail(shared5hZero).children[0].children[1].style.width, '0%', '0% 耗尽静态时继续显示真实时间基线与差额');
+  assert.equal(getRowRail(shared5hZero).children[1].style.opacity, '1', '0% 耗尽静态时保留白标');
 
   // 3. 顶栏圆环时间刻点与零冗余重绘校验（复原无 0% 修改的原主验证快照测试）
   api.setQuotaSnapshotForTest({
@@ -3485,12 +3469,12 @@ test('额度消耗节奏 UI：双轨20格渲染、分层紧凑与展开、顶栏
   const csbWide = api.getComposerQuotaSummaryStateForTest(nowMs);
   assert.equal(csbWide.groupHidden, false);
   assert.equal(csbWide.win5hHidden, false);
-  assert.equal(csbWide.win5hText, '5h 65%');
+  assert.equal(csbWide.win5hText, '5H 65%');
   assert.equal(csbWide.win7dHidden, false);
-  assert.equal(csbWide.win7dText, '7d 59%');
+  assert.equal(csbWide.win7dText, '7D 59%');
   assert.equal(csbWide.altWarnHidden, false);
-  assert.match(csbWide.altWarnText, /5h 偏快/);
-  assert.equal(csbWide.moreText, '+2');
+  assert.match(csbWide.altWarnText, /5H 偏快/);
+  assert.equal(csbWide.moreText, '');
 
   // 切窄窗 (< 560) -> widthMode = tight，隐藏次要窗口与 +N，仍保留紧缩主窗口(7d)与另一条限额提醒(5h 偏快)
   h.sandbox.window.innerWidth = 480;
@@ -3558,23 +3542,18 @@ test('额度消耗节奏 UI：双轨20格渲染、分层紧凑与展开、顶栏
     fetchedAtMs: nowMs,
     nowMs
   }, nowMs);
-  const edgeRows = h.elements.get('quota-cur-buckets').children;
-  assert.equal(edgeRows.length, 4);
-  // 极小非零 0.134% 第1格透亮兜底 opacity=0.25
-  assert.equal(edgeRows[0].children[1].children[2].children[0].children[0].style.opacity, '0.25');
-  assert.equal(edgeRows[0].children[2].hidden, false);
-  // 0% 耗尽强制4档透支且 20 格全 0%
-  assert.equal(edgeRows[1].getAttribute('data-pace-tier'), '4');
-  assert.equal(edgeRows[1].children[1].children[2].children[0].children[0].style.width, '0%');
-  assert.match(edgeRows[1].children[2].children[1].children[1].textContent, /透支.*耗尽/);
-  // 缺重置时间与未知周期静默隐藏节奏轨，保留常规 20 格比例显示
-  assert.equal(edgeRows[2].getAttribute('data-pace-tier'), null);
-  assert.equal(edgeRows[2].children[2].hidden, true);
-  assert.equal(edgeRows[2].children[1].children[2].hidden, false);
-  assert.equal(edgeRows[3].getAttribute('data-pace-tier'), null);
-  assert.equal(edgeRows[3].children[2].hidden, true);
+  const edgeGem5h = getBoardRow('gemini-5h');
+  const edgeGem7d = getBoardRow('gemini-7d');
+  // 极小非零 0.134% -> 10.html 红警且第 1 格左对齐保留最小 6% 可见宽
+  assert.equal(edgeGem5h.getAttribute('data-red-alert'), 'true');
+  assert.equal(getRowCells(edgeGem5h)[0].children[0].style.width, '6.00%');
+  assert.equal(getRowCells(edgeGem5h)[0].children[0].style.opacity, '1');
+  // 0% 耗尽保持红警且 20 格全 0%
+  assert.equal(edgeGem7d.getAttribute('data-red-alert'), 'true');
+  assert.equal(getRowCells(edgeGem7d)[0].children[0].style.width, '0%');
+  assert.match(getRowPacePill(edgeGem7d).textContent, /已耗尽 0%/);
 
-  // 数据过期时整体隐藏顶栏时间刻点与所有窗口节奏轨
+  // 数据过期时整体隐藏顶栏时间刻点并清空主看板时间基准轨
   api.setQuotaSnapshotForTest({
     accountScopeKey: 'acct_pace_ui',
     error: 'stale timeout',
@@ -3584,7 +3563,7 @@ test('额度消耗节奏 UI：双轨20格渲染、分层紧凑与展开、顶栏
     nowMs
   }, nowMs);
   assert.equal(h.elements.get('quota-ring-pace-dot').hidden, true, '数据过期/异常时应隐藏顶栏时间刻点');
-  assert.equal(h.elements.get('quota-cur-buckets').children[0].children[2].hidden, true, '数据过期/异常时应隐藏节奏下轨');
+  assert.equal(getRowRail(getBoardRow('gemini-7d')).getAttribute('data-rail-empty'), 'true', '数据过期/异常时应隐藏/清空基准轨');
 
   api.dispose();
 });
@@ -3625,8 +3604,9 @@ test('v0.9.0-beta.1 同快照额度百分比在顶栏、双轨卡与输入框摘
     };
     api.setQuotaSnapshotForTest({ accountScopeKey: 'acct_same_snap', userStatusRes, quotaSummaryRes: snapReal, fetchedAtMs: nowMs, nowMs }, nowMs);
     assert.equal(h.elements.get('quota-badge-val').textContent, '6%');
-    assert.equal(api.getComposerQuotaSummaryStateForTest(nowMs).win5hText, '5h 6%');
-    assert.equal(h.elements.get('quota-cur-buckets').children[0].children[0].children[1].children[0].textContent, '6%');
+    assert.equal(api.getComposerQuotaSummaryStateForTest(nowMs).win5hText, '5H 6%');
+    const row5hSame = api.getQuotaBoardStateForTest().rows.find(r => r.id === 'gemini-5h');
+    assert.equal(row5hSame.pctText, '6%');
 
     // 2. 极小非零 0.0005 (0.05%) 与 core.formatQuotaPercentText 均返回 '<0.1%'
     assert.equal(core.formatQuotaPercentText(0.0005), '<0.1%');
@@ -3644,8 +3624,9 @@ test('v0.9.0-beta.1 同快照额度百分比在顶栏、双轨卡与输入框摘
     };
     api.setQuotaSnapshotForTest({ accountScopeKey: 'acct_micro_snap', userStatusRes, quotaSummaryRes: snapMicro, fetchedAtMs: nowMs, nowMs }, nowMs);
     assert.equal(h.elements.get('quota-badge-val').textContent, '<0.1%');
-    assert.equal(api.getComposerQuotaSummaryStateForTest(nowMs).win5hText, '5h <0.1%');
-    assert.equal(h.elements.get('quota-cur-buckets').children[0].children[0].children[1].children[0].textContent, '<0.1%');
+    assert.equal(api.getComposerQuotaSummaryStateForTest(nowMs).win5hText, '5H <0.1%');
+    const row5hMicro = api.getQuotaBoardStateForTest().rows.find(r => r.id === 'gemini-5h');
+    assert.equal(row5hMicro.pctText, '<0.1%');
   } finally {
     api.dispose();
   }
@@ -3751,7 +3732,7 @@ test('PR #74: 带前缀模型选择器、Orchestrator/Worker 身份、分屏聚�
     assert.equal(syncedRight.activeSessionProductKey, 'product:google:gemini-4-neon');
     assert.equal(syncedRight.activeSessionEffortUnknown, false);
     assert.equal(h.elements.get('quota-badge-val').textContent, '78%');
-    assert.equal(api.getComposerQuotaSummaryStateForTest(nowMs).win5hText, '5h 78%');
+    assert.equal(api.getComposerQuotaSummaryStateForTest(nowMs).win5hText, '5H 78%');
 
     // 2. Orchestrator (Carbon) & Orchestrator (Argon) 各自命中独立池与 41% / 92% 读数
     activeTriggerTextRight = 'Orchestrator (Carbon)';
@@ -3795,7 +3776,7 @@ test('PR #74: 带前缀模型选择器、Orchestrator/Worker 身份、分屏聚�
     assert.equal(vUnknown.currentModel.productLabel, 'Future Mystery 9');
     assert.equal(vUnknown.currentModel.poolKey, null);
     assert.equal(h.elements.get('quota-badge-val').textContent, '未知');
-    assert.equal(h.elements.get('quota-cur-buckets').children.length, 0);
+    assert.equal(h.elements.get('quota-cur-status').textContent, '未知');
     assert.equal(api.getComposerQuotaSummaryStateForTest(nowMs).groupHidden, true);
     api.setQuotaBadgeWindowMode?.('both');
     const vUnknownBoth = api.getModelQuotaStateForTest(nowMs).view;
@@ -3815,4 +3796,1505 @@ test('PR #74: 带前缀模型选择器、Orchestrator/Worker 身份、分屏聚�
     api.dispose();
   }
 });
+
+test('02 批任务 1：强刷穿透 forceRefresh、单 RPC 失败拒绝成功、同源强刷去重、旧后台防倒灌、账号回退与装饰标签 NEW 统一', async () => {
+  collector.resetQuotaHostCacheForTest();
+  const { nowMs, userStatusRes, quotaSummaryRes } = buildRealistic2321Fixtures();
+
+  // 1.1 装饰标签「新建」与 New 统一识别并规范为 NEW，且不误判为 Notice/无权限；真实下线、Notice、无权限各自保留
+  assert.equal(core.isDecorativeBadgeTagTitle('New'), true);
+  assert.equal(core.isDecorativeBadgeTagTitle('新建'), true);
+  assert.equal(core.normalizeDecorativeBadgeTagTitle('New'), 'NEW');
+  assert.equal(core.normalizeDecorativeBadgeTagTitle('新建'), 'NEW');
+  assert.equal(core.normalizeDecorativeBadgeTagTitle('Leaving Soon'), null);
+
+  const decoAvail = core.classifyModelQuotaAvailability({
+    label: 'Gemini 4 Neon (High)',
+    tagTitle: '新建',
+    tagDescription: 'For most deep reasoning and complex problems'
+  });
+  assert.equal(decoAvail.noPermission, false);
+  assert.equal(decoAvail.noticeText, null, '装饰标签新建附带产品简介不应生成 Notice 告警');
+  assert.equal(decoAvail.decorativeBadgeTag, 'NEW');
+
+  const leavingAvail = core.classifyModelQuotaAvailability({
+    label: 'Gemini 4 Argon (High)',
+    tagTitle: 'Leaving Soon',
+    tagDescription: 'Leaving on Nov 30.'
+  });
+  assert.equal(leavingAvail.noPermission, false);
+  assert.equal(leavingAvail.noticeTitle, 'Leaving Soon');
+  assert.match(leavingAvail.noticeText, /Leaving on Nov 30/);
+  assert.equal(leavingAvail.decorativeBadgeTag, null);
+
+  // 1.2 force: true 穿透 15s 短缓存并向 RetrieveUserQuotaSummary 传 { forceRefresh: true }
+  const rpcLog = [];
+  const res1 = await collector.fetchQuotaSnapshotFromHost({
+    origin: 'https://127.0.0.1:59001',
+    nowMs,
+    connect: async () => ({
+      call: async (method, params) => {
+        rpcLog.push({ method, params });
+        return method === 'GetUserStatus' ? userStatusRes : quotaSummaryRes;
+      }
+    })
+  });
+  assert.equal(res1.ok, true);
+  assert.equal(rpcLog.find(r => r.method === 'RetrieveUserQuotaSummary').params.forceRefresh, undefined);
+
+  // 15s 内非强刷命中短缓存，不发 RPC
+  const resCached = await collector.fetchQuotaSnapshotFromHost({
+    origin: 'https://127.0.0.1:59001',
+    nowMs: nowMs + 3000,
+    connect: async () => { throw new Error('should hit 15s ttl cache'); }
+  });
+  assert.equal(resCached.ok, true);
+  assert.equal(resCached.cacheHit, true);
+
+  // 15s 内 force: true 穿透短缓存且传入 { forceRefresh: true }
+  const updatedSummary = JSON.parse(JSON.stringify(quotaSummaryRes));
+  updatedSummary.response.groups[0].buckets[0].remainingFraction = 0.72;
+  const forceRpcLog = [];
+  const resForce = await collector.fetchQuotaSnapshotFromHost({
+    origin: 'https://127.0.0.1:59001',
+    force: true,
+    source: 'panel_manual_refresh',
+    nowMs: nowMs + 4000,
+    connect: async () => ({
+      call: async (method, params) => {
+        forceRpcLog.push({ method, params });
+        return method === 'GetUserStatus' ? userStatusRes : updatedSummary;
+      }
+    })
+  });
+  assert.equal(resForce.ok, true);
+  assert.equal(resForce.forceRefreshSent, true);
+  assert.equal(resForce.forceRefreshApplied, true);
+  assert.equal(resForce.dataFreshness, 'live_force_refresh');
+  const qReq = forceRpcLog.find(r => r.method === 'RetrieveUserQuotaSummary');
+  assert.deepEqual(qReq.params, { forceRefresh: true });
+  assert.equal(resForce.snapshot.pools.find(p => p.poolKey === 'shared_gemini_main').buckets[0].remainingFraction, 0.72);
+
+  // 1.3 单 RPC 失败（如 RetrieveUserQuotaSummary 失败但 GetUserStatus 成功）不得进入成功状态，且保留同账号上次可信快照
+  const singleFail = await collector.fetchQuotaSnapshotFromHost({
+    origin: 'https://127.0.0.1:59001',
+    force: true,
+    nowMs: nowMs + 5000,
+    connect: async () => ({
+      call: async (method) => {
+        if (method === 'GetUserStatus') return userStatusRes;
+        throw new Error('upstream 503');
+      }
+    })
+  });
+  assert.equal(singleFail.ok, false, '单 RPC 失败绝不可返回 ok: true');
+  assert.equal(singleFail.snapshot.syncState, 'stale');
+  assert.equal(singleFail.snapshot.pools.find(p => p.poolKey === 'shared_gemini_main').buckets[0].remainingFraction, 0.72, '失败必须回退到同账号上次可信快照 72%');
+
+  // 1.4 并发同源强刷共享同一在途 Promise（不堆叠 RPC），而旧非强刷后台晚于新强刷返回时不倒灌
+  let resolveBgQuota = null;
+  let forceCallCounter = 0;
+  const bgPromise = collector.fetchQuotaSnapshotFromHost({
+    origin: 'https://127.0.0.1:59002',
+    force: false,
+    nowMs: nowMs + 1000,
+    connect: async () => ({
+      call: async (method) => {
+        if (method === 'GetUserStatus') return userStatusRes;
+        return new Promise(resolve => { resolveBgQuota = resolve; });
+      }
+    })
+  });
+  await new Promise(r => setImmediate(r));
+  const freshSummaryRace = JSON.parse(JSON.stringify(quotaSummaryRes));
+  freshSummaryRace.response.groups[0].buckets[0].remainingFraction = 0.88;
+  let resolveForceQuota = null;
+  const makeForceOpts = () => ({
+    origin: 'https://127.0.0.1:59002',
+    force: true,
+    nowMs: nowMs + 2000,
+    connect: async () => ({
+      call: async (method, params) => {
+        if (method === 'GetUserStatus') return userStatusRes;
+        forceCallCounter++;
+        assert.deepEqual(params, { forceRefresh: true });
+        return new Promise(resolve => { resolveForceQuota = resolve; });
+      }
+    })
+  });
+  const f1 = collector.fetchQuotaSnapshotFromHost(makeForceOpts());
+  const f2 = collector.fetchQuotaSnapshotFromHost(makeForceOpts());
+  const f3 = collector.fetchQuotaSnapshotFromHost(makeForceOpts());
+  await new Promise(r => setImmediate(r));
+  assert.equal(forceCallCounter, 1, '同源并发 3 次强刷必须共享同一在途 RPC');
+  resolveForceQuota(freshSummaryRace);
+  const [rf1, rf2, rf3] = await Promise.all([f1, f2, f3]);
+  assert.equal(rf1.ok, true);
+  assert.equal(rf2.snapshot.pools[0].buckets[0].remainingFraction, 0.88);
+  assert.equal(rf3.snapshot.pools[0].buckets[0].remainingFraction, 0.88);
+
+  // 旧后台晚到带着过时 45% -> 不得倒灌覆盖缓存中的 88%
+  resolveBgQuota(quotaSummaryRes);
+  const rBg = await bgPromise;
+  assert.equal(rBg.staleDiscarded, true);
+  const afterBgCache = await collector.fetchQuotaSnapshotFromHost({
+    origin: 'https://127.0.0.1:59002',
+    force: false,
+    nowMs: nowMs + 3000,
+    connect: async () => { throw new Error('should return fresh 88% cache'); }
+  });
+  assert.equal(afterBgCache.snapshot.pools[0].buckets[0].remainingFraction, 0.88);
+  collector.resetQuotaHostCacheForTest();
+});
+
+test('02 批任务 2 & 3：顶栏 1 秒 3 次即时轮换合并强刷、额度直达零闪烁、滚动缩短夹紧与 Issue #107 右键边界', async () => {
+  const nowMs = Date.now();
+  const f5h = new Date(nowMs + 4 * 3600000).toISOString();
+  const fWeek = new Date(nowMs + 5 * 86400000).toISOString();
+  const fArgon = new Date(nowMs + 6 * 86400000).toISOString();
+  const { userStatusRes, quotaSummaryRes } = buildRealistic2321Fixtures(new Date(nowMs).toISOString(), f5h, fWeek, fArgon);
+  quotaSummaryRes.response.groups[0].buckets[0].remainingFraction = 0.88; // 5h 88%
+  quotaSummaryRes.response.groups[0].buckets[1].remainingFraction = 0.96; // 7d 96%
+
+  const h = createQuotaRendererHarness();
+  try {
+    // 清理初始化请求
+    while (h.quotaRequests.length > 0) {
+      h.quotaRequests.shift().resolve({ ok: false, error: 'init-noop' });
+    }
+    await h.flush();
+
+    const api = h.sandbox.__AGContextMeter;
+
+    // 2.1 冷启动未知套餐显示「待识别」，绝不写死 Google AI Pro
+    assert.equal(h.elements.get('quota-plan-tier-pill').textContent, '待识别');
+
+    // 2.2 注入当前模型与初始快照（88% 5h / 96% 7d），默认 auto 显示最紧缩 88% 5h
+    api.setContextLatestForTest(
+      { model: 'Gemini 4 Hydrogen (High)', modelId: 'MODEL_PLACEHOLDER_M28', actual: 1000, budget: 256000 },
+      userStatusRes.userStatus.cascadeModelConfigData.clientModelConfigs
+    );
+    api.setQuotaSnapshotForTest({
+      accountScopeKey: 'acct_cycle3',
+      fetchedAtMs: nowMs,
+      userStatusRes,
+      quotaSummaryRes
+    }, nowMs);
+    assert.equal(h.elements.get('quota-badge-val').textContent, '88%');
+    assert.equal(h.elements.get('quota-badge-tag').textContent, '5h');
+
+    // 2.3 1 秒连点顶栏 #badge-quota 3 次：每次即时切周期 (auto->5h->weekly->both)，底层合并只发 1 次 force: true 强刷
+    const badgeQuota = h.elements.get('badge-quota');
+    const qFill = h.elements.get('quota-ring-fill');
+    const reqBefore = h.quotaRequests.length;
+    badgeQuota.dispatchEvent({ type: 'click', detail: 1 }); // -> 5h
+    assert.equal(api.getQuotaBadgeWindowMode(), '5h');
+    assert.equal(h.elements.get('quota-badge-val').textContent, '88%');
+    assert.equal(badgeQuota.getAttribute('data-quota-syncing'), 'true', '等待期间给圆环克制同步脉冲属性');
+
+    badgeQuota.dispatchEvent({ type: 'click', detail: 1 }); // -> weekly
+    assert.equal(api.getQuotaBadgeWindowMode(), 'weekly');
+    assert.equal(h.elements.get('quota-badge-val').textContent, '96%');
+    assert.equal(h.elements.get('quota-badge-tag').textContent, '7d');
+
+    badgeQuota.dispatchEvent({ type: 'click', detail: 1 }); // -> both
+    assert.equal(api.getQuotaBadgeWindowMode(), 'both');
+    assert.equal(h.elements.get('quota-badge-dual').hidden, false);
+    assert.equal(h.elements.get('quota-badge-dual').children[0].textContent, '5h 88%');
+    assert.equal(h.elements.get('quota-badge-dual').children[1].textContent, '7d 96%');
+
+    // 1 秒连点 3 次合并为 1 条底层强刷请求
+    assert.equal(h.quotaRequests.length, reqBefore + 1, '1 秒点 3 次底层只能合并为 1 条在途强刷 RPC');
+    assert.equal(h.quotaRequests[reqBefore].opts.force, true);
+    assert.equal(h.quotaRequests[reqBefore].opts.source, 'topbar_badge_cycle');
+
+    // 回包带新数值 (5h 85% / 7d 94%) 与真实 Ultra 套餐 -> 原子同步顶栏、悬停菜单、底栏与套餐徽标
+    api.setComposerQuotaSummaryEnabledForTest(true);
+    const ultraUserStatus = JSON.parse(JSON.stringify(userStatusRes));
+    ultraUserStatus.userStatus.userTier = { id: 'g1-ultra-tier', name: 'Google AI Ultra' };
+    ultraUserStatus.userStatus.planStatus = { planInfo: { teamsTier: 'TEAMS_TIER_PRO_ULTIMATE', planName: 'Google AI Ultra' } };
+    const nextSummary = JSON.parse(JSON.stringify(quotaSummaryRes));
+    nextSummary.response.groups[0].buckets[0].remainingFraction = 0.85;
+    nextSummary.response.groups[0].buckets[1].remainingFraction = 0.94;
+    const ultraSnap = core.buildModelQuotaSnapshot({
+      userStatusRes: ultraUserStatus,
+      quotaSummaryRes: nextSummary,
+      currentModel: { modelId: 'MODEL_PLACEHOLDER_M28', label: 'Gemini 4 Hydrogen (High)' },
+      fetchMeta: { fetchedAtMs: nowMs + 600 },
+      nowMs: nowMs + 600
+    });
+    h.quotaRequests[reqBefore].resolve({
+      ok: true,
+      data: {
+        ok: true,
+        accountScopeKey: 'acct_cycle3',
+        fetchedAtMs: nowMs + 600,
+        lastSuccessAtMs: nowMs + 600,
+        planTierSummary: { status: 'identified', tierKey: 'ultra', tierName: 'Google AI Ultra', planName: 'Google AI Ultra' },
+        snapshot: ultraSnap
+      }
+    });
+    await h.flush();
+    assert.equal(badgeQuota.getAttribute('data-quota-syncing'), null);
+    assert.equal(h.elements.get('quota-badge-dual').children[0].textContent, '5h 85%');
+    assert.equal(h.elements.get('quota-badge-dual').children[1].textContent, '7d 94%');
+    assert.equal(h.elements.get('overflow-quota-val').textContent, '5h 85% / 7d 94%');
+    assert.equal(h.elements.get('csb-quota-text-5h').textContent, '5H 85%');
+    assert.equal(h.elements.get('csb-quota-text-7d').textContent, '7D 94%');
+    assert.equal(h.elements.get('quota-plan-tier-pill').textContent, 'Google AI Ultra', '同账号套餐随强刷原子提交，无需等待历史扫描');
+
+    // 2.4 Issue #107：其他徽章 (#badge / #badge-tokens / #badge-speed) 在浅色与深色状态下右键均不切主题、不写 ag_theme_mode、不改面板、不发刷新
+    for (const targetTheme of ['light', 'dark']) {
+      // 通过明确的 #theme-toggle 按钮切换到目标初始主题，确保内存态与 storage 一致
+      let guard = 0;
+      while (h.storageMap.get('ag_theme_mode') !== targetTheme && guard < 4) {
+        h.elements.get('theme-toggle').click();
+        guard++;
+      }
+      assert.equal(h.storageMap.get('ag_theme_mode'), targetTheme, `应已进入 ${targetTheme} 主题态`);
+      const reqCountBefore = h.quotaRequests.length;
+      const panelQuotaHiddenBefore = h.elements.get('panel-quota').hidden;
+      for (const bid of ['badge', 'badge-tokens', 'badge-speed']) {
+        const node = h.elements.get(bid);
+        let prevented = false;
+        node.dispatchEvent({ type: 'contextmenu', preventDefault() { prevented = true; } });
+        assert.equal(prevented, false, `${bid} 无独立右键动作，应交回宿主原生行为`);
+        assert.equal(h.storageMap.get('ag_theme_mode'), targetTheme, `${bid} 右键绝不能修改 ag_theme_mode`);
+        assert.equal(h.elements.get('panel-quota').hidden, panelQuotaHiddenBefore);
+        assert.equal(h.quotaRequests.length, reqCountBefore);
+      }
+    }
+
+    // 2.5 #badge-quota 右键只开关 #panel-quota，不改周期、不改主题，并完整消费事件
+    const modeBeforeCtx = api.getQuotaBadgeWindowMode();
+    const themeBeforeCtx = h.storageMap.get('ag_theme_mode');
+    let qPrev = false; let qStop = false; let qStopImm = false;
+    badgeQuota.dispatchEvent({
+      type: 'contextmenu',
+      preventDefault() { qPrev = true; },
+      stopPropagation() { qStop = true; },
+      stopImmediatePropagation() { qStopImm = true; }
+    });
+    assert.equal(qPrev && qStop && qStopImm, true);
+    assert.equal(h.elements.get('panel-quota').hidden, false);
+    assert.equal(api.getQuotaBadgeWindowMode(), modeBeforeCtx);
+    assert.equal(h.storageMap.get('ag_theme_mode'), themeBeforeCtx);
+
+    // 明确主题按钮 #theme-toggle 仍可正常切换主题
+    const themeBeforeBtn = h.storageMap.get('ag_theme_mode');
+    h.elements.get('theme-toggle').click();
+    assert.notEqual(h.storageMap.get('ag_theme_mode'), themeBeforeBtn, '明确主题按钮必须正常切换主题');
+
+    // 2.6 #overflow-quota-btn 悬停菜单入口直达 #panel-quota 且滚动缩短夹紧有效
+    h.elements.get('close-quota').click();
+    assert.equal(h.elements.get('panel-quota').hidden, true);
+    h.elements.get('overflow-quota-btn').click();
+    assert.equal(h.elements.get('panel-quota').hidden, false);
+
+    const viewQuota = h.elements.get('view-quota');
+    viewQuota.scrollHeight = 900;
+    viewQuota.clientHeight = 400;
+    viewQuota.scrollTop = 450;
+    // 模拟内容缩短（scrollHeight 从 900 缩至 520，最大有效 scrollTop=120）
+    viewQuota.scrollHeight = 520;
+    api.setQuotaSnapshotForTest({
+      accountScopeKey: 'acct_cycle3',
+      fetchedAtMs: nowMs + 1500,
+      snapshot: ultraSnap
+    }, nowMs + 1500);
+    assert.equal(viewQuota.scrollTop, 120, '内容缩短时必须按最大有效滚动锚点安全夹紧');
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('02 批任务 4：两段式 20 格差分微反馈（下降暖红/上涨高亮）、圆形倒计时表盘、紧凑条联动与完整时间线', async () => {
+  const nowMs = Date.now();
+  const f5h = new Date(nowMs + 3 * 3600000 + 25 * 60000).toISOString();
+  const fWeek = new Date(nowMs + 4 * 86400000 + 6 * 3600000).toISOString();
+  const fArgon = new Date(nowMs + 5 * 86400000).toISOString();
+  const { userStatusRes, quotaSummaryRes } = buildRealistic2321Fixtures(new Date(nowMs).toISOString(), f5h, fWeek, fArgon);
+  quotaSummaryRes.response.groups[0].buckets[0].remainingFraction = 0.60; // 12 格
+
+  const h = createQuotaRendererHarness();
+  try {
+    while (h.quotaRequests.length > 0) {
+      h.quotaRequests.shift().resolve({ ok: false, error: 'init-noop' });
+    }
+    await h.flush();
+
+    const api = h.sandbox.__AGContextMeter;
+    api.setContextLatestForTest(
+      { model: 'Gemini 4 Hydrogen (High)', modelId: 'MODEL_PLACEHOLDER_M28', actual: 1000, budget: 256000 },
+      userStatusRes.userStatus.cascadeModelConfigData.clientModelConfigs
+    );
+    api.setQuotaSnapshotForTest({
+      accountScopeKey: 'acct_diff_anim',
+      fetchedAtMs: nowMs,
+      userStatusRes,
+      quotaSummaryRes
+    }, nowMs);
+    api.showQuotaPanelForTest(true);
+    while (h.quotaRequests.length > 0) {
+      h.quotaRequests.shift().resolve({
+        ok: true,
+        data: {
+          ok: true,
+          accountScopeKey: 'acct_diff_anim',
+          fetchedAtMs: nowMs,
+          lastSuccessAtMs: nowMs,
+          snapshot: core.buildModelQuotaSnapshot({
+            userStatusRes,
+            quotaSummaryRes,
+            currentModel: { modelId: 'MODEL_PLACEHOLDER_M28', label: 'Gemini 4 Hydrogen (High)' },
+            fetchMeta: { fetchedAtMs: nowMs },
+            nowMs
+          })
+        }
+      });
+    }
+    await h.flush();
+
+    const mainBoard = h.elements.get('quota-main-board');
+    const gem5hRow = mainBoard.children.find(c => c.getAttribute('data-row-id') === 'gemini-5h');
+    const getRowCells = (row) => row.children[0].children[1].children[0].children;
+    const dialWrap = gem5hRow.children[1].children[0];
+    assert.equal(dialWrap.className, 'dial-wrapper', '每行必须渲染 10.html 右侧 70px 圆形倒计时表盘');
+    assert.equal(dialWrap.getAttribute('data-dial-pending'), null);
+
+    const runAnimToEnd = async () => {
+      for (let i = 0; i < 30; i++) {
+        h.stepRaf(120);
+        await h.flush();
+        for (const t of h.scheduledTimeouts.filter(t => !t.cleared && t.ms === 200)) {
+          t.cleared = true; t.fn();
+        }
+        await h.flush();
+      }
+    };
+
+    // 4.1 余量下降（60% 12 格 -> 40% 8 格）：退潮清零后逐格机械弹起至 8 格，落稳后按钮才切 done 并 900ms 回 idle
+    const dropReqIdx = h.quotaRequests.length;
+    const pDrop = api.refreshQuotaForTest(true, { manual: true, skipScanFloor: true });
+    assert.equal(api.getQuotaBoardStateForTest().phase, 'drain');
+
+    const dropSummary = JSON.parse(JSON.stringify(quotaSummaryRes));
+    dropSummary.response.groups[0].buckets[0].remainingFraction = 0.40; // 8 格
+    h.quotaRequests[dropReqIdx].resolve({
+      ok: true,
+      data: {
+        ok: true,
+        accountScopeKey: 'acct_diff_anim',
+        fetchedAtMs: nowMs + 800,
+        lastSuccessAtMs: nowMs + 800,
+        snapshot: core.buildModelQuotaSnapshot({
+          userStatusRes,
+          quotaSummaryRes: dropSummary,
+          currentModel: { modelId: 'MODEL_PLACEHOLDER_M28', label: 'Gemini 4 Hydrogen (High)' },
+          fetchMeta: { fetchedAtMs: nowMs + 800 },
+          nowMs: nowMs + 800
+        })
+      }
+    });
+    await pDrop;
+    await runAnimToEnd();
+
+    assert.equal(getRowCells(gem5hRow).filter(c => c.children[0].getAttribute('data-cell-active') === 'true').length, 8);
+    assert.equal(h.elements.get('btn-quota-refresh').getAttribute('data-refresh-state'), 'done');
+    assert.equal(h.elements.get('quota-refresh-text').textContent, '✓ 已刷新');
+    for (const t of h.scheduledTimeouts.filter(t => !t.cleared && t.ms === 900)) {
+      t.cleared = true; t.fn();
+    }
+    assert.equal(h.elements.get('btn-quota-refresh').getAttribute('data-refresh-state'), 'idle');
+
+    // 4.2 余量增加（40% 8 格 -> 75% 15 格）：完整时间线记录 drain -> refill -> settled
+    const gainReqIdx = h.quotaRequests.length;
+    const pGain = api.refreshQuotaForTest(true, { manual: true, skipScanFloor: true });
+    const gainSummary = JSON.parse(JSON.stringify(quotaSummaryRes));
+    gainSummary.response.groups[0].buckets[0].remainingFraction = 0.75; // 15 格
+    h.quotaRequests[gainReqIdx].resolve({
+      ok: true,
+      data: {
+        ok: true,
+        accountScopeKey: 'acct_diff_anim',
+        fetchedAtMs: nowMs + 1600,
+        lastSuccessAtMs: nowMs + 1600,
+        snapshot: core.buildModelQuotaSnapshot({
+          userStatusRes,
+          quotaSummaryRes: gainSummary,
+          currentModel: { modelId: 'MODEL_PLACEHOLDER_M28', label: 'Gemini 4 Hydrogen (High)' },
+          fetchMeta: { fetchedAtMs: nowMs + 1600 },
+          nowMs: nowMs + 1600
+        })
+      }
+    });
+    await pGain;
+    await runAnimToEnd();
+
+    const gainDetail = api.getQuotaChargeDetailForTest();
+    assert.equal(getRowCells(gem5hRow).filter(c => c.children[0].getAttribute('data-cell-active') === 'true').length, 15);
+    assert.ok(gainDetail.timeline.some(ev => ev.stage === 'drain_start'));
+    assert.ok(gainDetail.timeline.some(ev => ev.stage === 'rpc_resolved'));
+    assert.ok(gainDetail.timeline.some(ev => ev.stage === 'refill_start'));
+    assert.ok(gainDetail.timeline.some(ev => ev.stage === 'settled'));
+
+    for (const t of h.scheduledTimeouts.filter(t => !t.cleared && t.ms === 900)) {
+      t.cleared = true; t.fn();
+    }
+    assert.equal(h.elements.get('btn-quota-refresh').getAttribute('data-refresh-state'), 'idle');
+
+    // 4.3 快响应保留 200ms 全空换气停顿（不传 skipScanFloor）
+    const fastReqIdx = h.quotaRequests.length;
+    const pFast = api.refreshQuotaForTest(true, { manual: true });
+    h.quotaRequests[fastReqIdx].resolve({
+      ok: true,
+      data: {
+        ok: true,
+        accountScopeKey: 'acct_diff_anim',
+        fetchedAtMs: nowMs + 2200,
+        lastSuccessAtMs: nowMs + 2200,
+        snapshot: core.buildModelQuotaSnapshot({
+          userStatusRes,
+          quotaSummaryRes: gainSummary,
+          currentModel: { modelId: 'MODEL_PLACEHOLDER_M28', label: 'Gemini 4 Hydrogen (High)' },
+          fetchMeta: { fetchedAtMs: nowMs + 2200 },
+          nowMs: nowMs + 2200
+        })
+      }
+    });
+    await pFast;
+    for (let i = 0; i < 10; i++) { h.stepRaf(100); await h.flush(); }
+    assert.equal(api.getQuotaBoardStateForTest().phase, 'pause', '快响应退潮后必须保留 200ms 全空换气停顿');
+    await runAnimToEnd();
+    for (const t of h.scheduledTimeouts.filter(t => !t.cleared && t.ms === 900)) {
+      t.cleared = true; t.fn();
+    }
+
+    // 4.4 失败或取消（AbortError）不得进入已刷新，优雅回充恢复上次可信 75%
+    const failReqIdx = h.quotaRequests.length;
+    const pFail = api.refreshQuotaForTest(true, { manual: true, skipScanFloor: true });
+    h.quotaRequests[failReqIdx].resolve({ ok: false, error: 'AbortError: cancelled by host' });
+    await pFail;
+    await runAnimToEnd();
+    assert.notEqual(h.elements.get('btn-quota-refresh').getAttribute('data-refresh-state'), 'done');
+    assert.equal(h.elements.get('quota-badge-val').textContent, '75%', '失败/取消必须保留上次可信 75% 读数');
+    assert.equal(getRowCells(gem5hRow).filter(c => c.children[0].getAttribute('data-cell-active') === 'true').length, 15, '失败回滚后恢复原 15 格');
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('02 批续跑缺口 1：跨账号旧回包防清缓存倒灌、强刷未完成切号、账号未知/不匹配、无可信快照、合法切号与同账号三次合并', async (t) => {
+  collector.resetQuotaHostCacheForTest();
+  const { nowMs, userStatusRes, quotaSummaryRes } = buildRealistic2321Fixtures();
+  const crypto = require('node:crypto');
+  const scopeOf = (email) => 'acct_' + crypto.createHash('sha256').update(email.toLowerCase()).digest('hex').slice(0, 16);
+
+  const emailA = 'probe.alpha@example.com';
+  const emailB = 'probe.beta@example.com';
+  const scopeA = scopeOf(emailA);
+  const scopeB = scopeOf(emailB);
+
+  const makeUserStatus = (email, tierId = 'g1-pro-tier', tierName = 'Google AI Pro') => {
+    const clone = JSON.parse(JSON.stringify(userStatusRes));
+    clone.userStatus.email = email;
+    clone.userStatus.userTier = { id: tierId, name: tierName };
+    return clone;
+  };
+  const makeQuotaSummary = (frac5h, frac7d = 0.9) => {
+    const clone = JSON.parse(JSON.stringify(quotaSummaryRes));
+    clone.response.groups[0].buckets[0].remainingFraction = frac5h;
+    clone.response.groups[0].buckets[1].remainingFraction = frac7d;
+    return clone;
+  };
+
+  // 1.1 A 后台慢回包 (seq=1) 挂起 -> 切到 B 强刷 (seq=2) 先完成 -> 释放 A -> 随后 B 非强刷命中 B 的 TTL 缓存而非 A
+  const origin1 = 'https://127.0.0.1:59101';
+  let releaseSlowA = null;
+  const pSlowA = collector.fetchQuotaSnapshotFromHost({
+    origin: origin1,
+    force: false,
+    expectedAccountScopeKey: scopeA,
+    nowMs,
+    connect: async () => ({
+      call: async (method) => {
+        if (method === 'GetUserStatus') return makeUserStatus(emailA);
+        return new Promise(resolve => { releaseSlowA = resolve; });
+      }
+    })
+  });
+  await new Promise(r => setImmediate(r));
+
+  const resBForce = await collector.fetchQuotaSnapshotFromHost({
+    origin: origin1,
+    force: true,
+    expectedAccountScopeKey: scopeB,
+    nowMs: nowMs + 500,
+    connect: async () => ({
+      call: async (method) => {
+        if (method === 'GetUserStatus') return makeUserStatus(emailB, 'g1-ultra-tier', 'Google AI Ultra');
+        return makeQuotaSummary(0.91, 0.95);
+      }
+    })
+  });
+  assert.equal(resBForce.ok, true);
+  assert.equal(resBForce.fetchSeq, 2);
+  assert.equal(resBForce.accountScopeKey, scopeB);
+  assert.equal(resBForce.snapshot.pools[0].buckets[0].remainingFraction, 0.91);
+
+  releaseSlowA(makeQuotaSummary(0.22, 0.33));
+  const resSlowA = await pSlowA;
+  assert.equal(resSlowA.ok, false, '迟到的跨账号旧回包绝不得返回 ok=true');
+  assert.equal(resSlowA.staleDiscarded, true, '迟到的跨账号旧回包必须标为 staleDiscarded=true');
+  assert.equal(resSlowA.accountScopeKey, scopeB, '迟到回包不得删掉 B 缓存或把作用域回写成 A');
+
+  // 随后客户端明确要求 B 的非强刷请求必须命中 B 的 TTL 缓存（0.91），绝不命中 A（0.22）
+  const resBTtl = await collector.fetchQuotaSnapshotFromHost({
+    origin: origin1,
+    force: false,
+    expectedAccountScopeKey: scopeB,
+    nowMs: nowMs + 1500,
+    connect: async () => { throw new Error('应命中 B 的 15s TTL 缓存，不得发起 RPC'); }
+  });
+  assert.equal(resBTtl.ok, true);
+  assert.equal(resBTtl.cacheHit, true);
+  assert.equal(resBTtl.accountScopeKey, scopeB);
+  assert.equal(resBTtl.snapshot.pools[0].buckets[0].remainingFraction, 0.91);
+
+  // 1.2 A 强刷 (seq=1) 未完成即切 B (seq=2)，且 A 先于 B 返回 -> A 必须立即被丢弃，绝不污染缓存
+  const origin2 = 'https://127.0.0.1:59102';
+  let releaseForceA = null;
+  let releaseForceB = null;
+  const pForceA = collector.fetchQuotaSnapshotFromHost({
+    origin: origin2,
+    force: true,
+    expectedAccountScopeKey: scopeA,
+    nowMs,
+    connect: async () => ({
+      call: async (method) => {
+        if (method === 'GetUserStatus') return makeUserStatus(emailA);
+        return new Promise(resolve => { releaseForceA = resolve; });
+      }
+    })
+  });
+  await new Promise(r => setImmediate(r));
+  const pForceB = collector.fetchQuotaSnapshotFromHost({
+    origin: origin2,
+    force: true,
+    expectedAccountScopeKey: scopeB,
+    nowMs: nowMs + 200,
+    connect: async () => ({
+      call: async (method) => {
+        if (method === 'GetUserStatus') return makeUserStatus(emailB);
+        return new Promise(resolve => { releaseForceB = resolve; });
+      }
+    })
+  });
+  await new Promise(r => setImmediate(r));
+
+  releaseForceA(makeQuotaSummary(0.18, 0.25));
+  const rForceA = await pForceA;
+  assert.equal(rForceA.ok, false);
+  assert.equal(rForceA.staleDiscarded, true);
+  assert.equal(rForceA.snapshot, null, 'B 尚未落地时，过期 A 不得泄露旧快照');
+
+  releaseForceB(makeQuotaSummary(0.84, 0.92));
+  const rForceB = await pForceB;
+  assert.equal(rForceB.ok, true);
+  assert.equal(rForceB.accountScopeKey, scopeB);
+  assert.equal(rForceB.snapshot.pools[0].buckets[0].remainingFraction, 0.84);
+
+  // 1.3 B 无可信快照：A 已有缓存后切 B 发起强刷但 B 失败 -> 返回 error 空池，绝不回退 A 缓存，后续 B 非强刷也不命中 A TTL
+  const origin3 = 'https://127.0.0.1:59103';
+  const rSeedA = await collector.fetchQuotaSnapshotFromHost({
+    origin: origin3,
+    force: true,
+    expectedAccountScopeKey: scopeA,
+    nowMs,
+    connect: async () => ({
+      call: async (method) => (method === 'GetUserStatus' ? makeUserStatus(emailA) : makeQuotaSummary(0.66, 0.77))
+    })
+  });
+  assert.equal(rSeedA.ok, true);
+  const rBFailNoSnap = await collector.fetchQuotaSnapshotFromHost({
+    origin: origin3,
+    force: true,
+    expectedAccountScopeKey: scopeB,
+    nowMs: nowMs + 500,
+    connect: async () => ({
+      call: async () => { throw new Error('ECONNREFUSED 127.0.0.1'); }
+    })
+  });
+  assert.equal(rBFailNoSnap.ok, false);
+  assert.equal(rBFailNoSnap.snapshot.syncState, 'error');
+  assert.equal(rBFailNoSnap.snapshot.pools.length, 0, 'B 无可信快照时绝不得回退 A 的缓存池');
+
+  let bNonForceRpcCalled = false;
+  const rBNonForceMiss = await collector.fetchQuotaSnapshotFromHost({
+    origin: origin3,
+    force: false,
+    expectedAccountScopeKey: scopeB,
+    nowMs: nowMs + 1000,
+    connect: async () => ({
+      call: async (method) => {
+        bNonForceRpcCalled = true;
+        return method === 'GetUserStatus' ? makeUserStatus(emailB) : makeQuotaSummary(0.79, 0.88);
+      }
+    })
+  });
+  assert.equal(bNonForceRpcCalled, true, '明确要求 B 的非强刷不得命中 A 的 TTL 缓存');
+  assert.equal(rBNonForceMiss.ok, true);
+  assert.equal(rBNonForceMiss.accountScopeKey, scopeB);
+  assert.equal(rBNonForceMiss.snapshot.pools[0].buckets[0].remainingFraction, 0.79);
+
+  // 1.4 账号未知（缺 email）与显式目标账号不匹配：均拒绝成功、不删改 B 缓存、不推进 committedSeq
+  const noEmailStatus = makeUserStatus('');
+  delete noEmailStatus.userStatus.email;
+  const rUnknownId = await collector.fetchQuotaSnapshotFromHost({
+    origin: origin3,
+    force: true,
+    expectedAccountScopeKey: scopeB,
+    nowMs: nowMs + 2000,
+    connect: async () => ({
+      call: async (method) => (method === 'GetUserStatus' ? noEmailStatus : makeQuotaSummary(0.11, 0.12))
+    })
+  });
+  assert.equal(rUnknownId.ok, false);
+  assert.equal(rUnknownId.identityVerified, false);
+  assert.equal(rUnknownId.errorKind, 'unverified_account');
+  assert.equal(rUnknownId.accountScopeKey, 'anonymous');
+
+  // 显式指定全新预期账号 C，但 RPC 返回了旧账号 A -> 明确错账号拦截
+  const emailC = 'probe.gamma@example.com';
+  const scopeC = scopeOf(emailC);
+  const rMismatch = await collector.fetchQuotaSnapshotFromHost({
+    origin: origin3,
+    force: true,
+    expectedAccountScopeKey: scopeC,
+    nowMs: nowMs + 3000,
+    connect: async () => ({
+      call: async (method) => (method === 'GetUserStatus' ? makeUserStatus(emailA) : makeQuotaSummary(0.15, 0.25))
+    })
+  });
+  assert.equal(rMismatch.ok, false);
+  assert.equal(rMismatch.accountIdentityMismatch, true);
+  assert.equal(rMismatch.errorKind, 'account_mismatch');
+  assert.equal(rMismatch.snapshot.syncState, 'error');
+  assert.equal(rMismatch.snapshot.pools.length, 0);
+
+  // 1.5 合法切号：原稳定在 A，客户端仍带旧 expectedAccountScopeKey=A 刷新，宿主返回可信新身份 B -> 合法更新预期账号为 B，避免卡在旧身份
+  const origin4 = 'https://127.0.0.1:59104';
+  const rStableA = await collector.fetchQuotaSnapshotFromHost({
+    origin: origin4,
+    force: true,
+    expectedAccountScopeKey: scopeA,
+    nowMs,
+    connect: async () => ({
+      call: async (method) => (method === 'GetUserStatus' ? makeUserStatus(emailA) : makeQuotaSummary(0.55, 0.65))
+    })
+  });
+  assert.equal(rStableA.ok, true);
+  assert.equal(rStableA.accountScopeKey, scopeA);
+
+  const rLegitSwitchToB = await collector.fetchQuotaSnapshotFromHost({
+    origin: origin4,
+    force: true,
+    expectedAccountScopeKey: scopeA,
+    nowMs: nowMs + 1000,
+    connect: async () => ({
+      call: async (method) => (method === 'GetUserStatus' ? makeUserStatus(emailB) : makeQuotaSummary(0.93, 0.97))
+    })
+  });
+  assert.equal(rLegitSwitchToB.ok, true, '合法切到 B 时必须接受可信新身份');
+  assert.equal(rLegitSwitchToB.accountSwitched, true);
+  assert.equal(rLegitSwitchToB.accountIdentityMismatch, false);
+  assert.equal(rLegitSwitchToB.accountScopeKey, scopeB);
+  const rAfterSwitchCache = await collector.fetchQuotaSnapshotFromHost({
+    origin: origin4,
+    force: false,
+    nowMs: nowMs + 2000,
+    connect: async () => { throw new Error('合法切号后非强刷应命中新 B 缓存'); }
+  });
+  assert.equal(rAfterSwitchCache.cacheHit, true);
+  assert.equal(rAfterSwitchCache.accountScopeKey, scopeB);
+  assert.equal(rAfterSwitchCache.snapshot.pools[0].buckets[0].remainingFraction, 0.93);
+
+  // 1.6 同账号三次并发强刷合并为 1 次 RPC
+  const origin5 = 'https://127.0.0.1:59105';
+  let mergeRpcCount = 0;
+  let releaseMerged = null;
+  const makeSameAcctOpts = () => ({
+    origin: origin5,
+    force: true,
+    expectedAccountScopeKey: scopeA,
+    nowMs: nowMs + 100,
+    connect: async () => ({
+      call: async (method) => {
+        if (method === 'GetUserStatus') return makeUserStatus(emailA);
+        mergeRpcCount++;
+        return new Promise(resolve => { releaseMerged = resolve; });
+      }
+    })
+  });
+  const m1 = collector.fetchQuotaSnapshotFromHost(makeSameAcctOpts());
+  const m2 = collector.fetchQuotaSnapshotFromHost(makeSameAcctOpts());
+  const m3 = collector.fetchQuotaSnapshotFromHost(makeSameAcctOpts());
+  await new Promise(r => setImmediate(r));
+  assert.equal(mergeRpcCount, 1, '同账号三次并发强刷必须合并为 1 条在途 RPC');
+  releaseMerged(makeQuotaSummary(0.73, 0.81));
+  const [rm1, rm2, rm3] = await Promise.all([m1, m2, m3]);
+  assert.equal(rm1.ok && rm2.ok && rm3.ok, true);
+  assert.equal(rm1.snapshot.pools[0].buckets[0].remainingFraction, 0.73);
+  assert.equal(rm3.snapshot.pools[0].buckets[0].remainingFraction, 0.73);
+
+  // 1.7 meter-main IPC、live-host 保护与 deriveTrustedAutoSwitchQuotaContext：已判过期/错账号/未验证身份均不写入可信快照、不刷新可信时间、不触发自动切号
+  const { registerMeterIpcHandlers } = require('./meter-main');
+  const accountsMod = require('./meter-accounts');
+  const liveHostSrc = fs.readFileSync(path.join(__dirname, 'live-host.js'), 'utf8');
+  assert.match(liveHostSrc, /isDiscardedOrInvalidIdentity[\s\S]*staleDiscarded === true[\s\S]*shouldSkipAutoSwitchEval/);
+  const handlers = new Map();
+  registerMeterIpcHandlers({ handle: (ch, fn) => handlers.set(ch, fn) });
+  const getQuotaIpc = handlers.get('context-meter:get-quota');
+  const syncSpy = t.mock.fn();
+  const evalSpy = t.mock.fn(async () => ({ ok: true, action: 'noop' }));
+  t.mock.method(accountsMod, 'getSharedAccountsManager', () => ({
+    isSwitchInFlight: () => false,
+    detectCurrentActiveAccount: async () => ({ email: emailB }),
+    syncActiveHostQuotaSnapshot: syncSpy,
+    evaluateAutoSwitch: evalSpy,
+    getOverviewState: () => ({
+      activeAccountEmail: emailB,
+      autoSwitch: { enabled: true, poolKey: 'shared_gemini_main', windowKey: '5h', metricMode: 'remaining_pct', thresholdPct: 30, candidates: [emailA] }
+    })
+  }));
+
+  const badResponses = [
+    {
+      ok: true,
+      staleDiscarded: true,
+      discardedReason: 'stale_fetch_seq',
+      email: emailA,
+      fetchedAtMs: nowMs,
+      snapshot: core.buildModelQuotaSnapshot({ userStatusRes: makeUserStatus(emailA), quotaSummaryRes: makeQuotaSummary(0.05), fetchMeta: { fetchedAtMs: nowMs }, nowMs })
+    },
+    {
+      ok: false,
+      accountIdentityMismatch: true,
+      errorKind: 'account_mismatch',
+      email: emailA,
+      fetchedAtMs: nowMs,
+      snapshot: core.buildModelQuotaSnapshot({ userStatusRes: makeUserStatus(emailA), quotaSummaryRes: makeQuotaSummary(0.05), fetchMeta: { fetchedAtMs: nowMs }, nowMs })
+    },
+    {
+      ok: true,
+      identityVerified: false,
+      errorKind: 'unverified_account',
+      email: null,
+      fetchedAtMs: nowMs,
+      snapshot: core.buildModelQuotaSnapshot({ userStatusRes: noEmailStatus, quotaSummaryRes: makeQuotaSummary(0.05), fetchMeta: { fetchedAtMs: nowMs }, nowMs })
+    }
+  ];
+  const frame = { url: 'http://127.0.0.1:59199/chat' };
+  const ipcEvent = { senderFrame: frame, sender: { mainFrame: frame } };
+  for (const fakeRes of badResponses) {
+    const trustCheck = accountsMod.deriveTrustedAutoSwitchQuotaContext({ res: fakeRes, activeEmail: emailB, nowMs });
+    assert.equal(trustCheck.trusted, false);
+    const mockFetch = t.mock.method(collector, 'fetchQuotaSnapshotFromHost', async () => fakeRes);
+    const ipcOut = await getQuotaIpc(ipcEvent, { force: true });
+    mockFetch.mock.restore();
+    assert.equal(ipcOut.ok, true);
+    assert.equal(ipcOut.accountSyncResult, null, '过期/错账号/未验证回包不得触发自动切号评估');
+  }
+  assert.equal(syncSpy.mock.callCount(), 0, '过期/错账号/未验证回包绝不得写入可信账号快照或刷新可信时间');
+  assert.equal(evalSpy.mock.callCount(), 0, '过期/错账号/未验证回包绝不得触发旧自动切号规则');
+
+  collector.resetQuotaHostCacheForTest();
+});
+
+test('02 批续跑缺口 2：区分强刷成功与旧宿主缓存回退、显式不支持与网络错区分、缺有效数据、2.35.1 未变化成功与自动切号信任判定', async () => {
+  collector.resetQuotaHostCacheForTest();
+  const os = require('node:os');
+  const accountsMod = require('./meter-accounts');
+  const { nowMs, userStatusRes, quotaSummaryRes } = buildRealistic2321Fixtures();
+  const originFb = 'https://127.0.0.1:59201';
+  const email = userStatusRes.userStatus.email;
+
+  // 2.1 先建立一次正常缓存采样（lastSuccessAtMs = nowMs）
+  const seedRes = await collector.fetchQuotaSnapshotFromHost({
+    origin: originFb,
+    force: false,
+    nowMs,
+    connect: async () => ({
+      call: async (method) => (method === 'GetUserStatus' ? userStatusRes : quotaSummaryRes)
+    })
+  });
+  assert.equal(seedRes.ok, true);
+  assert.equal(seedRes.lastSuccessAtMs, nowMs);
+
+  // 2.2 模拟旧协议返回 unknown field forceRefresh -> 回退 {} 拿到同账号缓存，但不返回 ok:true、不刷新 lastSuccessAtMs、不覆写新鲜 TTL 缓存
+  const fbCalls = [];
+  const fbSummary = JSON.parse(JSON.stringify(quotaSummaryRes));
+  fbSummary.response.groups[0].buckets[0].remainingFraction = 0.45;
+  const fbRes = await collector.fetchQuotaSnapshotFromHost({
+    origin: originFb,
+    force: true,
+    nowMs: nowMs + 5000,
+    connect: async () => ({
+      call: async (method, params) => {
+        fbCalls.push({ method, params });
+        if (method === 'GetUserStatus') return userStatusRes;
+        if (params?.forceRefresh === true) {
+          throw new Error('HTTP 400 INVALID_ARGUMENT: unknown field "forceRefresh" in RetrieveUserQuotaSummaryRequest');
+        }
+        return fbSummary;
+      }
+    })
+  });
+  assert.equal(fbCalls.filter(c => c.method === 'RetrieveUserQuotaSummary').length, 2, '显式不支持 forceRefresh 时应先强刷再回退 {}');
+  assert.equal(fbRes.ok, false, '旧宿主缓存回退绝不得当作强刷成功返回 ok=true');
+  assert.equal(fbRes.dataFreshness, 'host_cache_fallback');
+  assert.equal(fbRes.forceRefreshSent, true);
+  assert.equal(fbRes.forceRefreshApplied, false);
+  assert.equal(fbRes.forceRefreshFallback, true);
+  assert.equal(fbRes.errorKind, 'force_refresh_unsupported');
+  assert.equal(fbRes.lastSuccessAtMs, nowMs, '缓存回退不得刷新 lastSuccessAtMs 为新采样时间');
+  assert.equal(fbRes.snapshot.syncState, 'stale');
+  assert.ok(fbRes.snapshot.pools.length > 0, '缓存回退应保留同账号有用的缓存池数据');
+
+  // 2.3 暂时网络错误（timeout / 503）绝不得走 {} 回退，与显式不支持字段严格区分
+  const netCalls = [];
+  const netErrRes = await collector.fetchQuotaSnapshotFromHost({
+    origin: originFb,
+    force: true,
+    nowMs: nowMs + 6000,
+    connect: async () => ({
+      call: async (method, params) => {
+        netCalls.push({ method, params });
+        if (method === 'GetUserStatus') return userStatusRes;
+        throw new Error('connect ETIMEDOUT 127.0.0.1:59201');
+      }
+    })
+  });
+  assert.equal(netCalls.filter(c => c.method === 'RetrieveUserQuotaSummary').length, 1, '暂时网络超时不得静默重试 {} 冒充缓存回退');
+  assert.equal(netErrRes.ok, false);
+  assert.equal(netErrRes.forceRefreshFallback, false);
+  assert.equal(netErrRes.dataFreshness, 'error_fallback');
+  assert.equal(netErrRes.errorKind, 'timeout');
+
+  // 2.4 单 RPC 失败（GetUserStatus 失败）亦不得进入成功状态
+  const statusFailRes = await collector.fetchQuotaSnapshotFromHost({
+    origin: originFb,
+    force: true,
+    nowMs: nowMs + 7000,
+    connect: async () => ({
+      call: async (method) => {
+        if (method === 'GetUserStatus') throw new Error('HTTP 503 unavailable');
+        return quotaSummaryRes;
+      }
+    })
+  });
+  assert.equal(statusFailRes.ok, false);
+  assert.equal(statusFailRes.forceRefreshFallback, false);
+  assert.equal(statusFailRes.snapshot.syncState, 'stale');
+
+  // 2.5 旧协议回退但缺有效数据（冷启动无历史缓存且 {} 返回空池与空模型配置）
+  const originEmptyFb = 'https://127.0.0.1:59202';
+  const emptyUserStatus = { userStatus: { email: 'empty.fb@example.com', cascadeModelConfigData: { clientModelConfigs: [] } } };
+  const emptyFbRes = await collector.fetchQuotaSnapshotFromHost({
+    origin: originEmptyFb,
+    force: true,
+    nowMs: nowMs + 8000,
+    connect: async () => ({
+      call: async (method, params) => {
+        if (method === 'GetUserStatus') return emptyUserStatus;
+        if (params?.forceRefresh === true) throw new Error('unknown field forceRefresh');
+        return { response: { groups: [] } };
+      }
+    })
+  });
+  assert.equal(emptyFbRes.ok, false);
+  assert.equal(emptyFbRes.dataFreshness, 'host_cache_fallback');
+  assert.equal(emptyFbRes.lastSuccessAtMs, null);
+  assert.equal(emptyFbRes.snapshot.syncState, 'error');
+  assert.equal(emptyFbRes.snapshot.pools.length, 0);
+
+  // 2.6 deriveTrustedAutoSwitchQuotaContext 与 evaluateAutoSwitch：即使强行构造 ok:true + fresh 的 host_cache_fallback 也绝不触发自动切号
+  const lowQuotaSummary = JSON.parse(JSON.stringify(quotaSummaryRes));
+  lowQuotaSummary.response.groups[0].buckets[0].remainingFraction = 0.05; // 5% 低于阈值 20%
+  const lowSnap = core.buildModelQuotaSnapshot({
+    userStatusRes,
+    quotaSummaryRes: lowQuotaSummary,
+    fetchMeta: { fetchedAtMs: nowMs + 5000 },
+    nowMs: nowMs + 5000
+  });
+  const trustFallbackForced = accountsMod.deriveTrustedAutoSwitchQuotaContext({
+    res: {
+      ok: true,
+      email,
+      dataFreshness: 'host_cache_fallback',
+      forceRefreshSent: true,
+      forceRefreshApplied: false,
+      forceRefreshFallback: true,
+      fetchedAtMs: nowMs + 5000,
+      snapshot: lowSnap
+    },
+    activeEmail: email,
+    nowMs: nowMs + 5000
+  });
+  assert.equal(trustFallbackForced.trusted, false);
+  assert.equal(trustFallbackForced.syncState, 'host_cache_fallback');
+
+  const trustActualFb = accountsMod.deriveTrustedAutoSwitchQuotaContext({
+    res: fbRes,
+    activeEmail: email,
+    nowMs: nowMs + 5000
+  });
+  assert.equal(trustActualFb.trusted, false);
+  assert.equal(trustActualFb.syncState, 'host_cache_fallback');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-fb-autoswitch-'));
+  try {
+    const mgr = accountsMod.createAccountsManager({
+      stateDir: tmpDir,
+      credentialsPaths: {
+        desktopDbPath: path.join(tmpDir, 'missing.vscdb'),
+        googleAccountsPath: path.join(tmpDir, 'missing.json')
+      }
+    });
+    mgr.syncActiveHostQuotaSnapshot(seedRes, email, { nowMs });
+    mgr.updateAutoSwitchConfig({
+      enabled: true,
+      poolKey: 'shared_gemini_main',
+      windowKey: '5h',
+      metricMode: 'remaining_pct',
+      thresholdPct: 20,
+      debounceSec: 0,
+      candidates: ['backup@example.com']
+    });
+    const evalOut = await mgr.evaluateAutoSwitch({
+      activeEmail: email,
+      activeSnapshot: lowSnap,
+      syncState: trustFallbackForced.syncState,
+      nowMs: nowMs + 5000
+    });
+    assert.equal(evalOut.action, 'blocked');
+    assert.equal(evalOut.state, 'blocked_untrusted_quota');
+    assert.equal(evalOut.reason, 'quota_state_host_cache_fallback');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+
+  // 2.7 渲染层端到端回归：
+  // (a) 旧宿主 host_cache_fallback（即便 payload 带 ok:true）保留同账号缓存、不刷新 lastSuccessAtMs、不播充能、按钮为 fallback「仅缓存」、展示警告提示与横幅
+  // (b) 缺有效数据的 host_cache_fallback 按钮进入 error 且展示无可用缓存横幅
+  // (c) 真正的 2.35.1 强刷成功且额度未变化：正常播充能、按钮进 done「✓ 已刷新」、提示「已更新」并回 idle
+  const h = createQuotaRendererHarness();
+  try {
+    while (h.quotaRequests.length > 0) {
+      h.quotaRequests.shift().resolve({ ok: false, error: 'init-noop' });
+    }
+    await h.flush();
+    const api = h.sandbox.__AGContextMeter;
+    api.setContextLatestForTest(
+      { model: 'Gemini 4 Hydrogen (High)', modelId: 'MODEL_PLACEHOLDER_M28', actual: 1000, budget: 256000 },
+      userStatusRes.userStatus.cascadeModelConfigData.clientModelConfigs
+    );
+    api.setQuotaSnapshotForTest({
+      accountScopeKey: seedRes.accountScopeKey,
+      fetchedAtMs: nowMs,
+      lastSuccessAtMs: nowMs,
+      userStatusRes,
+      quotaSummaryRes
+    }, nowMs);
+    api.showQuotaPanelForTest(true);
+    while (h.quotaRequests.length > 0) {
+      h.quotaRequests.shift().resolve({ ok: true, data: seedRes });
+    }
+    await h.flush();
+
+    const prevSuccessTs = api.getModelQuotaStateForTest(nowMs).state.lastSuccessAtMs;
+    assert.equal(h.elements.get('quota-badge-val').textContent, '45%');
+
+    // (a) 真正的 2.35.1 强刷成功且额度未变化（45% -> 45%，forceRefreshApplied: true, dataFreshness: 'live_force_refresh'）
+    const reqRealIdx = h.quotaRequests.length;
+    const pManualReal = api.refreshQuotaForTest(true, { manual: true, skipScanFloor: true });
+    const unchangedLiveSnap = core.buildModelQuotaSnapshot({
+      userStatusRes,
+      quotaSummaryRes,
+      currentModel: { modelId: 'MODEL_PLACEHOLDER_M28', label: 'Gemini 4 Hydrogen (High)' },
+      fetchMeta: { fetchedAtMs: nowMs + 4000 },
+      nowMs: nowMs + 4000
+    });
+    h.quotaRequests[reqRealIdx].resolve({
+      ok: true,
+      data: {
+        ok: true,
+        accountScopeKey: seedRes.accountScopeKey,
+        forceRefreshSent: true,
+        forceRefreshApplied: true,
+        forceRefreshFallback: false,
+        dataFreshness: 'live_force_refresh',
+        fetchedAtMs: nowMs + 4000,
+        lastSuccessAtMs: nowMs + 4000,
+        snapshot: unchangedLiveSnap
+      }
+    });
+    await pManualReal;
+    const stepAllBoard = async () => {
+      for (let i = 0; i < 30; i++) {
+        h.stepRaf(120);
+        await h.flush();
+      }
+    };
+    const liveDetail = api.getQuotaChargeDetailForTest();
+    assert.equal(liveDetail.playing, true, '2.35.1 真正强刷成功且额度未变化时仍应正常播三段式零残留反馈');
+    assert.equal(api.getModelQuotaStateForTest(nowMs + 4000).state.lastSuccessAtMs, nowMs + 4000);
+    await stepAllBoard();
+    assert.equal(h.elements.get('btn-quota-refresh').getAttribute('data-refresh-state'), 'done');
+    assert.equal(h.elements.get('quota-refresh-text').textContent, '✓ 已刷新');
+    assert.equal(h.elements.get('quota-refresh-feedback').hidden, false);
+    assert.equal(h.elements.get('quota-refresh-feedback').getAttribute('data-tone'), null);
+    assert.equal(h.elements.get('quota-refresh-feedback').textContent, '已更新');
+    for (const t of h.scheduledTimeouts.filter(t => !t.cleared && t.ms === 900)) {
+      t.cleared = true; t.fn();
+    }
+    assert.equal(h.elements.get('btn-quota-refresh').getAttribute('data-refresh-state'), 'idle');
+
+    // (b) 模拟旧协议缓存回退（含防御性 ok:true + host_cache_fallback）
+    const beforeFbSuccessTs = api.getModelQuotaStateForTest(nowMs + 4000).state.lastSuccessAtMs;
+    assert.equal(beforeFbSuccessTs, nowMs + 4000);
+    const reqFbIdx = h.quotaRequests.length;
+    const pManualFb = api.refreshQuotaForTest(true, { manual: true, skipScanFloor: true });
+    h.quotaRequests[reqFbIdx].resolve({
+      ok: true,
+      data: {
+        ...fbRes,
+        ok: true,
+        fetchedAtMs: nowMs + 9000,
+        lastSuccessAtMs: beforeFbSuccessTs
+      }
+    });
+    await pManualFb;
+    await stepAllBoard();
+    assert.equal(h.elements.get('btn-quota-refresh').getAttribute('data-refresh-state'), 'fallback');
+    assert.equal(h.elements.get('quota-refresh-text').textContent, '仅缓存');
+    assert.notEqual(h.elements.get('quota-refresh-text').textContent, '✓ 已刷新');
+    assert.equal(h.elements.get('quota-refresh-feedback').hidden, false);
+    assert.equal(h.elements.get('quota-refresh-feedback').getAttribute('data-tone'), 'warn');
+    assert.equal(h.elements.get('quota-refresh-feedback').textContent, '实时刷新不可用，已保留缓存');
+    assert.equal(h.elements.get('quota-banner').hidden, false);
+    assert.equal(h.elements.get('quota-banner').getAttribute('data-tone'), 'warn');
+    assert.match(h.elements.get('quota-banner-text').textContent, /不支持实时强制刷新/);
+    assert.equal(h.elements.get('quota-badge-val').textContent, '45%', '必须保留同账号 45% 缓存显示');
+    assert.equal(api.getModelQuotaStateForTest(nowMs + 9000).state.lastSuccessAtMs, beforeFbSuccessTs, '缓存回退不得刷新 lastSuccessAtMs');
+    for (const t of h.scheduledTimeouts.filter(t => !t.cleared && t.ms === 900)) {
+      t.cleared = true; t.fn();
+    }
+    assert.equal(h.elements.get('btn-quota-refresh').getAttribute('data-refresh-state'), 'idle');
+
+    // (c) 冷启动无有效数据的旧协议缓存回退 -> error 态横幅，绝不展示成功
+    api.setQuotaSnapshotForTest(null, nowMs + 15000);
+    const reqEmptyIdx = h.quotaRequests.length;
+    const pEmptyFb = api.refreshQuotaForTest(true, { manual: true, skipScanFloor: true });
+    h.quotaRequests[reqEmptyIdx].resolve({ ok: true, data: emptyFbRes });
+    await pEmptyFb;
+    await stepAllBoard();
+    assert.equal(h.elements.get('btn-quota-refresh').getAttribute('data-refresh-state'), 'error');
+    assert.equal(h.elements.get('quota-banner').hidden, false);
+    assert.equal(h.elements.get('quota-banner').getAttribute('data-tone'), 'error');
+    assert.match(h.elements.get('quota-banner-text').textContent, /暂无可用缓存数据/);
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+
+  collector.resetQuotaHostCacheForTest();
+});
+
+test('02 批续稿终极验收：10.html 原样双池四行映射、十阶边界(78%/46%/10%/0%/10.1%/未知/无权限)、双色阶切换、尾格左对齐宽、70px 总小时圆盘(124:00/168:00/04:59)与三语400px窄栏', async () => {
+  const nowMs = Date.now();
+  const f5h = new Date(nowMs + 4 * 3600000 + 59 * 60000 + 30000).toISOString(); // 04:59
+  const fWeek124 = new Date(nowMs + (5 * 24 + 4) * 3600000 + 42000).toISOString(); // 124:00
+  const fWeek168 = new Date(nowMs + 7 * 86400000 + 10000).toISOString(); // 168:00
+  const fArgon = new Date(nowMs + 5 * 86400000).toISOString();
+  const { userStatusRes, quotaSummaryRes } = buildRealistic2321Fixtures(new Date(nowMs).toISOString(), f5h, fWeek124, fArgon);
+
+  // 构造 10.html 验收边界：Gemini 7d=78%(124:00), Gemini 5h=10.1%(刚超10%非红警,04:59), Shared 7d=46%(168:00), Shared 5h=10%(红警)
+  quotaSummaryRes.response.groups[0].buckets = [
+    { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.78, resetTime: fWeek124 },
+    { bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.101, resetTime: f5h }
+  ];
+  quotaSummaryRes.response.groups[1].buckets = [
+    { bucketId: '3p-weekly', window: 'weekly', remainingFraction: 0.46, resetTime: fWeek168 },
+    { bucketId: '3p-5h', window: '5h', remainingFraction: 0.10, resetTime: new Date(nowMs + 42 * 60000 + 25000).toISOString() }
+  ];
+  // 去掉第 3 组验证标准双池四行（稍后再测额外独立池）
+  quotaSummaryRes.response.groups = quotaSummaryRes.response.groups.slice(0, 2);
+
+  const h = createQuotaRendererHarness();
+  try {
+    while (h.quotaRequests.length > 0) {
+      h.quotaRequests.shift().resolve({ ok: false, error: 'init-noop' });
+    }
+    await h.flush();
+
+    const api = h.sandbox.__AGContextMeter;
+    api.setContextLatestForTest(
+      { model: 'Gemini 4 Hydrogen (High)', modelId: 'MODEL_PLACEHOLDER_M28', actual: 1000, budget: 256000 },
+      userStatusRes.userStatus.cascadeModelConfigData.clientModelConfigs
+    );
+    api.showQuotaPanelForTest(true);
+    while (h.quotaRequests.length > 0) {
+      h.quotaRequests.shift().resolve({ ok: false, error: 'noop' });
+    }
+
+    api.setQuotaSnapshotForTest({
+      accountScopeKey: 'acct_10html_port',
+      fetchedAtMs: nowMs,
+      lastSuccessAtMs: nowMs,
+      userStatusRes,
+      quotaSummaryRes
+    }, nowMs);
+
+    const mainBoard = h.elements.get('quota-main-board');
+    const getRow = (id) => mainBoard.children.find(c => c.getAttribute('data-row-id') === id);
+    const getCells = (row) => row.children[0].children[1].children[0].children;
+    const getDial = (row) => row.children[1].children[0];
+
+    // 1. 双池四行顺序：第一组 GEMINI (7d -> 5h)，第二组 CLAUDE / GPT 共用 (7d -> 5h)，额外真实独立池继续可查看
+    const rowIds = mainBoard.children.filter(c => String(c.className || '').includes('quota-row')).map(c => c.getAttribute('data-row-id'));
+    assert.deepEqual(rowIds.slice(0, 4), ['gemini-7d', 'gemini-5h', 'shared-7d', 'shared-5h']);
+    const carbonNoPermState = api.getQuotaBoardStateForTest().rows.find(r => String(r.id).includes('carbon'));
+    assert.ok(carbonNoPermState, '其他真实独立池继续在主看板下方可查看');
+    assert.equal(carbonNoPermState.isNoPermission, true, '无权限池必须独立标示为 noPermission');
+    assert.equal(carbonNoPermState.isRedAlert, false, '无权限池绝不得被当成红警');
+
+    const bState = api.getQuotaBoardStateForTest();
+    assert.equal(bState.colorMode, 'uniform', '首开默认应为整条随档位变色');
+
+    // 2. 十阶色值与未四舍五入红警边界
+    const rGem7d = bState.rows.find(r => r.id === 'gemini-7d');
+    const rGem5h = bState.rows.find(r => r.id === 'gemini-5h');
+    const rSh7d = bState.rows.find(r => r.id === 'shared-7d');
+    const rSh5h = bState.rows.find(r => r.id === 'shared-5h');
+
+    assert.equal(rGem7d.decileStep, 8);
+    assert.equal(rGem7d.colorHex, '#3CC999', '78% -> 80% 档 #3CC999');
+    assert.equal(rGem7d.isRedAlert, false);
+    assert.equal(rGem5h.decileStep, 2, '10.1% 未四舍五入刚超过 10% 必须走 20% 档，绝非红警');
+    assert.equal(rGem5h.isRedAlert, false);
+    assert.equal(rGem5h.colorHex, '#C2EEDF');
+    assert.equal(rSh7d.decileStep, 5);
+    assert.equal(rSh7d.colorHex, '#F6C7B0', '46% -> 50% 档 #F6C7B0');
+    assert.equal(rSh5h.decileStep, 1);
+    assert.equal(rSh5h.isRedAlert, true, '10% 必须触发统一红警 #EF4444');
+    assert.equal(rSh5h.colorHex, '#EF4444');
+
+    // 3. 78% 精确 20 格尾格左对齐宽 (15 满格 + 第 16 格 60.00% 宽、opacity=1)
+    const gem7dCells = getCells(getRow('gemini-7d'));
+    assert.equal(gem7dCells[14].children[0].style.width, '100.00%');
+    assert.equal(gem7dCells[15].children[0].style.width, '60.00%', '78% 第 16 格必须为 60.00% 宽度');
+    assert.equal(gem7dCells[15].children[0].style.opacity, '1');
+    assert.equal(gem7dCells[16].children[0].style.width, '0%');
+    assert.equal(gem7dCells[0].children[0].style.backgroundColor, '#3CC999', 'uniform 模式首格取当前档位色');
+
+    // 4. 切换至「条内 10 阶逐段加深」原地重绘：健康行首对用 segment0Hex，红警行仍全红 #EF4444
+    h.elements.get('quota-color-mode-progressive').click();
+    assert.equal(api.getQuotaBoardStateForTest().colorMode, 'progressive');
+    assert.equal(gem7dCells[0].children[0].style.backgroundColor, '#F2FDF9', 'progressive 健康行首对必须用 segment0Hex');
+    assert.equal(gem7dCells[1].children[0].style.backgroundColor, '#F2FDF9');
+    assert.equal(gem7dCells[2].children[0].style.backgroundColor, '#E6FAF3');
+    assert.equal(getCells(getRow('shared-5h'))[0].children[0].style.backgroundColor, '#EF4444', 'progressive 模式下 ≤10% 仍全行统一红警');
+    h.elements.get('quota-color-mode-uniform').click();
+    assert.equal(api.getQuotaBoardStateForTest().colorMode, 'uniform');
+
+    // 5. 70px 圆盘总小时:分钟 (124:00 / 168:00 / 04:59 / 00:42) 与三位缩字 is-three-digits
+    assert.equal(rGem7d.dialText, '124:00', '5 天 4 小时整显示 124:00');
+    assert.equal(rGem7d.dialThreeDigits, true);
+    assert.equal(rSh7d.dialText, '168:00', '7 天整显示 168:00');
+    assert.equal(rSh7d.dialThreeDigits, true);
+    assert.equal(rGem5h.dialText, '04:59', '5h 保留 04:59 短时格式');
+    assert.equal(rGem5h.dialThreeDigits, false);
+    assert.equal(rSh5h.dialText, '00:42');
+
+    // 6. 0%、未知、无权限边界与三语零中英文括号
+    const edgeSummary = JSON.parse(JSON.stringify(quotaSummaryRes));
+    edgeSummary.response.groups[0].buckets[0].remainingFraction = 0; // 0%
+    edgeSummary.response.groups[0].buckets[1].remainingFraction = null; // 未知
+    edgeSummary.response.groups[0].buckets[1].resetTime = null;
+    api.setQuotaSnapshotForTest({
+      accountScopeKey: 'acct_10html_port',
+      fetchedAtMs: nowMs + 1000,
+      lastSuccessAtMs: nowMs + 1000,
+      userStatusRes,
+      quotaSummaryRes: edgeSummary
+    }, nowMs + 1000);
+    const edgeState = api.getQuotaBoardStateForTest();
+    const zeroRow = edgeState.rows.find(r => r.id === 'gemini-7d');
+    const unkRow = edgeState.rows.find(r => r.id === 'gemini-5h');
+    assert.equal(zeroRow.isRedAlert, true, '0% 保留红警');
+    assert.equal(zeroRow.visualLitCount, 0, '0% 20 格全空');
+    assert.equal(unkRow.isUnknown, true, '未知态独立显示');
+    assert.equal(unkRow.isRedAlert, false, '未知态绝不得被当成红警');
+    assert.equal(unkRow.dialPending, true);
+    assert.equal(unkRow.dialText, '--:--');
+
+    // 三语 (zh-CN / zh-TW / en) 零中英文括号核验 + 零行级「同池共用」与零档位色号胶囊
+    for (const lang of ['zh-CN', 'zh-TW', 'en']) {
+      await api.setPanelLanguage(lang, { persist: false });
+      api.setQuotaSnapshotForTest({
+        accountScopeKey: 'acct_10html_port',
+        fetchedAtMs: nowMs,
+        lastSuccessAtMs: nowMs,
+        userStatusRes,
+        quotaSummaryRes
+      }, nowMs);
+      const g7dDial = getDial(getRow('gemini-7d'));
+      assert.equal(/[()（）]/.test(g7dDial.title), false, `${lang} 圆盘提示必须零中英文括号`);
+      assert.equal(/[()（）]/.test(g7dDial.getAttribute('aria-label')), false, `${lang} 无障碍文本必须零中英文括号`);
+      for (const r of api.getQuotaBoardStateForTest().rows) {
+        assert.equal(/[()（）]/.test(r.pacePillText), false, `${lang} 节奏胶囊零括号`);
+        assert.equal(/[()（）]/.test(r.timeSummary), false, `${lang} 顶行摘要零括号`);
+        assert.equal(/[()（）]/.test(r.subtext), false, `${lang} 副文案零括号`);
+        assert.equal(r.badges.some(b => /同池共用|Shared Pool/i.test(b)), false, `${lang} 严禁出现行级同池共用徽标`);
+      }
+      const boardRows = mainBoard.children.filter(c => String(c.className || '').includes('quota-row'));
+      for (const br of boardRows) {
+        const summaryChildren = br.children[0].children[0].children[1].children;
+        assert.equal(summaryChildren.some(n => String(n.className || '').includes('decile-status-badge')), false, `${lang} 严禁渲染档位开发标注胶囊`);
+        assert.equal(summaryChildren.some(n => /#[0-9A-Fa-f]{6}/.test(String(n.textContent || ''))), false, `${lang} 严禁暴露色号`);
+      }
+    }
+    await api.setPanelLanguage('zh-CN', { persist: false });
+
+    // 7. CSS 宽栏/窄栏 400px 响应式契约核验
+    const cssSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+    assert.match(cssSrc, /@container\s+quota-panel\s*\(max-width:\s*560px\)/);
+    assert.match(cssSrc, /#panel-quota\s+\.dial-digits\.is-three-digits/);
+    assert.match(cssSrc, /#panel-quota\s+\.seg-grid[\s\S]*gap:\s*3px/);
+    assert.equal(/\.decile-status-badge/.test(cssSrc), false, 'styles.css 必须移除档位开发胶囊样式');
+    assert.equal(/\.quota-color-mode-btn/.test(cssSrc), false, 'styles.css 必须移除橙色旧模式切换器样式');
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('02 批浅色可读性与看板细节收口：四行统一浅色加深、自定义表面色即时重绘、10.1%上游取整容错、缺绝对时间省略未知、估算跨厂商判定与分段选择器键盘持久化', async () => {
+  const nowMs = Date.now();
+  const f5h = new Date(nowMs + 36 * 60000 + 20000).toISOString();
+  const fWeek = new Date(nowMs + (5 * 24 + 2) * 3600000 + 16 * 60000).toISOString();
+  const fArgon = new Date(nowMs + 5 * 86400000).toISOString();
+  const { userStatusRes, quotaSummaryRes } = buildRealistic2321Fixtures(new Date(nowMs).toISOString(), f5h, fWeek, fArgon);
+
+  quotaSummaryRes.response.groups[0].buckets = [
+    { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.36, resetTime: fWeek },
+    { bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.101, resetTime: f5h }
+  ];
+  quotaSummaryRes.response.groups[1].buckets = [
+    { bucketId: '3p-weekly', window: 'weekly', remainingFraction: 0.28, resetTime: fWeek },
+    { bucketId: '3p-5h', window: '5h', remainingFraction: 0.25, resetTime: f5h }
+  ];
+  quotaSummaryRes.response.groups = quotaSummaryRes.response.groups.slice(0, 2);
+
+  const hexToLum = (hex) => {
+    const clean = String(hex || '').replace('#', '');
+    const n = parseInt(clean, 16);
+    const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => {
+      const s = v / 255;
+      return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const hexToHue = (hex) => {
+    const clean = String(hex || '').replace('#', '');
+    const n = parseInt(clean, 16);
+    const r = ((n >> 16) & 255) / 255;
+    const g = ((n >> 8) & 255) / 255;
+    const b = (n & 255) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+    if (d === 0) return 0;
+    let h = max === r ? ((g - b) / d + (g < b ? 6 : 0)) : (max === g ? (b - r) / d + 2 : (r - g) / d + 4);
+    return h * 60;
+  };
+
+  const h = createQuotaRendererHarness();
+  try {
+    while (h.quotaRequests.length > 0) h.quotaRequests.shift().resolve({ ok: false, error: 'init-noop' });
+    await h.flush();
+
+    const api = h.sandbox.__AGContextMeter;
+    api.setContextLatestForTest(
+      { model: 'Gemini 4 Hydrogen (High)', modelId: 'MODEL_PLACEHOLDER_M28', actual: 1000, budget: 256000 },
+      userStatusRes.userStatus.cascadeModelConfigData.clientModelConfigs
+    );
+    api.showQuotaPanelForTest(true);
+    while (h.quotaRequests.length > 0) h.quotaRequests.shift().resolve({ ok: false, error: 'noop' });
+
+    api.setThemeModeForTest('dark');
+    api.setQuotaSnapshotForTest({
+      accountScopeKey: 'acct_light_polish',
+      fetchedAtMs: nowMs,
+      lastSuccessAtMs: nowMs,
+      userStatusRes,
+      quotaSummaryRes
+    }, nowMs);
+
+    // 1. 标题区生产回归：真实 renderQuotaBoard 呈现套餐胶囊与单一更新时间
+    assert.equal(h.elements.get('quota-plan-tier-pill').hidden, false);
+    assert.equal(h.elements.get('quota-plan-tier-pill').textContent, 'Google AI Pro');
+    const updatedMeta = h.elements.get('quota-updated-meta');
+    assert.ok(updatedMeta, '应存在单一更新时间容器');
+    const updatedTimeVal = h.elements.get('quota-time-updated').textContent;
+    assert.match(updatedTimeVal, /\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}/);
+    assert.equal(/更新于/.test(updatedTimeVal), false, '不得出现「上次更新 更新于」重复文案');
+
+    // 2. 临界 10.1% 显示精度：即使上游 percentText 已被取整成 "10%" 也必须显示 10.1% 且不触发红警
+    const darkState = api.getQuotaBoardStateForTest();
+    const g5hRow = darkState.rows.find(r => r.id === 'gemini-5h');
+    assert.equal(g5hRow.isRedAlert, false);
+    assert.equal(g5hRow.pctText, '10.1%', '10.1% 必须与 10% 红警在文案上清晰区分');
+
+    // 3. 深浅色四行成对采样验证（uniform 与 progressive 模式共享同一浅色明度派生规则）
+    const palettes = ['gemini-7d', 'gemini-5h', 'shared-7d', 'shared-5h'];
+    for (const pid of palettes) {
+      let prevLightLum = 1.01;
+      // 逐段模式首对格 (cellIndex=0)
+      const seg0Dark = api.resolveQuotaCellColorForTest(pid, 0, 40, 'progressive', { surface: 'dark' });
+      const seg0Light = api.resolveQuotaCellColorForTest(pid, 0, 40, 'progressive', { surface: 'light' });
+      assert.ok(hexToLum(seg0Light) < hexToLum(seg0Dark) - 0.10, `${pid} 逐段首对格浅色必须明显深于深色`);
+      for (const pct of [20, 30, 40, 60, 80, 100]) {
+        const dSpec = api.resolveQuotaDecileSpecForTest(pid, pct, { surface: 'dark' });
+        const lSpec = api.resolveQuotaDecileSpecForTest(pid, pct, { surface: 'light' });
+        assert.ok(hexToLum(lSpec.hex) < hexToLum(dSpec.hex), `${pid} ${pct}% 浅色必须深于深色`);
+        assert.ok(hexToLum(lSpec.hex) < prevLightLum, `${pid} ${pct}% 浅色十阶必须严格单调加深`);
+        prevLightLum = hexToLum(lSpec.hex);
+        const hueDiff = Math.min(Math.abs(hexToHue(lSpec.hex) - hexToHue(dSpec.hex)), 360 - Math.abs(hexToHue(lSpec.hex) - hexToHue(dSpec.hex)));
+        assert.ok(hueDiff < 8, `${pid} ${pct}% 浅色派生必须保持色相一致 (diff=${hueDiff.toFixed(1)})`);
+      }
+    }
+    // 同组 7d 浅于 5h 的层级保持
+    for (const pct of [20, 30, 40, 80, 100]) {
+      const g7 = api.resolveQuotaDecileSpecForTest('gemini-7d', pct, { surface: 'light' });
+      const g5 = api.resolveQuotaDecileSpecForTest('gemini-5h', pct, { surface: 'light' });
+      const s7 = api.resolveQuotaDecileSpecForTest('shared-7d', pct, { surface: 'light' });
+      const s5 = api.resolveQuotaDecileSpecForTest('shared-5h', pct, { surface: 'light' });
+      assert.ok(hexToLum(g7.hex) > hexToLum(g5.hex), `浅色 ${pct}% Gemini 7d 必须浅于 5h`);
+      assert.ok(hexToLum(s7.hex) > hexToLum(s5.hex), `浅色 ${pct}% Shared 7d 必须浅于 5h`);
+    }
+
+    // 4. 切换主题与自定义面板表面色时，看板立即原位重绘所有有效格
+    const mainBoard = h.elements.get('quota-main-board');
+    const g7RowDom = mainBoard.children.find(c => c.getAttribute('data-row-id') === 'gemini-7d');
+    const g7Cell0Fill = g7RowDom.children[0].children[1].children[0].children[0].children[0];
+    const darkHexBefore = g7Cell0Fill.style.backgroundColor;
+    assert.equal(darkHexBefore, '#B0EDD8');
+
+    api.setThemeModeForTest('light');
+    assert.equal(api.getQuotaBoardStateForTest().surfaceTone, 'light');
+    assert.equal(mainBoard.getAttribute('data-surface-tone'), 'light');
+    const lightHexAfter = g7Cell0Fill.style.backgroundColor;
+    assert.notEqual(lightHexAfter, darkHexBefore, '切浅色主题必须立即原位加深有效格');
+    assert.ok(hexToLum(lightHexAfter) < hexToLum(darkHexBefore), '浅色有效格亮度必须低于深色');
+
+    // 在浅色主题下设置自定义深色面板背景，必须尊重 data-panel-tone="dark" 切回深色原色
+    api.setCustomPanelBgForTest('#181818');
+    assert.equal(api.getQuotaBoardStateForTest().surfaceTone, 'dark');
+    assert.equal(g7Cell0Fill.style.backgroundColor, '#B0EDD8');
+    api.setCustomPanelBgForTest('');
+    assert.equal(api.getQuotaBoardStateForTest().surfaceTone, 'light');
+
+    // 5. 顶行压缩重复天小时 + 缺失绝对时间但有倒计时时省略「未知」与分隔符
+    const g7Summary = api.getQuotaBoardStateForTest().rows.find(r => r.id === 'gemini-7d').timeSummary;
+    assert.equal(/122h|\d+h$/.test(g7Summary), false, '7d 顶行应压缩重复的总小时摘要');
+    assert.ok(api.getQuotaBoardStateForTest().rows.find(r => r.id === 'gemini-7d').subtext.includes('122'), '完整小时数保留在副文案');
+
+    // 构造无 resetTimeText 但有有效 resetAtMs + 上游 percentText 被取整为 "10%" 的 10.1% 视图
+    const snapMissingRt = core.buildModelQuotaSnapshot({
+      userStatusRes,
+      quotaSummaryRes,
+      currentModel: { modelId: 'MODEL_PLACEHOLDER_M28', label: 'Gemini 4 Hydrogen (High)' },
+      fetchMeta: { fetchedAtMs: nowMs },
+      nowMs
+    });
+    snapMissingRt.pools[0].buckets[1].resetTimeText = '';
+    snapMissingRt.pools[0].buckets[1].percentText = '10%'; // 模拟上游已四舍五入为 10%
+    snapMissingRt.pools[0].buckets[1].remainingFraction = 0.101;
+    api.setQuotaSnapshotForTest({
+      accountScopeKey: 'acct_light_polish',
+      fetchedAtMs: nowMs,
+      lastSuccessAtMs: nowMs,
+      snapshot: snapMissingRt
+    }, nowMs);
+    const missingRtRow = api.getQuotaBoardStateForTest().rows.find(r => r.id === 'gemini-5h');
+    const missingRtSummary = missingRtRow.timeSummary;
+    assert.equal(missingRtRow.isRedAlert, false, '10.1% 即使上游 percentText="10%" 也绝不触发红警');
+    assert.equal(missingRtRow.pctText, '10.1%', '10.1% 即使上游 percentText="10%" 也必须显示 10.1%');
+    assert.equal(/未知|Unknown/.test(missingRtSummary), false, '有有效倒计时但缺绝对时间文案时不得拼出「未知」');
+    assert.equal(/^·|·$/.test(missingRtSummary.trim()), false, '不得残留孤立分隔符');
+    assert.ok(missingRtSummary.includes('36'), '仍保留有效倒计时读数');
+
+    // 6. Gemini 估算副文案不误标「同池混用模型」；Claude + GPT 跨厂商真实混用正确标注且零括号
+    api.setTokenHistoryForTest({
+      accountScopeKey: 'acct_light_polish',
+      quotaUsageCoverageStartMs: nowMs - 8 * 86400000,
+      recentModelUsage: [
+        { accountScopeKey: 'acct_light_polish', poolKey: 'gemini-4-neon', sharedGroupKey: 'shared_gemini_main', ts: nowMs - 3600000, inputTokens: 80000000, cacheTokens: 60000000, outputTokens: 10000000, totalTokens: 150000000 },
+        { accountScopeKey: 'acct_light_polish', poolKey: 'gemini-4-hydrogen', sharedGroupKey: 'shared_gemini_main', ts: nowMs - 1800000, inputTokens: 50000000, cacheTokens: 45000000, outputTokens: 8800000, totalTokens: 103800000 },
+        { accountScopeKey: 'acct_light_polish', poolKey: 'claude-sonnet-5-5', sharedGroupKey: 'shared_3p_pool', ts: nowMs - 3600000, inputTokens: 15000000, cacheTokens: 10000000, outputTokens: 5000000, totalTokens: 30000000 },
+        { accountScopeKey: 'acct_light_polish', poolKey: 'gpt-oss-120b', sharedGroupKey: 'shared_3p_pool', ts: nowMs - 1800000, inputTokens: 5000000, cacheTokens: 3000000, outputTokens: 2000000, totalTokens: 10000000 }
+      ],
+      dailyMap: {}
+    });
+    api.setQuotaSnapshotForTest({
+      accountScopeKey: 'acct_light_polish',
+      fetchedAtMs: nowMs + 500,
+      lastSuccessAtMs: nowMs + 500,
+      userStatusRes,
+      quotaSummaryRes
+    }, nowMs + 500);
+    const estState = api.getQuotaBoardStateForTest();
+    const gemCap = estState.rows.find(r => r.id === 'gemini-7d').tokenCaption;
+    const sharedCap = estState.rows.find(r => r.id === 'shared-7d').tokenCaption;
+    assert.ok(gemCap.includes('约剩余'), `Gemini 7d 应产出真实估算副文案: ${gemCap}`);
+    assert.equal(/同池混用/.test(gemCap), false, `Gemini 同厂商多型号绝不得误标同池混用模型: ${gemCap}`);
+    assert.equal(/[()（）]/.test(gemCap), false, '估算副文案零括号');
+    assert.ok(sharedCap.includes('约剩余'), `Shared 7d 应产出真实估算副文案: ${sharedCap}`);
+    assert.equal(/同池混用/.test(sharedCap), true, `Claude + GPT 跨厂商混用保留提示: ${sharedCap}`);
+    assert.equal(/[()（）]/.test(sharedCap), false, '跨厂商混用副文案零括号');
+
+    // 7. 分段选择器复用 ctx-segmented / ctx-seg-pill、键盘导航与持久化重开读回
+    const tplSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
+    assert.match(tplSrc, /id="quota-color-mode-segmented"\s+class="ctx-segmented ctx-seg-pill quota-color-mode-segmented"/, '模板必须复用 ctx-segmented ctx-seg-pill');
+    assert.match(tplSrc, /id="quota-color-mode-uniform"\s+class="ctx-seg-btn active"/, '按钮必须复用 ctx-seg-btn');
+    const segGroup = h.elements.get('quota-color-mode-segmented');
+    const btnUni = h.elements.get('quota-color-mode-uniform');
+    const btnProg = h.elements.get('quota-color-mode-progressive');
+    btnUni.setAttribute('data-color-mode', 'uniform');
+    btnProg.setAttribute('data-color-mode', 'progressive');
+    assert.equal(btnUni.classList.contains('active'), true);
+    assert.equal(btnUni.getAttribute('aria-pressed'), 'true');
+    assert.equal(btnProg.getAttribute('aria-pressed'), 'false');
+
+    // 键盘 ArrowRight 切到 progressive
+    let prevented = false;
+    segGroup.dispatchEvent({ type: 'keydown', key: 'ArrowRight', target: btnUni, preventDefault: () => { prevented = true; } });
+    assert.equal(prevented, true);
+    assert.equal(api.getQuotaBoardStateForTest().colorMode, 'progressive');
+    assert.equal(btnProg.classList.contains('active'), true);
+    assert.equal(btnProg.getAttribute('aria-pressed'), 'true');
+    assert.equal(btnUni.classList.contains('active'), false);
+    assert.equal(h.sandbox.localStorage.getItem('ag_quota_color_mode'), 'progressive');
+
+    // progressive 浅色首对格使用浅色派生值
+    const progLightCell0 = g7Cell0Fill.style.backgroundColor;
+    assert.equal(progLightCell0, api.resolveQuotaCellColorForTest('gemini-7d', 0, 36, 'progressive', { surface: 'light' }));
+
+    // 键盘 Home 回到 uniform
+    segGroup.dispatchEvent({ type: 'keydown', key: 'Home', target: btnProg, preventDefault: () => { } });
+    assert.equal(api.getQuotaBoardStateForTest().colorMode, 'uniform');
+    assert.equal(h.sandbox.localStorage.getItem('ag_quota_color_mode'), 'uniform');
+  } finally {
+    h.sandbox.__AGContextMeter.dispose();
+  }
+});
+
 

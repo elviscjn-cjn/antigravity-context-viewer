@@ -64,7 +64,9 @@ const MAIN_CAPABILITIES = {
   applyUpdate: true,
   restartHost: true,
   hotReload: true,
-  syncPricing: true
+  syncPricing: true,
+  hostTheme: true,
+  hostInstallPath: true
 };
 
 const {
@@ -322,6 +324,7 @@ function getMeterSource() {
     const msg = String(fatalErr && fatalErr.stack ? fatalErr.stack : fatalErr);
     console.error('[Context Meter Fatal Init Error]:', msg);
     try { window.__AGContextMeterFatalError = msg; } catch {}
+    try { window.__AGContextMeterActiveHost?.__agForceDispose?.(); } catch {}
     return false;
   }
 })();`;
@@ -674,6 +677,8 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
   }
 }
 
+let hostRestartInFlight = false;
+
 async function handleRestartHost(event, options = {}) {
   const url = isLocalMainFrameSender(event);
   if (!url) throw new Error('仅允许本机主聊天窗口');
@@ -681,13 +686,19 @@ async function handleRestartHost(event, options = {}) {
   if (!targetApp || typeof targetApp.relaunch !== 'function' || typeof targetApp.quit !== 'function') {
     return { ok: true, supported: false };
   }
+  const useGlobalGuard = !options?.appOverride;
+  if (useGlobalGuard && hostRestartInFlight) {
+    return { ok: true, supported: true, duplicate: true };
+  }
   const args = Array.isArray(options?.args)
     ? options.args
     : (Array.isArray(process.argv) ? process.argv.slice(1) : []);
   const delayMs = Number.isFinite(Number(options?.delayMs)) ? Number(options.delayMs) : 80;
   try {
+    if (useGlobalGuard) hostRestartInFlight = true;
     targetApp.relaunch({ args });
   } catch (error) {
+    if (useGlobalGuard) hostRestartInFlight = false;
     return { ok: false, supported: true, error: error.message };
   }
   const triggerRestart = () => {
@@ -825,6 +836,8 @@ function registerMeterIpcHandlers(ipcMain) {
       const collector = require('./meter-collector');
       const opts = {
         force: options === true || options?.force === true,
+        source: typeof options?.source === 'string' ? options.source : undefined,
+        expectedAccountScopeKey: typeof options?.expectedAccountScopeKey === 'string' ? options.expectedAccountScopeKey : undefined,
         currentModel: typeof options?.currentModel === 'string' ? options.currentModel : null,
         browsePoolKey: typeof options?.browsePoolKey === 'string' ? options.browsePoolKey : null,
         origin: url.origin,
@@ -833,11 +846,19 @@ function registerMeterIpcHandlers(ipcMain) {
       const res = await collector.fetchQuotaSnapshotFromHost(opts);
       const { _raw, ...safePayload } = res || {};
       let accountSyncResult = null;
+      let syncedAccountsOverview = null;
       try {
         const { getSharedAccountsManager, deriveTrustedAutoSwitchQuotaContext } = require('./meter-accounts');
         const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
         const switchInFlight = Boolean(mgr.isSwitchInFlight?.());
-        const sourceEmail = !switchInFlight
+        const isDiscardedOrInvalidIdentity = Boolean(
+          res?.staleDiscarded === true ||
+          res?.accountIdentityMismatch === true ||
+          res?.identityVerified === false ||
+          res?.errorKind === 'account_mismatch' ||
+          res?.errorKind === 'unverified_account'
+        );
+        const sourceEmail = (!switchInFlight && !isDiscardedOrInvalidIdentity)
           ? (res?.email || _raw?.planStatus?.email || _raw?.userStatus?.email || _raw?.email || res?.planStatus?.email || null)
           : null;
         const activeDetectedEmail = !switchInFlight
@@ -848,11 +869,18 @@ function registerMeterIpcHandlers(ipcMain) {
           raw: _raw,
           activeEmail: activeDetectedEmail
         });
-        if (!switchInFlight && trustCtx.trusted && trustCtx.email && res?.snapshot) {
+        const shouldSkipAutoSwitchEval = Boolean(
+          isDiscardedOrInvalidIdentity ||
+          trustCtx.syncState === 'stale_discarded' ||
+          trustCtx.syncState === 'account_mismatch' ||
+          trustCtx.syncState === 'unverified_account'
+        );
+        if (!switchInFlight && !shouldSkipAutoSwitchEval && trustCtx.trusted && trustCtx.email && res?.snapshot) {
           mgr.syncActiveHostQuotaSnapshot(res, trustCtx.email);
+          syncedAccountsOverview = mgr.getOverviewState();
         }
-        const ov = mgr.getOverviewState();
-        if (!switchInFlight && ov.autoSwitch?.enabled) {
+        const ov = syncedAccountsOverview || mgr.getOverviewState();
+        if (!switchInFlight && !shouldSkipAutoSwitchEval && ov.autoSwitch?.enabled) {
           const requiresClientRestart = isHostVersionAtLeast('2.34.0');
           const openWindowCount = countOpenHostWindows();
           const hasRestartApi = typeof app?.relaunch === 'function' && typeof app?.quit === 'function';
@@ -976,7 +1004,7 @@ function registerMeterIpcHandlers(ipcMain) {
           }
         }
       } catch { }
-      return { ok: true, data: safePayload, accountSyncResult };
+      return { ok: true, data: safePayload, accountSyncResult, ...(syncedAccountsOverview ? { accountsOverview: syncedAccountsOverview } : {}) };
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -1296,7 +1324,14 @@ function registerMeterIpcHandlers(ipcMain) {
       const { getSharedAccountsManager } = require('./meter-accounts');
       const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
       await mgr.detectCurrentActiveAccount();
-      return mgr.getOverviewState();
+      // 仅同步本地已缓存安全 Data URI，不在被动概览读取时发起任何远程头像/OAuth/UserInfo 网络请求
+      if (typeof mgr.hydrateMissingAvatars === 'function') {
+        void mgr.hydrateMissingAvatars({ limit: 4, allowRemoteFetch: false }).catch(() => { });
+      }
+      return {
+        ...mgr.getOverviewState(),
+        openWindowCount: Math.max(1, getActiveHubWindowOrigins().length)
+      };
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -1306,30 +1341,31 @@ function registerMeterIpcHandlers(ipcMain) {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
+      const collector = require('./meter-collector');
       const { getSharedAccountsManager, dispatchAccountsAction } = require('./meter-accounts');
       const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
-      let restartClient;
+      const openWindowCount = Math.max(1, getActiveHubWindowOrigins().length);
       const requiresClientRestart = isHostVersionAtLeast('2.34.0');
-      if (payload?.action === 'switch' && requiresClientRestart
-        && typeof app?.relaunch === 'function' && typeof app?.quit === 'function') {
-        const { dialog } = require('electron');
-        const zh = /^zh/i.test(app.getLocale?.() || '');
-        const result = await dialog.showMessageBox({
-          type: 'question',
-          buttons: zh ? ['切换并重启', '取消'] : ['Switch and restart', 'Cancel'],
-          defaultId: 1,
-          cancelId: 1,
-          message: zh ? '切换账号需要重新启动 Antigravity' : 'Restart Antigravity to switch accounts'
-        });
-        if (result.response !== 0) {
-          return { ok: false, cancelled: true, reason: 'user_cancelled_restart', overview: mgr.getOverviewState() };
-        }
-        restartClient = () => handleRestartHost(event);
-      }
+      const hasRestartApi = typeof app?.relaunch === 'function' && typeof app?.quit === 'function';
+      const deferRestart = payload?.deferRestart === true;
+      const canAutoRestart = Boolean(requiresClientRestart && hasRestartApi);
+      const restartClient = (!deferRestart && canAutoRestart)
+        ? () => handleRestartHost(event)
+        : undefined;
       return await dispatchAccountsAction(mgr, payload || {}, {
         restartClient,
         requiresClientRestart,
-        allowManualRestartPending: requiresClientRestart && !restartClient
+        canAutoRestart,
+        deferRestart,
+        allowManualRestartPending: true,
+        persistOnVerifyMismatch: payload?.persistOnVerifyMismatch !== false,
+        fetchActiveHostSnapshot: async ({ force, manual }) => collector.fetchQuotaSnapshotFromHost({
+          origin: url.origin,
+          force: Boolean(force),
+          manual: manual !== false,
+          source: manual !== false ? 'manual_account_refresh' : 'auto_poll'
+        }),
+        openWindowCount
       });
     } catch (e) {
       return { ok: false, error: e.message };
@@ -1386,29 +1422,164 @@ function registerMeterIpcHandlers(ipcMain) {
     }
   });
 
+  ipcMain.handle('context-meter:host-guard-status', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { getHostGuardOverview } = require('./host-guard');
+      return getHostGuardOverview(options || {});
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:host-guard-action', async (event, payload = {}) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const action = String(payload?.action || '').trim().toLowerCase();
+      const { enableHostGuard, disableHostGuard, getHostGuardOverview } = require('./host-guard');
+      const { recoverHostInstallation } = require('./host-recovery');
+      if (action === 'enable') {
+        return await enableHostGuard({
+          asarPath: typeof payload?.asarPath === 'string' ? payload.asarPath : undefined,
+          port: payload?.port ? Number(payload.port) : undefined,
+          liveOnly: Boolean(payload?.liveOnly)
+        });
+      }
+      if (action === 'disable') {
+        return await disableHostGuard({
+          asarPath: typeof payload?.asarPath === 'string' ? payload.asarPath : undefined
+        });
+      }
+      if (action === 'recover') {
+        const rec = await recoverHostInstallation({
+          asarPath: typeof payload?.asarPath === 'string' ? payload.asarPath : undefined,
+          noHotInject: true
+        });
+        return { ...rec, overview: getHostGuardOverview({}) };
+      }
+      if (action === 'check' || action === 'status') {
+        return { ok: true, overview: getHostGuardOverview({}) };
+      }
+      return { ok: false, error: '不支持的恢复操作' };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:host-theme', async (event, payload = {}) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { readHostThemeConfig, writeHostThemeMode } = require('./local-api');
+      const action = String(payload?.action || 'get').trim().toLowerCase();
+      if (action === 'set') {
+        return await writeHostThemeMode(payload?.mode, { origin: url.origin });
+      }
+      return readHostThemeConfig();
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:host-install-path', async (event, payload = {}) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const {
+        resolveAsarTarget,
+        getConfiguredCustomAsarPath,
+        saveConfiguredCustomAsarPath,
+        clearConfiguredCustomAsarPath,
+        inspectCustomAsarPath
+      } = require('./asar-engine');
+      const action = String(payload?.action || 'get').trim().toLowerCase();
+      if (action === 'browse') {
+        const { dialog } = require('electron');
+        const targetWin = resolveTargetWindow(event.sender);
+        if (!dialog || typeof dialog.showOpenDialog !== 'function') {
+          return { ok: false, supported: false, error: '当前环境不支持目录选择对话框，请直接填写路径' };
+        }
+        const pickRes = await dialog.showOpenDialog(targetWin || undefined, {
+          title: '选择 Antigravity 安装目录或 app.asar',
+          properties: ['openDirectory', 'openFile'],
+          filters: [{ name: 'Antigravity ASAR / App', extensions: ['asar', 'exe', 'app'] }]
+        });
+        if (!pickRes || pickRes.canceled || !Array.isArray(pickRes.filePaths) || !pickRes.filePaths[0]) {
+          return { ok: false, cancelled: true };
+        }
+        const picked = pickRes.filePaths[0];
+        const inspected = inspectCustomAsarPath(picked);
+        return { ...inspected, selectedPath: picked };
+      }
+      if (action === 'set') {
+        const res = saveConfiguredCustomAsarPath(payload?.path || '');
+        const resolved = resolveAsarTarget(null, {});
+        return { ...res, resolved };
+      }
+      if (action === 'clear') {
+        const res = clearConfiguredCustomAsarPath();
+        const resolved = resolveAsarTarget(null, {});
+        return { ...res, resolved };
+      }
+      const customPath = getConfiguredCustomAsarPath();
+      const resolved = resolveAsarTarget(null, {});
+      return {
+        ok: true,
+        customPath: customPath || null,
+        effectiveAsarPath: resolved?.asarPath || null,
+        effectiveSource: resolved?.source || 'not_found',
+        recordedTargetMissing: Boolean(resolved?.recordedTargetMissing),
+        recordedTargetPath: resolved?.recordedTargetPath || null
+      };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
   ipcMain.handle('context-meter:predict-next-prompt', async (event, payload = {}) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
       const settings = getPluginSettings();
-      if (settings.nextPromptEnabled !== true) {
+      if (settings.nextPromptEnabled !== true && payload?.allowWhenDisabled !== true) {
         return { ok: true, abstained: true, suggestion: '', reason: 'feature_disabled', requestCount: 0 };
       }
-      const { predictNextPromptAsync } = require('./meter-next-prompt');
+      const { predictNextPromptAsync, extractTurnsFromRawSteps } = require('./meter-next-prompt');
+      let turns = Array.isArray(payload?.turns) ? payload.turns : [];
+      let turnsSource = turns.length > 0 ? 'renderer_turns' : 'none';
+      const hasValidPair = turns.some(t => t && (t.role === 'user' || t.sourceType === 'user') && (t.text || t.content))
+        && turns.some(t => t && (t.role === 'assistant' || t.sourceType === 'assistant') && (t.text || t.content));
+      if (!hasValidPair && typeof payload?.cascadeId === 'string' && payload.cascadeId.trim()) {
+        try {
+          const tl = await collectSessionTimelineAsync(payload.cascadeId.trim(), { force: true });
+          const recentTurns = Array.isArray(tl?.recentConversationTurns) && tl.recentConversationTurns.length > 0
+            ? tl.recentConversationTurns
+            : extractTurnsFromRawSteps(tl?.rawSteps || [], 8);
+          if (recentTurns.length > 0) {
+            turns = recentTurns;
+            turnsSource = Array.isArray(tl?.recentConversationTurns) && tl.recentConversationTurns.length > 0
+              ? 'timeline_recent_turns'
+              : 'timeline_raw_steps';
+          }
+        } catch { }
+      }
       const safeInput = {
         cascadeId: typeof payload?.cascadeId === 'string' ? payload.cascadeId : undefined,
         turnId: typeof payload?.turnId === 'string' ? payload.turnId : undefined,
         language: typeof payload?.language === 'string' ? payload.language : undefined,
-        turns: Array.isArray(payload?.turns) ? payload.turns : [],
+        turns,
         preferences: Array.isArray(payload?.preferences) ? payload.preferences : [],
         verificationEvidence: typeof payload?.verificationEvidence === 'string' ? payload.verificationEvidence : undefined,
         taskMarkdown: typeof payload?.taskMarkdown === 'string' ? payload.taskMarkdown : undefined
       };
-      return await predictNextPromptAsync(safeInput, {
+      const out = await predictNextPromptAsync(safeInput, {
         origin: url.origin,
         model: typeof payload?.model === 'string' && payload.model.trim() ? payload.model.trim() : undefined,
-        allowGetModelResponseFallback: payload?.allowGetModelResponseFallback === true
+        allowGetModelResponseFallback: payload?.allowGetModelResponseFallback !== false
       });
+      return { ...out, turnsSource };
     } catch (e) {
       return { ok: false, abstained: true, suggestion: '', error: e.message };
     }

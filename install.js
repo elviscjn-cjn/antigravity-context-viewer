@@ -117,6 +117,9 @@ async function shutdownLiveHostGracefully(liveInfo) {
       return { ok: true, method: 'http_shutdown', pid: liveInfo.pid };
     }
   }
+  if (Number(liveInfo.pid) === process.pid) {
+    return { ok: false, reason: 'self_pid', pid: liveInfo.pid };
+  }
   try {
     process.kill(liveInfo.pid, 0);
     process.kill(liveInfo.pid);
@@ -169,14 +172,15 @@ async function tryHotInjectDetailed(options = {}) {
       return report;
     }
 
+    const bundleRoot = options.bundleDir ? path.resolve(options.bundleDir) : __dirname;
     let pkgVersion = null;
     try {
-      pkgVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || null;
+      pkgVersion = JSON.parse(fs.readFileSync(path.join(bundleRoot, 'package.json'), 'utf8')).version || null;
     } catch { }
     const stateDir = options.stateDir || getStateDir();
     const livePath = fs.existsSync(path.join(stateDir, '.live-session.json'))
       ? path.join(stateDir, '.live-session.json')
-      : path.join(__dirname, '.live-session.json');
+      : path.join(bundleRoot, '.live-session.json');
     let liveInfo = options.liveInfo || (fs.existsSync(livePath) ? JSON.parse(fs.readFileSync(livePath, 'utf8')) : null);
     let liveProbeOk = Boolean(options.liveVerified);
     if (liveInfo && !liveProbeOk) {
@@ -194,7 +198,7 @@ async function tryHotInjectDetailed(options = {}) {
     }
 
     const bundle = ['meter-core.js', 'meter-renderer.js']
-      .map(f => fs.readFileSync(path.join(__dirname, f), 'utf8'))
+      .map(f => fs.readFileSync(path.join(bundleRoot, f), 'utf8'))
       .join('\n');
 
     let cachedSettings = null;
@@ -352,6 +356,13 @@ async function install(options = {}) {
     }
   }
   const stateDir = options.stateDir ? path.resolve(String(options.stateDir)) : getStateDir();
+  if (
+    process.env.AG_METER_TEST_MODE === '1' &&
+    options.allowNonIsolatedInTest !== true &&
+    (!isIsolatedTestPath(stateDir) || !isIsolatedTestPath(installed))
+  ) {
+    throw new Error(`测试模式禁止写入非隔离安装目标或状态目录: stateDir=${stateDir}, target=${installed}`);
+  }
   let sourceArchive = installed;
   let previousManifest = null;
   const manifestPath = path.join(stateDir, 'installation.json');
@@ -574,8 +585,10 @@ async function install(options = {}) {
       // 若用户或测试显式传入 pureMeterOnly: true 或 --pure-meter-only，则仅注入上下文监控
       const isPureMeterOnly = Boolean(options.pureMeterOnly || process.argv.includes('--pure-meter-only'));
 
-      // 模块 A: Proxy NoTun (免 TUN 代理组件注入)
-      const shouldInjectProxy = !isPureMeterOnly && (modulesConfig.modules.proxy.enabled || options.injectProxy === true);
+      // 模块 A: Proxy NoTun (免 TUN 代理组件注入；遵守三模块严格独立隔离与显式关闭清洗红线)
+      const shouldInjectProxy = !isPureMeterOnly && options.injectProxy !== false && (
+        modulesConfig.modules.proxy.enabled || options.injectProxy === true
+      );
       if (shouldInjectProxy) {
         const proxyCode = generateProxyUtilsCode(modulesConfig.modules.proxy);
         finalUtils = proxyCode + '\n' + finalUtils;
@@ -656,6 +669,8 @@ async function install(options = {}) {
         'modules-config.js',
         'modular-installer.js',
         'host-recovery.js',
+        'host-guard.js',
+        'autostart.js',
         'install.js',
         'restore.js',
         'meter-main.js',
@@ -673,6 +688,7 @@ async function install(options = {}) {
         'meter-enhance.js',
         'meter-rehydrate.js',
         'meter-accounts.js',
+        'meter-task-quota.js',
         'meter-next-prompt.js',
         'macos-binary-utils.js',
         'local-api.js',
@@ -804,6 +820,28 @@ async function install(options = {}) {
         };
       }
 
+      const prevTargets = (previousManifest?.targets && typeof previousManifest.targets === 'object')
+        ? { ...previousManifest.targets }
+        : {};
+      const patchedSha256 = sha(fs.readFileSync(packed));
+      const nowInstalledIso = new Date().toISOString();
+      prevTargets[targetKey] = {
+        targetKey,
+        installed,
+        version,
+        meterVersion: pkgVersion,
+        backup,
+        previousInstalledBackup,
+        previousInstalledSha256,
+        originalSha256: origSha,
+        patchedSha256,
+        backupsByVersion: prevBackupsByVersion,
+        installedAt: nowInstalledIso,
+        updatedAt: nowInstalledIso,
+        uninstalled: false,
+        restoredAt: null
+      };
+
       const manifest = {
         meterVersion: pkgVersion,
         version,
@@ -814,13 +852,16 @@ async function install(options = {}) {
         previousInstalledBackup,
         previousInstalledSha256,
         originalSha256: origSha,
-        patchedSha256: sha(fs.readFileSync(packed)),
+        patchedSha256,
         originalFilesVerified: verified,
         added: additions.map(f => 'dist/' + f),
         modified: ['dist/utils.js', 'dist/preload.js'],
-        installedAt: new Date().toISOString(),
+        installedAt: nowInstalledIso,
+        uninstalled: false,
+        restoredAt: null,
         enabledModules: Object.entries(modulesConfig.modules).filter(([, v]) => v.enabled).map(([k]) => k),
         backupsByVersion: prevBackupsByVersion,
+        targets: prevTargets,
         ...(macIntegrity.isMacAppBundle ? { macAsarIntegrity: macIntegrity } : {})
       };
 
@@ -1003,7 +1044,7 @@ function getWatchBundleBuildId(baseDir = null) {
   try {
     const root = baseDir || __dirname;
     const h = crypto.createHash('sha256');
-    for (const f of ['meter-core.js', 'meter-renderer.js', 'live-host.js', 'host-recovery.js', 'meter-collector.js', 'meter-storage.js', 'meter-proxy.js', 'meter-cli-launcher.js', 'meter-cli-monitor.js', 'meter-cli-adapter.js', 'meter-cli-companion.js', 'meter-cli-ui.js', 'meter-context-unlock.js', 'meter-enhance.js', 'meter-rehydrate.js', 'meter-accounts.js', 'meter-next-prompt.js', 'macos-binary-utils.js', 'local-api.js', 'modules-config.js', 'asar-engine.js', 'package.json']) {
+    for (const f of ['meter-core.js', 'meter-renderer.js', 'live-host.js', 'host-recovery.js', 'host-guard.js', 'autostart.js', 'meter-collector.js', 'meter-storage.js', 'meter-proxy.js', 'meter-cli-launcher.js', 'meter-cli-monitor.js', 'meter-cli-adapter.js', 'meter-cli-companion.js', 'meter-cli-ui.js', 'meter-context-unlock.js', 'meter-enhance.js', 'meter-rehydrate.js', 'meter-accounts.js', 'meter-next-prompt.js', 'macos-binary-utils.js', 'local-api.js', 'modules-config.js', 'asar-engine.js', 'package.json']) {
       const p = path.join(root, f);
       if (fs.existsSync(p)) h.update(f + ':').update(fs.readFileSync(p));
     }

@@ -1,4 +1,5 @@
 'use strict';
+process.env.AG_METER_TEST_MODE = '1';
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -393,10 +394,10 @@ function createBatch01Harness(options = {}) {
       }
     }
 
-    // 精确建立关键父子关系以便测试移动工作区、折叠与标签栏顺序
+    // 精确建立关键父子关系以便测试移动工作区、折叠与标签栏顺序（去重后仅 3 个平级 Tab）
     const panel = ensureEl('panel', 'section');
     const ctxTabsBar = ensureEl('ctx-tabs-bar', 'div');
-    const tabs = ['session', 'speed', 'models', 'accounts'].map((k) => {
+    const tabs = ['session', 'speed', 'models'].map((k) => {
       const b = ensureEl(`tab-ctx-${k}`, 'button', { role: 'tab', class: 'ctx-tab' });
       b.setAttribute('data-ctx-tab', k);
       return b;
@@ -404,7 +405,7 @@ function createBatch01Harness(options = {}) {
     ctxTabsBar.replaceChildren(...tabs);
     panel.appendChild(ctxTabsBar);
 
-    for (const k of ['session', 'speed', 'models', 'accounts', 'settings']) {
+    for (const k of ['session', 'speed', 'models', 'settings']) {
       panel.appendChild(ensureEl(`pane-ctx-${k}`, 'div'));
     }
 
@@ -425,29 +426,9 @@ function createBatch01Harness(options = {}) {
     for (const cid of [
       'chk-auto-switch-enabled', 'sel-auto-switch-pool', 'sel-auto-switch-metric',
       'sel-auto-switch-window', 'inp-auto-switch-threshold', 'auto-switch-candidates-list',
-      'btn-save-auto-switch', 'auto-switch-save-status', 'auto-switch-status-pill', 'accounts-list'
+      'btn-save-auto-switch', 'auto-switch-save-status', 'auto-switch-status-pill', 'quota-accounts-list', 'accounts-list'
     ]) {
       acctCard.appendChild(ensureEl(cid, cid.startsWith('chk') || cid.startsWith('inp') ? 'input' : 'div'));
-    }
-    const paneAccounts = ensureEl('pane-ctx-accounts', 'div');
-    const secSwitch = ensureEl('ctx-accounts-switch-section', 'div');
-    const secPools = ensureEl('ctx-shared-pools-section', 'div');
-    paneAccounts.appendChild(secSwitch);
-    paneAccounts.appendChild(secPools);
-    for (const aid of [
-      'btn-tab-acct-refresh', 'btn-tab-acct-oauth-add', 'ctx-acct-active-summary',
-      'ctx-acct-feedback', 'ctx-accounts-list', 'ctx-autoswitch-summary-card',
-      'ctx-autoswitch-status-pill', 'ctx-autoswitch-rule-summary', 'ctx-autoswitch-reason',
-      'btn-ctx-open-autoswitch-rules'
-    ]) {
-      secSwitch.appendChild(ensureEl(aid, aid.startsWith('btn') ? 'button' : 'div'));
-    }
-    for (const pid of [
-      'ctx-pools-account-tag', 'ctx-pools-updated-at', 'btn-ctx-pools-refresh',
-      'ctx-pools-banner', 'ctx-pools-current-card', 'ctx-pools-cur-model',
-      'ctx-pools-cur-reset', 'ctx-pools-cur-badges', 'ctx-pools-others-list', 'quota-compare-list'
-    ]) {
-      secPools.appendChild(ensureEl(pid, pid.startsWith('btn') ? 'button' : 'div'));
     }
 
     // 确认弹窗位于顶层 shadow 而不是 workspace 内部（验收重点）
@@ -910,26 +891,27 @@ test('第 2 项：看板第 4 标签账号与共享池、双脱敏切号、展�
   });
 
   try {
-    // 1. 标签顺序与唯一 ID
+    // 1. 去重后标签顺序与冗余旧视图彻底清理验证
     const bar = h.elements.get('ctx-tabs-bar');
     assert.deepEqual(
       bar.children.map((c) => c.getAttribute('data-ctx-tab')),
-      ['session', 'speed', 'models', 'accounts']
+      ['session', 'speed', 'models']
     );
-    assert.ok(TPL_SOURCE.match(/id="quota-compare-list"/g)?.length === 1, '全模板仅允许存在唯一 #quota-compare-list');
+    assert.equal(h.elements.get('tab-ctx-accounts'), undefined, '冗余 #tab-ctx-accounts 必须已移除');
+    assert.equal(h.elements.get('pane-ctx-accounts'), undefined, '冗余 #pane-ctx-accounts 必须已移除');
+    assert.equal(h.api.getAccountsTabStateForTest().legacyAccountsTabPresent, false);
 
-    // 2. 旧持久化标识 'settings' 自动迁移至第 4 标签 'accounts'，及方向键导航
-    assert.equal(h.api.getAccountsTabStateForTest().activeContextTab, 'accounts');
-    assert.equal(h.sandbox.localStorage.getItem('ag_ctx_active_tab'), 'accounts');
-    assert.equal(h.elements.get('pane-ctx-accounts').hidden, false);
-
-    // 右箭头循环回第一项，左箭头回到 accounts
-    h.elements.get('tab-ctx-accounts').trigger('keydown', { key: 'ArrowRight' });
+    // 2. 旧持久化标识 'settings' / 'accounts' 自动迁移至 'session'，方向键在 3 个 Tab 间循环导航
     assert.equal(h.api.getAccountsTabStateForTest().activeContextTab, 'session');
-    h.elements.get('tab-ctx-session').trigger('keydown', { key: 'ArrowLeft' });
-    assert.equal(h.api.getAccountsTabStateForTest().activeContextTab, 'accounts');
+    assert.equal(h.sandbox.localStorage.getItem('ag_ctx_active_tab'), 'session');
+    assert.equal(h.elements.get('pane-ctx-session').hidden, false);
 
-    // 3. 写入账号列表 + 设置当前会话模型上下文，验证切号前与展开其他池不变更会话模型
+    h.elements.get('tab-ctx-session').trigger('keydown', { key: 'ArrowLeft' });
+    assert.equal(h.api.getAccountsTabStateForTest().activeContextTab, 'models');
+    h.elements.get('tab-ctx-models').trigger('keydown', { key: 'ArrowRight' });
+    assert.equal(h.api.getAccountsTabStateForTest().activeContextTab, 'session');
+
+    // 3. 写入账号列表 + 设置当前会话模型上下文，验证切号与展开其他池不变更会话模型
     h.api.setContextLatestForTest({
       model: 'Gemini 4 Pro High',
       modelId: 'gemini-4-pro-high',
@@ -943,78 +925,22 @@ test('第 2 项：看板第 4 标签账号与共享池、双脱敏切号、展�
 
     const stateBefore = h.api.getAccountsTabStateForTest();
     assert.equal(stateBefore.activeEmail, 'alice.smith@example.com');
-    assert.equal(stateBefore.tabAccountCount, 2);
-    assert.equal(stateBefore.tabOtherPoolsCount, 1);
-
-    // 验证第 4 标签移除了重复的完整 20 格进度条，改用 5h / 7d 分窗口简洁摘要与直达模型额度看板按钮
-    const collectText = (n) => {
-      if (!n) return '';
-      return [n.textContent || '', ...Array.from(n.children || []).map(collectText)].filter(Boolean).join(' ');
-    };
-    const curBucketsEl = h.elements.get('ctx-pools-cur-buckets');
-    const curBucketsText = collectText(curBucketsEl);
-    assert.equal(curBucketsEl.querySelectorAll('.quota-bar-track').length, 0, '账号页当前池摘要不得渲染重复 20 格额度进度条');
-    assert.equal(curBucketsEl.querySelectorAll('.quota-bucket-row').length, 0, '账号页当前池摘要不得渲染完整进度行');
-    assert.match(curBucketsText, /68%/);
-    assert.match(curBucketsText, /84%/);
-    assert.match(curBucketsText, /2h 15m/);
-    assert.match(curBucketsText, /5d 04h/);
-    assert.equal(h.elements.get('ctx-pools-others-list').querySelectorAll('.quota-bar-track').length, 0, '其他共享池列表亦不得重复渲染完整进度条');
-    assert.ok(h.elements.get('btn-ctx-open-quota-board'), '必须提供查看模型额度直达按钮');
-    h.elements.get('btn-ctx-open-quota-board').click();
-    assert.equal(h.elements.get('panel-quota').hidden, false, '查看模型额度按钮必须直达模型额度看板');
-    assert.ok(h.elements.get('quota-cur-buckets').querySelectorAll('.quota-bar-track').length > 0, '完整 20 格进度条统一在模型额度看板展示');
-    assert.ok(h.elements.get('quota-cur-buckets').querySelectorAll('.quota-bucket-row').length > 0, '完整分桶行统一在模型额度看板展示');
-    h.elements.get('btn-quota-open-accounts-settings').click();
 
     const beforeSessionModel = h.api.syncContextModelSelectionForTest().activeSessionModelKey;
     h.api.selectQuotaPoolBrowseForTest('shared_claude_alt');
     assert.equal(h.api.syncContextModelSelectionForTest().activeSessionModelKey, beforeSessionModel, '展开其他共享池绝不能修改当前会话模型');
 
-    // 手动点击 Bob 账号的切换按钮 -> 刷新实际生效账号和共享池 5h/7d 值
-    const switchBtn = h.elements.get('ctx-accounts-list').querySelectorAll('button').find((b) => String(b.textContent).includes('切'));
+    // 手动点击 Bob 账号的切换按钮（降级设置卡中） -> 刷新实际生效账号
+    const switchBtn = h.elements.get('quota-accounts-list').querySelectorAll('button').find((b) => String(b.textContent).includes('切'));
     assert.ok(switchBtn, '应渲染切换账号按钮');
     switchBtn.click();
     await h.flush();
     assert.equal(h.api.getAccountsTabStateForTest().activeEmail, 'bob.jones@example.com');
 
-    // 验证第 4 标签共享池错误/无权限/空数据横幅可显式展示
-    // 验证读取账号概览失败时明确展示加载异常，不得伪装成「0 个已登记账号」
-    const origAcctsAction = h.sandbox.window.contextMeterAPI.accountsAction;
-    h.api.setAccountsOverviewForTest(null);
-    h.sandbox.window.contextMeterAPI.accountsAction = async () => ({ ok: false, error: 'backend_module_corrupted' });
-    h.elements.get('btn-tab-acct-refresh').click();
-    await h.flush();
-    assert.match(h.elements.get('ctx-acct-active-summary').textContent, /失败|backend_module_corrupted/);
-    assert.match(collectText(h.elements.get('ctx-accounts-list')), /失败|backend_module_corrupted/);
-
-    // 恢复正常概览接口并验证第 4 标签共享池错误/无权限/空数据横幅可显式展示
-    h.sandbox.window.contextMeterAPI.accountsAction = origAcctsAction;
-    h.sandbox.window.contextMeterAPI.getAccountsOverview = async () => currentOverview;
-    h.api.setAccountsOverviewForTest({
-      activeAccountEmail: null,
-      accounts: [],
-      autoSwitch: { enabled: false },
-      autoSwitchStatus: { state: 'off' }
-    });
-    h.api.setQuotaSnapshotForTest({ error: 'unauthorized', errorKind: 'auth' });
-    await h.flush();
-    assert.equal(h.elements.get('ctx-pools-banner').hidden, false, '未登录或无权限时共享池必须显示明确状态横幅');
-    assert.match(h.elements.get('ctx-pools-banner-text').textContent, /unauthorized|无权限|失败/);
-
-    h.api.setQuotaSnapshotForTest({
-      snapshot: {
-        fetchedAtMs: Date.now(),
-        pools: [{ poolKey: 'shared_3p_pool', title: 'Claude', noPermission: true, buckets: [] }]
-      }
-    });
-    await h.flush();
-    assert.equal(h.elements.get('ctx-pools-banner').hidden, false);
-    assert.match(h.elements.get('ctx-pools-banner-text').textContent, /无权限/);
-
-    // 4. 顶栏额度快览 Manage Accounts 捷径进入第 4 标签
-    h.elements.get('btn-quota-open-accounts-settings').click();
-    assert.equal(h.elements.get('pane-ctx-accounts').hidden, false);
+    // 4. 额度看板已净化（删除底部账号入口卡），无宿主设置弹窗时切换至账号入口平滑回退到设置页账号专卡
+    assert.equal(h.elements.get('btn-quota-open-accounts-settings'), undefined);
+    h.api.switchContextTabForTest('accounts');
+    assert.equal(h.elements.get('pane-ctx-settings').hidden, false);
   } finally {
     h.api.dispose();
   }
@@ -1074,16 +1000,14 @@ test('第 3 项：自动切号总开关直提与校验、双维度状态反馈�
       const chk = h.elements.get('chk-auto-switch-enabled');
       const th = h.elements.get('inp-auto-switch-threshold');
       const saveStatus = h.elements.get('auto-switch-save-status');
-      const tabPill = h.elements.get('ctx-autoswitch-status-pill');
-      const quotaPill = h.elements.get('quota-entry-autoswitch-pill');
+      assert.equal(h.elements.get('quota-entry-autoswitch-pill'), undefined, '额度看板已移除底部多账号入口卡');
+      const quotaPill = h.elements.get('auto-switch-status-pill');
 
-      // 1. 切换开关 -> 立即三处同步显示待保存/未保存状态
       // 1. 已有合法保存规则且无未保存草稿 -> 直接拨动总开关应立即提交并反馈双维度状态
       chk.checked = true;
       chk.trigger('change');
       await h.flush();
       assert.equal(h.api.getAccountsTabStateForTest().autoSwitchEnabled, true, '无未保存修改时总开关应直接提交启用');
-      assert.equal(tabPill.textContent, '已开启 · 监控中');
       assert.equal(quotaPill.textContent, '已开启 · 监控中');
       assert.equal(h.elements.get('auto-switch-status-pill').textContent, '已开启 · 监控中');
 
@@ -1116,11 +1040,10 @@ test('第 3 项：自动切号总开关直提与校验、双维度状态反馈�
       assert.equal(chk.disabled, false);
       assert.equal(chk.checked, true);
 
-      // 4. 存在未保存草稿修改 -> 三处同步显示待保存，此时拨动总开关提示先保存规则；保存草稿与 mutationSeq 并发防倒灌正常
+      // 4. 存在未保存草稿修改 -> 同步显示待保存，此时拨动总开关提示先保存规则；保存草稿与 mutationSeq 并发防倒灌正常
       th.value = '25';
       th.trigger('input');
       assert.match(saveStatus.textContent, /未保存|待保存/);
-      assert.match(tabPill.textContent, /待保存/);
       assert.match(quotaPill.textContent, /待保存/);
       assert.equal(h.api.getAccountsTabStateForTest().draftDirty, true);
 
@@ -1150,7 +1073,6 @@ test('第 3 项：自动切号总开关直提与校验、双维度状态反馈�
       const seqAfterSave = h.api.getAccountsTabStateForTest().mutationSeq;
       assert.ok(seqAfterSave > seqBeforeSave, '保存成功必须递增 mutationSeq');
       assert.equal(h.api.getAccountsTabStateForTest().autoSwitchEnabled, true);
-      assert.equal(tabPill.textContent, '已开启 · 监控中');
       assert.equal(quotaPill.textContent, '已开启 · 监控中');
       assert.equal(h.api.getAccountsTabStateForTest().draftDirty, false);
 
@@ -1158,7 +1080,7 @@ test('第 3 项：自动切号总开关直提与校验、双维度状态反馈�
       if (releaseSlowOverview) releaseSlowOverview({ ...baseOverview, autoSwitch: { ...baseOverview.autoSwitch, enabled: false } });
       await h.flush();
       assert.equal(h.api.getAccountsTabStateForTest().autoSwitchEnabled, true, '旧 overview 晚到绝不得回滚已保存状态');
-      assert.equal(tabPill.textContent, '已开启 · 监控中');
+      assert.equal(quotaPill.textContent, '已开启 · 监控中');
 
       // 验证开启但无候选账号与免改盘模式下的双维度状态和阻塞原因清晰展示
       h.api.setAccountsOverviewForTest({
@@ -1166,8 +1088,8 @@ test('第 3 项：自动切号总开关直提与校验、双维度状态反馈�
         autoSwitch: { ...baseOverview.autoSwitch, enabled: true, candidates: [] },
         autoSwitchStatus: { state: 'no_candidates', blockedReason: 'no_candidates_configured' }
       });
-      assert.equal(tabPill.textContent, '已开启 · 受阻 · 缺少候选账号');
-      assert.match(h.elements.get('ctx-autoswitch-reason').textContent, /候选账号/);
+      assert.equal(quotaPill.textContent, '已开启 · 受阻 · 缺少候选账号');
+      assert.match(h.elements.get('auto-switch-last-note').textContent, /候选账号/);
 
       // 此时若在缺少候选且未保存条件下直开，不得假成功
       h.api.setAccountsOverviewForTest({
@@ -1186,8 +1108,8 @@ test('第 3 项：自动切号总开关直提与校验、双维度状态反馈�
         autoSwitch: { ...baseOverview.autoSwitch, enabled: true, candidates: ['b@example.com'] },
         autoSwitchStatus: { state: 'waiting_idle', blockedReason: 'live_mode_cannot_auto_restart' }
       });
-      assert.equal(tabPill.textContent, '已开启 · 等待当前生成完成');
-      assert.match(h.elements.get('ctx-autoswitch-reason').textContent, /免改盘|重启/);
+      assert.equal(quotaPill.textContent, '已开启 · 等待当前生成完成');
+      assert.match(h.elements.get('auto-switch-last-note').textContent, /免改盘|重启/);
     } finally {
       h.api.dispose();
     }
@@ -1465,15 +1387,17 @@ test('第 3 项：自动切号总开关直提与校验、双维度状态反馈�
     assert.doesNotMatch(RENDERER_SOURCE, /#ag-context-meter-radial-host[^}]*-webkit-app-region:\s*no-drag/i, 'radialHost 外壳禁止带 no-drag');
     assert.match(CSS_SOURCE, /\.ctx-radial-orb:not\(\[hidden\]\)[\s\S]*?-webkit-app-region:\s*no-drag/);
     assert.match(RENDERER_SOURCE, /#ag-context-meter\[hidden\][\s\S]*?pointer-events:\s*none\s*!important/);
-    assert.match(CSS_SOURCE, /--ag-host-accent,\s*#7748CF/);
+    assert.match(CSS_SOURCE, /--ag-host-accent,\s*var\(--primary,\s*#3274f6\)/);
 
-    // 2. 双向客户端语言切换 zh-CN <-> en（保留品牌且不改面板语言）
+    // 2. 双向客户端语言切换 zh-CN <-> en（保留品牌且不改面板语言，严格写入隔离临时目录）
     const modConfigMod = require('./modules-config');
-    const tmpCfg = path.join(os.tmpdir(), `agcm-lang-cfg-${Date.now()}.json`);
+    const tmpCfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agcm-lang-cfg-'));
+    const tmpCfg = path.join(tmpCfgDir, 'modules.json');
     try {
       const baseCfg = JSON.parse(JSON.stringify(modConfigMod.DEFAULT_CONFIG));
       baseCfg.modules.chinese = { enabled: false, language: 'en', brandTitle: 'translated' };
       modConfigMod.saveModulesConfig(baseCfg, { configPath: tmpCfg });
+      assert.equal(fs.existsSync(tmpCfg), true, 'configPath 必须真实写入临时文件而非主力目录');
 
       const c1 = modConfigMod.loadModulesConfig({ configPath: tmpCfg });
       c1.modules.chinese.enabled = true;
@@ -1495,7 +1419,7 @@ test('第 3 项：自动切号总开关直提与校验、双维度状态反馈�
       const meterMainSrc = fs.readFileSync(path.join(__dirname, 'meter-main.js'), 'utf8');
       assert.doesNotMatch(meterMainSrc, /!targetEnable[\s\S]{0,160}brandTitle\s*=\s*['"]english['"]/, 'meter-main 切回英文不得重置 brandTitle');
     } finally {
-      fs.rmSync(tmpCfg, { force: true });
+      fs.rmSync(tmpCfgDir, { recursive: true, force: true });
     }
   });
 
@@ -1514,7 +1438,8 @@ test('第 3 项：自动切号总开关直提与校验、双维度状态反馈�
       'settings.fallback.title', 'settings.fallback.defaultReason', 'settings.fallback.retryHost',
       'settings.fallback.noHostModal', 'settings.fallback.standaloneBrowser',
       'settings.clientLang.applyRestart', 'mod.zh.submitting', 'mod.zh.readbackMismatch',
-      'prefs.saving', 'prefs.stateOn', 'prefs.stateOff', 'prefs.toggleFailed'
+      'prefs.saving', 'prefs.stateOn', 'prefs.stateOff', 'prefs.toggleFailed',
+      'quota.refresh.cached', 'quota.refresh.fallbackTip', 'quota.fallback.banner', 'quota.fallback.noDataBanner'
     ];
     for (const key of newKeys) {
       const m = I18N_SOURCE.match(new RegExp(`'${key.replace(/\./g, '\\.')}'\\s*:\\s*\\{[^\\n]+\\}`));

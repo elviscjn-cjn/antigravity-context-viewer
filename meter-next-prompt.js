@@ -16,7 +16,8 @@ const {
   CLOUDCODE_PROD_URL,
   fetchJsonWithProxy,
   getSharedAccountsManager,
-  normalizeEmail
+  normalizeEmail,
+  refreshOAuthAccessToken
 } = require('./meter-accounts');
 
 const DEFAULT_MAX_USER_CHARS = 800;
@@ -133,10 +134,78 @@ function detectDominantLanguage(text) {
 }
 
 /**
+ * 从会话轨迹 rawSteps 中提取标准用户/助手轮次，供后端与渲染端统一复用
+ */
+function extractTurnsFromRawSteps(rawSteps, maxTurns = 8) {
+  if (!Array.isArray(rawSteps) || rawSteps.length === 0) return [];
+  const extracted = [];
+  let pendingToolSummary = [];
+  for (const step of rawSteps) {
+    if (!step || typeof step !== 'object') continue;
+    const userText = typeof step.userInput?.userResponse === 'string'
+      ? step.userInput.userResponse.trim()
+      : (typeof step.userResponse === 'string' ? step.userResponse.trim() : '');
+    if (userText) {
+      pendingToolSummary = [];
+      extracted.push({
+        role: 'user',
+        sourceType: step.source === 'BACKGROUND_NOTIFICATION' ? 'background_notification' : 'user',
+        text: userText,
+        status: 'completed'
+      });
+      continue;
+    }
+    if (step.type === 'TOOL_RESULT' || step.toolName || step.toolCall) {
+      const toolLabel = String(step.toolName || step.toolCall?.name || 'tool').trim();
+      const snippet = typeof step.content === 'string' ? step.content.slice(0, 120) : '';
+      if (toolLabel || snippet) {
+        pendingToolSummary.push(snippet ? `${toolLabel}: ${snippet}` : toolLabel);
+      }
+      continue;
+    }
+    const assistantText = typeof step.plannerResponse?.modifiedResponse === 'string' && step.plannerResponse.modifiedResponse.trim()
+      ? step.plannerResponse.modifiedResponse.trim()
+      : (typeof step.plannerResponse?.response === 'string' && step.plannerResponse.response.trim()
+        ? step.plannerResponse.response.trim()
+        : (typeof step.response === 'string' && step.response.trim()
+          ? step.response.trim()
+          : ((step.role === 'assistant' || step.type === 'ASSISTANT' || step.type === 'PLANNER_RESPONSE') && typeof step.content === 'string'
+            ? step.content.trim()
+            : '')));
+    if (assistantText) {
+      const status = step.status === 'RUNNING'
+        ? 'streaming'
+        : (step.error ? 'error' : 'completed');
+      const toolSummary = pendingToolSummary.slice(-4).join(' | ').slice(0, 360);
+      pendingToolSummary = [];
+      if (extracted.length > 0 && extracted[extracted.length - 1].role === 'assistant') {
+        const prev = extracted[extracted.length - 1];
+        prev.text = `${prev.text}\n${assistantText}`.trim();
+        prev.status = status;
+        if (toolSummary) prev.toolSummary = prev.toolSummary ? `${prev.toolSummary} | ${toolSummary}`.slice(0, 360) : toolSummary;
+      } else {
+        extracted.push({
+          role: 'assistant',
+          sourceType: 'assistant',
+          text: assistantText,
+          status,
+          ...(toolSummary ? { toolSummary } : {})
+        });
+      }
+    }
+  }
+  return extracted.slice(-Math.max(2, Number(maxTurns) || 8));
+}
+
+/**
  * 抽取与规范化预测上下文：明确标注来源角色、最近目标/偏好、最后回复尾部、工具摘要及待办清单
  */
 function buildPredictionContext(input = {}) {
-  const turns = Array.isArray(input.turns) ? input.turns : [];
+  const rawTurns = Array.isArray(input.turns) ? input.turns : [];
+  const hasStructuredAssistant = rawTurns.some(t => t && (t.role === 'assistant' || t.sourceType === 'assistant') && (t.text || t.content));
+  const turns = (!hasStructuredAssistant && Array.isArray(input.rawSteps) && input.rawSteps.length > 0)
+    ? extractTurnsFromRawSteps(input.rawSteps)
+    : rawTurns;
   const taskChecklist = input.taskMarkdown !== undefined
     ? parseTaskChecklist(input.taskMarkdown)
     : readTaskChecklistForSession(input.cascadeId, input);
@@ -330,15 +399,38 @@ async function callCloudCodeGenerateContent(prompts, options = {}) {
   const model = String(options.model || DEFAULT_PREDICTION_MODEL).trim().replace(/^models\//i, '');
 
   let accessToken = options.accessToken || null;
+  let refreshToken = '';
   let projectId = options.projectId || '';
+  let didPreRefresh = false;
+  let sharedMgr = null;
+  let activeEmailForSave = '';
   if (!accessToken) {
-    const mgr = getSharedAccountsManager(options.managerOpts || {});
-    const ov = mgr.getOverviewState?.() || {};
-    const store = mgr.loadStore?.() || { accounts: {} };
-    const activeEmail = normalizeEmail(ov.activeAccountEmail || store.activeAccountEmail || '');
-    const rec = activeEmail ? store.accounts?.[activeEmail] : null;
+    sharedMgr = getSharedAccountsManager(options.managerOpts || {});
+    const ov = sharedMgr.getOverviewState?.() || {};
+    const store = sharedMgr.loadStore?.() || { accounts: {} };
+    activeEmailForSave = normalizeEmail(ov.activeAccountEmail || store.activeAccountEmail || '');
+    const rec = activeEmailForSave ? store.accounts?.[activeEmailForSave] : null;
     accessToken = rec?.credential?.accessToken || null;
+    refreshToken = rec?.credential?.refreshToken || '';
     projectId = projectId || rec?.projectId || '';
+    const expiresAt = Number(rec?.credential?.expiresAt || 0);
+    const isExpired = expiresAt > 0 && Date.now() >= (expiresAt - 60000);
+    if ((!accessToken || isExpired) && refreshToken && typeof refreshOAuthAccessToken === 'function') {
+      try {
+        const refreshed = await refreshOAuthAccessToken(refreshToken, customFetch, null, options.proxyConfigOptions || {});
+        if (refreshed?.accessToken) {
+          accessToken = refreshed.accessToken;
+          didPreRefresh = true;
+          try {
+            if (activeEmailForSave && store.accounts?.[activeEmailForSave]?.credential && typeof sharedMgr.saveStore === 'function') {
+              store.accounts[activeEmailForSave].credential.accessToken = refreshed.accessToken;
+              if (refreshed.expiresAt) store.accounts[activeEmailForSave].credential.expiresAt = refreshed.expiresAt;
+              sharedMgr.saveStore(store);
+            }
+          } catch { }
+        }
+      } catch { }
+    }
   }
 
   if (!accessToken) {
@@ -346,11 +438,11 @@ async function callCloudCodeGenerateContent(prompts, options = {}) {
   }
 
   const ua = `antigravity/2.34.0 ${process.platform === 'win32' ? 'windows' : process.platform}/${process.arch === 'x64' ? 'amd64' : process.arch}`;
-  const headers = {
-    Authorization: `Bearer ${accessToken}`,
+  const buildHeaders = (tok) => ({
+    Authorization: `Bearer ${tok}`,
     'User-Agent': ua,
     'Content-Type': 'application/json'
-  };
+  });
 
   const payload = {
     ...(projectId ? { project: projectId } : {}),
@@ -373,16 +465,44 @@ async function callCloudCodeGenerateContent(prompts, options = {}) {
     : [CLOUDCODE_DAILY_URL, CLOUDCODE_PROD_URL];
 
   let lastErr = null;
+  let didRefreshAfter401 = false;
   const startedAt = Date.now();
   for (const baseUrl of baseUrls) {
     try {
-      const res = await fetchJsonWithProxy(`${baseUrl}/v1internal:generateContent`, {
+      let res = await fetchJsonWithProxy(`${baseUrl}/v1internal:generateContent`, {
         method: 'POST',
         stage: 'next_prompt_predict',
         timeoutMs,
-        headers,
+        headers: buildHeaders(accessToken),
         body: JSON.stringify(payload)
       }, customFetch, options.proxyConfigOptions || {});
+
+      if (res.status === 401 && !didRefreshAfter401 && refreshToken && typeof refreshOAuthAccessToken === 'function') {
+        didRefreshAfter401 = true;
+        try {
+          const refreshed = await refreshOAuthAccessToken(refreshToken, customFetch, null, options.proxyConfigOptions || {});
+          if (refreshed?.accessToken) {
+            accessToken = refreshed.accessToken;
+            try {
+              if (sharedMgr && activeEmailForSave && typeof sharedMgr.loadStore === 'function' && typeof sharedMgr.saveStore === 'function') {
+                const stNow = sharedMgr.loadStore() || { accounts: {} };
+                if (stNow.accounts?.[activeEmailForSave]?.credential) {
+                  stNow.accounts[activeEmailForSave].credential.accessToken = refreshed.accessToken;
+                  if (refreshed.expiresAt) stNow.accounts[activeEmailForSave].credential.expiresAt = refreshed.expiresAt;
+                  sharedMgr.saveStore(stNow);
+                }
+              }
+            } catch { }
+            res = await fetchJsonWithProxy(`${baseUrl}/v1internal:generateContent`, {
+              method: 'POST',
+              stage: 'next_prompt_predict',
+              timeoutMs,
+              headers: buildHeaders(accessToken),
+              body: JSON.stringify(payload)
+            }, customFetch, options.proxyConfigOptions || {});
+          }
+        } catch { }
+      }
 
       if (res.ok && res.json) {
         const respRoot = res.json.response || res.json;
@@ -396,6 +516,7 @@ async function callCloudCodeGenerateContent(prompts, options = {}) {
           transport: 'cloudcode_generate_content',
           model,
           rawText: candText,
+          authRefreshed: Boolean(didPreRefresh || didRefreshAfter401),
           latencyMs: Date.now() - startedAt,
           usage: usageMeta ? {
             inputTokens: Number(usageMeta.promptTokenCount) || 0,
@@ -514,6 +635,8 @@ async function predictNextPromptAsync(input = {}, options = {}) {
     turnId: ctx.turnId,
     model: genRes.model || options.model || DEFAULT_PREDICTION_MODEL,
     transport: genRes.transport || 'cloudcode_generate_content',
+    authRefreshed: Boolean(genRes.authRefreshed),
+    assistantChars: ctx.lastAssistantText ? ctx.lastAssistantText.length : 0,
     requestCount: 1,
     latencyMs: genRes.latencyMs || 0,
     usage: genRes.usage || null
@@ -528,6 +651,7 @@ module.exports = {
   parseTaskChecklist,
   readTaskChecklistForSession,
   detectDominantLanguage,
+  extractTurnsFromRawSteps,
   buildPredictionContext,
   shouldPreAbstain,
   buildPredictionPrompts,

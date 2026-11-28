@@ -82,8 +82,10 @@ function renderCsiRankBoard(containerEl, list, selectedDate, kind) {
     const row = document.createElement('div');
     row.className = 'csi-board-row';
     const left = document.createElement('span');
+    left.className = 'csi-board-name';
     left.style.cssText = 'min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
     left.textContent = r.name;
+    left.title = r.name;
     const barWrap = document.createElement('span');
     barWrap.className = 'ctx-cmd-prog-bar';
     barWrap.style.maxWidth = '64px';
@@ -168,7 +170,7 @@ function renderCsi7dChart(svg, dailyInsights, selectedDate) {
       if (lt) { lt.textContent = short(maxTok); nodes.push(lt); }
       const rt = createSvgEl('text', {
         x: width - padR + 4, y: (y + 3).toFixed(1), 'text-anchor': 'start',
-        fill: '#C084FC', 'font-size': '8.5'
+        fill: 'var(--ag-host-accent-text, var(--ag-host-accent, var(--primary, #3274f6)))', 'font-size': '8.5'
       });
       if (rt) { rt.textContent = `$${maxCost.toFixed(2)}`; nodes.push(rt); }
     }
@@ -204,7 +206,7 @@ function renderCsi7dChart(svg, dailyInsights, selectedDate) {
         width: subBarW.toFixed(1),
         height: costH.toFixed(1),
         rx: '2',
-        fill: '#C084FC',
+        fill: 'var(--ag-host-accent, var(--primary, #3274f6))',
         stroke: isSel ? '#FFFFFF' : 'none',
         'stroke-width': isSel ? '1.2' : '0',
         style: 'cursor:pointer',
@@ -220,7 +222,7 @@ function renderCsi7dChart(svg, dailyInsights, selectedDate) {
       x: cx.toFixed(1),
       y: String(height - 6),
       'text-anchor': 'middle',
-      fill: isSel ? '#C084FC' : 'var(--ag-text-muted, #8a8a94)',
+      fill: isSel ? 'var(--ag-host-accent-text, var(--ag-host-accent, var(--primary, #3274f6)))' : 'var(--ag-text-muted, #8a8a94)',
       'font-size': '9',
       'font-weight': isSel ? '700' : '400'
     });
@@ -368,18 +370,23 @@ function renderCrossSessionInsightsSection() {
       card.setAttribute('data-archive-cid', sa.cascadeId || '');
 
       const top = document.createElement('div');
-      top.className = 'ctx-radar-top';
+      top.className = 'csi-archive-top ctx-radar-top';
+      const fullTitle = sa.title || (sa.cascadeId ? sa.cascadeId.slice(0, 12) : 'session');
       const titleEl = document.createElement('strong');
-      titleEl.style.cssText = 'font-size:11.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-      titleEl.textContent = sa.title || (sa.cascadeId ? sa.cascadeId.slice(0, 12) : 'session');
+      titleEl.className = 'csi-archive-title';
+      titleEl.style.cssText = 'display:block;flex:1 1 0;font-size:11.5px;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      titleEl.textContent = fullTitle;
+      titleEl.title = fullTitle;
       const dateSp = document.createElement('span');
+      dateSp.className = 'csi-archive-date';
       dateSp.style.cssText = 'font-size:10px;color:var(--ag-text-muted);flex-shrink:0;';
       dateSp.textContent = sa.date || '—';
       top.appendChild(titleEl);
       top.appendChild(dateSp);
 
       const meta = document.createElement('div');
-      meta.style.cssText = 'display:flex;flex-wrap:wrap;gap:5px;font-size:10px;color:var(--ag-text-secondary);';
+      meta.className = 'csi-archive-meta';
+      meta.style.cssText = 'display:flex;flex-wrap:wrap;gap:5px;font-size:10px;color:var(--ag-text-secondary);min-width:0;max-width:100%;overflow:hidden;';
       if (sa.workspaceTag) {
         const wsPill = document.createElement('span');
         wsPill.className = 'ctx-ov-meta-pill';
@@ -395,7 +402,7 @@ function renderCrossSessionInsightsSection() {
       const bar = document.createElement('div');
       bar.className = 'csi-archive-bar';
       const ratios = sa.compositionRatios || { inputPct: 0, cachePct: 0, outputPct: 0 };
-      for (const [col, pct] of [['#10B981', ratios.inputPct], ['#FB923C', ratios.cachePct], ['#C084FC', ratios.outputPct]]) {
+      for (const [col, pct] of [['#10B981', ratios.inputPct], ['#FB923C', ratios.cachePct], ['var(--ag-host-accent, var(--primary, #3274f6))', ratios.outputPct]]) {
         if (!(pct > 0)) continue;
         const seg = document.createElement('div');
         seg.style.cssText = `width:${Math.max(2, pct)}%;background:${col};height:100%;`;
@@ -403,11 +410,15 @@ function renderCrossSessionInsightsSection() {
       }
 
       const foot = document.createElement('div');
-      foot.style.cssText = 'display:flex;justify-content:space-between;font-size:10.5px;color:var(--ag-text-secondary);font-variant-numeric:tabular-nums;';
+      foot.className = 'csi-archive-foot';
+      foot.style.cssText = 'display:flex;justify-content:space-between;gap:6px;font-size:10.5px;color:var(--ag-text-secondary);font-variant-numeric:tabular-nums;min-width:0;max-width:100%;overflow:hidden;';
+      const langCode = typeof currentLang !== 'undefined' ? currentLang : 'zh-CN';
+      const cacheLbl = langCode === 'en' ? 'Cache' : (langCode === 'zh-TW' ? '快取' : '缓存');
+      const callsLbl = langCode === 'en' ? 'calls' : (langCode === 'zh-TW' ? '次呼叫' : '次调用');
       const leftF = document.createElement('span');
-      leftF.textContent = `${short(sa.totalTokens || 0)} · Cache ${sa.cacheReadPct ?? 0}%`;
+      leftF.textContent = `${short(sa.totalTokens || 0)} · ${cacheLbl} ${sa.cacheReadPct ?? 0}%`;
       const rightF = document.createElement('span');
-      rightF.textContent = sa.costUSD > 0 ? `$${Number(sa.costUSD).toFixed(3)}` : `${sa.callCount || 0} calls`;
+      rightF.textContent = sa.costUSD > 0 ? `$${Number(sa.costUSD).toFixed(3)}` : `${sa.callCount || 0} ${callsLbl}`;
       foot.appendChild(leftF);
       foot.appendChild(rightF);
 

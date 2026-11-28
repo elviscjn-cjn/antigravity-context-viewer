@@ -286,6 +286,10 @@ test('Phase 5 UI: 移除自定义模型选择器、清理旧版遗留隐藏状�
 
   assert.equal(source.includes('syncModelPickers'), false, '渲染器包中不得再包含 syncModelPickers');
   assert.equal(source.includes('ag-mp-model-menu'), false, '渲染器包中不得再注册自定义模型下拉菜单');
+  assert.equal(source.includes('AGQuickModelEffortPicker'), false, '渲染器包中不得再包含 AGQuickModelEffortPicker');
+  assert.equal(source.includes('syncQuickModelEffortPicker'), false, '渲染器包中不得再包含 syncQuickModelEffortPicker');
+  assert.equal(source.includes('ag-qmp-trigger'), false, '渲染器包中不得再包含快捷模型选择器触发器');
+  assert.equal(fs.existsSync(path.join(__dirname, 'src', 'renderer', 'quick-model-effort-picker.js')), false, 'quick-model-effort-picker.js 必须彻底删除');
   assert.equal(tpl.includes('chk-simplified-model-picker'), false, '设置模板不得再保留简化模型选择器开关');
   assert.equal(i18nSrc.includes('modelPicker.title'), false, 'i18n 不得保留独占模型选择器词条');
   assert.equal(tpl.includes('chk-next-prompt-enabled'), true, '下一句预测入口必须保持完整');
@@ -296,10 +300,13 @@ test('Phase 5 UI: 移除自定义模型选择器、清理旧版遗留隐藏状�
   doc.appendChild(head);
   doc.appendChild(body);
 
-  // 模拟旧版遗留样式与探测 class
+  // 模拟旧版遗留样式与探测 class（含已废弃的快捷模型选择器残留）
   const legacyStyle = createDomNode('STYLE');
   legacyStyle.id = 'ag-model-picker-style';
   head.appendChild(legacyStyle);
+  const legacyQuickStyle = createDomNode('STYLE');
+  legacyQuickStyle.id = 'ag-quick-model-effort-style';
+  head.appendChild(legacyQuickStyle);
   body.classList.add('ag-mp-native-probing');
 
   function makeComposer(routeId, initialTriggerText) {
@@ -315,8 +322,12 @@ test('Phase 5 UI: 移除自定义模型选择器、清理旧版遗留隐藏状�
     const legacyWrap = createDomNode('DIV');
     legacyWrap.className = 'ag-mp-wrap';
     legacyWrap.setAttribute('data-ag-model-picker', 'true');
+    const legacyQuickRoot = createDomNode('DIV');
+    legacyQuickRoot.className = 'ag-qmp-root';
+    legacyQuickRoot.setAttribute('data-ag-quick-model-picker', 'true');
     comp.appendChild(trig);
     comp.appendChild(legacyWrap);
+    comp.appendChild(legacyQuickRoot);
     view.appendChild(comp);
     body.appendChild(view);
     return { view, comp, trig, legacyWrap };
@@ -411,8 +422,9 @@ test('Phase 5 UI: 移除自定义模型选择器、清理旧版遗留隐藏状�
     assert.equal(mainPane.trig.classList.contains('ag-mp-native-hidden'), false, '即使旧配置保存为开启，也必须撤销原生触发器隐藏');
     assert.equal(sidePane.trig.classList.contains('ag-mp-native-hidden'), false);
     assert.equal(head.querySelector('#ag-model-picker-style'), null, '旧版模型选择器样式必须清理');
+    assert.equal(head.querySelector('#ag-quick-model-effort-style'), null, '已废弃快捷模型选择器样式必须清理');
     assert.equal(body.classList.contains('ag-mp-native-probing'), false, '旧版探测 class 必须清理');
-    assert.equal(body.querySelectorAll('.ag-mp-wrap, .ag-mp-popover, [data-ag-model-picker="true"]').length, 0, '旧版自定义菜单节点必须全部移除');
+    assert.equal(body.querySelectorAll('.ag-mp-wrap, .ag-mp-popover, [data-ag-model-picker="true"], [data-ag-quick-model-picker], .ag-qmp-root, .ag-qmp-popover').length, 0, '旧版自定义菜单与快捷选择器节点必须全部移除');
     assert.equal(storageMap.has('ag_simplified_model_picker'), false, '旧版 localStorage 键应被清理');
     assert.equal(mainPane.comp.querySelectorAll('[data-testid="model-selector-trigger"]').length, 1, '每个输入框只保留唯一原生触发器');
     assert.equal(api.getModelPickersStateForTest, undefined, '不再暴露自定义模型选择器状态接口');
