@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   build-windows-helper:
+    if: github.ref_name != 'v0.9.4-half-finished'
     name: Build Windows CLI Window Helper from Source
     runs-on: windows-latest
 
@@ -96,3 +97,28 @@ jobs:
           gh release edit "${{ github.ref_name }}" --title "${{ steps.meta.outputs.release_title }}" --notes-file RELEASE_NOTES.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-half-finished-windows:
+    if: github.ref_name == 'v0.9.4-half-finished'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v4
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build and publish Windows x64 package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/package-release.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $zip = "antigravity-context-viewer_0.9.4_windows_amd64.zip"
+          $assetPath = Join-Path "dist/release" $zip
+          $sha = (Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$sha  $zip" | Set-Content -LiteralPath "dist/release/checksums.txt" -Encoding utf8
+          gh release create "${{ github.ref_name }}" $assetPath "dist/release/checksums.txt" --verify-tag --prerelease --latest=false --title "0.9.4 半成品版" --notes-file RELEASE_NOTES.md
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -3,3 +3,5 @@
 这轮做了详细上下文、个人用量、右侧布局和账号管理的一些改动. 部分设计从其他优秀项目获得了灵感. 先把话说在前头. Context 这块还有几处没做到我想要的样子, 一些 UI 细节和布局也还在收尾. 感兴趣的话可以试试切号、额度刷新和新加的小功能.
 
 这次提供 Windows x64 安装包. 没有完成不同机器上的安装和功能验证. 我再花几天把剩下的交互和 UI 慢慢补好.
+
+Antigravity 界面汉化基于 Antigravity-Chinese-Localization. 感谢 aabbWei 与 antigravity-cn-community 贡献者.
