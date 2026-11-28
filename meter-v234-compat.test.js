@@ -721,3 +721,258 @@ async function createWindow(url, storageManager, options) {
   assert.equal(process.exitCode, 1, '结构预检阻塞时 cmdCheck 不得返回 0');
   process.exitCode = prevExitCode;
 });
+
+// ============================================================================
+// 5. SSH 远程窗口：无本地 daemon/authBootstrap 时通过被动捕获 CSRF Token 与 sessionFetch 获取 5h/7d 额度
+// ============================================================================
+
+test('SSH 远端回环 origin 在无本地 daemon 记录时，通过被动捕获的 x-codeium-csrf-token 成功连接并获取 5h/7d 额度（含 401 刷新重试）', async (t) => {
+  const meterMain = require('./meter-main');
+  let activeRemoteToken = 'ssh-remote-csrf-v1';
+  let userStatusCalls = 0;
+  let quotaSummaryCalls = 0;
+
+  const future5h = new Date(Date.now() + 4 * 3600 * 1000).toISOString();
+  const future7d = new Date(Date.now() + 6 * 24 * 3600 * 1000).toISOString();
+
+  const server = http.createServer((req, res) => {
+    if (req.url === '/') {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<script>window.__APP_CONFIG__ = {"productName":"antigravity","csrfToken":"","appVersion":"2.36.0"};</script>');
+      return;
+    }
+    const got = req.headers['x-codeium-csrf-token'];
+    if (got !== activeRemoteToken) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+    if (req.url.endsWith('/GetUserStatus')) {
+      userStatusCalls++;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        userStatus: {
+          email: 'ssh.user@example.com',
+          cascadeModelConfigData: {
+            clientModelConfigs: [
+              {
+                label: 'Gemini 4 Hydrogen (High)',
+                modelOrAlias: { model: 'MODEL_PLACEHOLDER_M28' },
+                quotaInfo: { remainingFraction: 0.72, resetTime: future5h }
+              }
+            ]
+          }
+        }
+      }));
+      return;
+    }
+    if (req.url.endsWith('/RetrieveUserQuotaSummary')) {
+      quotaSummaryCalls++;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        response: {
+          groups: [
+            {
+              groupId: 'gemini',
+              displayName: 'Gemini Pro & Flash',
+              buckets: [
+                { bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.72, resetTime: future5h },
+                { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.91, resetTime: future7d }
+              ]
+            }
+          ]
+        }
+      }));
+      return;
+    }
+    res.writeHead(404);
+    res.end('not found');
+  });
+
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => server.close(r)));
+  const port = server.address().port;
+  const sshOrigin = `http://127.0.0.1:${port}`;
+  t.after(() => {
+    meterMain.clearCapturedCsrfToken(sshOrigin);
+    collector.resetQuotaHostCacheForTest();
+  });
+
+  // 1. 验证 attachSessionCsrfCapture 优先使用 onSendHeaders，不覆盖已有的 onBeforeSendHeaders 监听器
+  let onSendHeadersListener = null;
+  let beforeSendOverwritten = false;
+  const mockSession = {
+    webRequest: {
+      onBeforeSendHeaders() { beforeSendOverwritten = true; },
+      onSendHeaders(_filter, listener) { onSendHeadersListener = listener; }
+    }
+  };
+  assert.equal(meterMain.attachSessionCsrfCapture(mockSession), true);
+  assert.equal(beforeSendOverwritten, false, '不得覆盖已有的 onBeforeSendHeaders 监听');
+  assert.equal(typeof onSendHeadersListener, 'function');
+
+  // 2. 严禁记录非回环地址的 token
+  onSendHeadersListener({
+    url: 'https://example.com/api',
+    requestHeaders: { 'X-Codeium-Csrf-Token': 'should-not-capture' }
+  });
+  assert.equal(meterMain.getCapturedCsrfToken('https://example.com', mockSession), null);
+
+  // 3. 捕获回环请求头中的 x-codeium-csrf-token（大小写不敏感）
+  onSendHeadersListener({
+    url: `${sshOrigin}/exa.language_server_pb.LanguageServerService/GetCascadeTrajectorySteps`,
+    requestHeaders: { 'X-Codeium-Csrf-Token': activeRemoteToken }
+  });
+  assert.equal(meterMain.getCapturedCsrfToken(sshOrigin, mockSession), activeRemoteToken);
+
+  // 4. 在无本地 authBootstrap 与无本地 daemon 记录下，成功通过捕获的 token 拉取 5h/7d 额度
+  let rendererToken = activeRemoteToken;
+  const mockEvent = {
+    sender: {
+      session: mockSession,
+      getURL: () => `${sshOrigin}/c/ssh-conv`,
+      isDestroyed: () => false,
+      executeJavaScript: async () => rendererToken
+    }
+  };
+  const senderAuthOpts = meterMain.buildSenderOriginAuthOptions(mockEvent, sshOrigin);
+  collector.resetQuotaHostCacheForTest();
+  const quotaRes = await collector.fetchQuotaSnapshotFromHost({
+    force: true,
+    origin: sshOrigin,
+    authBootstrap: null,
+    allowDaemonFallback: false,
+    ...senderAuthOpts
+  });
+  assert.equal(quotaRes.ok, true, `预期获取额度成功，实际错误: ${quotaRes.error}`);
+  assert.equal(quotaRes.snapshot?.syncState, 'fresh');
+  assert.equal(userStatusCalls, 1);
+  assert.equal(quotaSummaryCalls, 1);
+  const geminiPool = (quotaRes.snapshot?.pools || []).find(p => p.poolKey === 'shared_gemini_main');
+  assert.ok(geminiPool, '应解析出 Gemini 额度池');
+  const b5h = (geminiPool.buckets || []).find(b => b.windowKey === '5h');
+  const bWeekly = (geminiPool.buckets || []).find(b => b.windowKey === 'weekly');
+  assert.ok(b5h && bWeekly, '应同时解析出 5h 与 7d 额度窗口');
+  assert.equal(Math.round(b5h.remainingFraction * 100), 72);
+  assert.equal(Math.round(bWeekly.remainingFraction * 100), 91);
+
+  // 5. 模拟远端令牌轮换导致 401：应清空旧缓存并刷新重试成功
+  activeRemoteToken = 'ssh-remote-csrf-v2';
+  rendererToken = activeRemoteToken;
+  const api = await localApi.connect({
+    origin: sshOrigin,
+    authBootstrap: null,
+    allowDaemonFallback: false,
+    ...senderAuthOpts
+  });
+  // 此时 connect 使用的是旧缓存 v1，首次 RPC 应触发 401 -> 清除旧缓存 -> refreshCapturedCsrfToken 拿到 v2 -> 重试成功
+  const retryRes = await api.call('GetUserStatus', {});
+  assert.equal(retryRes.userStatus.email, 'ssh.user@example.com');
+  assert.equal(meterMain.getCapturedCsrfToken(sshOrigin, mockSession), 'ssh-remote-csrf-v2');
+});
+
+test('SSH 2.36.0 SOCKS5 远端 Session 窗口通过 context-meter:get-quota 经 session.fetch 与捕获 CSRF 获取额度', async (t) => {
+  const meterMain = require('./meter-main');
+  const remoteOrigin = 'https://127.0.0.1:49991';
+  const remoteToken = 'ssh-socks5-csrf-token';
+  const future5h = new Date(Date.now() + 3 * 3600 * 1000).toISOString();
+  const future7d = new Date(Date.now() + 5 * 24 * 3600 * 1000).toISOString();
+  const fetchedUrls = [];
+  let onSendHeadersListener = null;
+
+  const mockRemoteSession = {
+    webRequest: {
+      onSendHeaders(_filter, listener) { onSendHeadersListener = listener; }
+    },
+    fetch: async (url, init = {}) => {
+      fetchedUrls.push(String(url));
+      if (String(url) === `${remoteOrigin}/`) {
+        return {
+          status: 200,
+          text: async () => '<script>window.__APP_CONFIG__ = {"csrfToken":"","appVersion":"2.36.0"};</script>'
+        };
+      }
+      const hdrToken = init?.headers?.['x-codeium-csrf-token'];
+      if (hdrToken !== remoteToken) {
+        return { status: 401, text: async () => '{"error":"unauthorized"}' };
+      }
+      if (String(url).endsWith('/GetUserStatus')) {
+        return {
+          status: 200,
+          text: async () => JSON.stringify({
+            userStatus: {
+              email: 'ubuntu.ssh@example.com',
+              cascadeModelConfigData: {
+                clientModelConfigs: [
+                  {
+                    label: 'Gemini 4 Hydrogen (High)',
+                    modelOrAlias: { model: 'MODEL_PLACEHOLDER_M28' },
+                    quotaInfo: { remainingFraction: 0.85, resetTime: future5h }
+                  }
+                ]
+              }
+            }
+          })
+        };
+      }
+      if (String(url).endsWith('/RetrieveUserQuotaSummary')) {
+        return {
+          status: 200,
+          text: async () => JSON.stringify({
+            response: {
+              groups: [
+                {
+                  groupId: 'gemini',
+                  displayName: 'Gemini Pro & Flash',
+                  buckets: [
+                    { bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.85, resetTime: future5h },
+                    { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.95, resetTime: future7d }
+                  ]
+                }
+              ]
+            }
+          })
+        };
+      }
+      return { status: 404, text: async () => 'not found' };
+    }
+  };
+
+  t.after(() => {
+    meterMain.clearCapturedCsrfToken(remoteOrigin, mockRemoteSession);
+    collector.resetQuotaHostCacheForTest();
+  });
+
+  // 注册到独立 mock ipcMain
+  const handlers = new Map();
+  meterMain.registerMeterIpcHandlers({
+    handle(channel, fn) { handlers.set(channel, fn); }
+  });
+  const getQuotaHandler = handlers.get('context-meter:get-quota');
+  assert.equal(typeof getQuotaHandler, 'function');
+
+  // 先绑定 session 捕获，并模拟渲染进程已发出一次带 CSRF 的回环请求
+  meterMain.attachSessionCsrfCapture(mockRemoteSession);
+  onSendHeadersListener({
+    url: `${remoteOrigin}/exa.language_server_pb.LanguageServerService/GetAllCascadeTrajectories`,
+    requestHeaders: { 'x-codeium-csrf-token': remoteToken }
+  });
+
+  const mainFrame = { url: `${remoteOrigin}/c/remote-ubuntu-session` };
+  const event = {
+    senderFrame: mainFrame,
+    sender: {
+      __isRemoteSession: true,
+      session: mockRemoteSession,
+      mainFrame,
+      getURL: () => mainFrame.url,
+      isDestroyed: () => false
+    }
+  };
+
+  collector.resetQuotaHostCacheForTest();
+  const res = await getQuotaHandler(event, { force: true });
+  assert.equal(res.ok, true, `SSH sessionFetch 额度拉取应成功，实际返回: ${JSON.stringify(res)}`);
+  assert.ok(fetchedUrls.some(u => u.endsWith('/GetUserStatus')), '应通过 session.fetch 调用 GetUserStatus');
+  assert.ok(fetchedUrls.some(u => u.endsWith('/RetrieveUserQuotaSummary')), '应通过 session.fetch 调用 RetrieveUserQuotaSummary');
+});
