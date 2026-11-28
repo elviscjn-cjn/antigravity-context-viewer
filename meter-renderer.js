@@ -56946,6 +56946,8 @@ function createHostSettingsController(deps = {}) {
     );
   }
 
+  const SETTINGS_NAV_CATEGORY_RE = /\b(general|browser|account|appearance|editor|models?|notifications?|shortcuts?|keybindings?|agents?|privacy|extensions?|plugins?|mcp|billing|language|theme)\b|通用|应用|浏览器|瀏覽器|账号|帳號|账户|帳戶|外观|外觀|模型|通知|快捷键|快捷鍵|隐私|隱私|语言|語言|代理/i;
+
   function isHostNavTestId(node) {
     if (!node) return false;
     const id = String(node.id || '');
@@ -57133,6 +57135,22 @@ function createHostSettingsController(deps = {}) {
       const browserBtn = modal.querySelector?.('#settings-nav-item-Browser, [data-testid="settings-nav-item-Browser"]') || (browserById && (modal.contains?.(browserById) || browserById.parentElement?.parentElement === modal) ? browserById : null);
       const navBtns = getNavButtons(modal);
       if (!browserBtn && navBtns.length === 0) continue;
+      const isExplicitSettingsModal = Boolean(
+        modal.classList?.contains?.('settings-modal-container') ||
+        modal.getAttribute?.('data-testid') === 'settings-modal'
+      );
+      const explicitNavBtns = navBtns.filter((b) => isHostNavTestId(b));
+      const matchedCategoryBtns = navBtns.filter((b) => (
+        isHostNavTestId(b) ||
+        SETTINGS_NAV_CATEGORY_RE.test(String(b.textContent || b.id || b.getAttribute?.('data-testid') || ''))
+      ));
+      if (!browserBtn && explicitNavBtns.length === 0) {
+        if (isExplicitSettingsModal) {
+          if (matchedCategoryBtns.length === 0) continue;
+        } else if (matchedCategoryBtns.length < 2) {
+          continue;
+        }
+      }
       let navList = null;
       if (browserBtn) {
         const directParent = browserBtn.parentElement;
@@ -57143,8 +57161,9 @@ function createHostSettingsController(deps = {}) {
           navList = directParent;
         }
       } else {
-        const sampleBtn = navBtns.find((b) => /general|browser|account|浏览器|通用/i.test(String(b.textContent || b.id || b.getAttribute?.('data-testid') || ''))) || navBtns[0];
-        const directParent = sampleBtn?.parentElement;
+        const sampleBtn = explicitNavBtns[0] || matchedCategoryBtns[0];
+        if (!sampleBtn) continue;
+        const directParent = sampleBtn.parentElement;
         const grandParent = directParent?.parentElement;
         navList = (grandParent && getNavButtons(grandParent).length > getNavButtons(directParent).length)
           ? grandParent
@@ -71152,7 +71171,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   }
 
   globalThis.__AGContextMeter = {
-    buildId: '6fa9255b969466ee',
+    buildId: 'eccdaf24011e7738',
     version: METER_RENDERER_VERSION,
     ensureAlive: () => {
       if (state.disposed) return false;

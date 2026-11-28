@@ -773,3 +773,76 @@ test('Phase 7.3: 底栏开关解耦、#csb-group-status 直达与窄窗优先露
     api.dispose();
   }
 });
+
+test('Issue #124: 普通 [role="dialog"] 提示弹窗与单一按钮确认框绝不得被误注入宿主设置导航', async () => {
+  const h = createHostSettingsTestHarness({ initialBackendVersion: '0.9.3' });
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    await h.flush();
+
+    // 1. 复现归档会话后右下角出现的 Conversation Archived [role="dialog"] 提示条（含 × 关闭与 Undo）
+    const toast = h.createMockNode('div');
+    toast.setAttribute('role', 'dialog');
+    const toastHeader = h.createMockNode('div');
+    const toastTitle = h.createMockNode('span');
+    toastTitle.textContent = 'Conversation Archived';
+    const toastClose = h.createMockNode('button');
+    toastClose.textContent = '×';
+    toastHeader.appendChild(toastTitle);
+    toastHeader.appendChild(toastClose);
+    const toastBody = h.createMockNode('div');
+    toastBody.textContent = 'View archived in the sidebar';
+    const toastUndo = h.createMockNode('button');
+    toastUndo.textContent = 'Undo';
+    toast.appendChild(toastHeader);
+    toast.appendChild(toastBody);
+    toast.appendChild(toastUndo);
+    h.bodyNode.appendChild(toast);
+
+    assert.equal(api.syncHostSettingsForTest(), false, '归档提示弹窗不得匹配为宿主设置弹窗');
+    assert.equal(h.docElements.get('ag-cm-host-settings-nav'), undefined, '不得挂载 #ag-cm-host-settings-nav');
+    assert.equal(toastHeader.children.length, 2, '归档提示头部子节点数量必须保持不变');
+
+    // 2. 仅包含单个关键词的普通确认框（如 Cancel + Remove Account）同样不得误挂载
+    toast.remove();
+    const confirmDlg = h.createMockNode('div');
+    confirmDlg.setAttribute('role', 'dialog');
+    const confirmActions = h.createMockNode('div');
+    const btnCancel = h.createMockNode('button');
+    btnCancel.textContent = 'Cancel';
+    const btnRemoveAcc = h.createMockNode('button');
+    btnRemoveAcc.textContent = 'Remove Account';
+    confirmActions.appendChild(btnCancel);
+    confirmActions.appendChild(btnRemoveAcc);
+    const confirmMsg = h.createMockNode('div');
+    confirmMsg.textContent = 'Are you sure?';
+    confirmDlg.appendChild(confirmActions);
+    confirmDlg.appendChild(confirmMsg);
+    h.bodyNode.appendChild(confirmDlg);
+
+    assert.equal(api.syncHostSettingsForTest(), false, '仅有单个关键词按钮的普通 [role="dialog"] 不得误挂载');
+    assert.equal(h.docElements.get('ag-cm-host-settings-nav'), undefined);
+
+    // 3. 无 .settings-modal-container / settings-nav-item-* 但包含 >= 2 个设置分类导航的真实设置 [role="dialog"] 仍可正常挂载
+    confirmDlg.remove();
+    const genericSettingsDlg = h.createMockNode('div');
+    genericSettingsDlg.setAttribute('role', 'dialog');
+    const navWrap = h.createMockNode('div');
+    const navBtn1 = h.createMockNode('button');
+    navBtn1.textContent = 'General';
+    const navBtn2 = h.createMockNode('button');
+    navBtn2.textContent = 'Appearance';
+    navWrap.appendChild(navBtn1);
+    navWrap.appendChild(navBtn2);
+    const pane = h.createMockNode('div');
+    pane.textContent = 'Settings Content';
+    genericSettingsDlg.appendChild(navWrap);
+    genericSettingsDlg.appendChild(pane);
+    h.bodyNode.appendChild(genericSettingsDlg);
+
+    assert.equal(api.syncHostSettingsForTest(), true, '具备 >= 2 个真实设置分类导航的 [role="dialog"] 仍应正常挂载');
+    assert.ok(h.docElements.get('ag-cm-host-settings-nav'), '应成功挂载 #ag-cm-host-settings-nav');
+  } finally {
+    api.dispose();
+  }
+});
