@@ -2288,7 +2288,8 @@ test('Issue #115: openUrlInSystemBrowser、startOAuthLogin 浏览器打开失败
     const mgr = accountsMod.createAccountsManager({
       stateDir: tmpDir,
       credentialStore: makeMockCredStore(),
-      oauthConfig: { clientId: 'test-client.apps.googleusercontent.com', clientSecret: 'GOCSPX-test-secret' }
+      oauthClientId: 'test-client.apps.googleusercontent.com',
+      oauthClientSecret: 'GOCSPX-test-secret'
     });
     const t0 = Date.now();
     const failRes = await accountsMod.dispatchAccountsAction(mgr, { action: 'oauth_login', timeoutMs: 30000 }, {
